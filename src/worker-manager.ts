@@ -18,6 +18,8 @@ export interface AgentConfig {
   model: string;
   /** Whether the agent is active (auto-start on startup) */
   active: boolean;
+  /** Per-agent project root */
+  project?: string;
 }
 
 export class WorkerManager {
@@ -68,7 +70,7 @@ export class WorkerManager {
       channel: agent.channel,
       agentId: agent.agentId,
       model: agent.model,
-      projectRoot: this.config.projectRoot,
+      projectRoot: agent.project || this.config.projectRoot,
       chatApiUrl: this.config.chatApiUrl,
       clawdBin: this.config.clawdBin,
       debug: this.config.debug,
@@ -133,6 +135,7 @@ export class WorkerManager {
           agentId: a.agent_id,
           model: a.model || "claude-sonnet-4",
           active: a.active !== false,
+          project: a.project || "",
         }));
       }
     } catch (error) {

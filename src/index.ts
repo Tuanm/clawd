@@ -10,10 +10,9 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
-
+import { registerAgentRoutes } from "./api/agents";
 import { loadConfig, validateClawdBin } from "./config";
 import { WorkerManager } from "./worker-manager";
-import { registerAgentRoutes } from "./api/agents";
 
 // Load configuration from CLI args + env
 const config = loadConfig();
@@ -27,8 +26,8 @@ if (!validateClawdBin(config.clawdBin)) {
 // Import clawd-chat server modules
 // ============================================================================
 import {
-  db,
   clearStaleStreamingStates,
+  db,
   getAgent,
   getOrRegisterAgent,
   initDatabase,
@@ -43,13 +42,7 @@ import {
 } from "./server/database";
 import { handleMcpRequest } from "./server/mcp";
 import { createChannel, getChannelInfo, listChannels } from "./server/routes/channels";
-import {
-  attachFilesToMessage,
-  getFile,
-  getFileMetadata,
-  getOptimizedFile,
-  uploadFile,
-} from "./server/routes/files";
+import { attachFilesToMessage, getFile, getFileMetadata, getOptimizedFile, uploadFile } from "./server/routes/files";
 import {
   addReaction,
   deleteMessage,
@@ -1114,5 +1107,3 @@ process.on("SIGINT", async () => {
   await workerManager.stop();
   process.exit(0);
 });
-
-

@@ -31,12 +31,20 @@ export function initAgentsTable(db: Database): void {
       channel TEXT NOT NULL,
       agent_id TEXT NOT NULL,
       model TEXT NOT NULL DEFAULT 'claude-sonnet-4',
+      project TEXT NOT NULL DEFAULT '',
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (strftime('%s', 'now')),
       updated_at TEXT NOT NULL DEFAULT (strftime('%s', 'now')),
       UNIQUE(channel, agent_id)
     )
   `);
+
+  // Add project column if table already exists without it
+  try {
+    db.exec(`ALTER TABLE channel_agents ADD COLUMN project TEXT NOT NULL DEFAULT ''`);
+  } catch {
+    // Column already exists
+  }
 }
 
 /** Register agent management API routes */
@@ -75,23 +83,25 @@ export function registerAgentRoutes(
     if (path === "/api/app.agents.add" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
-        const { channel, agent_id, model } = body;
+        const { channel, agent_id, model, project } = body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
         }
 
         const agentModel = model || "claude-sonnet-4";
+        const agentProject = project || "";
 
         try {
           db.run(
-            `INSERT INTO channel_agents (channel, agent_id, model, active)
-             VALUES (?, ?, ?, 1)
+            `INSERT INTO channel_agents (channel, agent_id, model, project, active)
+             VALUES (?, ?, ?, ?, 1)
              ON CONFLICT(channel, agent_id) DO UPDATE SET
                model = excluded.model,
+               project = excluded.project,
                active = 1,
                updated_at = strftime('%s', 'now')`,
-            [channel, agent_id, agentModel],
+            [channel, agent_id, agentModel, agentProject],
           );
         } catch (error) {
           return json({ ok: false, error: String(error) }, 500);
@@ -103,11 +113,12 @@ export function registerAgentRoutes(
           agentId: agent_id,
           model: agentModel,
           active: true,
+          project: agentProject,
         });
 
         return json({
           ok: true,
-          agent: { channel, agent_id, model: agentModel, active: true, running: true },
+          agent: { channel, agent_id, model: agentModel, project: agentProject, active: true, running: true },
         });
       });
     }
@@ -136,7 +147,7 @@ export function registerAgentRoutes(
     if (path === "/api/app.agents.update" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
-        const { channel, agent_id, model, active } = body;
+        const { channel, agent_id, model, active, project } = body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
@@ -149,6 +160,10 @@ export function registerAgentRoutes(
         if (model !== undefined) {
           updates.push("model = ?");
           params.push(model);
+        }
+        if (project !== undefined) {
+          updates.push("project = ?");
+          params.push(project);
         }
         if (active !== undefined) {
           updates.push("active = ?");
@@ -173,14 +188,15 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "agent_not_found" }, 404);
         }
 
-        // Restart worker if model changed or active state changed
-        if (model !== undefined || active !== undefined) {
+        // Restart worker if model changed, project changed, or active state changed
+        if (model !== undefined || active !== undefined || project !== undefined) {
           if (agent.active === 1) {
             await workerManager.restartAgent({
               channel,
               agentId: agent_id,
               model: agent.model,
               active: true,
+              project: agent.project || "",
             });
           } else {
             await workerManager.stopAgent(channel, agent_id);
@@ -207,6 +223,26 @@ export function registerAgentRoutes(
     // List available models
     if (path === "/api/app.models.list") {
       return json({ ok: true, models: AVAILABLE_MODELS });
+    }
+
+    // List directories (for folder picker)
+    if (path === "/api/app.folders.list") {
+      const dir = url.searchParams.get("path") || process.env.HOME || "/";
+      try {
+        const { readdirSync } = require("node:fs");
+        const { join } = require("node:path");
+        const entries = readdirSync(dir, { withFileTypes: true });
+        const folders = entries
+          .filter((e: any) => e.isDirectory() && !e.name.startsWith("."))
+          .map((e: any) => ({
+            name: e.name,
+            path: join(dir, e.name),
+          }))
+          .sort((a: any, b: any) => a.name.localeCompare(b.name));
+        return json({ ok: true, path: dir, folders });
+      } catch (error) {
+        return json({ ok: false, error: String(error) }, 500);
+      }
     }
 
     // Not handled
@@ -253,3 +289,4 @@ function handleAsync(fn: () => Promise<Response>): Response {
   // return the promise directly. But for type safety, we wrap.
   return fn() as any;
 }
+

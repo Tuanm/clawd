@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import AgentDialog from "./AgentDialog";
 import MessageComposer from "./MessageComposer";
-import MessageList from "./MessageList";
-import { StreamOutputDialog } from "./MessageList";
+import MessageList, { StreamOutputDialog } from "./MessageList";
 import PlanModal from "./PlanModal";
 import SearchModal from "./SearchModal";
-import AgentDialog from "./AgentDialog";
 import { UnreadBadge } from "./UnreadBadge";
 
 interface SeenByAgent {
@@ -898,7 +897,7 @@ export default function App({ channel: initialChannel }: Props) {
                       playNotificationSound();
                       // Show desktop notification for the first new agent message
                       const agentName = msg.agent_id || "Claw'd";
-                      const plainText = msg.text?.replace(/[*_`~#>\[\]()!]/g, "").trim() || "New message";
+                      const plainText = msg.text?.replace(/[*_`~#>[\]()!]/g, "").trim() || "New message";
                       showDesktopNotification(agentName, plainText, channelId);
                       break;
                     }
@@ -1114,7 +1113,7 @@ export default function App({ channel: initialChannel }: Props) {
               playNotificationSound();
               // Show desktop notification when tab is hidden
               const agentName = data.message.agent_id || "Claw'd";
-              const plainText = data.message.text?.replace(/[*_`~#>\[\]()!]/g, "").trim() || "New message";
+              const plainText = data.message.text?.replace(/[*_`~#>[\]()!]/g, "").trim() || "New message";
               showDesktopNotification(agentName, plainText, msgChannel);
             }
 

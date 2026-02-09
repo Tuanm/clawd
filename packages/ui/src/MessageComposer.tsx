@@ -433,16 +433,12 @@ export default function MessageComposer({
               </svg>
             </button>
             <div className="toolbar-divider" />
-            <button className="toolbar-btn" title="Inline code (\`code\`)" onClick={() => applyFormat("\`", "\`")}>
+            <button className="toolbar-btn" title="Inline code (\`code\`)" onClick={() => applyFormat("`", "`")}>
               <svg viewBox="0 0 24 24" fill="currentColor">
                 <path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z" />
               </svg>
             </button>
-            <button
-              className="toolbar-btn"
-              title="Code block (\`\`\`)"
-              onClick={() => applyFormat("\`\`\`\n", "\n\`\`\`")}
-            >
+            <button className="toolbar-btn" title="Code block (\`\`\`)" onClick={() => applyFormat("```\n", "\n```")}>
               <svg viewBox="0 0 24 24" fill="currentColor">
                 <path d="M4 3h16c.55 0 1 .45 1 1v16c0 .55-.45 1-1 1H4c-.55 0-1-.45-1-1V4c0-.55.45-1 1-1zm1 2v14h14V5H5zm3.4 10.6L4.8 12l3.6-3.6L9.8 7l-5 5 5 5-1.4-1.4zm7.2 0l3.6-3.6-3.6-3.6L14.2 7l5 5-5 5 1.4-1.4z" />
               </svg>
