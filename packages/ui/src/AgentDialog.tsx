@@ -11,6 +11,7 @@ interface Agent {
   project: string;
   active: boolean;
   running: boolean;
+  avatar_color: string | null;
 }
 
 interface Props {
@@ -61,25 +62,12 @@ function ChevronIcon() {
   );
 }
 
-// Simple color hash for agents
-function agentColor(agentId: string): string {
-  const colors = [
-    "#D97853",
-    "#7A4AD9",
-    "#4A9BD9",
-    "#D94A7A",
-    "#4AD98A",
-    "#D9B34A",
-    "#4AD9D9",
-    "#9B4AD9",
-    "#D97A4A",
-    "#4A6BD9",
-  ];
-  let hash = 0;
-  for (let i = 0; i < agentId.length; i++) {
-    hash = agentId.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return colors[Math.abs(hash) % colors.length];
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
 }
 
 export default function AgentDialog({ channel, isOpen, onClose }: Props) {
@@ -90,7 +78,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
 
   // Add form state
   const [newName, setNewName] = useState("");
-  const [newModel, setNewModel] = useState("claude-sonnet-4");
+  const [newModel, setNewModel] = useState("claude-sonnet-4.5");
   const [newProject, setNewProject] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -117,7 +105,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setShowAddForm(false);
       setError(null);
       setNewName("");
-      setNewModel("claude-sonnet-4");
+      setNewModel("claude-sonnet-4.5");
       setNewProject("");
       setShowFolderBrowser(false);
     }
@@ -153,14 +141,14 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
         body: JSON.stringify({
           channel,
           agent_id: newName.trim(),
-          model: newModel.trim() || "claude-sonnet-4",
+          model: newModel.trim() || "claude-sonnet-4.5",
           project: newProject.trim(),
         }),
       });
       const data = await res.json();
       if (data.ok) {
         setNewName("");
-        setNewModel("claude-sonnet-4");
+        setNewModel("claude-sonnet-4.5");
         setNewProject("");
         setShowAddForm(false);
         setSelectedAgentId(newName.trim());
@@ -240,7 +228,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
         <div className="stream-agent-bar">
           {agents.map((agent) => {
             const isActive = selectedAgentId === agent.agent_id && !showAddForm;
-            const color = agentColor(agent.agent_id);
+            const color = agent.avatar_color || "#D97853";
             return (
               <button
                 key={agent.agent_id}
@@ -374,8 +362,8 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                       </button>
                     )}
                     <span className="agent-browser-path">{folderPath || "/"}</span>
-                    <button className="agent-action-btn agent-action-btn--accent agent-browser-select" onClick={() => handleFolderSelect(folderPath)}>
-                      Select
+                    <button className="agent-browser-check" onClick={() => handleFolderSelect(folderPath)} title="Select this folder">
+                      <CheckIcon />
                     </button>
                   </div>
                   <div className="agent-browser-list">
@@ -410,4 +398,3 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     document.body,
   );
 }
-

@@ -133,7 +133,7 @@ export class WorkerManager {
         return data.agents.map((a: any) => ({
           channel: a.channel,
           agentId: a.agent_id,
-          model: a.model || "claude-sonnet-4",
+          model: a.model || "claude-sonnet-4.5",
           active: a.active !== false,
           project: a.project || "",
         }));

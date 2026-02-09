@@ -871,10 +871,23 @@ body {
   white-space: nowrap;
 }
 
-.agent-browser-select {
-  padding: 3px 10px;
-  font-size: 11px;
+.agent-browser-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: hsl(var(--text) / 50%);
+  cursor: pointer;
   flex-shrink: 0;
+}
+
+.agent-browser-check:hover {
+  background: hsl(var(--text) / 6%);
+  color: hsl(var(--accent));
 }
 
 .agent-browser-list {
@@ -4243,4 +4256,3 @@ textarea {
   -webkit-user-select: text;
   user-select: text;
 }
-

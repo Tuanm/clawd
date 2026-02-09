@@ -18,7 +18,7 @@ import type { WorkerManager } from "../worker-manager";
 
 /** Available AI models */
 const AVAILABLE_MODELS = [
-  { id: "claude-sonnet-4", name: "Claude Sonnet 4", description: "Fast and capable" },
+  { id: "claude-sonnet-4.5", name: "Claude Sonnet 4", description: "Fast and capable" },
   { id: "claude-opus-4", name: "Claude Opus 4", description: "Most intelligent" },
   { id: "claude-haiku-4", name: "Claude Haiku 4", description: "Fastest, lightweight" },
 ];
@@ -30,7 +30,7 @@ export function initAgentsTable(db: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       channel TEXT NOT NULL,
       agent_id TEXT NOT NULL,
-      model TEXT NOT NULL DEFAULT 'claude-sonnet-4',
+      model TEXT NOT NULL DEFAULT 'claude-sonnet-4.5',
       project TEXT NOT NULL DEFAULT '',
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (strftime('%s', 'now')),
@@ -63,10 +63,20 @@ export function registerAgentRoutes(
       let agents: any[];
       if (channel) {
         agents = db
-          .query("SELECT * FROM channel_agents WHERE channel = ? ORDER BY created_at ASC")
+          .query(
+            `SELECT ca.*, a.avatar_color FROM channel_agents ca
+             LEFT JOIN agents a ON a.id = ca.agent_id AND a.channel = ca.channel
+             WHERE ca.channel = ? ORDER BY ca.created_at ASC`,
+          )
           .all(channel) as any[];
       } else {
-        agents = db.query("SELECT * FROM channel_agents ORDER BY channel, created_at ASC").all() as any[];
+        agents = db
+          .query(
+            `SELECT ca.*, a.avatar_color FROM channel_agents ca
+             LEFT JOIN agents a ON a.id = ca.agent_id AND a.channel = ca.channel
+             ORDER BY ca.channel, ca.created_at ASC`,
+          )
+          .all() as any[];
       }
 
       // Enrich with running status
@@ -89,7 +99,7 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "channel and agent_id required" }, 400);
         }
 
-        const agentModel = model || "claude-sonnet-4";
+        const agentModel = model || "claude-sonnet-4.5";
         const agentProject = project || "";
 
         try {
@@ -289,4 +299,3 @@ function handleAsync(fn: () => Promise<Response>): Response {
   // return the promise directly. But for type safety, we wrap.
   return fn() as any;
 }
-
