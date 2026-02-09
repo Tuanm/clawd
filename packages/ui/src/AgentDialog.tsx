@@ -39,8 +39,8 @@ function PlusIcon() {
 function FolderIcon() {
   return (
     <svg
-      width="16"
-      height="16"
+      width="14"
+      height="14"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -49,6 +49,14 @@ function FolderIcon() {
       strokeLinejoin="round"
     >
       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function ChevronIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="15 18 9 12 15 6" />
     </svg>
   );
 }
@@ -280,133 +288,116 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
             </div>
           )}
 
-          {/* Selected agent details */}
+          {/* Selected agent details -- same input layout as Add, but readonly */}
           {selectedAgent && !showAddForm && (
-            <div className="agent-detail">
-              <div className="agent-detail-row">
-                <span className="agent-detail-label">Name</span>
-                <span className="agent-detail-value">{selectedAgent.agent_id}</span>
-              </div>
-              <div className="agent-detail-row">
-                <span className="agent-detail-label">Project</span>
-                <span className="agent-detail-value">
-                  {selectedAgent.project || <span className="agent-detail-empty">Not set</span>}
-                </span>
-              </div>
-              <div className="agent-detail-row">
-                <span className="agent-detail-label">Model</span>
-                <span className="agent-detail-value">{selectedAgent.model}</span>
-              </div>
-              <div className="agent-detail-row">
-                <span className="agent-detail-label">Status</span>
-                <span className={`agent-detail-value agent-status ${selectedAgent.running ? "running" : "stopped"}`}>
-                  {selectedAgent.running ? "Running" : "Stopped"}
-                </span>
-              </div>
-              <button className="agent-remove-btn" onClick={() => handleRemoveAgent(selectedAgent.agent_id)}>
-                Remove from channel
+            <div className="agent-fields">
+              <input type="text" className="agent-field-input" placeholder="Name" value={selectedAgent.agent_id} readOnly />
+              <input type="text" className="agent-field-input" placeholder="Model" value={selectedAgent.model} readOnly />
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Project"
+                value={selectedAgent.project || ""}
+                readOnly
+              />
+              <button className="agent-action-btn agent-action-btn--danger" onClick={() => handleRemoveAgent(selectedAgent.agent_id)}>
+                Remove
               </button>
             </div>
           )}
 
-          {/* Add agent form */}
+          {/* Add agent form -- same input layout as details */}
           {showAddForm && (
-            <div className="agent-add-form">
-              <div className="agent-form-field">
-                <label className="agent-form-label">Name</label>
+            <div className="agent-fields">
+              <input
+                ref={nameInputRef}
+                type="text"
+                className="agent-field-input"
+                placeholder="Name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAddAgent();
+                  if (e.key === "Escape") {
+                    setShowAddForm(false);
+                    setError(null);
+                  }
+                }}
+              />
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Model"
+                value={newModel}
+                onChange={(e) => setNewModel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAddAgent();
+                }}
+              />
+              <div className="agent-field-browse">
                 <input
-                  ref={nameInputRef}
                   type="text"
-                  className="agent-form-input"
-                  placeholder="Agent ID (e.g., Claw'd)"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
+                  className="agent-field-input"
+                  placeholder="Project"
+                  value={newProject}
+                  onChange={(e) => setNewProject(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleAddAgent();
-                    if (e.key === "Escape") {
-                      setShowAddForm(false);
-                      setError(null);
+                  }}
+                />
+                <button
+                  className="agent-field-browse-btn"
+                  onClick={() => {
+                    setShowFolderBrowser(!showFolderBrowser);
+                    if (!showFolderBrowser) {
+                      loadFolders(newProject || "/");
                     }
                   }}
-                />
+                  title="Browse"
+                >
+                  <FolderIcon />
+                </button>
               </div>
-              <div className="agent-form-field">
-                <label className="agent-form-label">Model</label>
-                <input
-                  type="text"
-                  className="agent-form-input"
-                  placeholder="claude-sonnet-4"
-                  value={newModel}
-                  onChange={(e) => setNewModel(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleAddAgent();
-                  }}
-                />
-              </div>
-              <div className="agent-form-field">
-                <label className="agent-form-label">Project</label>
-                <div className="agent-form-folder-row">
-                  <input
-                    type="text"
-                    className="agent-form-input agent-form-folder-input"
-                    placeholder="/path/to/project"
-                    value={newProject}
-                    onChange={(e) => setNewProject(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAddAgent();
-                    }}
-                  />
-                  <button
-                    className="agent-form-folder-btn"
-                    onClick={() => {
-                      setShowFolderBrowser(!showFolderBrowser);
-                      if (!showFolderBrowser) {
-                        loadFolders(newProject || "/");
-                      }
-                    }}
-                    title="Browse folders"
-                  >
-                    <FolderIcon />
-                  </button>
-                </div>
-                {/* Inline folder browser */}
-                {showFolderBrowser && (
-                  <div className="agent-folder-browser">
-                    <div className="agent-folder-path">
-                      <span className="agent-folder-current">{folderPath || "/"}</span>
-                      <button className="agent-folder-select-btn" onClick={() => handleFolderSelect(folderPath)}>
-                        Select
+              {/* Minimal folder browser */}
+              {showFolderBrowser && (
+                <div className="agent-browser">
+                  <div className="agent-browser-head">
+                    {folderPath && folderPath !== "/" && (
+                      <button
+                        className="agent-browser-back"
+                        onClick={() => {
+                          const parent = folderPath.split("/").slice(0, -1).join("/") || "/";
+                          loadFolders(parent);
+                        }}
+                      >
+                        <ChevronIcon />
                       </button>
-                    </div>
-                    <div className="agent-folder-list">
-                      {folderPath && folderPath !== "/" && (
-                        <button
-                          className="agent-folder-item"
-                          onClick={() => {
-                            const parent = folderPath.split("/").slice(0, -1).join("/") || "/";
-                            loadFolders(parent);
-                          }}
-                        >
-                          📁 ..
-                        </button>
-                      )}
-                      {folderLoading ? (
-                        <div className="agent-folder-loading">Loading...</div>
-                      ) : (
-                        folders.map((f) => (
-                          <button key={f.path} className="agent-folder-item" onClick={() => loadFolders(f.path)}>
-                            📁 {f.name}
-                          </button>
-                        ))
-                      )}
-                      {!folderLoading && folders.length === 0 && (
-                        <div className="agent-folder-empty">No subdirectories</div>
-                      )}
-                    </div>
+                    )}
+                    <span className="agent-browser-path">{folderPath || "/"}</span>
+                    <button className="agent-action-btn agent-action-btn--accent agent-browser-select" onClick={() => handleFolderSelect(folderPath)}>
+                      Select
+                    </button>
                   </div>
-                )}
-              </div>
-              <button className="agent-add-submit-btn" onClick={handleAddAgent} disabled={!newName.trim() || saving}>
+                  <div className="agent-browser-list">
+                    {folderLoading ? (
+                      <div className="agent-browser-empty">Loading...</div>
+                    ) : folders.length === 0 ? (
+                      <div className="agent-browser-empty">No subdirectories</div>
+                    ) : (
+                      folders.map((f) => (
+                        <button key={f.path} className="agent-browser-item" onClick={() => loadFolders(f.path)}>
+                          {f.name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+              <button
+                className="agent-action-btn agent-action-btn--accent"
+                onClick={handleAddAgent}
+                disabled={!newName.trim() || saving}
+              >
                 {saving ? "Adding..." : "Add"}
               </button>
             </div>
@@ -419,3 +410,4 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     document.body,
   );
 }
+
