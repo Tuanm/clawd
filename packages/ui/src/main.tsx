@@ -2,7 +2,6 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import HomePage from "./HomePage";
-import SettingsPage from "./SettingsPage";
 import "./styles.css";
 
 // Register Service Worker for PWA + desktop notifications
@@ -35,11 +34,6 @@ registerServiceWorker();
 function Router() {
   const path = window.location.pathname;
 
-  // Settings page
-  if (path === "/settings" || path === "/settings/") {
-    return <SettingsPage />;
-  }
-
   // Match both patterns:
   // - /spaces/{channel-id} (legacy)
   // - /{channel-id} (new, direct)
@@ -48,7 +42,7 @@ function Router() {
   if (spaceMatch) {
     const channel = spaceMatch[1];
     // Skip non-channel paths
-    if (channel && !["favicon.ico", "assets", "api", "ws", "mcp", "health", "settings"].includes(channel)) {
+    if (channel && !["favicon.ico", "assets", "api", "ws", "mcp", "health"].includes(channel)) {
       return <App channel={channel} />;
     }
   }

@@ -4,6 +4,7 @@ import MessageList from "./MessageList";
 import { StreamOutputDialog } from "./MessageList";
 import PlanModal from "./PlanModal";
 import SearchModal from "./SearchModal";
+import SettingsDialog from "./SettingsDialog";
 import { UnreadBadge } from "./UnreadBadge";
 
 interface SeenByAgent {
@@ -446,6 +447,7 @@ export default function App({ channel: initialChannel }: Props) {
   const [channelAgents, setChannelAgents] = useState<Record<string, SeenByAgent[]>>({});
   const [showPlanModal, setShowPlanModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
+  const [showSettingsDialog, setShowSettingsDialog] = useState(false);
   const [jumpToMessageTs, setJumpToMessageTs] = useState<string | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [isActiveChannelAtBottom, setIsActiveChannelAtBottom] = useState(true);
@@ -813,7 +815,15 @@ export default function App({ channel: initialChannel }: Props) {
         const data = await res.json();
         if (data.ok) {
           if (data.messages.length === 0) {
-            setValidProject(false);
+            // Empty channel -- still valid, just no messages yet
+            updateChannelState(channelId, {
+              messages: [],
+              hasMoreOlder: false,
+              hasMoreNewer: false,
+              isAtLatest: true,
+              loaded: true,
+            });
+            setValidProject(true);
             return;
           }
 
@@ -928,12 +938,14 @@ export default function App({ channel: initialChannel }: Props) {
 
           setValidProject(true);
         } else {
-          setValidProject(false);
+          // API returned error -- still show channel UI (don't redirect)
+          setValidProject(true);
         }
       } catch (err) {
         console.error("Failed to fetch messages:", err);
         if (!background) {
-          setValidProject(false);
+          // Network error -- still show channel UI (don't redirect)
+          setValidProject(true);
         }
       }
     },
@@ -1564,10 +1576,7 @@ export default function App({ channel: initialChannel }: Props) {
   }, [activeChannel]);
 
   // Redirect to home if project is invalid
-  if (validProject === false) {
-    window.location.href = "/";
-    return null;
-  }
+  // (We no longer redirect -- channels with no messages still show the channel UI)
 
   // Loading state - Clawd running to header position
   if (validProject === null) {
@@ -1661,9 +1670,7 @@ export default function App({ channel: initialChannel }: Props) {
           )}
           <button
             className="settings-gear-btn"
-            onClick={() => {
-              window.location.href = "/settings";
-            }}
+            onClick={() => setShowSettingsDialog(true)}
             title="Settings"
           >
             <svg
@@ -1877,6 +1884,7 @@ export default function App({ channel: initialChannel }: Props) {
           }
         }}
       />
+      <SettingsDialog channel={activeChannel} isOpen={showSettingsDialog} onClose={() => setShowSettingsDialog(false)} />
     </div>
   );
 }

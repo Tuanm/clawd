@@ -4034,53 +4034,66 @@ textarea {
    Settings Page
    ============================================================================ */
 
-.settings-page {
-  height: 100vh;
-  height: 100dvh;
+/* Settings dialog (inline modal) */
+.settings-dialog {
+  background: hsl(var(--bg-center));
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  min-width: 320px;
+  max-width: 480px;
+  width: 90vw;
+  max-height: 70vh;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  background: hsl(var(--bg));
-  overflow-y: auto;
-  padding: 0 16px;
+  overflow: hidden;
+  animation: context-menu-appear 0.15s ease-out;
 }
 
-.settings-container {
-  width: 100%;
-  max-width: 600px;
-  padding: 24px 0;
-}
-
-.settings-header {
+.settings-dialog-header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 32px;
+  gap: 10px;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid hsl(var(--border));
 }
 
-.settings-back-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 6px;
+.settings-dialog-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: hsl(var(--text));
+  flex: 1;
+  margin: 0;
+}
+
+.settings-dialog-close-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s ease;
+  width: 28px;
+  height: 28px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--text) / 60%);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+  flex-shrink: 0;
 }
 
-.settings-back-btn:hover {
-  background: hsl(var(--text) / 6%);
-  color: var(--text-primary);
+.settings-dialog-close-btn:hover {
+  background-color: hsl(0 70% 55% / 10%);
+  color: hsl(0 70% 55%);
+  border-color: hsl(0 70% 55% / 40%);
 }
 
-.settings-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0;
+.settings-dialog-content {
+  overflow-y: auto;
+  padding: 16px 20px;
+  flex: 1;
 }
 
 .settings-section {
@@ -4098,40 +4111,6 @@ textarea {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
-  margin: 0;
-}
-
-.settings-label {
-  display: block;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
-  margin-bottom: 6px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.settings-select {
-  width: 100%;
-  padding: 8px 12px;
-  border: 1px solid hsl(var(--text) / 12%);
-  border-radius: 6px;
-  font-size: 14px;
-  background: hsl(var(--bg-center));
-  color: var(--text-primary);
-  cursor: pointer;
-  outline: none;
-  transition: border-color 0.15s ease;
-  appearance: auto;
-}
-
-.settings-select:focus {
-  border-color: hsl(15 63.1% 59.6%);
-}
-
-.settings-hint {
-  font-size: 13px;
-  color: var(--text-muted);
   margin: 0;
 }
 
@@ -4308,20 +4287,23 @@ textarea {
   gap: 8px;
 }
 
-.settings-model-select {
+.settings-model-input {
+  width: auto;
+  max-width: 180px;
   padding: 2px 6px;
   border: 1px solid hsl(var(--text) / 8%);
   border-radius: 4px;
   font-size: 12px;
   background: hsl(var(--bg));
   color: var(--text-muted);
-  cursor: pointer;
   outline: none;
-  appearance: auto;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease;
 }
 
-.settings-model-select:focus {
+.settings-model-input:focus {
   border-color: hsl(15 63.1% 59.6%);
+  color: hsl(var(--text));
 }
 
 .settings-agent-status {
@@ -4417,8 +4399,10 @@ textarea {
 
 /* Mobile adjustments */
 @media (max-width: 600px) {
-  .settings-container {
-    padding: 16px 0;
+  .settings-dialog {
+    min-width: 0;
+    max-width: 100vw;
+    width: 95vw;
   }
 
   .settings-agent-row {
@@ -4431,4 +4415,3 @@ textarea {
     gap: 2px;
   }
 }
-
