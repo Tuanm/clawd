@@ -1790,7 +1790,7 @@ export default function App({ channel: initialChannel }: Props) {
       <MessageComposer
         onSend={sendMessage}
         channel={activeChannel}
-        disabled={messages.length === 0}
+        disabled={!channelStates.get(activeChannel)?.loaded}
         thinkingBanner={
           streamingAgents.length > 0 ? (
             <div className="thinking-banner" onClick={() => setStreamDialogOpen(true)} title="Click to see thoughts">
