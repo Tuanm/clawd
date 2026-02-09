@@ -64,7 +64,16 @@ function ChevronIcon() {
 
 function CheckIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
       <polyline points="20 6 9 17 4 12" />
     </svg>
   );
@@ -279,8 +288,20 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           {/* Selected agent details -- same input layout as Add, but readonly */}
           {selectedAgent && !showAddForm && (
             <div className="agent-fields">
-              <input type="text" className="agent-field-input" placeholder="Name" value={selectedAgent.agent_id} readOnly />
-              <input type="text" className="agent-field-input" placeholder="Model" value={selectedAgent.model} readOnly />
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Name"
+                value={selectedAgent.agent_id}
+                readOnly
+              />
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Model"
+                value={selectedAgent.model}
+                readOnly
+              />
               <input
                 type="text"
                 className="agent-field-input"
@@ -288,7 +309,10 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 value={selectedAgent.project || ""}
                 readOnly
               />
-              <button className="agent-action-btn agent-action-btn--danger" onClick={() => handleRemoveAgent(selectedAgent.agent_id)}>
+              <button
+                className="agent-action-btn agent-action-btn--danger"
+                onClick={() => handleRemoveAgent(selectedAgent.agent_id)}
+              >
                 Remove
               </button>
             </div>
@@ -362,7 +386,11 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                       </button>
                     )}
                     <span className="agent-browser-path">{folderPath || "/"}</span>
-                    <button className="agent-browser-check" onClick={() => handleFolderSelect(folderPath)} title="Select this folder">
+                    <button
+                      className="agent-browser-check"
+                      onClick={() => handleFolderSelect(folderPath)}
+                      title="Select this folder"
+                    >
                       <CheckIcon />
                     </button>
                   </div>

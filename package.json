@@ -2,25 +2,37 @@
   "name": "clawd-app",
   "version": "0.1.0",
   "description": "Claw'd App - All-in-one desktop app: clawd-chat server + UI + worker manager",
+  "main": "dist/electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
     "dev:ui": "cd packages/ui && bun run dev",
+    "dev:electron": "bun run build:electron && NODE_ENV=development electron dist/electron/main.js",
     "build:ui": "cd packages/ui && bun install && bun run build",
-    "build": "bun run build:ui && mkdir -p dist && bun build src/index.ts --compile --minify --sourcemap --target=bun --outfile dist/clawd-app && rm -rf dist/ui && cp -r packages/ui/dist dist/ui",
-    "build:linux": "bun run build:ui && mkdir -p dist && bun build src/index.ts --compile --minify --target=bun-linux-x64 --outfile dist/clawd-app-linux-x64 && rm -rf dist/ui && cp -r packages/ui/dist dist/ui",
-    "build:macos": "bun run build:ui && mkdir -p dist && bun build src/index.ts --compile --minify --target=bun-darwin-arm64 --outfile dist/clawd-app-darwin-arm64 && rm -rf dist/ui && cp -r packages/ui/dist dist/ui",
-    "install:local": "mkdir -p ~/.clawd/bin && cp dist/clawd-app ~/.clawd/bin/ && rm -rf ~/.clawd/bin/app-ui && cp -r dist/ui ~/.clawd/bin/app-ui",
+    "build:electron": "cd electron && npx tsc -p tsconfig.json",
+    "build:server": "mkdir -p dist/server && bun build src/index.ts --compile --minify --target=bun --outfile dist/server/clawd-app && rm -rf dist/server/ui && cp -r packages/ui/dist dist/server/ui",
+    "build": "bun run build:ui && bun run build:server && bun run build:electron",
+    "build:linux": "bun run build:ui && mkdir -p dist/server && bun build src/index.ts --compile --minify --target=bun-linux-x64 --outfile dist/server/clawd-app && rm -rf dist/server/ui && cp -r packages/ui/dist dist/server/ui && bun run build:electron",
+    "build:macos": "bun run build:ui && mkdir -p dist/server && bun build src/index.ts --compile --minify --target=bun-darwin-arm64 --outfile dist/server/clawd-app && rm -rf dist/server/ui && cp -r packages/ui/dist dist/server/ui && bun run build:electron",
+    "pack": "bun run build && npx electron-builder --dir",
+    "dist": "bun run build && npx electron-builder",
+    "dist:mac": "bun run build:macos && npx electron-builder --mac",
+    "dist:linux": "bun run build:linux && npx electron-builder --linux",
+    "dist:win": "bun run build && npx electron-builder --win",
+    "install:local": "mkdir -p ~/.clawd/bin && cp dist/server/clawd-app ~/.clawd/bin/ && rm -rf ~/.clawd/bin/app-ui && cp -r dist/server/ui ~/.clawd/bin/app-ui",
     "format": "bunx biome format --write .",
     "format:check": "bunx biome format .",
     "lint": "bunx biome lint .",
     "lint:fix": "bunx biome lint --write .",
     "check": "bunx biome check --write .",
-    "clean": "rm -rf dist node_modules packages/ui/node_modules packages/ui/dist"
+    "clean": "rm -rf dist release node_modules packages/ui/node_modules packages/ui/dist"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.14",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "electron": "^35.1.5",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.5.0"
   },
   "dependencies": {
     "sharp": "^0.33.5"
