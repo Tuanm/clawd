@@ -253,4 +253,3 @@ function handleAsync(fn: () => Promise<Response>): Response {
   // return the promise directly. But for type safety, we wrap.
   return fn() as any;
 }
-

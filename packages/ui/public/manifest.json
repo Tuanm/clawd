@@ -1,0 +1,29 @@
+{
+  "name": "Claw'd",
+  "short_name": "Claw'd",
+  "description": "Chat with Claw'd",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f9f7f3",
+  "theme_color": "#f9f7f3",
+  "icons": [
+    {
+      "src": "/clawd-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/clawd-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/clawd-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

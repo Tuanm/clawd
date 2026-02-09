@@ -70,7 +70,7 @@ export function loadConfig(): AppConfig {
     process.exit(0);
   }
 
-  const port = parseInt(values.port || process.env.CHAT_PORT || "53456", 10);
+  const port = parseInt(values.port || process.env.CHAT_PORT || "3456", 10);
   const clawdBin = values["clawd-bin"] || join(homedir(), ".clawd", "bin", "clawd");
   const projectRoot = values["project-root"] ? resolve(values["project-root"]) : process.cwd();
 
@@ -102,7 +102,7 @@ function printUsage() {
 Usage: clawd-app [options]
 
 Options:
-  -p, --port <port>            Server port (default: 53456)
+  -p, --port <port>            Server port (default: 3456)
   --clawd-bin <path>           Path to clawd binary (default: ~/.clawd/bin/clawd)
   -r, --project-root <path>    Project root directory (default: current directory)
   --no-browser                 Don't open browser on startup
@@ -117,4 +117,5 @@ Examples:
   clawd-app --no-browser --debug
 `);
 }
+
 

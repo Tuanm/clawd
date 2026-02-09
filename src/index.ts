@@ -40,20 +40,16 @@ import {
   setAgentSleeping,
   setAgentStreaming,
   toSlackMessage,
-} from "../../clawd-chat/packages/server/database";
-import { handleMcpRequest } from "../../clawd-chat/packages/server/mcp";
-import {
-  createChannel,
-  getChannelInfo,
-  listChannels,
-} from "../../clawd-chat/packages/server/routes/channels";
+} from "./server/database";
+import { handleMcpRequest } from "./server/mcp";
+import { createChannel, getChannelInfo, listChannels } from "./server/routes/channels";
 import {
   attachFilesToMessage,
   getFile,
   getFileMetadata,
   getOptimizedFile,
   uploadFile,
-} from "../../clawd-chat/packages/server/routes/files";
+} from "./server/routes/files";
 import {
   addReaction,
   deleteMessage,
@@ -65,7 +61,7 @@ import {
   postMessage,
   removeReaction,
   updateMessage,
-} from "../../clawd-chat/packages/server/routes/messages";
+} from "./server/routes/messages";
 import {
   addPhase,
   addTaskAttachment,
@@ -87,7 +83,7 @@ import {
   updatePhase,
   updatePlan,
   updateTask,
-} from "../../clawd-chat/packages/server/routes/tasks";
+} from "./server/routes/tasks";
 import {
   broadcastAgentStreaming,
   broadcastAgentToken,
@@ -100,7 +96,7 @@ import {
   handleWebSocketClose,
   handleWebSocketMessage,
   handleWebSocketOpen,
-} from "../../clawd-chat/packages/server/websocket";
+} from "./server/websocket";
 
 // ============================================================================
 // Initialize
@@ -133,8 +129,8 @@ const getUiDir = (): string => {
   const appUi = join(execDir, "app-ui");
   if (existsSync(appUi)) return appUi;
 
-  // Dev mode: clawd-chat UI dist
-  const devPath = join(dirname(Bun.main), "..", "..", "clawd-chat", "packages", "ui", "dist");
+  // Dev mode: local packages/ui dist
+  const devPath = join(dirname(Bun.main), "..", "packages", "ui", "dist");
   if (existsSync(devPath)) return devPath;
 
   // Fallback: dist/ui relative to cwd
@@ -237,7 +233,9 @@ async function parseBody(req: Request): Promise<Record<string, any>> {
   if (contentType.includes("multipart/form-data")) {
     const formData = await req.formData();
     const result: Record<string, any> = {};
-    formData.forEach((value, key) => { result[key] = value; });
+    formData.forEach((value, key) => {
+      result[key] = value;
+    });
     return result;
   }
   return {};
@@ -289,7 +287,6 @@ const server = Bun.serve({
     perMessageDeflate: true,
   },
 });
-
 
 // ============================================================================
 // Request handler (all API routes)
@@ -386,7 +383,10 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
 
       const conditions: string[] = ["channel = ?", "text LIKE ?"];
       const params: (string | number)[] = [channel, `%${search}%`];
-      if (beforeTs) { conditions.push("ts < ?"); params.push(beforeTs); }
+      if (beforeTs) {
+        conditions.push("ts < ?");
+        params.push(beforeTs);
+      }
 
       const query = `SELECT * FROM messages WHERE ${conditions.join(" AND ")} ORDER BY ts DESC LIMIT ?`;
       params.push(limit + 1);
@@ -428,7 +428,10 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
         code_preview: body.code_preview,
       });
       if (result.ok && body.files && Array.isArray(body.files) && body.files.length > 0) {
-        attachFilesToMessage(result.ts, body.files.map((f: { id: string }) => f.id));
+        attachFilesToMessage(
+          result.ts,
+          body.files.map((f: { id: string }) => f.id),
+        );
       }
       if (result.ok) {
         const msg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(result.ts);
@@ -460,15 +463,27 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
     // Reactions
     if (path === "/api/reactions.add" && req.method === "POST") {
       const body = await parseBody(req);
-      const result = addReaction({ channel: body.channel || "general", timestamp: body.timestamp, name: body.name, user: body.user });
-      if (result.ok) broadcastReaction(body.channel || "general", body.timestamp, body.name, body.user || "UHUMAN", "added");
+      const result = addReaction({
+        channel: body.channel || "general",
+        timestamp: body.timestamp,
+        name: body.name,
+        user: body.user,
+      });
+      if (result.ok)
+        broadcastReaction(body.channel || "general", body.timestamp, body.name, body.user || "UHUMAN", "added");
       return json(result);
     }
 
     if (path === "/api/reactions.remove" && req.method === "POST") {
       const body = await parseBody(req);
-      const result = removeReaction({ channel: body.channel || "general", timestamp: body.timestamp, name: body.name, user: body.user });
-      if (result.ok) broadcastReaction(body.channel || "general", body.timestamp, body.name, body.user || "UHUMAN", "removed");
+      const result = removeReaction({
+        channel: body.channel || "general",
+        timestamp: body.timestamp,
+        name: body.name,
+        user: body.user,
+      });
+      if (result.ok)
+        broadcastReaction(body.channel || "general", body.timestamp, body.name, body.user || "UHUMAN", "removed");
       return json(result);
     }
 
@@ -531,7 +546,6 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
       return json(getPendingMessages(channel, lastTs || undefined, includeBot, limit));
     }
 
-
     // Agent mark seen
     if (path === "/api/agent.markSeen" && req.method === "POST") {
       const body = await parseBody(req);
@@ -558,7 +572,11 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
         )
         .all(channel, lastSeenTs, agentId);
       if (messagesToMark.length > 0) {
-        markMessagesSeen(channel, agentId, messagesToMark.map((m) => m.ts));
+        markMessagesSeen(
+          channel,
+          agentId,
+          messagesToMark.map((m) => m.ts),
+        );
       }
 
       db.run(
@@ -650,8 +668,21 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
       const agentId = body.agent_id;
       const channel = body.channel || "general";
       if (!agentId || !body.tool_name) return json({ ok: false, error: "agent_id and tool_name required" }, 400);
-      broadcastAgentToolCall(channel, agentId, body.tool_name, body.tool_args || {}, body.status || "started", body.result);
-      return json({ ok: true, agent_id: agentId, channel, tool_name: body.tool_name, status: body.status || "started" });
+      broadcastAgentToolCall(
+        channel,
+        agentId,
+        body.tool_name,
+        body.tool_args || {},
+        body.status || "started",
+        body.result,
+      );
+      return json({
+        ok: true,
+        agent_id: agentId,
+        channel,
+        tool_name: body.tool_name,
+        status: body.status || "started",
+      });
     }
 
     // Get last processed
@@ -706,9 +737,13 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
       if (!lastPollTs || isAutoHibernate) finalStatus = "hibernate";
 
       return json({
-        ok: true, agent_id: agentId, channel, status: finalStatus,
+        ok: true,
+        agent_id: agentId,
+        channel,
+        status: finalStatus,
         hibernate_until: statusResult?.hibernate_until || null,
-        last_poll_ts: lastPollTs || null, auto_hibernate: isAutoHibernate,
+        last_poll_ts: lastPollTs || null,
+        auto_hibernate: isAutoHibernate,
       });
     }
 
@@ -756,8 +791,10 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
         const isOnline = lastPollTs ? nowSeconds - lastPollTs <= HIBERNATE_TIMEOUT : false;
         if (isOnline) anyOnline = true;
         agentStatuses.push({
-          agent_id: (agent as any).id, avatar_color: (agent as any).avatar_color,
-          status: isOnline ? "online" : "offline", last_poll_ts: lastPollTs,
+          agent_id: (agent as any).id,
+          avatar_color: (agent as any).avatar_color,
+          status: isOnline ? "online" : "offline",
+          last_poll_ts: lastPollTs,
         });
       }
       return json({ ok: true, channel, status: anyOnline ? "online" : "offline", agents: agentStatuses });
@@ -771,7 +808,6 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
       if (!msg) return json({ ok: false, error: "message_not_found" }, 404);
       return json({ ok: true, message: toSlackMessage(msg) });
     }
-
 
     // ========================================================================
     // Task APIs
@@ -805,7 +841,8 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
       const result = updateTask(body.task_id, body);
       if (!result.success) {
         if (result.error === "not_found") return json({ ok: false, error: "task_not_found" }, 404);
-        if (result.error === "already_claimed") return json({ ok: false, error: "already_claimed", claimed_by: result.claimed_by }, 409);
+        if (result.error === "already_claimed")
+          return json({ ok: false, error: "already_claimed", claimed_by: result.claimed_by }, 409);
       }
       return json({ ok: true, task: result.task });
     }
@@ -821,8 +858,12 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
       const body = await parseBody(req);
       if (!body.task_id || !body.name) return json({ ok: false, error: "task_id and name required" }, 400);
       const task = addTaskAttachment(body.task_id, {
-        name: body.name, url: body.url, file_id: body.file_id,
-        mimetype: body.mimetype, size: body.size, added_by: body.added_by || "api",
+        name: body.name,
+        url: body.url,
+        file_id: body.file_id,
+        mimetype: body.mimetype,
+        size: body.size,
+        added_by: body.added_by || "api",
       });
       if (!task) return json({ ok: false, error: "task_not_found" }, 404);
       return json({ ok: true, task });
@@ -830,7 +871,8 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
 
     if (path === "/api/tasks.removeAttachment" && req.method === "POST") {
       const body = await parseBody(req);
-      if (!body.task_id || !body.attachment_id) return json({ ok: false, error: "task_id and attachment_id required" }, 400);
+      if (!body.task_id || !body.attachment_id)
+        return json({ ok: false, error: "task_id and attachment_id required" }, 400);
       const task = removeTaskAttachment(body.task_id, body.attachment_id);
       if (!task) return json({ ok: false, error: "task_not_found" }, 404);
       return json({ ok: true, task });
@@ -931,8 +973,7 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
 
     if ((path === "/api/plans.unlinkTask" || path === "/api/phases.unlinkTask") && req.method === "POST") {
       const body = await parseBody(req);
-      if (!body.plan_id || !body.task_id)
-        return json({ ok: false, error: "plan_id and task_id required" }, 400);
+      if (!body.plan_id || !body.task_id) return json({ ok: false, error: "plan_id and task_id required" }, 400);
       const success = unlinkTaskFromPlan(body.plan_id, body.task_id);
       if (!success) return json({ ok: false, error: "unlinking_failed" }, 400);
       return json({ ok: true });
@@ -1073,10 +1114,5 @@ process.on("SIGINT", async () => {
   await workerManager.stop();
   process.exit(0);
 });
-
-
-
-
-
 
 

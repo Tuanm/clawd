@@ -457,4 +457,3 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
     console.log(`[Worker ${this.config.channel}:${this.config.agentId}] ${msg}`);
   }
 }
-
