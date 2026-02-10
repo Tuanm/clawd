@@ -51,11 +51,29 @@ export function initAgentsTable(db: Database): void {
 export function registerAgentRoutes(
   db: Database,
   workerManager: WorkerManager,
-): (req: Request, url: URL, path: string) => Response | null {
+): (req: Request, url: URL, path: string, bunServer?: any) => Response | null {
   // Initialize table
   initAgentsTable(db);
 
-  return (req: Request, url: URL, path: string): Response | null => {
+  // Helper to check if request comes from localhost
+  function isLocalRequest(req: Request, bunServer?: any): boolean {
+    if (bunServer && typeof bunServer.requestIP === "function") {
+      const ip = bunServer.requestIP(req);
+      if (ip) {
+        const addr = ip.address;
+        return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+      }
+    }
+    // Fallback: check URL hostname
+    try {
+      const url = new URL(req.url);
+      return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1";
+    } catch {
+      return false;
+    }
+  }
+
+  return (req: Request, url: URL, path: string, bunServer?: any): Response | null => {
     // List agents
     if (path === "/api/app.agents.list") {
       const channel = url.searchParams.get("channel");
@@ -92,6 +110,9 @@ export function registerAgentRoutes(
     // Add agent
     if (path === "/api/app.agents.add" && req.method === "POST") {
       return handleAsync(async () => {
+        if (!isLocalRequest(req, bunServer)) {
+          return json({ ok: false, error: "forbidden: local access only" }, 403);
+        }
         const body = await parseBody(req);
         const { channel, agent_id, model, project } = body;
 
@@ -136,6 +157,9 @@ export function registerAgentRoutes(
     // Remove agent
     if (path === "/api/app.agents.remove" && req.method === "POST") {
       return handleAsync(async () => {
+        if (!isLocalRequest(req, bunServer)) {
+          return json({ ok: false, error: "forbidden: local access only" }, 403);
+        }
         const body = await parseBody(req);
         const { channel, agent_id } = body;
 
@@ -156,6 +180,9 @@ export function registerAgentRoutes(
     // Update agent config
     if (path === "/api/app.agents.update" && req.method === "POST") {
       return handleAsync(async () => {
+        if (!isLocalRequest(req, bunServer)) {
+          return json({ ok: false, error: "forbidden: local access only" }, 403);
+        }
         const body = await parseBody(req);
         const { channel, agent_id, model, active, project } = body;
 

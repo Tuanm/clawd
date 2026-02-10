@@ -283,7 +283,7 @@ const server = Bun.serve({
 
     // API routes
     if (path.startsWith("/api/") || path === "/mcp" || path === "/health") {
-      return handleRequest(req, url, path);
+      return handleRequest(req, url, path, server);
     }
 
     // Static UI files
@@ -294,7 +294,7 @@ const server = Bun.serve({
     response = serveStatic("/index.html");
     if (response) return response;
 
-    return handleRequest(req, url, path);
+    return handleRequest(req, url, path, server);
   },
 
   websocket: {
@@ -309,7 +309,7 @@ const server = Bun.serve({
 // Request handler (all API routes)
 // ============================================================================
 
-async function handleRequest(req: Request, url?: URL, path?: string) {
+async function handleRequest(req: Request, url?: URL, path?: string, bunServer?: any) {
   url = url || new URL(req.url);
   path = path || url.pathname;
 
@@ -317,7 +317,7 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
     // ---- clawd-app specific routes ----
 
     // Agent management routes (handled by registerAgentRoutes)
-    const agentResponse = handleAgentRoute(req, url, path);
+    const agentResponse = handleAgentRoute(req, url, path, bunServer);
     if (agentResponse) return agentResponse;
 
     // ---- clawd-chat standard routes ----

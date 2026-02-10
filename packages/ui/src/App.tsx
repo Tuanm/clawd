@@ -1677,11 +1677,7 @@ export default function App({ channel: initialChannel }: Props) {
                 </div>
               ))}
           </div>
-          <div
-            className={`connection-indicator clickable ${!connected ? "reconnecting" : ""}`}
-            onClick={() => setShowAgentDialog(true)}
-            title="Agent"
-          >
+          <div className={`connection-indicator ${!connected ? "reconnecting" : ""}`} title="Agent">
             <CopilotLogo />
           </div>
         </div>
