@@ -378,9 +378,7 @@ function getMacOSCommandPrefix(workDir: string): string {
   const realClawdDir = safeRealpath(join(home, ".clawd"));
 
   // /Users is the real path; /private/Users doesn't exist, but handle it for safety
-  const privateHomeDir = realHomeDir.startsWith("/private")
-    ? realHomeDir
-    : `/private${realHomeDir}`;
+  const privateHomeDir = realHomeDir.startsWith("/private") ? realHomeDir : `/private${realHomeDir}`;
 
   const envPrefix = getEnvPrefix();
 
@@ -601,7 +599,3 @@ function shellEscape(str: string): string {
   }
   return `'${str.replace(/'/g, "'\\''")}'`;
 }
-
-
-
-

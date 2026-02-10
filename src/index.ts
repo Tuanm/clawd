@@ -1068,13 +1068,12 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
 
 console.log(`
 +---------------------------------------------------------------+
-|  Claw'd App - All-in-one Desktop                             |
+|  Claw'd App                                                   |
 +---------------------------------------------------------------+
 |  HTTP:      http://localhost:${PORT}                             |
 |  WebSocket: ws://localhost:${PORT}/ws                            |
 |  UI:        ${hasEmbeddedUI ? `embedded (${embeddedUIFileCount} files, ${(embeddedUITotalSize / 1024 / 1024).toFixed(1)}MB)` : UI_DIR ? UI_DIR : "(not found)"}
 |  Agent:     in-process
-|  Project:   ${config.projectRoot}
 +---------------------------------------------------------------+
 `);
 
