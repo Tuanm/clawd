@@ -29,6 +29,9 @@ db.exec("PRAGMA mmap_size = 268435456"); // 256MB memory-mapped I/O
 
 export { ATTACHMENTS_DIR };
 
+// Initialize tables BEFORE preparing statements (tables must exist for db.prepare)
+initDatabase();
+
 // ============================================================================
 // Prepared Statements for Hot Paths (high-throughput optimization)
 // ============================================================================
@@ -823,3 +826,4 @@ export function parseMentions(text: string): string[] {
   }
   return mentions;
 }
+

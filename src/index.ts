@@ -11,14 +11,14 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { registerAgentRoutes } from "./api/agents";
-import { loadConfig, validateClawdBin } from "./config";
+import { loadConfig, validateConfig } from "./config";
 import { WorkerManager } from "./worker-manager";
 
 // Load configuration from CLI args + env
 const config = loadConfig();
 
-// Validate clawd binary exists
-if (!validateClawdBin(config.clawdBin)) {
+// Validate config
+if (!validateConfig(config)) {
   process.exit(1);
 }
 
@@ -30,7 +30,6 @@ import {
   db,
   getAgent,
   getOrRegisterAgent,
-  initDatabase,
   listAgents,
   type Message,
   markMessagesSeen,
@@ -97,8 +96,7 @@ import {
 
 const PORT = config.port;
 
-// Initialize database
-initDatabase();
+// Database is initialized at module load time in database.ts (before prepared statements)
 
 // Initialize worker manager
 const workerManager = new WorkerManager(config);
@@ -1049,7 +1047,7 @@ console.log(`
 |  HTTP:      http://localhost:${PORT}                             |
 |  WebSocket: ws://localhost:${PORT}/ws                            |
 |  UI:        ${existsSync(UI_DIR) ? UI_DIR : "(not found)"}
-|  clawd:     ${config.clawdBin}
+|  Agent:     in-process
 |  Project:   ${config.projectRoot}
 +---------------------------------------------------------------+
 `);
@@ -1107,3 +1105,7 @@ process.on("SIGINT", async () => {
   await workerManager.stop();
   process.exit(0);
 });
+
+
+
+

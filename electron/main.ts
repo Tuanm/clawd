@@ -50,7 +50,7 @@ function getServerBinary(): string {
 
 function getServerUiDir(): string {
   if (IS_DEV) {
-    return join(__dirname, "..", "packages", "ui", "dist");
+    return join(__dirname, "..", "..", "packages", "ui", "dist");
   }
 
   const resourcesPath = process.resourcesPath || dirname(app.getPath("exe"));
@@ -81,7 +81,7 @@ function startServer(): Promise<void> {
 
     if (IS_DEV) {
       // Dev mode: spawn bun run dev
-      const projectRoot = join(__dirname, "..");
+      const projectRoot = join(__dirname, "..", "..");
       serverProcess = spawn("bun", ["run", "src/index.ts", "--no-browser"], {
         cwd: projectRoot,
         env: {
@@ -189,7 +189,7 @@ function createWindow(): void {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: join(__dirname, "preload.js"),
+      preload: join(__dirname, "preload.cjs"),
     },
   });
 
@@ -421,3 +421,6 @@ if (!gotTheLock) {
     stopServer();
   });
 }
+
+
+

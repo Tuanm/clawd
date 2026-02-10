@@ -20,34 +20,23 @@ extraResources:
 mac:
   category: public.app-category.developer-tools
   target:
-    - target: dmg
+    - target: zip
       arch:
         - arm64
         - x64
   darkModeSupport: true
-  hardenedRuntime: true
-
-dmg:
-  contents:
-    - x: 130
-      y: 220
-    - x: 410
-      y: 220
-      type: link
-      path: /Applications
+  hardenedRuntime: false
+  identity: null
 
 win:
   target:
-    - target: nsis
+    - target: portable
       arch:
         - x64
   requestedExecutionLevel: asInvoker
 
-nsis:
-  oneClick: false
-  perMachine: false
-  allowToChangeInstallationDirectory: true
-  createDesktopShortcut: true
+portable:
+  artifactName: "${productName}-${version}-portable.${ext}"
 
 linux:
   target:
@@ -56,4 +45,11 @@ linux:
         - x64
   category: Development
   maintainer: clawd-pilot
+  artifactName: "${productName}-${version}.${ext}"
+
+appImage:
+  artifactName: "${productName}-${version}.${ext}"
+
+
+
 

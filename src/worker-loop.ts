@@ -3,12 +3,17 @@
  *
  * Adapted from clawd/workers/clawd-chat/index.ts
  * Runs as an async task inside the same process (not a separate binary).
- * Spawns ~/.clawd/bin/clawd per message batch.
+ * Uses the embedded Agent class directly instead of spawning a subprocess.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { Agent, type AgentConfig } from "./agent/src/agent/agent";
+import { getToken } from "./agent/src/api/client";
+import { setSandboxProjectRoot, enableSandbox, setProjectHash } from "./agent/src/tools/tools";
+import { setDebug } from "./agent/src/utils/debug";
+import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
 
 // Session size limits (in estimated tokens) - tuned for 128k context
 const TOKEN_LIMIT_CRITICAL = 70000;
@@ -44,7 +49,6 @@ export interface WorkerLoopConfig {
   model: string;
   projectRoot: string;
   chatApiUrl: string;
-  clawdBin: string;
   debug: boolean;
   yolo: boolean;
 }
@@ -331,80 +335,82 @@ Please:
 DO NOT skip marking as processed - this is why you're being prompted again.`;
   }
 
-  /** Execute a prompt by spawning clawd */
+  /** Execute a prompt using the in-process Agent */
   private async executePrompt(prompt: string, sessionName: string): Promise<{ success: boolean; output: string }> {
-    const { clawdBin, chatApiUrl, channel, agentId, model, projectRoot } = this.config;
-
-    const pluginConfig = JSON.stringify({
-      type: "clawd-chat",
-      apiUrl: chatApiUrl,
-      channel,
-      agentId,
-    });
+    const { chatApiUrl, channel, agentId, model, projectRoot } = this.config;
 
     const projectHash = `${channel}_${agentId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
 
-    const args = [
-      "--model",
-      model,
-      "--session",
-      sessionName,
-      "--max-iterations",
-      "0",
-      "--plugin",
-      pluginConfig,
-      "--project-hash",
-      projectHash,
-      "--id",
-      agentId,
-    ];
-
-    if (this.config.yolo) args.push("--yolo");
-    if (this.config.debug) args.push("--debug");
-
-    args.push("-p", prompt);
-
-    this.log(`Running clawd: session=${sessionName}, project-hash=${projectHash}`);
+    this.log(`Running agent in-process: session=${sessionName}, project-hash=${projectHash}`);
 
     try {
-      const proc = Bun.spawn([clawdBin, ...args], {
-        cwd: projectRoot,
-        env: process.env,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      // Initialize sandbox
+      if (!this.config.yolo) {
+        setSandboxProjectRoot(projectRoot);
+        enableSandbox(true);
+      }
 
-      let stdout = "";
-      let stderr = "";
+      // Set project hash for data isolation
+      setProjectHash(projectHash);
 
-      const stdoutReader = proc.stdout.getReader();
-      (async () => {
-        while (true) {
-          const { done, value } = await stdoutReader.read();
-          if (done) break;
-          const text = new TextDecoder().decode(value);
-          stdout += text;
-          process.stdout.write(text);
-        }
-      })();
+      // Enable debug if configured
+      if (this.config.debug) {
+        setDebug(true);
+      }
 
-      const stderrReader = proc.stderr.getReader();
-      (async () => {
-        while (true) {
-          const { done, value } = await stderrReader.read();
-          if (done) break;
-          const text = new TextDecoder().decode(value);
-          stderr += text;
-          process.stderr.write(text);
-        }
-      })();
+      // Load CLAWD.md context
+      const clawdContext = this.loadClawdInstructions();
 
-      const exitCode = await proc.exited;
-      this.log(`clawd exited with code ${exitCode}`);
+      // Get GitHub token
+      const token = getToken();
+      if (!token) {
+        this.log("No GitHub token found");
+        return { success: false, output: "No GitHub token found. Run: gh auth login && gh auth refresh -s copilot" };
+      }
 
-      return { success: exitCode === 0, output: stdout + stderr };
+      // Create agent config
+      const agentConfig: AgentConfig = {
+        model,
+        maxIterations: 0, // Unlimited for worker mode
+        additionalContext: clawdContext || undefined,
+        onToken: (token) => {
+          process.stdout.write(token);
+        },
+        onToolCall: (name, args) => {
+          this.log(`Tool: ${name}`);
+        },
+        onToolResult: (name, result) => {
+          this.log(`Tool result: ${name} ${result.success ? "ok" : "err"}`);
+        },
+      };
+
+      // Create agent
+      const agent = new Agent(token, agentConfig);
+
+      // Create and register clawd-chat plugin for chat integration
+      const pluginConfig: ClawdChatConfig = {
+        type: "clawd-chat",
+        apiUrl: chatApiUrl,
+        channel,
+        agentId,
+      };
+
+      const plugin = {
+        plugin: createClawdChatPlugin(pluginConfig),
+        toolPlugin: createClawdChatToolPlugin(pluginConfig),
+      };
+      await agent.usePlugin(plugin);
+
+      // Run the agent with the prompt
+      const result = await agent.run(prompt, sessionName);
+
+      this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
+
+      await agent.close();
+
+      return { success: true, output: result.content };
     } catch (error) {
-      this.log(`Failed to spawn clawd: ${error}`);
+      this.log(`Failed to run agent: ${error}`);
       return { success: false, output: String(error) };
     }
   }
@@ -457,3 +463,6 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
     console.log(`[Worker ${this.config.channel}:${this.config.agentId}] ${msg}`);
   }
 }
+
+
+

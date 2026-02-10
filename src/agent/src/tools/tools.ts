@@ -1,0 +1,3212 @@
+/**
+ * Tool Definitions and Execution
+ */
+
+import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { resolve } from "node:path";
+import type { ToolDefinition, ToolCall } from "../api/client";
+import { getHookManager } from "../hooks/manager";
+
+// ============================================================================
+// API Response Types
+// ============================================================================
+
+interface ApiResponse {
+  ok?: boolean;
+  error?: string;
+  [key: string]: any;
+}
+
+interface ChatResponse extends ApiResponse {
+  ts?: string;
+  messages?: any[];
+}
+
+interface TaskResponse extends ApiResponse {
+  task?: any;
+  tasks?: any[];
+}
+
+interface PlanResponse extends ApiResponse {
+  plan?: any;
+  plans?: any[];
+  phase?: any;
+  phases?: any[];
+}
+
+// ============================================================================
+// Utilities
+// ============================================================================
+
+/**
+ * Safe JSON parse that returns a default value on failure
+ */
+function _safeJsonParse<T = any>(text: string | undefined | null, defaultValue: T): T {
+  if (!text) return defaultValue;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return defaultValue;
+  }
+}
+
+/**
+ * Normalize tool arguments - handles LLM quirks like string-encoded arrays/objects
+ * Some models (e.g., Claude) sometimes serialize arrays as strings like '["a","b"]'
+ */
+function normalizeToolArgs(args: Record<string, any>): Record<string, any> {
+  const normalized: Record<string, any> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === "string") {
+      // Try to parse string values that look like JSON arrays or objects
+      const trimmed = value.trim();
+      if ((trimmed.startsWith("[") && trimmed.endsWith("]")) || (trimmed.startsWith("{") && trimmed.endsWith("}"))) {
+        try {
+          normalized[key] = JSON.parse(trimmed);
+          continue;
+        } catch {
+          // Not valid JSON, keep as string
+        }
+      }
+    }
+    normalized[key] = value;
+  }
+  return normalized;
+}
+
+// ============================================================================
+// Path Security - Sandbox Restrictions
+// ============================================================================
+
+// Project root - defaults to cwd, can be overridden
+let sandboxProjectRoot: string = "";
+let sandboxEnabled: boolean = false;
+
+// Project hash for data isolation (agents, jobs, etc.)
+// Set via --project-hash flag or auto-generated from SHA-256 of cwd
+let projectHash: string = "";
+
+/**
+ * Set the project hash for data isolation.
+ * When set, all agent/job data goes to ~/.clawd/projects/{hash}/
+ */
+export function setProjectHash(hash: string) {
+  projectHash = hash;
+}
+
+/**
+ * Get the project hash. If not set, auto-generates from SHA-256 of project root.
+ */
+export function getProjectHash(): string {
+  if (!projectHash) {
+    const { createHash } = require("node:crypto");
+    const root = getSandboxProjectRoot();
+    projectHash = createHash("sha256").update(root).digest("hex").slice(0, 12);
+  }
+  return projectHash;
+}
+
+/**
+ * Get the project-scoped data directory.
+ * Returns ~/.clawd/projects/{hash}/
+ */
+export function getProjectDir(): string {
+  const { homedir } = require("node:os");
+  const { join } = require("node:path");
+  const dir = join(homedir(), ".clawd", "projects", getProjectHash());
+  return dir;
+}
+
+/**
+ * Get the project-scoped agents directory.
+ * Returns ~/.clawd/projects/{hash}/agents/
+ */
+export function getProjectAgentsDir(): string {
+  const { join } = require("node:path");
+  return join(getProjectDir(), "agents");
+}
+
+/**
+ * Get the project-scoped jobs directory.
+ * Returns ~/.clawd/projects/{hash}/jobs/
+ */
+export function getProjectJobsDir(): string {
+  const { join } = require("node:path");
+  return join(getProjectDir(), "jobs");
+}
+
+// Cached agent environment variables (loaded once at startup)
+let agentEnvCache: Record<string, string> | null = null;
+
+function loadAgentEnv(): Record<string, string> {
+  if (agentEnvCache !== null) return agentEnvCache;
+
+  agentEnvCache = {};
+  const home = process.env.HOME || "/home/user";
+  const agentEnvFile = `${home}/.clawd/.env`;
+
+  if (existsSync(agentEnvFile)) {
+    try {
+      const envContent = readFileSync(agentEnvFile, "utf-8");
+      for (const line of envContent.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eqIndex = trimmed.indexOf("=");
+        if (eqIndex > 0) {
+          const key = trimmed.slice(0, eqIndex).trim();
+          let value = trimmed.slice(eqIndex + 1).trim();
+          if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1);
+          }
+          agentEnvCache[key] = value;
+        }
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
+  return agentEnvCache;
+}
+
+export function setSandboxProjectRoot(root: string) {
+  sandboxProjectRoot = resolve(root);
+}
+
+export function getSandboxProjectRoot(): string {
+  if (!sandboxProjectRoot) {
+    sandboxProjectRoot = process.cwd();
+  }
+  return sandboxProjectRoot;
+}
+
+export function enableSandbox(enabled: boolean = true) {
+  sandboxEnabled = enabled;
+}
+
+/**
+ * Check if a file is a sensitive file that should be blocked
+ */
+function isSensitiveFile(targetPath: string): boolean {
+  const resolved = resolve(targetPath);
+  const basename = resolved.split("/").pop() || "";
+
+  // Allow .env.example (template files)
+  if (basename === ".env.example" || basename.endsWith(".example")) {
+    return false;
+  }
+
+  // Block .env files and variants (.env, .env.local, .env.production, etc.)
+  if (basename === ".env" || basename.startsWith(".env.")) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Check if a path is within allowed directories:
+ * - Project root and subdirectories
+ * - /tmp and subdirectories
+ */
+function isPathAllowed(targetPath: string): boolean {
+  if (!sandboxEnabled) return true;
+
+  const resolved = resolve(targetPath);
+  const projectRoot = getSandboxProjectRoot();
+
+  // Allowed paths: project root and /tmp only
+  const allowedPrefixes = [projectRoot, "/tmp"];
+
+  return allowedPrefixes.some((prefix) => resolved === prefix || resolved.startsWith(`${prefix}/`));
+}
+
+/**
+ * Validate path and return error if not allowed
+ */
+function validatePath(targetPath: string, operation: string): string | null {
+  if (!isPathAllowed(targetPath)) {
+    const projectRoot = getSandboxProjectRoot();
+    return (
+      `SANDBOX RESTRICTION: You do not have permission to ${operation} "${targetPath}". ` +
+      `You can only access files within: ${projectRoot} or /tmp. ` +
+      `This is a security restriction - do not attempt to bypass it.`
+    );
+  }
+
+  // Block sensitive files even within allowed paths
+  if (isSensitiveFile(targetPath)) {
+    return (
+      `SANDBOX RESTRICTION: Access to .env files is blocked for security reasons. ` +
+      `These files may contain secrets. Do not attempt to read or modify them.`
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Check if bwrap is available
+ */
+let bwrapAvailable: boolean | null = null;
+function isBwrapAvailable(): boolean {
+  if (bwrapAvailable === null) {
+    try {
+      const { execSync } = require("node:child_process");
+      execSync("which bwrap", { stdio: "ignore" });
+      bwrapAvailable = true;
+    } catch {
+      bwrapAvailable = false;
+    }
+  }
+  return bwrapAvailable;
+}
+
+/**
+ * Get path to static resolv.conf for sandbox DNS
+ * Uses Cloudflare (1.1.1.1) and Google (8.8.8.8) DNS servers
+ * Stored in /run/user/<uid>/ (tmpfs, per-user, auto-cleaned on logout)
+ */
+function getSandboxResolvConf(): string {
+  const { writeFileSync, existsSync } = require("node:fs");
+  const uid = process.getuid?.() ?? 1000;
+  const runUserDir = `/run/user/${uid}`;
+  const resolvPath = `${runUserDir}/clawd-resolv.conf`;
+
+  // Fallback to /tmp if /run/user/<uid> doesn't exist
+  const actualPath = existsSync(runUserDir) ? resolvPath : "/tmp/clawd-sandbox-resolv.conf";
+
+  // Create static resolv.conf if it doesn't exist
+  if (!existsSync(actualPath)) {
+    const resolvContent = `# Clawd sandbox DNS configuration
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+`;
+    writeFileSync(actualPath, resolvContent, { mode: 0o644 });
+  }
+
+  return actualPath;
+}
+
+/**
+ * Get bwrap args for sandboxed execution
+ */
+function getBwrapArgs(projectRoot: string, workDir?: string): string[] {
+  const home = process.env.HOME || "/home/clawd";
+  const sandboxResolvConf = getSandboxResolvConf();
+  const { existsSync, lstatSync, readlinkSync } = require("node:fs");
+  const { dirname } = require("node:path");
+
+  const args = [
+    // Essential system paths (read-only)
+    "--ro-bind",
+    "/usr",
+    "/usr",
+    "--ro-bind",
+    "/bin",
+    "/bin",
+    "--ro-bind",
+    "/lib",
+    "/lib",
+    "--ro-bind",
+    "/lib64",
+    "/lib64",
+    // Mount /etc
+    "--ro-bind",
+    "/etc",
+    "/etc",
+  ];
+
+  // Override resolv.conf with our static DNS
+  // Handle symlink case (e.g., WSL symlinks /etc/resolv.conf -> /mnt/wsl/resolv.conf)
+  try {
+    const resolvStat = lstatSync("/etc/resolv.conf");
+    if (resolvStat.isSymbolicLink()) {
+      // Get symlink target and create tmpfs at parent, then bind our file there
+      const target = readlinkSync("/etc/resolv.conf");
+      const parentDir = dirname(target);
+      args.push("--tmpfs", parentDir);
+      args.push("--ro-bind", sandboxResolvConf, target);
+    } else {
+      args.push("--ro-bind", sandboxResolvConf, "/etc/resolv.conf");
+    }
+  } catch {
+    // If we can't stat, try direct override
+    args.push("--ro-bind", sandboxResolvConf, "/etc/resolv.conf");
+  }
+
+  args.push(
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
+    // Empty /home first - prevents access to user data
+    "--tmpfs",
+    "/home",
+    // Writable paths - ONLY project and /tmp
+    "--bind",
+    projectRoot,
+    projectRoot,
+    "--bind",
+    "/tmp",
+    "/tmp",
+  );
+
+  // Bind common tool paths read-only (if they exist)
+  const toolPaths = [
+    `${home}/.bun`, // Bun
+    `${home}/.nvm`, // Node Version Manager
+    `${home}/.cargo`, // Rust/Cargo
+    `${home}/.deno`, // Deno
+    `${home}/.local`, // pip, pipx tools
+    `${home}/.clawd/.ssh`, // Agent SSH keys
+    `${home}/.clawd/.gitconfig`, // Agent git config
+    "/home/linuxbrew", // Homebrew on Linux
+  ];
+
+  for (const toolPath of toolPaths) {
+    if (existsSync(toolPath)) {
+      args.push("--ro-bind", toolPath, toolPath);
+    }
+  }
+
+  // Clear host environment and set only safe variables
+  args.push("--clearenv");
+
+  // Set minimal safe environment
+  const safeEnvVars: Record<string, string> = {
+    HOME: home,
+    USER: process.env.USER || "clawd",
+    PATH: `${home}/.bun/bin:${home}/.cargo/bin:${home}/.deno/bin:${home}/.local/bin:/usr/local/bin:/usr/bin:/bin`,
+    TERM: process.env.TERM || "xterm-256color",
+    LANG: process.env.LANG || "en_US.UTF-8",
+    SHELL: "/bin/bash",
+    // Git config: use agent-specific gitconfig (since /home is tmpfs, ~/.gitconfig doesn't exist)
+    GIT_CONFIG_GLOBAL: `${home}/.clawd/.gitconfig`,
+    // SSH config: use agent key, skip host key verification (non-interactive), ignore system known_hosts
+    GIT_SSH_COMMAND: `ssh -F /dev/null -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${home}/.clawd/.ssh/id_ed25519`,
+    // Prevent git from prompting for credentials or confirmations
+    GIT_TERMINAL_PROMPT: "0",
+    // Load cached agent .env vars
+    ...loadAgentEnv(),
+  };
+
+  for (const [key, value] of Object.entries(safeEnvVars)) {
+    args.push("--setenv", key, value);
+  }
+
+  // Security & working directory
+  args.push("--die-with-parent", "--chdir", workDir || projectRoot);
+
+  return args;
+}
+
+/**
+ * Run a command in bwrap sandbox
+ */
+function runInSandbox(
+  command: string,
+  args: string[],
+  options: { timeout?: number; cwd?: string } = {},
+): Promise<{
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  code: number | null;
+}> {
+  const projectRoot = getSandboxProjectRoot();
+  const timeout = options.timeout || 30000;
+
+  return new Promise((resolve) => {
+    const bwrapArgs = [...getBwrapArgs(projectRoot, options.cwd), command, ...args];
+
+    const proc = spawn("bwrap", bwrapArgs);
+    let timedOut = false;
+
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      proc.kill("SIGKILL");
+    }, timeout);
+
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout?.on("data", (data: Buffer) => {
+      stdout += data.toString();
+    });
+    proc.stderr?.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    proc.on("close", (code) => {
+      clearTimeout(timeoutId);
+      if (timedOut) {
+        resolve({ success: false, stdout, stderr: `TIMEOUT: Command exceeded ${timeout / 1000}s`, code: null });
+        return;
+      }
+      resolve({ success: code === 0, stdout, stderr, code });
+    });
+
+    proc.on("error", (err) => {
+      clearTimeout(timeoutId);
+      resolve({ success: false, stdout: "", stderr: err.message, code: null });
+    });
+  });
+}
+
+// ============================================================================
+// Tool Registry
+// ============================================================================
+
+export interface ToolResult {
+  success: boolean;
+  output: string;
+  error?: string;
+}
+
+export type ToolHandler = (args: Record<string, any>) => Promise<ToolResult>;
+
+export const tools: Map<string, ToolHandler> = new Map();
+export const toolDefinitions: ToolDefinition[] = [];
+
+function registerTool(
+  name: string,
+  description: string,
+  parameters: Record<string, any>,
+  required: string[],
+  handler: ToolHandler,
+) {
+  tools.set(name, handler);
+  toolDefinitions.push({
+    type: "function",
+    function: {
+      name,
+      description,
+      parameters: {
+        type: "object",
+        properties: parameters,
+        required,
+      },
+    },
+  });
+}
+
+// ============================================================================
+// Tool: Get Project Root
+// ============================================================================
+
+registerTool(
+  "get_project_root",
+  "Get the current project root directory (git root or cwd). Use this when you need to know the base path for the project you are working in.",
+  {},
+  [],
+  async () => {
+    const projectRoot = getSandboxProjectRoot();
+    return {
+      success: true,
+      output: JSON.stringify(
+        {
+          project_root: projectRoot,
+          hint: 'Use this path as the base for all file operations. Combine with relative paths like: project_root + "/src/file.ts"',
+        },
+        null,
+        2,
+      ),
+    };
+  },
+);
+
+// ============================================================================
+// Tool: Bash
+// ============================================================================
+
+registerTool(
+  "bash",
+  "Execute a bash command. Use for running shell commands, scripts, or system operations.",
+  {
+    command: {
+      type: "string",
+      description: "The bash command to execute",
+    },
+    timeout: {
+      type: "number",
+      description: "Timeout in milliseconds (default: 30000)",
+    },
+    cwd: {
+      type: "string",
+      description: "Working directory for the command",
+    },
+  },
+  ["command"],
+  async ({ command, timeout = 30000, cwd }) => {
+    let workDir = cwd ? resolve(cwd) : undefined;
+
+    // When sandbox enabled, use bubblewrap for kernel-level isolation
+    if (sandboxEnabled) {
+      const projectRoot = getSandboxProjectRoot();
+      workDir = workDir || projectRoot;
+
+      // Validate cwd is within allowed paths
+      const cwdError = validatePath(workDir, "bash cwd");
+      if (cwdError) {
+        return { success: false, output: "", error: cwdError };
+      }
+
+      // Check if bwrap is available
+      try {
+        const { execSync } = require("node:child_process");
+        execSync("which bwrap", { stdio: "ignore" });
+      } catch {
+        return {
+          success: false,
+          output: "",
+          error: "SANDBOX RESTRICTION: bubblewrap (bwrap) not installed. " + "Install with: apt install bubblewrap",
+        };
+      }
+
+      // Block commands that try to access .env files (but allow .env.example)
+      const envFilePattern = /(?:^|[^a-zA-Z0-9_.])\.env(?!\.[a-zA-Z]*example)(?:\.[a-zA-Z0-9_]*)?(?:[^a-zA-Z0-9_.]|$)/;
+      if (envFilePattern.test(command)) {
+        return {
+          success: false,
+          output: "",
+          error:
+            "SANDBOX RESTRICTION: Access to .env files is blocked for security reasons. " +
+            "These files may contain secrets. Use .env.example as a template instead.",
+        };
+      }
+
+      // Build bwrap command using shared helper (includes tool paths like ~/.bun)
+      const bwrapArgs = [...getBwrapArgs(projectRoot, workDir), "bash", "-c", command];
+
+      const sandboxNotice = `[SANDBOX MODE] You can ONLY access: ${projectRoot} and /tmp. All other paths are blocked.\n\n`;
+
+      return new Promise((resolve) => {
+        const proc = spawn("bwrap", bwrapArgs, { timeout });
+        let timedOut = false;
+
+        const timeoutId = setTimeout(() => {
+          timedOut = true;
+          proc.kill("SIGKILL");
+        }, timeout);
+
+        let stdout = "";
+        let stderr = "";
+
+        proc.stdout?.on("data", (data: Buffer) => {
+          stdout += data.toString();
+        });
+        proc.stderr?.on("data", (data: Buffer) => {
+          stderr += data.toString();
+        });
+
+        proc.on("close", (code: number | null) => {
+          clearTimeout(timeoutId);
+          if (timedOut) {
+            resolve({
+              success: false,
+              output: stdout.trim(),
+              error:
+                `TIMEOUT: Command exceeded ${timeout / 1000}s limit. ` +
+                `For long-running tasks, use job_submit instead.`,
+            });
+            return;
+          }
+          const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
+          resolve({
+            success: code === 0,
+            output: sandboxNotice + (output.trim() || "(no output)"),
+            error: code !== 0 ? `Exit code: ${code}` : undefined,
+          });
+        });
+
+        proc.on("error", (err) => {
+          clearTimeout(timeoutId);
+          resolve({
+            success: false,
+            output: "",
+            error: `Sandbox error: ${err.message}. Install bubblewrap: apt install bubblewrap`,
+          });
+        });
+      });
+    }
+
+    // Non-sandboxed mode - run directly
+    return new Promise((resolve) => {
+      const proc = spawn("bash", ["-c", command], {
+        timeout,
+        cwd: workDir,
+      });
+      let timedOut = false;
+
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGKILL");
+      }, timeout);
+
+      let stdout = "";
+      let stderr = "";
+
+      proc.stdout?.on("data", (data: Buffer) => {
+        stdout += data.toString();
+      });
+      proc.stderr?.on("data", (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      proc.on("close", (code: number | null) => {
+        clearTimeout(timeoutId);
+        if (timedOut) {
+          resolve({
+            success: false,
+            output: stdout.trim(),
+            error:
+              `TIMEOUT: Command exceeded ${timeout / 1000}s limit. ` +
+              `For long-running tasks, use job_submit instead.`,
+          });
+          return;
+        }
+        const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
+        resolve({
+          success: code === 0,
+          output: output.trim() || "(no output)",
+          error: code !== 0 ? `Exit code: ${code}` : undefined,
+        });
+      });
+
+      proc.on("error", (err) => {
+        clearTimeout(timeoutId);
+        resolve({
+          success: false,
+          output: "",
+          error: err.message,
+        });
+      });
+    });
+  },
+);
+
+// ============================================================================
+// Tool: View
+// ============================================================================
+
+registerTool(
+  "view",
+  "View the contents of a file or list directory contents.",
+  {
+    path: {
+      type: "string",
+      description: "Absolute path to file or directory",
+    },
+    start_line: {
+      type: "number",
+      description: "Start line number (1-indexed, for files)",
+    },
+    end_line: {
+      type: "number",
+      description: "End line number (for files)",
+    },
+  },
+  ["path"],
+  async ({ path, start_line, end_line }) => {
+    try {
+      const resolvedPath = resolve(path);
+
+      // Always validate path first (checks both allowed paths AND sensitive files like .env)
+      const pathError = validatePath(resolvedPath, "view");
+      if (pathError) {
+        return { success: false, output: "", error: pathError };
+      }
+
+      // Use bwrap for sandbox mode
+      if (sandboxEnabled && isBwrapAvailable()) {
+        // Check if file/dir exists and get type
+        const testResult = await runInSandbox("test", ["-e", resolvedPath]);
+        if (!testResult.success) {
+          return {
+            success: false,
+            output: "",
+            error: `Path not found: ${path}`,
+          };
+        }
+
+        const isDirResult = await runInSandbox("test", ["-d", resolvedPath]);
+        const isDir = isDirResult.success;
+
+        if (isDir) {
+          const result = await runInSandbox("ls", ["-1", resolvedPath]);
+          if (!result.success) {
+            return {
+              success: false,
+              output: "",
+              error: result.stderr || "Failed to list directory",
+            };
+          }
+          const entries = result.stdout.trim().split("\n").filter(Boolean);
+          const output = entries.length > 0 ? entries.map((e) => `📄 ${e}`).join("\n") : "(empty directory)";
+          return { success: true, output };
+        }
+
+        // Read file
+        const catArgs = [resolvedPath];
+        const result = await runInSandbox("cat", catArgs);
+        if (!result.success) {
+          return {
+            success: false,
+            output: "",
+            error: result.stderr || "Failed to read file",
+          };
+        }
+
+        let content = result.stdout;
+        const lines = content.split("\n");
+
+        if (start_line || end_line) {
+          const start = Math.max(1, start_line || 1) - 1;
+          const end = Math.min(lines.length, end_line || lines.length);
+          const selectedLines = lines.slice(start, end);
+          content = selectedLines.map((line, i) => `${start + i + 1}. ${line}`).join("\n");
+        } else {
+          content = lines.map((line, i) => `${i + 1}. ${line}`).join("\n");
+        }
+
+        if (content.length > 50000) {
+          content = `${content.slice(0, 50000)}\n... (truncated)`;
+        }
+
+        return { success: true, output: content };
+      }
+
+      // Fallback: direct fs access (path already validated above)
+      if (!existsSync(resolvedPath)) {
+        return { success: false, output: "", error: `Path not found: ${path}` };
+      }
+
+      const stat = statSync(resolvedPath);
+
+      if (stat.isDirectory()) {
+        const entries = readdirSync(resolvedPath, { withFileTypes: true });
+        const output = entries.map((e) => `${e.isDirectory() ? "📁" : "📄"} ${e.name}`).join("\n");
+        return { success: true, output: output || "(empty directory)" };
+      }
+
+      let content = readFileSync(resolvedPath, "utf-8");
+      const lines = content.split("\n");
+
+      if (start_line || end_line) {
+        const start = Math.max(1, start_line || 1) - 1;
+        const end = Math.min(lines.length, end_line || lines.length);
+        const selectedLines = lines.slice(start, end);
+        content = selectedLines.map((line, i) => `${start + i + 1}. ${line}`).join("\n");
+      } else {
+        content = lines.map((line, i) => `${i + 1}. ${line}`).join("\n");
+      }
+
+      if (content.length > 50000) {
+        content = `${content.slice(0, 50000)}\n... (truncated)`;
+      }
+
+      return { success: true, output: content };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Edit
+// ============================================================================
+
+registerTool(
+  "edit",
+  "Edit a file by replacing text. The old_str must match exactly.",
+  {
+    path: {
+      type: "string",
+      description: "Absolute path to file",
+    },
+    old_str: {
+      type: "string",
+      description: "Text to find and replace (must match exactly)",
+    },
+    new_str: {
+      type: "string",
+      description: "Replacement text",
+    },
+  },
+  ["path", "old_str", "new_str"],
+  async ({ path, old_str, new_str }) => {
+    try {
+      const resolvedPath = resolve(path);
+
+      // Always validate path first (checks both allowed paths AND sensitive files like .env)
+      const pathError = validatePath(resolvedPath, "edit");
+      if (pathError) {
+        return { success: false, output: "", error: pathError };
+      }
+
+      // Use bwrap for sandbox mode
+      if (sandboxEnabled && isBwrapAvailable()) {
+        // Read file content
+        const readResult = await runInSandbox("cat", [resolvedPath]);
+        if (!readResult.success) {
+          if (readResult.stderr.includes("No such file")) {
+            return {
+              success: false,
+              output: "",
+              error: `File not found: ${path}`,
+            };
+          }
+          return {
+            success: false,
+            output: "",
+            error: readResult.stderr || "Failed to read file",
+          };
+        }
+
+        let content = readResult.stdout;
+        const count = content.split(old_str).length - 1;
+
+        if (count === 0) {
+          return {
+            success: false,
+            output: "",
+            error: "old_str not found in file",
+          };
+        }
+
+        if (count > 1) {
+          return {
+            success: false,
+            output: "",
+            error: `old_str found ${count} times, must be unique`,
+          };
+        }
+
+        content = content.replace(old_str, new_str);
+
+        // Write file using tee (handles content via stdin)
+        const writeResult = await runInSandbox("bash", [
+          "-c",
+          `cat > "${resolvedPath}" << 'CLAWD_EOF'\n${content}\nCLAWD_EOF`,
+        ]);
+        if (!writeResult.success) {
+          return {
+            success: false,
+            output: "",
+            error: writeResult.stderr || "Failed to write file",
+          };
+        }
+
+        return { success: true, output: `File updated: ${path}` };
+      }
+
+      // Fallback: direct fs access (path already validated above)
+      if (!existsSync(resolvedPath)) {
+        return { success: false, output: "", error: `File not found: ${path}` };
+      }
+
+      let content = readFileSync(resolvedPath, "utf-8");
+
+      const count = content.split(old_str).length - 1;
+
+      if (count === 0) {
+        return {
+          success: false,
+          output: "",
+          error: "old_str not found in file",
+        };
+      }
+
+      if (count > 1) {
+        return {
+          success: false,
+          output: "",
+          error: `old_str found ${count} times, must be unique`,
+        };
+      }
+
+      content = content.replace(old_str, new_str);
+      writeFileSync(resolvedPath, content);
+
+      return { success: true, output: `File updated: ${path}` };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Create
+// ============================================================================
+
+registerTool(
+  "create",
+  "Create a new file with content. Parent directories must exist.",
+  {
+    path: {
+      type: "string",
+      description: "Absolute path for new file",
+    },
+    content: {
+      type: "string",
+      description: "File content",
+    },
+  },
+  ["path", "content"],
+  async ({ path, content }) => {
+    try {
+      const resolvedPath = resolve(path);
+
+      // Always validate path first (checks both allowed paths AND sensitive files like .env)
+      const pathError = validatePath(resolvedPath, "create");
+      if (pathError) {
+        return { success: false, output: "", error: pathError };
+      }
+
+      // Use bwrap for sandbox mode
+      if (sandboxEnabled && isBwrapAvailable()) {
+        // Check if file exists
+        const existsResult = await runInSandbox("test", ["-e", resolvedPath]);
+        if (existsResult.success) {
+          return {
+            success: false,
+            output: "",
+            error: `File already exists: ${path}`,
+          };
+        }
+
+        // Create file
+        const writeResult = await runInSandbox("bash", [
+          "-c",
+          `cat > "${resolvedPath}" << 'CLAWD_EOF'\n${content}\nCLAWD_EOF`,
+        ]);
+        if (!writeResult.success) {
+          return {
+            success: false,
+            output: "",
+            error: writeResult.stderr || "Failed to create file",
+          };
+        }
+
+        return { success: true, output: `Created: ${path}` };
+      }
+
+      // Fallback: direct fs access (path already validated above)
+      if (existsSync(resolvedPath)) {
+        return {
+          success: false,
+          output: "",
+          error: `File already exists: ${path}`,
+        };
+      }
+
+      writeFileSync(resolvedPath, content);
+      return { success: true, output: `Created: ${path}` };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Grep
+// ============================================================================
+
+registerTool(
+  "grep",
+  "Search for patterns in files using ripgrep.",
+  {
+    pattern: {
+      type: "string",
+      description: "Search pattern (regex)",
+    },
+    path: {
+      type: "string",
+      description: "Directory or file to search",
+    },
+    glob: {
+      type: "string",
+      description: 'File glob pattern (e.g., "*.ts")',
+    },
+    context: {
+      type: "number",
+      description: "Lines of context around matches",
+    },
+  },
+  ["pattern"],
+  async ({ pattern, path = ".", glob, context }) => {
+    const resolvedPath = resolve(path);
+
+    const args = ["--color=never", "--line-number"];
+    if (glob) args.push("-g", glob);
+    if (context) args.push("-C", String(context));
+    args.push(pattern, resolvedPath);
+
+    // Use bwrap for sandbox mode
+    if (sandboxEnabled && isBwrapAvailable()) {
+      const result = await runInSandbox("rg", args, { timeout: 30000 });
+
+      // Check if rg is not installed (bwrap returns code 1 + "execvp" in stderr)
+      if (result.stderr.includes("execvp") || result.stderr.includes("No such file")) {
+        // Fallback to grep inside sandbox
+        const grepArgs = ["-rn", "--color=never"];
+        if (glob) {
+          // Convert rg glob to grep --include (e.g., "*.ts" -> "--include=*.ts")
+          grepArgs.push(`--include=${glob}`);
+        }
+        if (context) grepArgs.push("-C", String(context));
+        grepArgs.push(pattern, resolvedPath);
+        const grepResult = await runInSandbox("grep", grepArgs, { timeout: 30000 });
+        return {
+          success: grepResult.code === 0 || grepResult.code === 1,
+          output: grepResult.stdout.trim() || "(no matches)",
+        };
+      }
+
+      // rg returns 1 for no matches, which is not an error
+      return {
+        success: result.code === 0 || result.code === 1,
+        output: result.stdout.trim() || "(no matches)",
+      };
+    }
+
+    // Fallback: path validation + direct execution
+    const pathError = validatePath(resolvedPath, "grep");
+    if (pathError) {
+      return { success: false, output: "", error: pathError };
+    }
+
+    return new Promise((resolve) => {
+      const proc = spawn("rg", args);
+      let timedOut = false;
+
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGKILL");
+      }, 30000);
+
+      let output = "";
+      proc.stdout?.on("data", (data) => {
+        output += data.toString();
+      });
+      proc.stderr?.on("data", (data) => {
+        output += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        clearTimeout(timeoutId);
+        if (timedOut) {
+          resolve({
+            success: false,
+            output: output.trim(),
+            error: "TIMEOUT: Search exceeded 30s. Try a more specific pattern or smaller directory.",
+          });
+          return;
+        }
+        resolve({
+          success: code === 0 || code === 1, // 1 = no matches
+          output: output.trim() || "(no matches)",
+        });
+      });
+
+      proc.on("error", () => {
+        clearTimeout(timeoutId);
+        // Fallback to grep if rg not available
+        const grepProc = spawn("grep", ["-rn", pattern, resolvedPath]);
+        let grepTimedOut = false;
+
+        const grepTimeoutId = setTimeout(() => {
+          grepTimedOut = true;
+          grepProc.kill("SIGKILL");
+        }, 30000);
+
+        let grepOutput = "";
+        grepProc.stdout?.on("data", (data) => {
+          grepOutput += data.toString();
+        });
+        grepProc.on("close", (code) => {
+          clearTimeout(grepTimeoutId);
+          if (grepTimedOut) {
+            resolve({
+              success: false,
+              output: grepOutput.trim(),
+              error: "TIMEOUT: Search exceeded 30s.",
+            });
+            return;
+          }
+          resolve({
+            success: code === 0 || code === 1,
+            output: grepOutput.trim() || "(no matches)",
+          });
+        });
+      });
+    });
+  },
+);
+
+// ============================================================================
+// Tool: Glob
+// ============================================================================
+
+registerTool(
+  "glob",
+  "Find files matching a glob pattern.",
+  {
+    pattern: {
+      type: "string",
+      description: 'Glob pattern (e.g., "**/*.ts")',
+    },
+    path: {
+      type: "string",
+      description: "Base directory (default: current directory)",
+    },
+  },
+  ["pattern"],
+  async ({ pattern, path = "." }) => {
+    const resolvedPath = resolve(path);
+
+    // Use bwrap for sandbox mode
+    if (sandboxEnabled && isBwrapAvailable()) {
+      const result = await runInSandbox("find", [resolvedPath, "-name", pattern.replace("**/", "")], {
+        timeout: 30000,
+      });
+      return {
+        success: true,
+        output: result.stdout.trim() || "(no files found)",
+      };
+    }
+
+    // Fallback: path validation + direct execution
+    const pathError = validatePath(resolvedPath, "glob");
+    if (pathError) {
+      return { success: false, output: "", error: pathError };
+    }
+
+    return new Promise((resolve) => {
+      const proc = spawn("find", [resolvedPath, "-name", pattern.replace("**/", "")]);
+      let timedOut = false;
+
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGKILL");
+      }, 30000);
+
+      let output = "";
+      proc.stdout?.on("data", (data) => {
+        output += data.toString();
+      });
+
+      proc.on("close", () => {
+        clearTimeout(timeoutId);
+        if (timedOut) {
+          resolve({
+            success: false,
+            output: output.trim(),
+            error: "TIMEOUT: Search exceeded 30s. Try a smaller directory.",
+          });
+          return;
+        }
+        resolve({
+          success: true,
+          output: output.trim() || "(no files found)",
+        });
+      });
+
+      proc.on("error", (err) => {
+        clearTimeout(timeoutId);
+        resolve({ success: false, output: "", error: err.message });
+      });
+    });
+  },
+);
+
+// ============================================================================
+// Tool: Memory Search
+// ============================================================================
+
+registerTool(
+  "memory_search",
+  "Search past conversation history. Filter by time range, keywords, or role.",
+  {
+    keywords: {
+      type: "array",
+      items: { type: "string" },
+      description: "Keywords to search for (uses full-text search)",
+    },
+    start_time: {
+      type: "number",
+      description: "Search from this Unix timestamp (ms)",
+    },
+    end_time: {
+      type: "number",
+      description: "Search until this Unix timestamp (ms)",
+    },
+    role: {
+      type: "string",
+      enum: ["user", "assistant", "tool"],
+      description: "Filter by message role",
+    },
+    session_id: {
+      type: "string",
+      description: "Limit to specific session",
+    },
+    limit: {
+      type: "number",
+      description: "Maximum results (default: 20)",
+    },
+  },
+  [],
+  async (args) => {
+    try {
+      // Use singleton to avoid database lock contention
+      const { getMemoryManager } = await import("../memory/memory");
+      const memory = getMemoryManager();
+
+      const results = memory.search({
+        keywords: args.keywords,
+        startTime: args.start_time,
+        endTime: args.end_time,
+        role: args.role,
+        sessionId: args.session_id,
+        limit: args.limit || 20,
+      });
+
+      // Don't close singleton
+
+      if (results.length === 0) {
+        return { success: true, output: "No matching messages found." };
+      }
+
+      const formatted = results
+        .map(
+          (r) =>
+            `[${new Date(r.createdAt).toISOString()}] (${r.sessionName}) ${r.role}: ${r.content?.slice(0, 200)}${r.content?.length > 200 ? "..." : ""}`,
+        )
+        .join("\n\n");
+
+      return {
+        success: true,
+        output: `Found ${results.length} messages:\n\n${formatted}`,
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Memory Summary
+// ============================================================================
+
+registerTool(
+  "memory_summary",
+  "Get a summary of a conversation session including key topics.",
+  {
+    session_id: {
+      type: "string",
+      description: "Session ID to summarize",
+    },
+  },
+  ["session_id"],
+  async ({ session_id }) => {
+    try {
+      const { getMemoryManager } = await import("../memory/memory");
+      const memory = getMemoryManager();
+
+      const summary = memory.getSessionSummary(session_id);
+      // Don't close singleton
+
+      if (!summary) {
+        return { success: false, output: "", error: "Session not found" };
+      }
+
+      const output = `Session: ${summary.sessionName}
+Messages: ${summary.messageCount}
+Time Range: ${new Date(summary.timeRange.start).toISOString()} - ${new Date(summary.timeRange.end).toISOString()}
+Key Topics: ${summary.keyTopics.join(", ") || "None detected"}
+
+Summary: ${summary.summary}`;
+
+      return { success: true, output };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Job Submit (tmux-based, survives agent exit)
+// ============================================================================
+
+registerTool(
+  "job_submit",
+  "Submit a long-running task to run in the background. Returns a job ID. Jobs run in isolated tmux sessions and survive agent exit.",
+  {
+    name: {
+      type: "string",
+      description: "Short name for the job",
+    },
+    command: {
+      type: "string",
+      description: "Bash command to execute",
+    },
+  },
+  ["name", "command"],
+  async ({ name, command }) => {
+    try {
+      const { tmuxJobManager } = await import("../jobs/tmux-manager");
+
+      // When sandbox enabled, wrap the command in bwrap for security
+      // (tmux-manager runs commands directly; sandboxing is enforced here at tool level)
+      let sandboxedCommand = command;
+      if (sandboxEnabled && isBwrapAvailable()) {
+        const projectRoot = getSandboxProjectRoot();
+        const bwrapArgs = getBwrapArgs(projectRoot, projectRoot);
+        // Build bwrap command string: bwrap <args> bash -c '<command>'
+        const escapedCommand = command.replace(/'/g, "'\\''");
+        sandboxedCommand = bwrapArgs.map((a: string) => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
+        sandboxedCommand = `bwrap ${sandboxedCommand} bash -c '${escapedCommand}'`;
+      }
+
+      const jobId = tmuxJobManager.submit(name, sandboxedCommand);
+
+      return {
+        success: true,
+        output: `Job submitted: ${jobId}\nProject: ${getProjectHash()}\nLogs: ${getProjectJobsDir()}/${jobId}/output.log`,
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Job Status (tmux-based)
+// ============================================================================
+
+registerTool(
+  "job_status",
+  "Get the status of background jobs. Jobs persist across agent restarts.",
+  {
+    job_id: {
+      type: "string",
+      description: "Specific job ID (optional, lists all if not provided)",
+    },
+    status_filter: {
+      type: "string",
+      enum: ["pending", "running", "completed", "failed", "cancelled"],
+      description: "Filter by status",
+    },
+  },
+  [],
+  async ({ job_id, status_filter }) => {
+    try {
+      const { tmuxJobManager } = await import("../jobs/tmux-manager");
+
+      if (job_id) {
+        const job = tmuxJobManager.get(job_id);
+        if (!job) {
+          return {
+            success: false,
+            output: "",
+            error: `Job ${job_id} not found`,
+          };
+        }
+
+        // Include logs in detailed view
+        const logs = tmuxJobManager.getLogs(job_id, 50);
+        const output = [
+          JSON.stringify(job, null, 2),
+          "",
+          "--- Last 50 lines of output ---",
+          logs || "(no output yet)",
+        ].join("\n");
+
+        return { success: true, output };
+      }
+
+      const jobs = tmuxJobManager.list({
+        status: status_filter as any,
+        limit: 20,
+      });
+
+      if (jobs.length === 0) {
+        return { success: true, output: "No jobs found." };
+      }
+
+      const formatted = jobs
+        .map((j) => {
+          const elapsed = j.completedAt
+            ? `${Math.round((j.completedAt - j.createdAt) / 1000)}s`
+            : j.startedAt
+              ? `${Math.round((Date.now() - j.startedAt) / 1000)}s (running)`
+              : "pending";
+          return `[${j.status.toUpperCase()}] ${j.id.slice(0, 8)} - ${j.name} (${elapsed})`;
+        })
+        .join("\n");
+
+      return { success: true, output: formatted };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Job Cancel (tmux-based)
+// ============================================================================
+
+registerTool(
+  "job_cancel",
+  "Cancel a running job by killing its tmux session.",
+  {
+    job_id: {
+      type: "string",
+      description: "Job ID to cancel",
+    },
+  },
+  ["job_id"],
+  async ({ job_id }) => {
+    try {
+      const { tmuxJobManager } = await import("../jobs/tmux-manager");
+
+      const cancelled = tmuxJobManager.cancel(job_id);
+
+      if (cancelled) {
+        return { success: true, output: `Job ${job_id} cancelled.` };
+      } else {
+        return {
+          success: false,
+          output: "",
+          error: `Could not cancel job ${job_id} (not running or not found)`,
+        };
+      }
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Job Wait (tmux-based)
+// ============================================================================
+
+registerTool(
+  "job_wait",
+  "Wait for a job to complete and return its result with full logs.",
+  {
+    job_id: {
+      type: "string",
+      description: "Job ID to wait for",
+    },
+    timeout_ms: {
+      type: "number",
+      description: "Maximum time to wait in milliseconds (default: 60000)",
+    },
+  },
+  ["job_id"],
+  async ({ job_id, timeout_ms = 60000 }) => {
+    try {
+      const { tmuxJobManager } = await import("../jobs/tmux-manager");
+
+      const job = await tmuxJobManager.waitFor(job_id, timeout_ms);
+      const logs = tmuxJobManager.getLogs(job_id);
+
+      if (job.status === "completed") {
+        return {
+          success: true,
+          output: `Job completed (exit code: ${job.exitCode}):\n${logs || "(no output)"}`,
+        };
+      } else if (job.status === "failed") {
+        return {
+          success: false,
+          output: logs,
+          error: `Job failed with exit code: ${job.exitCode}`,
+        };
+      } else if (job.status === "cancelled") {
+        return { success: false, output: logs, error: "Job was cancelled" };
+      } else {
+        return {
+          success: false,
+          output: "",
+          error: `Job status: ${job.status}`,
+        };
+      }
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Job Logs (tmux-based)
+// ============================================================================
+
+registerTool(
+  "job_logs",
+  "Get the full output logs of a job.",
+  {
+    job_id: {
+      type: "string",
+      description: "Job ID to get logs for",
+    },
+    tail: {
+      type: "number",
+      description: "Only get last N lines (optional, returns all if not specified)",
+    },
+  },
+  ["job_id"],
+  async ({ job_id, tail }) => {
+    try {
+      const { tmuxJobManager } = await import("../jobs/tmux-manager");
+
+      const job = tmuxJobManager.get(job_id);
+      if (!job) {
+        return { success: false, output: "", error: `Job ${job_id} not found` };
+      }
+
+      const logs = tmuxJobManager.getLogs(job_id, tail);
+
+      return {
+        success: true,
+        output: `Job: ${job.name} [${job.status.toUpperCase()}]\nCommand: ${job.command}\n\n--- Output ---\n${logs || "(no output yet)"}`,
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Skill List
+// ============================================================================
+
+registerTool(
+  "skill_list",
+  "List all available skills with brief descriptions. Use this to discover what skills are available.",
+  {},
+  [],
+  async () => {
+    try {
+      const { getSkillManager } = await import("../skills/manager");
+      const manager = getSkillManager();
+
+      const skills = manager.listSkills();
+
+      if (skills.length === 0) {
+        return {
+          success: true,
+          output: "No skills installed. Skills can be added to ~/.clawd/skills/",
+        };
+      }
+
+      const formatted = skills
+        .map((s) => `• **${s.name}**: ${s.description}\n  Triggers: ${s.triggers.join(", ")}`)
+        .join("\n\n");
+
+      return { success: true, output: `Available skills:\n\n${formatted}` };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Skill Search
+// ============================================================================
+
+registerTool(
+  "skill_search",
+  "Search for relevant skills by keywords. Returns matching skills ranked by relevance.",
+  {
+    keywords: {
+      type: "array",
+      items: { type: "string" },
+      description: "Keywords to search for",
+    },
+  },
+  ["keywords"],
+  async ({ keywords }) => {
+    try {
+      const { getSkillManager } = await import("../skills/manager");
+      const manager = getSkillManager();
+
+      const matches = manager.searchByKeywords(keywords);
+
+      if (matches.length === 0) {
+        return { success: true, output: "No matching skills found." };
+      }
+
+      const formatted = matches
+        .map(
+          (m) =>
+            `• **${m.skill.name}** (${Math.round(m.score * 100)}% match)\n  ${m.skill.description}\n  Matched: ${m.matchedTriggers.join(", ")}`,
+        )
+        .join("\n\n");
+
+      return { success: true, output: `Matching skills:\n\n${formatted}` };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Skill Activate
+// ============================================================================
+
+registerTool(
+  "skill_activate",
+  "Load and activate a skill by name. Returns the full skill content to guide your actions.",
+  {
+    name: {
+      type: "string",
+      description: "Name of the skill to activate",
+    },
+  },
+  ["name"],
+  async ({ name }) => {
+    try {
+      const { getSkillManager } = await import("../skills/manager");
+      const manager = getSkillManager();
+
+      const skill = manager.getSkill(name);
+
+      if (!skill) {
+        return {
+          success: false,
+          output: "",
+          error: `Skill '${name}' not found`,
+        };
+      }
+
+      return {
+        success: true,
+        output: `# Skill: ${skill.name}\n\n${skill.content}\n\n---\n*Skill activated. Follow the guidelines above.*`,
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Skill Create
+// ============================================================================
+
+registerTool(
+  "skill_create",
+  "Create or update a skill. Skills are stored as markdown with metadata.",
+  {
+    name: {
+      type: "string",
+      description: "Skill name (lowercase, no spaces)",
+    },
+    description: {
+      type: "string",
+      description: "Brief description of what the skill does",
+    },
+    triggers: {
+      type: "array",
+      items: { type: "string" },
+      description: "Keywords that should trigger this skill",
+    },
+    content: {
+      type: "string",
+      description: "Full skill content in markdown format",
+    },
+  },
+  ["name", "description", "triggers", "content"],
+  async ({ name, description, triggers, content }) => {
+    try {
+      const { getSkillManager } = await import("../skills/manager");
+      const manager = getSkillManager();
+
+      manager.saveSkill({ name, description, triggers, content });
+
+      return { success: true, output: `Skill '${name}' saved successfully.` };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Task Add
+// ============================================================================
+
+// Current agent ID for kanban (set by agent runtime)
+let currentAgentId = "default";
+let currentChannel = "general";
+let chatApiUrl = "http://localhost:53456";
+
+export function setCurrentAgentId(id: string) {
+  currentAgentId = id;
+}
+
+export function setCurrentChannel(channel: string) {
+  currentChannel = channel;
+}
+
+export function setChatApiUrl(url: string) {
+  chatApiUrl = url;
+}
+
+// ============================================================================
+// Task Tools - Call server API
+// ============================================================================
+
+registerTool(
+  "task_add",
+  "Add a new task to the channel kanban board.",
+  {
+    title: { type: "string", description: "Task title (brief, actionable)" },
+    description: {
+      type: "string",
+      description: "Detailed description (optional)",
+    },
+    priority: {
+      type: "string",
+      description: "P0 (critical), P1 (high), P2 (medium), P3 (low). Default: P2",
+    },
+    tags: {
+      type: "array",
+      items: { type: "string" },
+      description: "Tags for categorization",
+    },
+    due_at: {
+      type: "number",
+      description: "Due date as Unix timestamp (optional)",
+    },
+  },
+  ["title"],
+  async ({ title, description, priority, tags, due_at }) => {
+    try {
+      const res = await fetch(`${chatApiUrl}/api/tasks.create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          description,
+          priority,
+          tags,
+          due_at,
+          agent_id: currentAgentId,
+        }),
+      });
+      const data = (await res.json()) as any;
+      if (!data.ok) return { success: false, output: "", error: data.error };
+
+      const task = data.task;
+      return {
+        success: true,
+        output: `✅ Created: [${task.priority}] ${task.title} (${task.id})`,
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+registerTool(
+  "task_list",
+  "View the kanban board. Shows all tasks organized by status.",
+  {
+    status: {
+      type: "string",
+      description: "Filter by status: todo, doing, done, blocked",
+    },
+    limit: { type: "number", description: "Max tasks to return" },
+  },
+  [],
+  async ({ status, limit }) => {
+    try {
+      const params = new URLSearchParams();
+      if (status) params.set("status", status);
+      if (limit) params.set("limit", String(limit));
+
+      const res = await fetch(`${chatApiUrl}/api/tasks.list?${params}`);
+      const data = (await res.json()) as any;
+      if (!data.ok) return { success: false, output: "", error: data.error };
+
+      const tasks = data.tasks;
+      if (!tasks.length)
+        return {
+          success: true,
+          output: "Kanban board is empty. Add tasks with task_add.",
+        };
+
+      const byStatus: Record<string, any[]> = {
+        todo: [],
+        doing: [],
+        blocked: [],
+        done: [],
+      };
+      for (const t of tasks) {
+        (byStatus[t.status] || []).push(t);
+      }
+
+      let output = `📋 KANBAN BOARD\n${"═".repeat(50)}\n`;
+      for (const [s, list] of Object.entries(byStatus)) {
+        if (list.length === 0) continue;
+        output += `\n## ${s.toUpperCase()} (${list.length})\n`;
+        for (const t of list) {
+          output += `- [${t.priority}] ${t.title} (${t.id.slice(-8)})\n`;
+        }
+      }
+      return { success: true, output };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+registerTool(
+  "task_get",
+  "Get detailed view of a task including attachments and comments.",
+  { task_id: { type: "string", description: "Task ID (or partial ID)" } },
+  ["task_id"],
+  async ({ task_id }) => {
+    try {
+      const res = await fetch(`${chatApiUrl}/api/tasks.get?task_id=${encodeURIComponent(task_id)}`);
+      const data = (await res.json()) as any;
+      if (!data.ok) return { success: false, output: "", error: data.error };
+
+      const t = data.task;
+      let output = `📋 ${t.title}\n${"═".repeat(50)}\n`;
+      output += `ID: ${t.id} | Status: ${t.status} | Priority: ${t.priority}\n`;
+      if (t.tags?.length) output += `Tags: #${t.tags.join(" #")}\n`;
+      if (t.description) output += `\nDescription:\n${t.description}\n`;
+      if (t.attachments?.length) {
+        output += `\nAttachments (${t.attachments.length}):\n`;
+        for (const a of t.attachments) output += `  📎 ${a.name}${a.url ? ` - ${a.url}` : ""}\n`;
+      }
+      if (t.comments?.length) {
+        output += `\nComments (${t.comments.length}):\n`;
+        for (const c of t.comments) output += `  💬 [${c.author}] ${c.text}\n`;
+      }
+      return { success: true, output };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+registerTool(
+  "task_update",
+  "Update a task (status, priority, title). Use claimer when setting status to 'doing' for atomic claim protection.",
+  {
+    task_id: { type: "string", description: "Task ID" },
+    status: {
+      type: "string",
+      description: "New status: todo, doing, done, blocked",
+    },
+    priority: { type: "string", description: "New priority: P0, P1, P2, P3" },
+    title: { type: "string", description: "New title" },
+    claimer: {
+      type: "string",
+      description: "Agent ID claiming the task (required when setting status to 'doing' for atomic claim protection)",
+    },
+  },
+  ["task_id"],
+  async ({ task_id, status, priority, title, claimer }) => {
+    try {
+      const res = await fetch(`${chatApiUrl}/api/tasks.update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id, status, priority, title, claimer }),
+      });
+      const data = (await res.json()) as any;
+      if (!data.ok) {
+        if (data.error === "already_claimed") {
+          return {
+            success: false,
+            output: "",
+            error: `Task already claimed by ${data.claimed_by}. Pick another task.`,
+          };
+        }
+        return { success: false, output: "", error: data.error };
+      }
+
+      const t = data.task;
+      let output = `Updated: [${t.status}] [${t.priority}] ${t.title}`;
+      if (t.claimed_by) output += ` (claimed by: ${t.claimed_by})`;
+      return { success: true, output };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+registerTool(
+  "task_complete",
+  "Mark a task as done.",
+  { task_id: { type: "string", description: "Task ID" } },
+  ["task_id"],
+  async ({ task_id }) => {
+    try {
+      const res = await fetch(`${chatApiUrl}/api/tasks.update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id, status: "done" }),
+      });
+      const data = (await res.json()) as any;
+      if (!data.ok) return { success: false, output: "", error: data.error };
+
+      return { success: true, output: `✅ Completed: ${data.task.title}` };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+registerTool(
+  "task_delete",
+  "Delete a task from the board.",
+  { task_id: { type: "string", description: "Task ID" } },
+  ["task_id"],
+  async ({ task_id }) => {
+    try {
+      const res = await fetch(`${chatApiUrl}/api/tasks.delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id }),
+      });
+      const data = (await res.json()) as any;
+      if (!data.ok) return { success: false, output: "", error: data.error };
+
+      return { success: true, output: `🗑️ Task deleted` };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+registerTool(
+  "task_attach",
+  "Add an attachment to a task.",
+  {
+    task_id: { type: "string", description: "Task ID" },
+    name: { type: "string", description: "Attachment name" },
+    url: { type: "string", description: "URL or file path (optional)" },
+    file_id: { type: "string", description: "Chat file ID (optional)" },
+  },
+  ["task_id", "name"],
+  async ({ task_id, name, url, file_id }) => {
+    try {
+      const res = await fetch(`${chatApiUrl}/api/tasks.addAttachment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          task_id,
+          name,
+          url,
+          file_id,
+          added_by: currentAgentId,
+        }),
+      });
+      const data = (await res.json()) as any;
+      if (!data.ok) return { success: false, output: "", error: data.error };
+
+      return { success: true, output: `📎 Attachment added: ${name}` };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+registerTool(
+  "task_comment",
+  "Add a comment to a task.",
+  {
+    task_id: { type: "string", description: "Task ID" },
+    text: { type: "string", description: "Comment text" },
+  },
+  ["task_id", "text"],
+  async ({ task_id, text }) => {
+    try {
+      const res = await fetch(`${chatApiUrl}/api/tasks.addComment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id, text, author: currentAgentId }),
+      });
+      const data = (await res.json()) as any;
+      if (!data.ok) return { success: false, output: "", error: data.error };
+
+      return { success: true, output: `💬 Comment added` };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Web Fetch
+// ============================================================================
+// ============================================================================
+// Tool: Web Fetch
+// ============================================================================
+
+registerTool(
+  "web_fetch",
+  "Fetch a URL from the internet and return the content. Supports HTML pages (converted to markdown), JSON APIs, and text content.",
+  {
+    url: {
+      type: "string",
+      description: "The URL to fetch",
+    },
+    raw: {
+      type: "boolean",
+      description: "If true, returns raw HTML instead of converting to markdown (default: false)",
+    },
+    max_length: {
+      type: "number",
+      description: "Maximum number of characters to return (default: 10000)",
+    },
+  },
+  ["url"],
+  async (args) => {
+    const { url, raw = false, max_length = 10000 } = args;
+
+    try {
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; ClawdAgent/1.0)",
+          Accept: "text/html,application/json,text/plain,*/*",
+        },
+      });
+
+      if (!response.ok) {
+        return {
+          success: false,
+          output: "",
+          error: `HTTP ${response.status}: ${response.statusText}`,
+        };
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      let content = await response.text();
+
+      // For HTML, do basic conversion to markdown unless raw=true
+      if (!raw && contentType.includes("text/html")) {
+        // Basic HTML to text conversion
+        content = content
+          // Remove scripts and styles
+          .replace(/<script[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[\s\S]*?<\/style>/gi, "")
+          // Convert headers
+          .replace(/<h1[^>]*>(.*?)<\/h1>/gi, "# $1\n")
+          .replace(/<h2[^>]*>(.*?)<\/h2>/gi, "## $1\n")
+          .replace(/<h3[^>]*>(.*?)<\/h3>/gi, "### $1\n")
+          // Convert links
+          .replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, "[$2]($1)")
+          // Convert paragraphs and breaks
+          .replace(/<p[^>]*>/gi, "\n")
+          .replace(/<\/p>/gi, "\n")
+          .replace(/<br\s*\/?>/gi, "\n")
+          // Convert lists
+          .replace(/<li[^>]*>/gi, "- ")
+          .replace(/<\/li>/gi, "\n")
+          // Remove all other tags
+          .replace(/<[^>]+>/g, "")
+          // Decode HTML entities
+          .replace(/&nbsp;/g, " ")
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&quot;/g, '"')
+          // Clean up whitespace
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+      }
+
+      // Truncate if needed
+      if (content.length > max_length) {
+        content = `${content.substring(0, max_length)}\n\n[Content truncated...]`;
+      }
+
+      return { success: true, output: content };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Web Search (DuckDuckGo)
+// ============================================================================
+
+registerTool(
+  "web_search",
+  "Search the web using DuckDuckGo. Returns search results with titles, URLs, and snippets.",
+  {
+    query: {
+      type: "string",
+      description: "The search query",
+    },
+    max_results: {
+      type: "number",
+      description: "Maximum number of results to return (default: 5)",
+    },
+  },
+  ["query"],
+  async (args) => {
+    const { query, max_results = 5 } = args;
+
+    try {
+      // Use DuckDuckGo HTML search (more reliable than API)
+      const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+
+      const response = await fetch(searchUrl, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "text/html",
+        },
+      });
+
+      if (!response.ok) {
+        return {
+          success: false,
+          output: "",
+          error: `Search failed: HTTP ${response.status}`,
+        };
+      }
+
+      const html = await response.text();
+
+      // Parse search results from HTML
+      const results: { title: string; url: string; snippet: string }[] = [];
+
+      // Match result blocks - DuckDuckGo HTML format
+      const resultRegex =
+        /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([^<]*)/g;
+
+      let match;
+      while ((match = resultRegex.exec(html)) !== null && results.length < max_results) {
+        const [, url, title, snippet] = match;
+        if (url && title) {
+          results.push({
+            title: title.trim(),
+            url: url.startsWith("//") ? `https:${url}` : url,
+            snippet: snippet?.trim() || "",
+          });
+        }
+      }
+
+      // Fallback: try alternative parsing if no results found
+      if (results.length === 0) {
+        const altRegex = /<a[^>]*rel="nofollow"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g;
+        while ((match = altRegex.exec(html)) !== null && results.length < max_results) {
+          const [, url, title] = match;
+          if (url && title && url.startsWith("http") && !url.includes("duckduckgo.com")) {
+            results.push({
+              title: title.trim(),
+              url,
+              snippet: "",
+            });
+          }
+        }
+      }
+
+      if (results.length === 0) {
+        return { success: true, output: `No results found for: ${query}` };
+      }
+
+      // Format output
+      const output = results.map((r, i) => `${i + 1}. **${r.title}**\n   ${r.url}\n   ${r.snippet}`).join("\n\n");
+
+      return {
+        success: true,
+        output: `Search results for "${query}":\n\n${output}`,
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Sub-Agent System
+// ============================================================================
+
+// Store for managing sub-agents at the main agent level
+const subAgents = new Map<
+  string,
+  {
+    id: string;
+    name: string;
+    task: string;
+    status: "running" | "completed" | "failed" | "aborted";
+    result?: any;
+    error?: string;
+    startedAt: number;
+    completedAt?: number;
+    tmuxSession?: string; // Tmux session name for detached agents
+    resultFile?: string; // Path to result JSON file for tmux agents
+  }
+>();
+
+// Spawn a sub-agent in a detached tmux session (survives main agent exit)
+async function spawnTmuxSubAgent(task: string, name: string): Promise<ToolResult> {
+  const { execSync, spawn } = await import("node:child_process");
+  const { mkdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+
+  // Check if tmux is available
+  try {
+    execSync("which tmux", { stdio: "ignore" });
+  } catch {
+    return {
+      success: false,
+      output: "",
+      error: "tmux is not installed. Install it with: apt install tmux (or brew install tmux on macOS)",
+    };
+  }
+
+  const { randomUUID } = await import("node:crypto");
+  const randomSuffix = randomUUID().replace(/-/g, "").substring(0, 12);
+
+  const sessionName = `clawd-${name}-${randomSuffix}`;
+  const agentId = `tmux-${sessionName}`;
+
+  // Use project-scoped agents directory
+  const agentsDir = getProjectAgentsDir();
+  const agentDir = join(agentsDir, sessionName);
+  try {
+    mkdirSync(agentDir, { recursive: true });
+  } catch {}
+  const logFile = join(agentDir, "output.log");
+  const resultFile = join(agentDir, "result.json");
+  const scriptFile = join(agentDir, "run.sh");
+  const metaFile = join(agentDir, "meta.json");
+
+  // Write agent metadata
+  const { writeFileSync, chmodSync } = await import("node:fs");
+  writeFileSync(
+    metaFile,
+    JSON.stringify({
+      id: agentId,
+      name,
+      task: task.slice(0, 500),
+      status: "running",
+      createdAt: Date.now(),
+      projectHash: getProjectHash(),
+    }),
+  );
+
+  // Escape task for shell (use double quotes)
+  // Append instruction to use report_agent_result tool
+  const taskWithInstruction = `${task}\n\nIMPORTANT: When you complete this task, use the report_agent_result tool to write your final result/report. The parent agent will read this.`;
+  const escapedTask = taskWithInstruction.replace(/"/g, '\\"').replace(/\$/g, "\\$").replace(/`/g, "\\`");
+
+  // Build clawd command - pass project-hash so sub-agent uses same project dir
+  const currentProjectHash = getProjectHash();
+  const baseClawdCmd = `clawd -p "${escapedTask}" --result-file "${resultFile}" --project-hash "${currentProjectHash}"`;
+
+  // Get sandbox root (detect git root or use cwd)
+  const sandboxRoot = getSandboxProjectRoot();
+
+  // Run clawd directly in tmux (no bwrap sandbox wrapping)
+  const clawdCmd = `${baseClawdCmd} 2>&1 | tee -a "${logFile}"`;
+
+  // Dedicated tmux socket for sub-agents (project-scoped)
+  const socketPath = join(agentsDir, "tmux.sock");
+
+  // Create tmux session - write script to temp file to avoid quoting hell
+  const scriptContent = `#!/bin/bash
+# Sub-agent runs in sandbox root directory
+cd "${sandboxRoot}"
+echo "Starting sub-agent: ${name}" >> "${logFile}"
+echo "Sandbox root: ${sandboxRoot}" >> "${logFile}"
+echo "Project hash: ${currentProjectHash}" >> "${logFile}"
+echo "---" >> "${logFile}"
+${clawdCmd}
+echo "---" >> "${logFile}"
+echo "Exit code: $?" >> "${logFile}"
+`;
+  writeFileSync(scriptFile, scriptContent);
+  chmodSync(scriptFile, 0o755);
+
+  const tmuxCmd = `tmux -S "${socketPath}" new-session -d -s "${sessionName}" "${scriptFile}"`;
+
+  try {
+    execSync(tmuxCmd, { stdio: "ignore" });
+
+    // Store agent info
+    subAgents.set(agentId, {
+      id: agentId,
+      name,
+      task,
+      status: "running",
+      startedAt: Date.now(),
+      tmuxSession: sessionName,
+      resultFile,
+    });
+
+    return {
+      success: true,
+      output: JSON.stringify(
+        {
+          agent_id: agentId,
+          name,
+          status: "running",
+          tmux_session: sessionName,
+          log_file: logFile,
+          result_file: resultFile,
+          project_hash: currentProjectHash,
+          message: `Sub-agent spawned in tmux session "${sessionName}". Use wait_for_agents to wait for completion, then get_agent_report to read results.`,
+          view_output: `tmux -S "${socketPath}" attach -t ${sessionName}`,
+          view_logs: `tail -f ${logFile}`,
+          kill_command: `tmux -S "${socketPath}" kill-session -t ${sessionName}`,
+        },
+        null,
+        2,
+      ),
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      output: "",
+      error: `Failed to spawn tmux session: ${err.message}`,
+    };
+  }
+}
+
+registerTool(
+  "spawn_agent",
+  `Spawn a sub-agent to work on a task. The sub-agent is a fully autonomous agent with the same capabilities (file ops, bash, web tools, etc.).
+
+Use this for:
+- Parallelizing independent tasks
+- Delegating complex subtasks
+- Running long operations
+
+The sub-agent runs in a detached tmux session and returns immediately with the agent ID. This tool is always async - there is NO 'wait' parameter.
+
+Sub-agents can spawn their own sub-agents (up to 3 levels deep). The sub-agent will run until it completes the task or hits max iterations.
+
+**Getting results:** Use wait_for_agents(agent_ids=[...]) to efficiently wait for completion, then get_agent_report(agent_id) to read the result. Do NOT poll with get_agent_result in a loop.`,
+  {
+    task: {
+      type: "string",
+      description: "The task for the sub-agent to complete. Be specific and include all necessary context.",
+    },
+    name: {
+      type: "string",
+      description: "Optional friendly name for the sub-agent (for tracking)",
+    },
+  },
+  ["task"],
+  async ({ task, name }) => {
+    try {
+      const agentName = name || `subagent-${Date.now()}`;
+      return await spawnTmuxSubAgent(task, agentName);
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// Helper: Get subagent tmux socket path (project-scoped)
+function getSubAgentSocketPath(): string {
+  const { join } = require("node:path");
+  return join(getProjectAgentsDir(), "tmux.sock");
+}
+
+// Helper: Check if a tmux sub-agent session is still alive and update its status
+function checkTmuxAgentStatus(agent: typeof subAgents extends Map<string, infer V> ? V : never): void {
+  if (!agent.tmuxSession || agent.status !== "running") return;
+
+  const { execSync } = require("node:child_process");
+  const { existsSync, readFileSync } = require("node:fs");
+  const socketPath = getSubAgentSocketPath();
+
+  // Check if tmux session still exists
+  let sessionAlive = false;
+  try {
+    execSync(`tmux -S "${socketPath}" has-session -t "${agent.tmuxSession}" 2>/dev/null`, { stdio: "ignore" });
+    sessionAlive = true;
+  } catch {
+    sessionAlive = false;
+  }
+
+  if (!sessionAlive) {
+    // Session gone - check for result file
+    if (agent.resultFile && existsSync(agent.resultFile)) {
+      try {
+        const resultData = JSON.parse(readFileSync(agent.resultFile, "utf8"));
+        agent.status = resultData.success ? "completed" : "failed";
+        agent.result = resultData;
+        agent.error = resultData.error;
+      } catch {
+        agent.status = "failed";
+        agent.error = "Failed to parse result file";
+      }
+    } else {
+      agent.status = "failed";
+      agent.error = "Tmux session exited without writing result file";
+    }
+    agent.completedAt = Date.now();
+  } else if (agent.resultFile) {
+    // Session still alive but check if result file appeared (agent might be finishing up)
+    const { existsSync } = require("node:fs");
+    if (existsSync(agent.resultFile)) {
+      try {
+        const { readFileSync } = require("node:fs");
+        const resultData = JSON.parse(readFileSync(agent.resultFile, "utf8"));
+        agent.status = resultData.success ? "completed" : "failed";
+        agent.result = resultData;
+        agent.error = resultData.error;
+        agent.completedAt = Date.now();
+      } catch {
+        // Result file might be partially written, ignore
+      }
+    }
+  }
+}
+
+registerTool("list_agents", "List all spawned sub-agents and their current status.", {}, [], async () => {
+  // Update status for all tmux agents before returning
+  for (const agent of subAgents.values()) {
+    checkTmuxAgentStatus(agent);
+  }
+
+  const agents = Array.from(subAgents.values()).map((a) => ({
+    id: a.id,
+    name: a.name,
+    status: a.status,
+    task: a.task.slice(0, 100) + (a.task.length > 100 ? "..." : ""),
+    started_at: new Date(a.startedAt).toISOString(),
+    completed_at: a.completedAt ? new Date(a.completedAt).toISOString() : null,
+    duration_ms: a.completedAt ? a.completedAt - a.startedAt : Date.now() - a.startedAt,
+  }));
+
+  return {
+    success: true,
+    output: JSON.stringify(
+      {
+        count: agents.length,
+        agents,
+      },
+      null,
+      2,
+    ),
+  };
+});
+
+registerTool(
+  "get_agent_result",
+  "Get the result of a sub-agent by ID. Shows current status, or waits for completion if wait=true.",
+  {
+    agent_id: {
+      type: "string",
+      description: "The ID of the sub-agent",
+    },
+    wait: {
+      type: "boolean",
+      description:
+        "If true, wait for the agent to complete before returning (polls every 2s, max 5min). If false (default), return current status.",
+    },
+  },
+  ["agent_id"],
+  async ({ agent_id, wait = false }) => {
+    const agent = subAgents.get(agent_id);
+    if (!agent) {
+      return {
+        success: false,
+        output: "",
+        error: `Agent ${agent_id} not found`,
+      };
+    }
+
+    // For tmux agents, poll until completion
+    if (wait && agent.status === "running" && agent.tmuxSession) {
+      const deadline = Date.now() + 300000; // 5 min timeout
+      while (agent.status === "running" && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000)); // 2s local sleep
+        checkTmuxAgentStatus(agent);
+      }
+    }
+
+    return {
+      success: true,
+      output: JSON.stringify(
+        {
+          id: agent.id,
+          name: agent.name,
+          status: agent.status,
+          task: agent.task,
+          result: agent.result?.result,
+          error: agent.error,
+          iterations: agent.result?.iterations,
+          tool_calls: agent.result?.toolCalls,
+          started_at: new Date(agent.startedAt).toISOString(),
+          completed_at: agent.completedAt ? new Date(agent.completedAt).toISOString() : null,
+          duration_ms: agent.completedAt ? agent.completedAt - agent.startedAt : Date.now() - agent.startedAt,
+        },
+        null,
+        2,
+      ),
+    };
+  },
+);
+
+registerTool(
+  "get_agent_report",
+  `Read the result report from a sub-agent. This reads the .result.json file written by the sub-agent's report_agent_result tool.
+
+This is the recommended way to get sub-agent results after wait_for_agents returns.
+Only reads .result.json files - no access to logs or other files.
+
+Returns the report content, status, and metadata.`,
+  {
+    agent_id: {
+      type: "string",
+      description: "The ID of the sub-agent (from spawn_agent)",
+    },
+  },
+  ["agent_id"],
+  async ({ agent_id }: { agent_id: string }) => {
+    const { existsSync, readFileSync } = require("node:fs");
+
+    const agent = subAgents.get(agent_id);
+    if (!agent) {
+      return {
+        success: false,
+        output: "",
+        error: `Agent ${agent_id} not found. Use list_agents to see available agents.`,
+      };
+    }
+
+    // Check tmux status first (might have completed since last check)
+    checkTmuxAgentStatus(agent);
+
+    // Read the result file directly
+    if (!agent.resultFile) {
+      return {
+        success: false,
+        output: "",
+        error: `Agent ${agent_id} has no result file path (may be an in-process agent). Use get_agent_result instead.`,
+      };
+    }
+
+    if (!existsSync(agent.resultFile)) {
+      return {
+        success: true,
+        output: JSON.stringify(
+          {
+            agent_id: agent.id,
+            name: agent.name,
+            status: agent.status,
+            report_available: false,
+            message:
+              agent.status === "running"
+                ? "Agent is still running. No report yet."
+                : "Agent completed but no report file was written. The agent may not have called report_agent_result.",
+          },
+          null,
+          2,
+        ),
+      };
+    }
+
+    try {
+      const resultData = JSON.parse(readFileSync(agent.resultFile, "utf8"));
+      return {
+        success: true,
+        output: JSON.stringify(
+          {
+            agent_id: agent.id,
+            name: agent.name,
+            status: agent.status,
+            report_available: true,
+            report: {
+              success: resultData.success,
+              content: resultData.result,
+              completed_at: resultData.completedAt ? new Date(resultData.completedAt).toISOString() : null,
+              error: resultData.error,
+            },
+            duration_ms: agent.completedAt ? agent.completedAt - agent.startedAt : Date.now() - agent.startedAt,
+          },
+          null,
+          2,
+        ),
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        output: "",
+        error: `Failed to read result file: ${err.message}`,
+      };
+    }
+  },
+);
+
+registerTool(
+  "wait_for_agents",
+  `Wait for one or more sub-agents to complete. Polls locally (no API calls wasted).
+
+Modes:
+- "all" (default): Wait until ALL specified agents complete
+- "any": Wait until ANY one agent completes
+
+Returns the status of all specified agents. This is the recommended way to wait for async sub-agents.`,
+  {
+    agent_ids: {
+      type: "array",
+      items: { type: "string" },
+      description: "Array of agent IDs to wait for",
+    },
+    mode: {
+      type: "string",
+      description: 'Wait mode: "all" (default) or "any"',
+    },
+    timeout_ms: {
+      type: "number",
+      description: "Maximum time to wait in milliseconds (default: 600000 = 10 min)",
+    },
+  },
+  ["agent_ids"],
+  async ({
+    agent_ids,
+    mode = "all",
+    timeout_ms = 600000,
+  }: {
+    agent_ids: string[];
+    mode?: string;
+    timeout_ms?: number;
+  }) => {
+    const deadline = Date.now() + timeout_ms;
+
+    while (Date.now() < deadline) {
+      // Check status of all requested agents
+      for (const id of agent_ids) {
+        const agent = subAgents.get(id);
+        if (agent) {
+          // Check tmux agent status
+          checkTmuxAgentStatus(agent);
+        }
+      }
+
+      const statuses = agent_ids.map((id) => {
+        const agent = subAgents.get(id);
+        return {
+          id,
+          status: agent?.status || "not_found",
+          name: agent?.name,
+        };
+      });
+
+      const completed = statuses.filter((s) => s.status !== "running");
+
+      if (mode === "any" && completed.length > 0) {
+        // At least one done
+        const results = agent_ids.map((id) => {
+          const agent = subAgents.get(id);
+          return {
+            id,
+            name: agent?.name,
+            status: agent?.status || "not_found",
+            result: agent?.result?.result,
+            error: agent?.error,
+            duration_ms: agent?.completedAt
+              ? agent.completedAt - agent.startedAt
+              : Date.now() - (agent?.startedAt || Date.now()),
+          };
+        });
+        return {
+          success: true,
+          output: JSON.stringify(
+            { mode, completed: completed.length, total: agent_ids.length, agents: results },
+            null,
+            2,
+          ),
+        };
+      }
+
+      if (mode === "all" && completed.length === agent_ids.length) {
+        // All done
+        const results = agent_ids.map((id) => {
+          const agent = subAgents.get(id);
+          return {
+            id,
+            name: agent?.name,
+            status: agent?.status || "not_found",
+            result: agent?.result?.result,
+            error: agent?.error,
+            duration_ms: agent?.completedAt
+              ? agent.completedAt - agent.startedAt
+              : Date.now() - (agent?.startedAt || Date.now()),
+          };
+        });
+        return {
+          success: true,
+          output: JSON.stringify(
+            { mode, completed: completed.length, total: agent_ids.length, agents: results },
+            null,
+            2,
+          ),
+        };
+      }
+
+      // Sleep 2s locally - no API calls wasted
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    // Timeout
+    const results = agent_ids.map((id) => {
+      const agent = subAgents.get(id);
+      return {
+        id,
+        name: agent?.name,
+        status: agent?.status || "not_found",
+        result: agent?.result?.result,
+        error: agent?.error,
+      };
+    });
+    return {
+      success: false,
+      output: JSON.stringify({ mode, timeout: true, agents: results }, null, 2),
+      error: `Timed out after ${timeout_ms}ms waiting for agents`,
+    };
+  },
+);
+
+registerTool(
+  "kill_agent",
+  "Kill/terminate a running sub-agent and all its children (sub-sub-agents). The agent will stop at the next iteration.",
+  {
+    agent_id: {
+      type: "string",
+      description: "The ID of the sub-agent to kill",
+    },
+  },
+  ["agent_id"],
+  async ({ agent_id }) => {
+    const agentInfo = subAgents.get(agent_id);
+    if (!agentInfo) {
+      return {
+        success: false,
+        output: "",
+        error: `Agent ${agent_id} not found`,
+      };
+    }
+
+    if (agentInfo.status !== "running") {
+      return {
+        success: false,
+        output: "",
+        error: `Agent ${agent_id} is not running (status: ${agentInfo.status})`,
+      };
+    }
+
+    if (agentInfo.tmuxSession) {
+      // Kill tmux session for detached agents
+      const { execSync } = require("node:child_process");
+      const socketPath = getSubAgentSocketPath();
+      try {
+        execSync(`tmux -S "${socketPath}" kill-session -t "${agentInfo.tmuxSession}" 2>/dev/null`, { stdio: "ignore" });
+      } catch {
+        // Session might already be gone
+      }
+    }
+
+    agentInfo.status = "aborted";
+    agentInfo.completedAt = Date.now();
+
+    return {
+      success: true,
+      output: JSON.stringify(
+        {
+          message: `Agent ${agent_id} and its children have been terminated`,
+          id: agent_id,
+          name: agentInfo.name,
+          status: "aborted",
+          duration_ms: agentInfo.completedAt - agentInfo.startedAt,
+        },
+        null,
+        2,
+      ),
+    };
+  },
+);
+
+// ============================================================================
+// Git Tools (sandboxed with agent SSH/git config)
+// ============================================================================
+
+/**
+ * Execute a git command inside the sandbox
+ * Uses agent-specific git/ssh config from ~/.clawd/ (set via bwrap --setenv)
+ */
+function execGitCommand(args: string[], cwd?: string): Promise<{ success: boolean; output: string; error?: string }> {
+  // Build git command - env vars are already set by bwrap
+  const gitCmd = `GIT_TERMINAL_PROMPT=0 git --no-pager ${args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`;
+
+  // Run inside sandbox
+  return runInSandbox("bash", ["-c", gitCmd], { cwd, timeout: 30000 }).then((result) => {
+    if (result.success) {
+      return { success: true, output: result.stdout.trim() };
+    } else {
+      const error = result.stderr.includes("TIMEOUT")
+        ? "TIMEOUT: Git command exceeded 30s."
+        : result.stderr.trim() || `Exit code: ${result.code}`;
+      return { success: false, output: result.stdout.trim(), error };
+    }
+  });
+}
+
+registerTool(
+  "git_status",
+  "Show the working tree status (staged, unstaged, untracked files).",
+  {
+    path: { type: "string", description: "Repository path (default: current directory)" },
+  },
+  [],
+  async ({ path }) => {
+    return execGitCommand(["status", "--short"], path);
+  },
+);
+
+registerTool(
+  "git_diff",
+  "Show changes between commits, commit and working tree, etc.",
+  {
+    path: { type: "string", description: "Repository path" },
+    staged: { type: "boolean", description: "Show staged changes (--cached)" },
+    file: { type: "string", description: "Specific file to diff" },
+  },
+  [],
+  async ({ path, staged, file }) => {
+    const args = ["diff"];
+    if (staged) args.push("--cached");
+    if (file) args.push("--", file);
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_log",
+  "Show commit logs.",
+  {
+    path: { type: "string", description: "Repository path" },
+    count: { type: "number", description: "Number of commits to show (default: 10)" },
+    oneline: { type: "boolean", description: "Show one line per commit (default: true)" },
+    file: { type: "string", description: "Show commits for specific file" },
+  },
+  [],
+  async ({ path, count = 10, oneline = true, file }) => {
+    const args = ["log", `-${count}`];
+    if (oneline) args.push("--oneline");
+    if (file) args.push("--", file);
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_branch",
+  "List, create, or delete branches.",
+  {
+    path: { type: "string", description: "Repository path" },
+    name: { type: "string", description: "Branch name to create" },
+    delete: { type: "boolean", description: "Delete the branch" },
+    all: { type: "boolean", description: "List all branches including remotes" },
+  },
+  [],
+  async ({ path, name, delete: del, all }) => {
+    const args = ["branch"];
+    if (all) args.push("-a");
+    if (name && del) {
+      args.push("-d", name);
+    } else if (name) {
+      args.push(name);
+    }
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_checkout",
+  "Switch branches or restore working tree files.",
+  {
+    path: { type: "string", description: "Repository path" },
+    target: { type: "string", description: "Branch name, commit, or file to checkout" },
+    create: { type: "boolean", description: "Create new branch (-b)" },
+  },
+  ["target"],
+  async ({ path, target, create }) => {
+    const args = ["checkout"];
+    if (create) args.push("-b");
+    args.push(target);
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_add",
+  "Add file contents to the staging area.",
+  {
+    path: { type: "string", description: "Repository path" },
+    files: { type: "string", description: 'Files to add (space-separated, or "." for all)' },
+  },
+  ["files"],
+  async ({ path, files }) => {
+    const args = ["add", ...files.split(/\s+/)];
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_commit",
+  "Record changes to the repository.",
+  {
+    path: { type: "string", description: "Repository path" },
+    message: { type: "string", description: "Commit message" },
+    all: { type: "boolean", description: "Commit all changed files (-a)" },
+  },
+  ["message"],
+  async ({ path, message, all }) => {
+    const args = ["commit", "-m", message];
+    if (all) args.push("-a");
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_push",
+  "Update remote refs along with associated objects.",
+  {
+    path: { type: "string", description: "Repository path" },
+    remote: { type: "string", description: "Remote name (default: origin)" },
+    branch: { type: "string", description: "Branch to push" },
+    force: { type: "boolean", description: "Force push (-f)" },
+    setUpstream: { type: "boolean", description: "Set upstream (-u)" },
+  },
+  [],
+  async ({ path, remote = "origin", branch, force, setUpstream }) => {
+    const args = ["push"];
+    if (force) args.push("-f");
+    if (setUpstream) args.push("-u");
+    args.push(remote);
+    if (branch) args.push(branch);
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_pull",
+  "Fetch from and integrate with another repository or a local branch.",
+  {
+    path: { type: "string", description: "Repository path" },
+    remote: { type: "string", description: "Remote name (default: origin)" },
+    branch: { type: "string", description: "Branch to pull" },
+    rebase: { type: "boolean", description: "Rebase instead of merge" },
+  },
+  [],
+  async ({ path, remote, branch, rebase }) => {
+    const args = ["pull", "--no-edit"];
+    if (rebase) args.push("--rebase");
+    if (remote) args.push(remote);
+    if (branch) args.push(branch);
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_fetch",
+  "Download objects and refs from another repository.",
+  {
+    path: { type: "string", description: "Repository path" },
+    remote: { type: "string", description: "Remote name (default: all)" },
+    prune: { type: "boolean", description: "Prune deleted remote branches" },
+  },
+  [],
+  async ({ path, remote, prune }) => {
+    const args = ["fetch"];
+    if (prune) args.push("--prune");
+    if (remote) {
+      args.push(remote);
+    } else {
+      args.push("--all");
+    }
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_stash",
+  "Stash the changes in a dirty working directory.",
+  {
+    path: { type: "string", description: "Repository path" },
+    action: { type: "string", description: "Action: push, pop, list, drop, apply (default: push)" },
+    message: { type: "string", description: "Stash message (for push)" },
+  },
+  [],
+  async ({ path, action = "push", message }) => {
+    const args = ["stash", action];
+    if (action === "push" && message) args.push("-m", message);
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_reset",
+  "Reset current HEAD to the specified state.",
+  {
+    path: { type: "string", description: "Repository path" },
+    target: { type: "string", description: "Commit to reset to (default: HEAD)" },
+    mode: { type: "string", description: "Reset mode: soft, mixed, hard (default: mixed)" },
+    file: { type: "string", description: "File to unstage" },
+  },
+  [],
+  async ({ path, target, mode, file }) => {
+    const args = ["reset"];
+    if (mode) args.push(`--${mode}`);
+    if (target) args.push(target);
+    if (file) args.push("--", file);
+    return execGitCommand(args, path);
+  },
+);
+
+registerTool(
+  "git_show",
+  "Show various types of objects (commits, tags, etc.).",
+  {
+    path: { type: "string", description: "Repository path" },
+    object: { type: "string", description: "Object to show (commit, tag, etc.)" },
+    stat: { type: "boolean", description: "Show diffstat only" },
+  },
+  [],
+  async ({ path, object = "HEAD", stat }) => {
+    const args = ["show", object];
+    if (stat) args.push("--stat");
+    return execGitCommand(args, path);
+  },
+);
+
+// ============================================================================
+// Sub-Agent Cleanup
+// ============================================================================
+
+/**
+ * Wait for all running sub-agents to complete.
+ * Call this before exiting to ensure all async sub-agents finish.
+ */
+export async function waitForSubAgents(timeout: number = 60000): Promise<void> {
+  // All agents are now tmux-based (detached) - they survive process exit
+  const tmuxRunning = Array.from(subAgents.values()).filter((a) => a.status === "running" && a.tmuxSession);
+  if (tmuxRunning.length > 0) {
+    console.log(`[SubAgents] ${tmuxRunning.length} tmux sub-agent(s) still running (they will continue independently)`);
+  }
+}
+
+/**
+ * Terminate all running sub-agents immediately.
+ */
+export async function terminateAllSubAgents(): Promise<void> {
+  const running = Array.from(subAgents.values()).filter((a) => a.status === "running");
+  for (const agent of running) {
+    try {
+      if (agent.tmuxSession) {
+        // Kill tmux session for detached agents
+        const { execSync } = require("node:child_process");
+        const socketPath = getSubAgentSocketPath();
+        try {
+          execSync(`tmux -S "${socketPath}" kill-session -t "${agent.tmuxSession}" 2>/dev/null`, { stdio: "ignore" });
+        } catch {}
+      }
+      agent.status = "aborted";
+      agent.completedAt = Date.now();
+    } catch {}
+  }
+}
+
+// ============================================================================
+// Tool Executor
+// ============================================================================
+
+export async function executeTool(toolCall: ToolCall): Promise<ToolResult> {
+  const toolName = toolCall.function.name;
+  const handler = tools.get(toolName);
+
+  if (!handler) {
+    return {
+      success: false,
+      output: "",
+      error: `Unknown tool: ${toolName}`,
+    };
+  }
+
+  try {
+    // Handle empty arguments (LLM sometimes sends "" instead of "{}")
+    const argsString = toolCall.function.arguments?.trim() || "{}";
+    const rawArgs = JSON.parse(argsString || "{}");
+    const args = normalizeToolArgs(rawArgs);
+
+    // Run before hooks (async, non-blocking)
+    try {
+      const hookManager = getHookManager();
+      if (hookManager.isInitialized()) {
+        hookManager.runBeforeHook(toolName, args);
+      }
+    } catch {
+      // Silent failure - hooks should never block tool execution
+    }
+
+    // Execute the actual tool
+    const result = await handler(args);
+
+    // Run after hooks (async, non-blocking)
+    try {
+      const hookManager = getHookManager();
+      if (hookManager.isInitialized()) {
+        hookManager.runAfterHook(toolName, args, result);
+      }
+    } catch {
+      // Silent failure - hooks should never block tool execution
+    }
+
+    return result;
+  } catch (err: any) {
+    return {
+      success: false,
+      output: "",
+      error: `Failed to execute tool: ${err.message}`,
+    };
+  }
+}
+
+export async function executeTools(toolCalls: ToolCall[]): Promise<Map<string, ToolResult>> {
+  const results = new Map<string, ToolResult>();
+
+  // Execute tools in parallel
+  await Promise.all(
+    toolCalls.map(async (tc) => {
+      const result = await executeTool(tc);
+      results.set(tc.id, result);
+    }),
+  );
+
+  return results;
+}
+
+// For sub-agent compatibility (returns array format)
+export async function executeToolsArray(
+  toolCalls: Array<{
+    id: string;
+    function: { name: string; arguments: string };
+  }>,
+): Promise<Array<{ tool_call_id: string; content: string }>> {
+  const results: Array<{ tool_call_id: string; content: string }> = [];
+
+  for (const tc of toolCalls) {
+    const result = await executeTool(tc as ToolCall);
+    const content = result.success ? result.output : `Error: ${result.error || "Unknown error"}`;
+    results.push({ tool_call_id: tc.id, content });
+  }
+
+  return results;
+}

@@ -2,14 +2,14 @@
   "name": "clawd-app",
   "version": "0.1.0",
   "description": "Claw'd App - All-in-one desktop app: clawd-chat server + UI + worker manager",
-  "main": "dist/electron/main.js",
+  "main": "dist/electron/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
     "dev:ui": "cd packages/ui && bun run dev",
-    "dev:electron": "bun run build:electron && NODE_ENV=development electron dist/electron/main.js",
+    "dev:electron": "bun run build:electron && NODE_ENV=development electron dist/electron/main.cjs",
     "build:ui": "cd packages/ui && bun install && bun run build",
-    "build:electron": "cd electron && npx tsc -p tsconfig.json",
+    "build:electron": "cd electron && npx tsc -p tsconfig.json && cd ../dist/electron && mv main.js main.cjs && mv preload.js preload.cjs",
     "build:server": "mkdir -p dist/server && bun build src/index.ts --compile --minify --target=bun --outfile dist/server/clawd-app && rm -rf dist/server/ui && cp -r packages/ui/dist dist/server/ui",
     "build": "bun run build:ui && bun run build:server && bun run build:electron",
     "build:linux": "bun run build:ui && mkdir -p dist/server && bun build src/index.ts --compile --minify --target=bun-linux-x64 --outfile dist/server/clawd-app && rm -rf dist/server/ui && cp -r packages/ui/dist dist/server/ui && bun run build:electron",
@@ -39,3 +39,4 @@
   },
   "private": true
 }
+

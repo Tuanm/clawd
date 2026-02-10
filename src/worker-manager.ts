@@ -72,7 +72,6 @@ export class WorkerManager {
       model: agent.model,
       projectRoot: agent.project || this.config.projectRoot,
       chatApiUrl: this.config.chatApiUrl,
-      clawdBin: this.config.clawdBin,
       debug: this.config.debug,
       yolo: this.config.yolo,
     };
@@ -145,3 +144,4 @@ export class WorkerManager {
     return [];
   }
 }
+
