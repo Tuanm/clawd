@@ -39,4 +39,3 @@ export { PluginManager, createClawdChatPlugin } from "./plugins/index";
 export type { Plugin, PluginHooks, PluginContext, ClawdChatConfig } from "./plugins/index";
 
 export { setCurrentAgentId } from "./tools/tools";
-

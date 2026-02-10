@@ -11,7 +11,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentConfig } from "./agent/src/agent/agent";
 import { getToken } from "./agent/src/api/client";
-import { setSandboxProjectRoot, enableSandbox, setProjectHash } from "./agent/src/tools/tools";
+import { setProjectHash } from "./agent/src/tools/tools";
+import { initializeSandbox } from "./agent/src/utils/sandbox";
 import { setDebug } from "./agent/src/utils/debug";
 import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
 
@@ -345,10 +346,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
 
     try {
       // Initialize sandbox
-      if (!this.config.yolo) {
-        setSandboxProjectRoot(projectRoot);
-        enableSandbox(true);
-      }
+      await initializeSandbox(projectRoot, this.config.yolo);
 
       // Set project hash for data isolation
       setProjectHash(projectHash);
@@ -415,7 +413,9 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
       } finally {
         // Ensure agent is always cleaned up, even on error
         if (agent) {
-          try { await agent.close(); } catch {}
+          try {
+            await agent.close();
+          } catch {}
         }
       }
     } catch (error) {
@@ -472,4 +472,3 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
     console.log(`[Worker ${this.config.channel}:${this.config.agentId}] ${msg}`);
   }
 }
-

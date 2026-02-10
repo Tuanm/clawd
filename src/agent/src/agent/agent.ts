@@ -1659,4 +1659,3 @@ SUMMARY:`;
     // whose DB must stay open for the lifetime of the process
   }
 }
-

@@ -580,4 +580,3 @@ export class MCPManager extends EventEmitter {
     this.connections.clear();
   }
 }
-

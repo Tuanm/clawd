@@ -7,6 +7,15 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolCall } from "../api/client";
 import { getHookManager } from "../hooks/manager";
+import {
+  getSandboxProjectRoot,
+  setSandboxProjectRoot,
+  enableSandbox,
+  isSandboxEnabled,
+  isSandboxReady,
+  runInSandbox,
+  wrapCommandForSandbox,
+} from "../utils/sandbox";
 
 // ============================================================================
 // API Response Types
@@ -79,9 +88,8 @@ function normalizeToolArgs(args: Record<string, any>): Record<string, any> {
 // Path Security - Sandbox Restrictions
 // ============================================================================
 
-// Project root - defaults to cwd, can be overridden
-let sandboxProjectRoot: string = "";
-let sandboxEnabled: boolean = false;
+// Re-export sandbox functions used by other modules (index.ts, worker-loop.ts, etc.)
+export { setSandboxProjectRoot, getSandboxProjectRoot, enableSandbox } from "../utils/sandbox";
 
 // Project hash for data isolation (agents, jobs, etc.)
 // Set via --project-hash flag or auto-generated from SHA-256 of cwd
@@ -136,55 +144,6 @@ export function getProjectJobsDir(): string {
   return join(getProjectDir(), "jobs");
 }
 
-// Cached agent environment variables (loaded once at startup)
-let agentEnvCache: Record<string, string> | null = null;
-
-function loadAgentEnv(): Record<string, string> {
-  if (agentEnvCache !== null) return agentEnvCache;
-
-  agentEnvCache = {};
-  const home = process.env.HOME || "/home/user";
-  const agentEnvFile = `${home}/.clawd/.env`;
-
-  if (existsSync(agentEnvFile)) {
-    try {
-      const envContent = readFileSync(agentEnvFile, "utf-8");
-      for (const line of envContent.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
-        const eqIndex = trimmed.indexOf("=");
-        if (eqIndex > 0) {
-          const key = trimmed.slice(0, eqIndex).trim();
-          let value = trimmed.slice(eqIndex + 1).trim();
-          if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-            value = value.slice(1, -1);
-          }
-          agentEnvCache[key] = value;
-        }
-      }
-    } catch {
-      // Ignore parse errors
-    }
-  }
-
-  return agentEnvCache;
-}
-
-export function setSandboxProjectRoot(root: string) {
-  sandboxProjectRoot = resolve(root);
-}
-
-export function getSandboxProjectRoot(): string {
-  if (!sandboxProjectRoot) {
-    sandboxProjectRoot = process.cwd();
-  }
-  return sandboxProjectRoot;
-}
-
-export function enableSandbox(enabled: boolean = true) {
-  sandboxEnabled = enabled;
-}
-
 /**
  * Check if a file is a sensitive file that should be blocked
  */
@@ -211,7 +170,7 @@ function isSensitiveFile(targetPath: string): boolean {
  * - /tmp and subdirectories
  */
 function isPathAllowed(targetPath: string): boolean {
-  if (!sandboxEnabled) return true;
+  if (!isSandboxEnabled()) return true;
 
   const resolved = resolve(targetPath);
   const projectRoot = getSandboxProjectRoot();
@@ -244,215 +203,6 @@ function validatePath(targetPath: string, operation: string): string | null {
   }
 
   return null;
-}
-
-/**
- * Check if bwrap is available
- */
-let bwrapAvailable: boolean | null = null;
-function isBwrapAvailable(): boolean {
-  if (bwrapAvailable === null) {
-    try {
-      const { execSync } = require("node:child_process");
-      execSync("which bwrap", { stdio: "ignore" });
-      bwrapAvailable = true;
-    } catch {
-      bwrapAvailable = false;
-    }
-  }
-  return bwrapAvailable;
-}
-
-/**
- * Get path to static resolv.conf for sandbox DNS
- * Uses Cloudflare (1.1.1.1) and Google (8.8.8.8) DNS servers
- * Stored in /run/user/<uid>/ (tmpfs, per-user, auto-cleaned on logout)
- */
-function getSandboxResolvConf(): string {
-  const { writeFileSync, existsSync } = require("node:fs");
-  const uid = process.getuid?.() ?? 1000;
-  const runUserDir = `/run/user/${uid}`;
-  const resolvPath = `${runUserDir}/clawd-resolv.conf`;
-
-  // Fallback to /tmp if /run/user/<uid> doesn't exist
-  const actualPath = existsSync(runUserDir) ? resolvPath : "/tmp/clawd-sandbox-resolv.conf";
-
-  // Create static resolv.conf if it doesn't exist
-  if (!existsSync(actualPath)) {
-    const resolvContent = `# Clawd sandbox DNS configuration
-nameserver 1.1.1.1
-nameserver 8.8.8.8
-`;
-    writeFileSync(actualPath, resolvContent, { mode: 0o644 });
-  }
-
-  return actualPath;
-}
-
-/**
- * Get bwrap args for sandboxed execution
- */
-function getBwrapArgs(projectRoot: string, workDir?: string): string[] {
-  const home = process.env.HOME || "/home/clawd";
-  const sandboxResolvConf = getSandboxResolvConf();
-  const { existsSync, lstatSync, readlinkSync } = require("node:fs");
-  const { dirname } = require("node:path");
-
-  const args = [
-    // Essential system paths (read-only)
-    "--ro-bind",
-    "/usr",
-    "/usr",
-    "--ro-bind",
-    "/bin",
-    "/bin",
-    "--ro-bind",
-    "/lib",
-    "/lib",
-    "--ro-bind",
-    "/lib64",
-    "/lib64",
-    // Mount /etc
-    "--ro-bind",
-    "/etc",
-    "/etc",
-  ];
-
-  // Override resolv.conf with our static DNS
-  // Handle symlink case (e.g., WSL symlinks /etc/resolv.conf -> /mnt/wsl/resolv.conf)
-  try {
-    const resolvStat = lstatSync("/etc/resolv.conf");
-    if (resolvStat.isSymbolicLink()) {
-      // Get symlink target and create tmpfs at parent, then bind our file there
-      const target = readlinkSync("/etc/resolv.conf");
-      const parentDir = dirname(target);
-      args.push("--tmpfs", parentDir);
-      args.push("--ro-bind", sandboxResolvConf, target);
-    } else {
-      args.push("--ro-bind", sandboxResolvConf, "/etc/resolv.conf");
-    }
-  } catch {
-    // If we can't stat, try direct override
-    args.push("--ro-bind", sandboxResolvConf, "/etc/resolv.conf");
-  }
-
-  args.push(
-    "--dev",
-    "/dev",
-    "--proc",
-    "/proc",
-    // Empty /home first - prevents access to user data
-    "--tmpfs",
-    "/home",
-    // Writable paths - ONLY project and /tmp
-    "--bind",
-    projectRoot,
-    projectRoot,
-    "--bind",
-    "/tmp",
-    "/tmp",
-  );
-
-  // Bind common tool paths read-only (if they exist)
-  const toolPaths = [
-    `${home}/.bun`, // Bun
-    `${home}/.nvm`, // Node Version Manager
-    `${home}/.cargo`, // Rust/Cargo
-    `${home}/.deno`, // Deno
-    `${home}/.local`, // pip, pipx tools
-    `${home}/.clawd/.ssh`, // Agent SSH keys
-    `${home}/.clawd/.gitconfig`, // Agent git config
-    "/home/linuxbrew", // Homebrew on Linux
-  ];
-
-  for (const toolPath of toolPaths) {
-    if (existsSync(toolPath)) {
-      args.push("--ro-bind", toolPath, toolPath);
-    }
-  }
-
-  // Clear host environment and set only safe variables
-  args.push("--clearenv");
-
-  // Set minimal safe environment
-  const safeEnvVars: Record<string, string> = {
-    HOME: home,
-    USER: process.env.USER || "clawd",
-    PATH: `${home}/.bun/bin:${home}/.cargo/bin:${home}/.deno/bin:${home}/.local/bin:/usr/local/bin:/usr/bin:/bin`,
-    TERM: process.env.TERM || "xterm-256color",
-    LANG: process.env.LANG || "en_US.UTF-8",
-    SHELL: "/bin/bash",
-    // Git config: use agent-specific gitconfig (since /home is tmpfs, ~/.gitconfig doesn't exist)
-    GIT_CONFIG_GLOBAL: `${home}/.clawd/.gitconfig`,
-    // SSH config: use agent key, skip host key verification (non-interactive), ignore system known_hosts
-    GIT_SSH_COMMAND: `ssh -F /dev/null -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${home}/.clawd/.ssh/id_ed25519`,
-    // Prevent git from prompting for credentials or confirmations
-    GIT_TERMINAL_PROMPT: "0",
-    // Load cached agent .env vars
-    ...loadAgentEnv(),
-  };
-
-  for (const [key, value] of Object.entries(safeEnvVars)) {
-    args.push("--setenv", key, value);
-  }
-
-  // Security & working directory
-  args.push("--die-with-parent", "--chdir", workDir || projectRoot);
-
-  return args;
-}
-
-/**
- * Run a command in bwrap sandbox
- */
-function runInSandbox(
-  command: string,
-  args: string[],
-  options: { timeout?: number; cwd?: string } = {},
-): Promise<{
-  success: boolean;
-  stdout: string;
-  stderr: string;
-  code: number | null;
-}> {
-  const projectRoot = getSandboxProjectRoot();
-  const timeout = options.timeout || 30000;
-
-  return new Promise((resolve) => {
-    const bwrapArgs = [...getBwrapArgs(projectRoot, options.cwd), command, ...args];
-
-    const proc = spawn("bwrap", bwrapArgs);
-    let timedOut = false;
-
-    const timeoutId = setTimeout(() => {
-      timedOut = true;
-      proc.kill("SIGKILL");
-    }, timeout);
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout?.on("data", (data: Buffer) => {
-      stdout += data.toString();
-    });
-    proc.stderr?.on("data", (data: Buffer) => {
-      stderr += data.toString();
-    });
-
-    proc.on("close", (code) => {
-      clearTimeout(timeoutId);
-      if (timedOut) {
-        resolve({ success: false, stdout, stderr: `TIMEOUT: Command exceeded ${timeout / 1000}s`, code: null });
-        return;
-      }
-      resolve({ success: code === 0, stdout, stderr, code });
-    });
-
-    proc.on("error", (err) => {
-      clearTimeout(timeoutId);
-      resolve({ success: false, stdout: "", stderr: err.message, code: null });
-    });
-  });
 }
 
 // ============================================================================
@@ -542,8 +292,8 @@ registerTool(
   async ({ command, timeout = 30000, cwd }) => {
     let workDir = cwd ? resolve(cwd) : undefined;
 
-    // When sandbox enabled, use bubblewrap for kernel-level isolation
-    if (sandboxEnabled) {
+    // When sandbox enabled, use platform-specific isolation (bwrap on Linux, sandbox-exec on macOS)
+    if (isSandboxEnabled()) {
       const projectRoot = getSandboxProjectRoot();
       workDir = workDir || projectRoot;
 
@@ -551,18 +301,6 @@ registerTool(
       const cwdError = validatePath(workDir, "bash cwd");
       if (cwdError) {
         return { success: false, output: "", error: cwdError };
-      }
-
-      // Check if bwrap is available
-      try {
-        const { execSync } = require("node:child_process");
-        execSync("which bwrap", { stdio: "ignore" });
-      } catch {
-        return {
-          success: false,
-          output: "",
-          error: "SANDBOX RESTRICTION: bubblewrap (bwrap) not installed. " + "Install with: apt install bubblewrap",
-        };
       }
 
       // Block commands that try to access .env files (but allow .env.example)
@@ -577,59 +315,70 @@ registerTool(
         };
       }
 
-      // Build bwrap command using shared helper (includes tool paths like ~/.bun)
-      const bwrapArgs = [...getBwrapArgs(projectRoot, workDir), "bash", "-c", command];
-
       const sandboxNotice = `[SANDBOX MODE] You can ONLY access: ${projectRoot} and /tmp. All other paths are blocked.\n\n`;
 
-      return new Promise((resolve) => {
-        const proc = spawn("bwrap", bwrapArgs, { timeout });
-        let timedOut = false;
+      // Use kernel-level isolation (bwrap on Linux, sandbox-exec on macOS) if initialized
+      if (isSandboxReady()) {
+        try {
+          const wrappedCommand = await wrapCommandForSandbox(command, workDir);
+          return new Promise((resolve) => {
+            const proc = spawn("bash", ["-c", wrappedCommand], { timeout });
+            let timedOut = false;
 
-        const timeoutId = setTimeout(() => {
-          timedOut = true;
-          proc.kill("SIGKILL");
-        }, timeout);
+            const timeoutId = setTimeout(() => {
+              timedOut = true;
+              proc.kill("SIGKILL");
+            }, timeout);
 
-        let stdout = "";
-        let stderr = "";
+            let stdout = "";
+            let stderr = "";
 
-        proc.stdout?.on("data", (data: Buffer) => {
-          stdout += data.toString();
-        });
-        proc.stderr?.on("data", (data: Buffer) => {
-          stderr += data.toString();
-        });
-
-        proc.on("close", (code: number | null) => {
-          clearTimeout(timeoutId);
-          if (timedOut) {
-            resolve({
-              success: false,
-              output: stdout.trim(),
-              error:
-                `TIMEOUT: Command exceeded ${timeout / 1000}s limit. ` +
-                `For long-running tasks, use job_submit instead.`,
+            proc.stdout?.on("data", (data: Buffer) => {
+              stdout += data.toString();
             });
-            return;
-          }
-          const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
-          resolve({
-            success: code === 0,
-            output: sandboxNotice + (output.trim() || "(no output)"),
-            error: code !== 0 ? `Exit code: ${code}` : undefined,
-          });
-        });
+            proc.stderr?.on("data", (data: Buffer) => {
+              stderr += data.toString();
+            });
 
-        proc.on("error", (err) => {
-          clearTimeout(timeoutId);
-          resolve({
+            proc.on("close", (code: number | null) => {
+              clearTimeout(timeoutId);
+              if (timedOut) {
+                resolve({
+                  success: false,
+                  output: stdout.trim(),
+                  error:
+                    `TIMEOUT: Command exceeded ${timeout / 1000}s limit. ` +
+                    `For long-running tasks, use job_submit instead.`,
+                });
+                return;
+              }
+              const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
+              resolve({
+                success: code === 0,
+                output: sandboxNotice + (output.trim() || "(no output)"),
+                error: code !== 0 ? `Exit code: ${code}` : undefined,
+              });
+            });
+
+            proc.on("error", (err) => {
+              clearTimeout(timeoutId);
+              resolve({
+                success: false,
+                output: "",
+                error: `Sandbox error: ${err.message}`,
+              });
+            });
+          });
+        } catch (sandboxErr: any) {
+          return {
             success: false,
             output: "",
-            error: `Sandbox error: ${err.message}. Install bubblewrap: apt install bubblewrap`,
-          });
-        });
-      });
+            error: `Sandbox wrapping failed: ${sandboxErr.message}`,
+          };
+        }
+      }
+      // Fallback: sandbox enabled but kernel-level sandbox not initialized
+      // (e.g., missing dependencies). Still apply path validation above.
     }
 
     // Non-sandboxed mode - run directly
@@ -719,8 +468,8 @@ registerTool(
         return { success: false, output: "", error: pathError };
       }
 
-      // Use bwrap for sandbox mode
-      if (sandboxEnabled && isBwrapAvailable()) {
+      // Use sandbox for filesystem isolation
+      if (isSandboxReady()) {
         // Check if file/dir exists and get type
         const testResult = await runInSandbox("test", ["-e", resolvedPath]);
         if (!testResult.success) {
@@ -846,8 +595,8 @@ registerTool(
         return { success: false, output: "", error: pathError };
       }
 
-      // Use bwrap for sandbox mode
-      if (sandboxEnabled && isBwrapAvailable()) {
+      // Use sandbox for filesystem isolation
+      if (isSandboxReady()) {
         // Read file content
         const readResult = await runInSandbox("cat", [resolvedPath]);
         if (!readResult.success) {
@@ -965,8 +714,8 @@ registerTool(
         return { success: false, output: "", error: pathError };
       }
 
-      // Use bwrap for sandbox mode
-      if (sandboxEnabled && isBwrapAvailable()) {
+      // Use sandbox for filesystem isolation
+      if (isSandboxReady()) {
         // Check if file exists
         const existsResult = await runInSandbox("test", ["-e", resolvedPath]);
         if (existsResult.success) {
@@ -1044,11 +793,11 @@ registerTool(
     if (context) args.push("-C", String(context));
     args.push(pattern, resolvedPath);
 
-    // Use bwrap for sandbox mode
-    if (sandboxEnabled && isBwrapAvailable()) {
+    // Use sandbox for filesystem isolation
+    if (isSandboxReady()) {
       const result = await runInSandbox("rg", args, { timeout: 30000 });
 
-      // Check if rg is not installed (bwrap returns code 1 + "execvp" in stderr)
+      // Check if rg is not installed (sandbox returns code 1 + "execvp" in stderr)
       if (result.stderr.includes("execvp") || result.stderr.includes("No such file")) {
         // Fallback to grep inside sandbox
         const grepArgs = ["-rn", "--color=never"];
@@ -1167,8 +916,8 @@ registerTool(
   async ({ pattern, path = "." }) => {
     const resolvedPath = resolve(path);
 
-    // Use bwrap for sandbox mode
-    if (sandboxEnabled && isBwrapAvailable()) {
+    // Use sandbox for filesystem isolation
+    if (isSandboxReady()) {
       const result = await runInSandbox("find", [resolvedPath, "-name", pattern.replace("**/", "")], {
         timeout: 30000,
       });
@@ -1358,16 +1107,11 @@ registerTool(
     try {
       const { tmuxJobManager } = await import("../jobs/tmux-manager");
 
-      // When sandbox enabled, wrap the command in bwrap for security
+      // When sandbox enabled, wrap the command with platform-specific sandboxing
       // (tmux-manager runs commands directly; sandboxing is enforced here at tool level)
       let sandboxedCommand = command;
-      if (sandboxEnabled && isBwrapAvailable()) {
-        const projectRoot = getSandboxProjectRoot();
-        const bwrapArgs = getBwrapArgs(projectRoot, projectRoot);
-        // Build bwrap command string: bwrap <args> bash -c '<command>'
-        const escapedCommand = command.replace(/'/g, "'\\''");
-        sandboxedCommand = bwrapArgs.map((a: string) => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-        sandboxedCommand = `bwrap ${sandboxedCommand} bash -c '${escapedCommand}'`;
+      if (isSandboxReady()) {
+        sandboxedCommand = await wrapCommandForSandbox(command);
       }
 
       const jobId = tmuxJobManager.submit(name, sandboxedCommand);
@@ -2309,7 +2053,7 @@ async function spawnTmuxSubAgent(task: string, name: string): Promise<ToolResult
   // Get sandbox root (detect git root or use cwd)
   const sandboxRoot = getSandboxProjectRoot();
 
-  // Run clawd directly in tmux (no bwrap sandbox wrapping)
+  // Run clawd directly in tmux (no sandbox wrapping)
   const clawdCmd = `${baseClawdCmd} 2>&1 | tee -a "${logFile}"`;
 
   // Dedicated tmux socket for sub-agents (project-scoped)
@@ -2840,10 +2584,10 @@ registerTool(
 
 /**
  * Execute a git command inside the sandbox
- * Uses agent-specific git/ssh config from ~/.clawd/ (set via bwrap --setenv)
+ * Uses agent-specific git/ssh config from ~/.clawd/ (set via sandbox env)
  */
 function execGitCommand(args: string[], cwd?: string): Promise<{ success: boolean; output: string; error?: string }> {
-  // Build git command - env vars are already set by bwrap
+  // Build git command - env vars are set by sandbox
   const gitCmd = `GIT_TERMINAL_PROMPT=0 git --no-pager ${args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`;
 
   // Run inside sandbox

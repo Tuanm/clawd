@@ -9,7 +9,8 @@ import { Agent, type AgentConfig } from "./agent/agent";
 import { getToken } from "./api/client";
 import { getSessionManager } from "./session/manager";
 import { MCPManager } from "./mcp/client";
-import { setSandboxProjectRoot, enableSandbox, tools, toolDefinitions, setProjectHash } from "./tools/tools";
+import { tools, toolDefinitions, setProjectHash } from "./tools/tools";
+import { initializeSandbox } from "./utils/sandbox";
 import type { ToolDefinition } from "./api/client";
 import { API_URL, API_PATH } from "./api/config";
 import { setDebug } from "./utils/debug";
@@ -21,17 +22,12 @@ import { homedir } from "node:os";
 // Sandbox Initialization
 // ============================================================================
 
-function initSandbox(yolo: boolean) {
+async function initSandbox(yolo: boolean) {
   // Enable sandbox unless --yolo
   // Sub-agents inherit their cwd from parent (set during spawn), so they
   // automatically get sandboxed to the correct project root.
-  if (!yolo) {
-    const projectRoot = process.cwd();
-    setSandboxProjectRoot(projectRoot);
-    enableSandbox(true);
-    console.error(`[Sandbox] Enabled, restricted to: ${projectRoot}, /tmp`);
-    console.error(`[Sandbox] Use --yolo to disable restrictions`);
-  }
+  const projectRoot = process.cwd();
+  await initializeSandbox(projectRoot, yolo);
 }
 
 // ============================================================================
@@ -1811,7 +1807,7 @@ async function main() {
   }
 
   // Initialize sandbox (enabled by default unless --yolo)
-  initSandbox(args.yolo);
+  await initSandbox(args.yolo);
 
   // Initialize project hash for data isolation
   if (args.projectHash) {
@@ -2013,5 +2009,3 @@ async function main() {
 }
 
 main().catch(console.error);
-
-
