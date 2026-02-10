@@ -18,7 +18,7 @@ import { mcpManager } from "../mcp/client";
 import { estimateTokens, estimateMessagesTokens } from "../memory/memory";
 import { getSkillManager } from "../skills/manager";
 import { PluginManager, type Plugin } from "../plugins/manager";
-import { toolPluginManager, type ToolPlugin } from "../tools/plugin";
+import { ToolPluginManager, type ToolPlugin } from "../tools/plugin";
 import { parseToolArguments, formatToolResult } from "../core/loop";
 import { initializeHooks, destroyHooks } from "../hooks/manager";
 
@@ -199,6 +199,7 @@ export class Agent {
   private abortController: AbortController | null = null;
   private _cancelled = false;
   private plugins: PluginManager | null = null;
+  private toolPluginManager: ToolPluginManager = new ToolPluginManager();
   private agentId: string;
   private tokenLimitWarning: number;
   private tokenLimitCritical: number;
@@ -418,7 +419,7 @@ SUMMARY:`;
 
     // Register tool plugin if provided
     if (toolPluginInstance) {
-      toolPluginManager.register(toolPluginInstance);
+      this.toolPluginManager.register(toolPluginInstance);
     }
 
     // Add MCP servers provided by this plugin
@@ -478,7 +479,7 @@ SUMMARY:`;
     tools.push(...mcpTools);
 
     // Add plugin tools (from ToolPlugin interface)
-    const pluginTools = toolPluginManager.getToolDefinitions();
+    const pluginTools = this.toolPluginManager.getToolDefinitions();
     tools.push(...pluginTools);
 
     return tools;
@@ -510,9 +511,9 @@ SUMMARY:`;
         output: mcpResult.success ? JSON.stringify(mcpResult.result) : "",
         error: mcpResult.error,
       };
-    } else if (toolPluginManager.hasPluginTool(toolCall.function.name)) {
+    } else if (this.toolPluginManager.hasPluginTool(toolCall.function.name)) {
       // Plugin tool (from ToolPlugin interface)
-      const pluginResult = await toolPluginManager.executeTool(toolCall.function.name, transformedArgs, {
+      const pluginResult = await this.toolPluginManager.executeTool(toolCall.function.name, transformedArgs, {
         agentId: this.agentId,
         cwd: getSandboxProjectRoot(),
       });
@@ -1635,6 +1636,11 @@ SUMMARY:`;
         await this.plugins.shutdown();
       } catch {}
     }
+
+    // Destroy tool plugins (per-agent instance, avoids stale global state)
+    try {
+      await this.toolPluginManager.destroy();
+    } catch {}
 
     // Close connections
     this.client.close();

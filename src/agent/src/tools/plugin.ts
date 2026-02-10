@@ -232,5 +232,5 @@ export class ToolPluginManager {
   }
 }
 
-// Global plugin manager instance
-export const toolPluginManager = new ToolPluginManager();
+// Note: ToolPluginManager is instantiated per-agent (as an Agent instance property)
+// to avoid global state issues when agents are created/destroyed in worker loops.
