@@ -826,4 +826,3 @@ export function parseMentions(text: string): string[] {
   }
   return mentions;
 }
-

@@ -103,7 +103,3 @@ Examples:
   clawd-app --no-browser --debug
 `);
 }
-
-
-
-

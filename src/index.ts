@@ -12,6 +12,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { registerAgentRoutes } from "./api/agents";
 import { loadConfig, validateConfig } from "./config";
+import { getEmbeddedAsset, hasEmbeddedUI, embeddedUIFileCount, embeddedUITotalSize } from "./embedded-ui";
 import { WorkerManager } from "./worker-manager";
 
 // Load configuration from CLI args + env
@@ -108,7 +109,10 @@ const handleAgentRoute = registerAgentRoutes(db, workerManager);
 // UI static file serving
 // ============================================================================
 
-const getUiDir = (): string => {
+const getUiDir = (): string | null => {
+  // If embedded UI is available, no disk directory needed
+  if (hasEmbeddedUI) return null;
+
   if (process.env.UI_DIR && existsSync(process.env.UI_DIR)) {
     return process.env.UI_DIR;
   }
@@ -128,8 +132,8 @@ const getUiDir = (): string => {
   const cwdPath = join(process.cwd(), "dist", "ui");
   if (existsSync(cwdPath)) return cwdPath;
 
-  console.warn("[clawd-app] Warning: UI directory not found");
-  return execAdjacentUi;
+  console.warn("[clawd-app] Warning: UI directory not found and no embedded UI available");
+  return null;
 };
 
 const UI_DIR = getUiDir();
@@ -158,7 +162,30 @@ const fileCache = new Map<string, { content: Buffer; mtime: number }>();
 const CACHE_MAX_SIZE = 50 * 1024 * 1024;
 let cacheSize = 0;
 
-function serveStatic(filePath: string): Response | null {
+/**
+ * Serve a static UI file.
+ * Priority: embedded assets (compiled binary) -> filesystem (dev mode)
+ */
+function serveStatic(urlPath: string): Response | null {
+  // 1. Try embedded assets first (available in compiled binary)
+  if (hasEmbeddedUI) {
+    const asset = getEmbeddedAsset(urlPath);
+    if (asset) {
+      const isImmutable = !urlPath.endsWith(".html");
+      return new Response(asset.content, {
+        headers: {
+          "Content-Type": asset.mimeType,
+          "Cache-Control": isImmutable ? "public, max-age=31536000, immutable" : "no-cache",
+          ...corsHeaders,
+        },
+      });
+    }
+    return null;
+  }
+
+  // 2. Fallback: serve from filesystem (dev mode or external ui/ dir)
+  if (!UI_DIR) return null;
+  const filePath = join(UI_DIR, urlPath);
   if (!existsSync(filePath)) return null;
   const stat = statSync(filePath);
   if (stat.isDirectory()) return null;
@@ -260,12 +287,11 @@ const server = Bun.serve({
     }
 
     // Static UI files
-    const filePath = join(UI_DIR, path);
-    let response = serveStatic(filePath);
+    let response = serveStatic(path);
     if (response) return response;
-    response = serveStatic(join(filePath, "index.html"));
+    response = serveStatic(path + "/index.html");
     if (response) return response;
-    response = serveStatic(join(UI_DIR, "index.html"));
+    response = serveStatic("/index.html");
     if (response) return response;
 
     return handleRequest(req, url, path);
@@ -310,7 +336,7 @@ async function handleRequest(req: Request, url?: URL, path?: string) {
         clients: getClientCount(),
         workers: workerManager.getStatus().length,
         mcp: "/mcp",
-        ui: existsSync(UI_DIR) ? "bundled" : "not-built",
+        ui: hasEmbeddedUI ? "embedded" : UI_DIR && existsSync(UI_DIR) ? "filesystem" : "not-found",
       });
     }
 
@@ -1046,7 +1072,7 @@ console.log(`
 +---------------------------------------------------------------+
 |  HTTP:      http://localhost:${PORT}                             |
 |  WebSocket: ws://localhost:${PORT}/ws                            |
-|  UI:        ${existsSync(UI_DIR) ? UI_DIR : "(not found)"}
+|  UI:        ${hasEmbeddedUI ? `embedded (${embeddedUIFileCount} files, ${(embeddedUITotalSize / 1024 / 1024).toFixed(1)}MB)` : UI_DIR ? UI_DIR : "(not found)"}
 |  Agent:     in-process
 |  Project:   ${config.projectRoot}
 +---------------------------------------------------------------+
@@ -1105,7 +1131,3 @@ process.on("SIGINT", async () => {
   await workerManager.stop();
   process.exit(0);
 });
-
-
-
-

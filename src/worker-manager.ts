@@ -144,4 +144,3 @@ export class WorkerManager {
     return [];
   }
 }
-
