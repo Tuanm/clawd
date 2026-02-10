@@ -385,30 +385,39 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
       };
 
       // Create agent
-      const agent = new Agent(token, agentConfig);
+      let agent: Agent | null = null;
+      try {
+        agent = new Agent(token, agentConfig);
 
-      // Create and register clawd-chat plugin for chat integration
-      const pluginConfig: ClawdChatConfig = {
-        type: "clawd-chat",
-        apiUrl: chatApiUrl,
-        channel,
-        agentId,
-      };
+        // Create and register clawd-chat plugin for chat integration
+        const pluginConfig: ClawdChatConfig = {
+          type: "clawd-chat",
+          apiUrl: chatApiUrl,
+          channel,
+          agentId,
+        };
 
-      const plugin = {
-        plugin: createClawdChatPlugin(pluginConfig),
-        toolPlugin: createClawdChatToolPlugin(pluginConfig),
-      };
-      await agent.usePlugin(plugin);
+        const plugin = {
+          plugin: createClawdChatPlugin(pluginConfig),
+          toolPlugin: createClawdChatToolPlugin(pluginConfig),
+        };
+        await agent.usePlugin(plugin);
 
-      // Run the agent with the prompt
-      const result = await agent.run(prompt, sessionName);
+        // Run the agent with the prompt
+        const result = await agent.run(prompt, sessionName);
 
-      this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
+        this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
 
-      await agent.close();
+        await agent.close();
+        agent = null; // Prevent double-close in finally
 
-      return { success: true, output: result.content };
+        return { success: true, output: result.content };
+      } finally {
+        // Ensure agent is always cleaned up, even on error
+        if (agent) {
+          try { await agent.close(); } catch {}
+        }
+      }
     } catch (error) {
       this.log(`Failed to run agent: ${error}`);
       return { success: false, output: String(error) };
@@ -463,3 +472,4 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
     console.log(`[Worker ${this.config.channel}:${this.config.agentId}] ${msg}`);
   }
 }
+

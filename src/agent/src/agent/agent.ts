@@ -14,7 +14,7 @@ import { CopilotClient, type Message, type ToolCall, type CompletionRequest } fr
 import { getSessionManager, SessionManager, type Session } from "../session/manager";
 import { CheckpointManager, type Checkpoint } from "../session/checkpoint";
 import { toolDefinitions, executeTools, type ToolResult, getSandboxProjectRoot } from "../tools/tools";
-import { mcpManager } from "../mcp/client";
+import { MCPManager } from "../mcp/client";
 import { estimateTokens, estimateMessagesTokens } from "../memory/memory";
 import { getSkillManager } from "../skills/manager";
 import { PluginManager, type Plugin } from "../plugins/manager";
@@ -200,6 +200,7 @@ export class Agent {
   private _cancelled = false;
   private plugins: PluginManager | null = null;
   private toolPluginManager: ToolPluginManager = new ToolPluginManager();
+  private mcpManager: MCPManager = new MCPManager();
   private agentId: string;
   private tokenLimitWarning: number;
   private tokenLimitCritical: number;
@@ -427,7 +428,7 @@ SUMMARY:`;
       const servers = mainPlugin.getMcpServers();
       for (const server of servers) {
         try {
-          await mcpManager.addServer({
+          await this.mcpManager.addServer({
             name: server.name,
             url: server.url,
             transport: server.transport || "http",
@@ -475,7 +476,7 @@ SUMMARY:`;
     const tools = [...toolDefinitions];
 
     // Add MCP tools
-    const mcpTools = mcpManager.getToolDefinitions();
+    const mcpTools = this.mcpManager.getToolDefinitions();
     tools.push(...mcpTools);
 
     // Add plugin tools (from ToolPlugin interface)
@@ -505,7 +506,7 @@ SUMMARY:`;
 
     if (toolCall.function.name.startsWith("mcp_")) {
       // MCP tool
-      const mcpResult = await mcpManager.executeMCPTool(toolCall.function.name, transformedArgs);
+      const mcpResult = await this.mcpManager.executeMCPTool(toolCall.function.name, transformedArgs);
       result = {
         success: mcpResult.success,
         output: mcpResult.success ? JSON.stringify(mcpResult.result) : "",
@@ -1642,8 +1643,20 @@ SUMMARY:`;
       await this.toolPluginManager.destroy();
     } catch {}
 
+    // Disconnect MCP servers (per-agent instance, avoids stale global state)
+    try {
+      await this.mcpManager.disconnectAll();
+    } catch {}
+
+    // Destroy hooks (global, reset for next agent)
+    try {
+      await destroyHooks();
+    } catch {}
+
     // Close connections
     this.client.close();
-    this.sessions.close();
+    // NOTE: Do NOT close this.sessions -- it's a shared singleton
+    // whose DB must stay open for the lifetime of the process
   }
 }
+

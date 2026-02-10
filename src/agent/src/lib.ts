@@ -29,7 +29,7 @@ export type { Job as TmuxJob, JobStatus as TmuxJobStatus } from "./jobs/tmux-man
 export { SubAgent, spawnAgent } from "./subagent/subagent";
 export type { SubAgentConfig, SubAgentResult, SubAgentStatus } from "./subagent/subagent";
 
-export { MCPManager, mcpManager } from "./mcp/client";
+export { MCPManager } from "./mcp/client";
 export type { MCPServerConfig, MCPTool, MCPResource, MCPPrompt } from "./mcp/client";
 
 export { SkillManager, getSkillManager } from "./skills/manager";
@@ -39,3 +39,4 @@ export { PluginManager, createClawdChatPlugin } from "./plugins/index";
 export type { Plugin, PluginHooks, PluginContext, ClawdChatConfig } from "./plugins/index";
 
 export { setCurrentAgentId } from "./tools/tools";
+

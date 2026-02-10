@@ -581,5 +581,3 @@ export class MCPManager extends EventEmitter {
   }
 }
 
-// Singleton
-export const mcpManager = new MCPManager();

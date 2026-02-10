@@ -8,7 +8,7 @@
 import { Agent, type AgentConfig } from "./agent/agent";
 import { getToken } from "./api/client";
 import { getSessionManager } from "./session/manager";
-import { mcpManager } from "./mcp/client";
+import { MCPManager } from "./mcp/client";
 import { setSandboxProjectRoot, enableSandbox, tools, toolDefinitions, setProjectHash } from "./tools/tools";
 import type { ToolDefinition } from "./api/client";
 import { API_URL, API_PATH } from "./api/config";
@@ -160,6 +160,9 @@ interface MCPConfigFile {
     }
   >;
 }
+
+// CLI MCP manager instance (only used in CLI mode, not shared with Agent)
+const mcpManager = new MCPManager();
 
 async function loadMCPConfigs(): Promise<void> {
   const CLAWD_DIR = join(homedir(), ".clawd");
@@ -2010,3 +2013,5 @@ async function main() {
 }
 
 main().catch(console.error);
+
+
