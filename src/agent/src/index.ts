@@ -11,7 +11,7 @@ import { getSessionManager } from "./session/manager";
 import { mcpManager } from "./mcp/client";
 import { setSandboxProjectRoot, enableSandbox, tools, toolDefinitions, setProjectHash } from "./tools/tools";
 import type { ToolDefinition } from "./api/client";
-import { API_URL } from "./api/config";
+import { API_URL, API_PATH } from "./api/config";
 import { setDebug } from "./utils/debug";
 import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -668,6 +668,7 @@ function debugLogJson(category: string, label: string, obj: any) {
 
 const PROXY_CONFIG = {
   API_URL: API_URL,
+  API_PATH: API_PATH,
   HEADERS: {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -1289,7 +1290,7 @@ async function handleProxyRequest(req: Request, token: string): Promise<Response
         tools: openaiReq.tools?.length ? `${openaiReq.tools.length} functions` : undefined,
       });
 
-      const upstreamResponse = await fetch(`${PROXY_CONFIG.API_URL}/v1/chat/completions`, {
+      const upstreamResponse = await fetch(`${PROXY_CONFIG.API_URL}${PROXY_CONFIG.API_PATH}`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -1353,7 +1354,7 @@ async function handleProxyRequest(req: Request, token: string): Promise<Response
   }
 
   // Chat completions - OpenAI format
-  if (path === "/v1/chat/completions" || path === "/chat/completions") {
+  if (path === PROXY_CONFIG.API_PATH) {
     if (req.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method not allowed" }), {
         status: 405,
@@ -1382,7 +1383,7 @@ async function handleProxyRequest(req: Request, token: string): Promise<Response
         tools: requestBody.tools?.length ? `${requestBody.tools.length} functions` : undefined,
       });
 
-      const upstreamResponse = await fetch(`${PROXY_CONFIG.API_URL}/v1/chat/completions`, {
+      const upstreamResponse = await fetch(`${PROXY_CONFIG.API_URL}${PROXY_CONFIG.API_PATH}`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,

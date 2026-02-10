@@ -1,4 +1,7 @@
-export const API_URL =
-  process.env.COPILOT_API_URL || "https://api.githubcopilot.com";
+export const COPILOT_API_URL = "https://api.githubcopilot.com";
 
-console.log(`[COPILOT_API_URL] ${API_URL}`);
+export const API_URL = process.env.COPILOT_API_URL || COPILOT_API_URL;
+
+export const API_PATH = API_URL === COPILOT_API_URL ? "/chat/completions" : "/v1/chat/completions";
+
+console.log(`[OpenAI Server] ${API_URL}`);

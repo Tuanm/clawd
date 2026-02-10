@@ -4,7 +4,7 @@
 
 import http2 from "node:http2";
 import { EventEmitter } from "node:events";
-import { API_URL } from "./config";
+import { API_URL, API_PATH, COPILOT_API_URL } from "./config";
 
 // ============================================================================
 // Types
@@ -240,7 +240,7 @@ export class CopilotClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const headers = {
         ":method": "POST",
-        ":path": "/v1/chat/completions",
+        ":path": API_PATH,
         Authorization: `Bearer ${this.token}`,
         "X-Interaction-Id": crypto.randomUUID(),
         ...BASE_HEADERS,
@@ -323,7 +323,7 @@ export class CopilotClient extends EventEmitter {
 
     const headers = {
       ":method": "POST",
-      ":path": "/v1/chat/completions",
+      ":path": API_PATH,
       Authorization: `Bearer ${this.token}`,
       "X-Interaction-Id": crypto.randomUUID(),
       ...BASE_HEADERS,

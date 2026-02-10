@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { ATTACHMENTS_DIR, db, generateId } from "../database";
 
 // Cache directory for optimized images
