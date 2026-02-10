@@ -2,14 +2,18 @@
  * Cross-platform sandbox utilities
  *
  * Linux: bubblewrap (bwrap) - deny-by-default namespace isolation
- * macOS: sandbox-exec with Seatbelt profiles - deny-by-default policy
+ * macOS: sandbox-exec with Seatbelt profiles - allow-default, deny-writes approach
  *
- * Security: Only projectRoot and /tmp are writable. Only necessary system
- * paths (/usr, /bin, /lib, /etc) are readable. Environment is wiped clean.
+ * Security model:
+ * - Write access: only projectRoot, /tmp, and ~/.clawd
+ * - Read access (Linux): only explicitly mounted system paths
+ * - Read access (macOS): system-wide reads allowed (required by dyld), home dir blocked
+ * - Home directory: blocked except for specific tool dirs (.bun, .cargo, .clawd, etc.)
+ * - Environment: wiped clean and rebuilt with only safe variables
  */
 
 import { spawn, execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { resolve, join, dirname } from "node:path";
 
@@ -260,95 +264,136 @@ function getBwrapPrefix(options: BwrapOptions): string {
 // ============================================================================
 
 /**
- * Generate a deny-default Seatbelt profile for macOS sandbox-exec.
+ * Resolve a path to its real path on macOS (handles /tmp -> /private/tmp, etc.)
+ * Returns the original path if realpath fails (e.g., path doesn't exist yet).
+ */
+function safeRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * Generate a Seatbelt profile for macOS sandbox-exec.
  *
- * Same security posture as bwrap:
- * - Deny everything by default
- * - Allow read-only access to system paths
- * - Allow read-write access only to projectRoot and /tmp
- * - Allow network access (agents need git, API calls, etc.)
+ * Strategy: allow-default with deny-writes (like Gemini CLI's "permissive" profile).
+ *
+ * A pure (deny default) approach is impractical on macOS because it requires
+ * enumerating all dyld shared cache paths, system frameworks, mach services,
+ * sysctl names, etc. -- any of which can change between macOS versions and
+ * cause mysterious "Abort trap: 6" crashes.
+ *
+ * Instead we:
+ * 1. (allow default) -- allow reads and process execution
+ * 2. (deny file-write*) -- deny all writes by default
+ * 3. Explicitly allow writes only to projectRoot and /tmp
+ *
+ * This matches the security intent: agents can READ system files (needed for
+ * running commands) but can only WRITE to the project directory and temp files.
+ *
+ * NOTE: On macOS, /tmp is a symlink to /private/tmp, /etc to /private/etc, etc.
+ * Seatbelt operates on real paths, so we must use /private/tmp in the profile.
+ * We use sandbox-exec -D params to pass resolved paths into the profile.
  */
 function getMacOSSandboxProfile(): string {
-  const home = process.env.HOME || homedir();
+  return `(version 1)
 
-  const profile = `(version 1)
-(deny default)
+; Allow everything by default (reads, process exec, mach lookups, etc.)
+(allow default)
 
-; Process execution
-(allow process-exec)
-(allow process-fork)
-(allow sysctl-read)
-(allow signal (target self))
-(allow mach-lookup)
-(allow mach-register)
-(allow ipc-posix-shm-read-data)
-(allow ipc-posix-shm-write-data)
-(allow ipc-posix-shm-read-metadata)
-(allow ipc-posix-shm-write-unlink)
-
-; Read-only system paths (minimal set)
-(allow file-read*
-  (subpath "/usr")
-  (subpath "/bin")
-  (subpath "/sbin")
-  (subpath "/Library")
-  (subpath "/System")
-  (subpath "/etc")
-  (subpath "/var")
-  (subpath "/dev")
-  (subpath "/private/etc")
-  (subpath "/private/var"))
-
-; Tool paths (read-only)
-(allow file-read*
-  (subpath "${home}/.bun")
-  (subpath "${home}/.nvm")
-  (subpath "${home}/.cargo")
-  (subpath "${home}/.deno")
-  (subpath "${home}/.local")
-  (subpath "${home}/.clawd"))
+; ====================================================================
+; DENY all file writes -- then selectively re-enable for safe paths
+; ====================================================================
+(deny file-write*)
 
 ; Project root (read-write)
-(allow file-read* file-write*
-  (subpath "${sandboxProjectRoot}"))
+(allow file-write*
+  (subpath (param "PROJECT_DIR")))
 
-; /tmp (read-write)
-(allow file-read* file-write*
-  (subpath "/tmp")
-  (subpath "/private/tmp"))
+; /tmp (read-write) -- use real path (/private/tmp on macOS)
+(allow file-write*
+  (subpath (param "TMP_DIR")))
 
-; Allow network (agents need git, web fetch, APIs)
-(allow network*)
+; Tool config dirs that may need write access
+(allow file-write*
+  (subpath (param "CLAWD_DIR")))
 
-; Allow pseudo-terminals
-(allow file-read* file-write*
-  (literal "/dev/tty")
-  (subpath "/dev/ttys")
-  (literal "/dev/ptmx")
-  (subpath "/dev/fd"))
-
-; Allow reading /dev/urandom, /dev/random
-(allow file-read*
-  (literal "/dev/urandom")
-  (literal "/dev/random")
+; Allow writes to /dev pseudo-devices
+(allow file-write*
+  (literal "/dev/stdout")
+  (literal "/dev/stderr")
   (literal "/dev/null")
-  (literal "/dev/zero"))
-`;
+  (literal "/dev/ptmx")
+  (regex #"^/dev/ttys[0-9]*$"))
 
-  return profile;
+; ====================================================================
+; DENY reads to sensitive home directory paths
+; (allow default already permits reads, but we restrict sensitive areas)
+; ====================================================================
+; Block reading SSH keys, cloud credentials, browser data, etc.
+; Note: we re-allow specific tool paths below
+(deny file-read*
+  (subpath (param "HOME_DIR"))
+  (subpath (param "PRIVATE_HOME_DIR")))
+
+; Re-allow reading specific tool directories under home
+(allow file-read*
+  (subpath (param "CLAWD_DIR"))
+  (subpath (param "PROJECT_DIR")))
+
+; Re-allow common development tool directories (read-only)
+; These exist under HOME_DIR but need to be readable for toolchains
+(allow file-read*
+  (subpath (string-append (param "HOME_DIR") "/.bun"))
+  (subpath (string-append (param "HOME_DIR") "/.nvm"))
+  (subpath (string-append (param "HOME_DIR") "/.cargo"))
+  (subpath (string-append (param "HOME_DIR") "/.deno"))
+  (subpath (string-append (param "HOME_DIR") "/.local"))
+  (subpath (string-append (param "HOME_DIR") "/.npm"))
+  (subpath (string-append (param "HOME_DIR") "/.config"))
+  (subpath (string-append (param "HOME_DIR") "/.gitconfig")))
+
+; Allow all network access (agents need git, web fetch, APIs)
+(allow network*)
+`;
 }
 
 /**
  * Build the command prefix for macOS sandboxed execution.
- * Uses env -i for clean environment + sandbox-exec for filesystem isolation.
+ * Uses env -i for clean environment + sandbox-exec with -D params for path injection.
  */
 function getMacOSCommandPrefix(workDir: string): string {
   const profile = getMacOSSandboxProfile();
   const profilePath = "/tmp/clawd-sandbox.sb";
   writeFileSync(profilePath, profile, { mode: 0o644 });
 
+  const home = process.env.HOME || homedir();
+
+  // Resolve real paths -- macOS symlinks /tmp -> /private/tmp, /etc -> /private/etc
+  const realProjectDir = safeRealpath(sandboxProjectRoot);
+  const realTmpDir = safeRealpath("/tmp");
+  const realHomeDir = safeRealpath(home);
+  const realClawdDir = safeRealpath(join(home, ".clawd"));
+
+  // /Users is the real path; /private/Users doesn't exist, but handle it for safety
+  const privateHomeDir = realHomeDir.startsWith("/private")
+    ? realHomeDir
+    : `/private${realHomeDir}`;
+
   const envPrefix = getEnvPrefix();
-  return `${envPrefix} sandbox-exec -f ${profilePath} bash -c`;
+
+  // Use -D params to inject resolved paths into the Seatbelt profile
+  const dParams = [
+    `-D PROJECT_DIR=${realProjectDir}`,
+    `-D TMP_DIR=${realTmpDir}`,
+    `-D HOME_DIR=${realHomeDir}`,
+    `-D PRIVATE_HOME_DIR=${privateHomeDir}`,
+    `-D CLAWD_DIR=${realClawdDir}`,
+  ].join(" ");
+
+  return `${envPrefix} sandbox-exec ${dParams} -f ${profilePath} bash -c`;
 }
 
 // ============================================================================
@@ -556,3 +601,7 @@ function shellEscape(str: string): string {
   }
   return `'${str.replace(/'/g, "'\\''")}'`;
 }
+
+
+
+
