@@ -24,35 +24,6 @@ if (!validateConfig(config)) {
 }
 
 // ============================================================================
-// Daemon Mode - spawn background process and exit
-// ============================================================================
-if (config.daemon) {
-  // Build command line args without -d/--daemon
-  const args = Bun.argv.slice(2).filter((arg) => arg !== "-d" && arg !== "--daemon");
-  const argsStr = args.map((a) => `"${a}"`).join(" ");
-
-  // Use shell with nohup and & to properly daemonize
-  // Redirect stdout/stderr to /dev/null and use setsid for new session
-  const cmd = `nohup "${Bun.argv[0]}" "${Bun.argv[1]}" ${argsStr} > /dev/null 2>&1 & echo $!`;
-
-  const result = Bun.spawnSync(["sh", "-c", cmd], {
-    env: { ...process.env },
-  });
-
-  const pid = result.stdout.toString().trim();
-
-  if (pid && /^\d+$/.test(pid)) {
-    console.log(`[clawd-app] Started in background (PID: ${pid})`);
-    console.log(`[clawd-app] To stop: kill ${pid}`);
-    process.exit(0);
-  } else {
-    console.error("[clawd-app] Failed to start daemon");
-    console.error(result.stderr.toString());
-    process.exit(1);
-  }
-}
-
-// ============================================================================
 // Import clawd-chat server modules
 // ============================================================================
 import {
@@ -1159,4 +1130,3 @@ process.on("SIGINT", async () => {
   await workerManager.stop();
   process.exit(0);
 });
-

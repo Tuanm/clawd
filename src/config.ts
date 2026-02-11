@@ -20,8 +20,6 @@ export interface AppConfig {
   debug: boolean;
   /** Disable sandbox + unlimited iterations for agents */
   yolo: boolean;
-  /** Run in daemon (background) mode */
-  daemon: boolean;
 }
 
 /** Parse CLI arguments and build config */
@@ -32,7 +30,6 @@ export function loadConfig(): AppConfig {
     help?: boolean;
     debug?: boolean;
     yolo?: boolean;
-    daemon?: boolean;
   };
 
   try {
@@ -44,7 +41,6 @@ export function loadConfig(): AppConfig {
         help: { type: "boolean", short: "h" },
         debug: { type: "boolean" },
         yolo: { type: "boolean" },
-        daemon: { type: "boolean", short: "d" },
       },
       allowPositionals: false,
     });
@@ -75,7 +71,6 @@ export function loadConfig(): AppConfig {
     projectRoot: process.cwd(),
     debug: values.debug || false,
     yolo: values.yolo || false,
-    daemon: values.daemon || false,
   };
 }
 
@@ -91,7 +86,6 @@ Usage: clawd-app [options]
 
 Options:
   -p, --port <port>            Server port (default: 3456)
-  -d, --daemon                 Run in background (daemon mode)
   --no-browser                 Don't open browser on startup
   --yolo                       Disable sandbox + unlimited iterations for agents
   --debug                      Enable debug logging
@@ -100,7 +94,6 @@ Options:
 Examples:
   clawd-app
   clawd-app --port 8080
-  clawd-app --daemon
   clawd-app --no-browser --debug
 `);
 }
