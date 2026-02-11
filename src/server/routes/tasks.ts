@@ -11,7 +11,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 // Use same DATA_DIR as chat.db
-const DATA_DIR = process.env.DATA_DIR || join(process.env.HOME || "/tmp", ".config", "clawd");
+const DATA_DIR = process.env.DATA_DIR || join(process.env.HOME || "/tmp", ".clawd", "data");
 
 // ============================================================================
 // Types

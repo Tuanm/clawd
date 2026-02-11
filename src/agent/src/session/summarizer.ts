@@ -49,7 +49,13 @@ export class SessionSummarizer {
   private intervalId?: NodeJS.Timeout;
   private isRunning = false;
 
-  constructor(config: Partial<SummarizerConfig> & { channel: string; agentId: string; serverUrl: string }) {
+  constructor(
+    config: Partial<SummarizerConfig> & {
+      channel: string;
+      agentId: string;
+      serverUrl: string;
+    },
+  ) {
     this.config = {
       messageThreshold: 50,
       keepRecentCount: 20,
@@ -139,7 +145,10 @@ export class SessionSummarizer {
       });
 
       if (response.ok) {
-        const data = (await response.json()) as { ok: boolean; messages: any[] };
+        const data = (await response.json()) as {
+          ok: boolean;
+          messages: any[];
+        };
         if (data.ok && data.messages) {
           // Sort by timestamp (oldest first for summarization)
           return data.messages.sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
@@ -298,7 +307,7 @@ Summary:`;
       // Call our chat/completions API with provided token
       const client = new CopilotClient(this.config.token);
       const response = await client.complete({
-        model: this.config.model || "claude-sonnet-4", // Use same model as agent
+        model: this.config.model || "claude-sonnet-4.5", // Use same model as agent
         messages: [{ role: "user", content: prompt }],
         temperature: 0.3,
         max_tokens: 2000,

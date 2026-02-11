@@ -273,8 +273,8 @@ async function handleRequest(req: Request, token: string): Promise<Response> {
       JSON.stringify({
         object: "list",
         data: [
-          { id: "claude-sonnet-4", object: "model", owned_by: "anthropic" },
-          { id: "claude-opus-4", object: "model", owned_by: "anthropic" },
+          { id: "claude-sonnet-4.5", object: "model", owned_by: "anthropic" },
+          { id: "claude-opus-4.5", object: "model", owned_by: "anthropic" },
           { id: "gpt-4.1", object: "model", owned_by: "openai" },
           { id: "gpt-4o", object: "model", owned_by: "openai" },
           { id: "o3-mini", object: "model", owned_by: "openai" },

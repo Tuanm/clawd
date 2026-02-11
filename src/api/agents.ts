@@ -18,9 +18,21 @@ import type { WorkerManager } from "../worker-manager";
 
 /** Available AI models */
 const AVAILABLE_MODELS = [
-  { id: "claude-sonnet-4.5", name: "Claude Sonnet 4", description: "Fast and capable" },
-  { id: "claude-opus-4", name: "Claude Opus 4", description: "Most intelligent" },
-  { id: "claude-haiku-4", name: "Claude Haiku 4", description: "Fastest, lightweight" },
+  {
+    id: "claude-sonnet-4.5",
+    name: "Claude Sonnet 4.5",
+    description: "Fast and capable",
+  },
+  {
+    id: "claude-opus-4.5",
+    name: "Claude Opus 4.5",
+    description: "Most intelligent",
+  },
+  {
+    id: "claude-haiku-4.5",
+    name: "Claude Haiku 4.5",
+    description: "Fastest, lightweight",
+  },
 ];
 
 /** Initialize the channel_agents table in the database */
@@ -149,7 +161,14 @@ export function registerAgentRoutes(
 
         return json({
           ok: true,
-          agent: { channel, agent_id, model: agentModel, project: agentProject, active: true, running: true },
+          agent: {
+            channel,
+            agent_id,
+            model: agentModel,
+            project: agentProject,
+            active: true,
+            running: true,
+          },
         });
       });
     }

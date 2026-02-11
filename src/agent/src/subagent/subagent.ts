@@ -118,8 +118,14 @@ class SubAgentToolExecutor implements ToolExecutor {
             parameters: {
               type: "object",
               properties: {
-                task: { type: "string", description: "The task for the sub-agent" },
-                name: { type: "string", description: "Optional name for tracking" },
+                task: {
+                  type: "string",
+                  description: "The task for the sub-agent",
+                },
+                name: {
+                  type: "string",
+                  description: "Optional name for tracking",
+                },
                 toolCategory: {
                   type: "string",
                   description:
@@ -156,7 +162,9 @@ class SubAgentToolExecutor implements ToolExecutor {
             description: "Get the result of a completed sub-agent",
             parameters: {
               type: "object",
-              properties: { agent_id: { type: "string", description: "Sub-agent ID" } },
+              properties: {
+                agent_id: { type: "string", description: "Sub-agent ID" },
+              },
               required: ["agent_id"],
             },
           },
@@ -195,7 +203,11 @@ class SubAgentToolExecutor implements ToolExecutor {
     const { args, error } = parseToolArguments(toolCall.function.arguments);
 
     if (error) {
-      return { tool_call_id: toolCall.id, content: `Error: ${error}`, success: false };
+      return {
+        tool_call_id: toolCall.id,
+        content: `Error: ${error}`,
+        success: false,
+      };
     }
 
     let content: string;
@@ -247,7 +259,7 @@ export class SubAgent extends EventEmitter {
     this.id = randomUUID();
     this.parentId = config.parentId;
     this.name = config.name || `agent-${this.id.slice(0, 8)}`;
-    this.model = config.model || "claude-sonnet-4-20250514";
+    this.model = config.model || "claude-sonnet-4.5";
     this.maxIterations = config.maxIterations || 20;
     this.depth = config.depth || 0;
     this.pluginManager = new PluginManager(config.plugins);

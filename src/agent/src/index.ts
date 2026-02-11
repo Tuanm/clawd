@@ -478,7 +478,7 @@ ${c.bold}Session Management:${c.reset}
 
 ${c.bold}Models:${c.reset}
   ${c.green}Free:${c.reset}      gpt-4.1, gpt-5-mini
-  ${c.yellow}Standard:${c.reset}  claude-sonnet-4, gpt-5, gpt-5.1, gpt-5.2
+  ${c.yellow}Standard:${c.reset}  claude-sonnet-4.5, gpt-5, gpt-5.1, gpt-5.2
   ${c.magenta}Premium:${c.reset}   claude-opus-4.6 (3x), claude-opus-4.5 (3x)
   ${c.dim}Economy:${c.reset}   claude-haiku-4.5 (0.33x)
 
@@ -1217,8 +1217,8 @@ async function handleProxyRequest(req: Request, token: string): Promise<Response
       JSON.stringify({
         object: "list",
         data: [
-          { id: "claude-sonnet-4", object: "model", owned_by: "anthropic" },
-          { id: "claude-opus-4", object: "model", owned_by: "anthropic" },
+          { id: "claude-sonnet-4.5", object: "model", owned_by: "anthropic" },
+          { id: "claude-opus-4.5", object: "model", owned_by: "anthropic" },
           { id: "gpt-4.1", object: "model", owned_by: "openai" },
           { id: "gpt-4o", object: "model", owned_by: "openai" },
           { id: "o3-mini", object: "model", owned_by: "openai" },
@@ -1489,18 +1489,18 @@ ${c.bold}Examples:${c.reset}
   # OpenAI format
   curl http://localhost:3456/v1/chat/completions \\
     -H "Content-Type: application/json" \\
-    -d '{"model":"claude-sonnet-4","messages":[{"role":"user","content":"Hello"}]}'
+    -d '{"model":"claude-sonnet-4.5","messages":[{"role":"user","content":"Hello"}]}'
 
   # Anthropic format
   curl http://localhost:3456/v1/messages \\
     -H "Content-Type: application/json" \\
-    -d '{"model":"claude-sonnet-4","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+    -d '{"model":"claude-sonnet-4.5","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
 
   # With API key authentication
   curl http://localhost:3456/v1/chat/completions \\
     -H "Content-Type: application/json" \\
     -H "Authorization: Bearer your-api-key" \\
-    -d '{"model":"claude-sonnet-4","messages":[{"role":"user","content":"Hello"}]}'
+    -d '{"model":"claude-sonnet-4.5","messages":[{"role":"user","content":"Hello"}]}'
 `);
 }
 

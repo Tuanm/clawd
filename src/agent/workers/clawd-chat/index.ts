@@ -131,7 +131,7 @@ Examples:
   clawd-worker --channel chat-task --daemon
   clawd-worker --channel chat-task --yolo --debug
   clawd-worker --channel chat-task --project-root /path/to/project
-  clawd-worker -c chat-task -p . -i MyAgent -m claude-sonnet-4
+  clawd-worker -c chat-task -p . -i MyAgent -m claude-sonnet-4.5
 `);
   process.exit(0);
 }
@@ -182,7 +182,9 @@ ${cmd}
 
   // Kill existing session if any
   try {
-    execSync(`tmux kill-session -t "${sessionName}" 2>/dev/null`, { stdio: "ignore" });
+    execSync(`tmux kill-session -t "${sessionName}" 2>/dev/null`, {
+      stdio: "ignore",
+    });
   } catch {}
 
   // Start tmux session

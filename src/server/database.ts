@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-const DATA_DIR = process.env.DATA_DIR || join(process.env.HOME || "/tmp", ".config", "clawd");
+const DATA_DIR = process.env.DATA_DIR || join(process.env.HOME || "/tmp", ".clawd", "data");
 const DB_PATH = join(DATA_DIR, "chat.db");
 const ATTACHMENTS_DIR = join(DATA_DIR, "attachments");
 

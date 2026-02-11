@@ -172,7 +172,7 @@ CLAIMING TASKS:
 const MODEL_TOKEN_LIMITS: Record<string, number> = {
   "claude-opus-4.6": 200000,
   "claude-opus-4.5": 200000,
-  "claude-sonnet-4": 200000,
+  "claude-sonnet-4.5": 200000,
   "claude-haiku-4.5": 200000,
   "gpt-5": 128000,
   "gpt-5.1": 128000,

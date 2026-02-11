@@ -107,7 +107,7 @@ Examples:
   clawds --id leader --caps "planning" --yolo --chat
   clawds --id backend --caps "db,api" --yolo --auto
   clawds --id tester --caps "testing" -p "Run all tests"
-  clawds --id backend -m claude-sonnet-4 -p "Optimize queries"
+  clawds --id backend -m claude-sonnet-4.5 -p "Optimize queries"
 
 Agents on the same project auto-discover each other via the shared bus
 and can exchange messages using agent_send, agent_discover, and more.
