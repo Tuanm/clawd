@@ -145,31 +145,34 @@ function validateProjectPath(
 // ============================================================================
 
 /**
- * Cache for gitignore checking per project root
+ * Cache for gitignore checking per git root (can be project root, submodule, or nested repo)
  */
 const gitignoreCache = new Map<string, Set<string>>();
 
 /**
- * Get the set of git-tracked files for a project.
- * Uses `git ls-files` to get all tracked files, which respects .gitignore.
- * Results are cached per project root.
+ * Check if a directory is a git repository (has .git file or directory).
+ * For submodules, .git is a file pointing to the parent's .git/modules folder.
  */
-function getGitTrackedFiles(projectRoot: string): Set<string> | null {
+function isGitRepository(dirPath: string): boolean {
+  const gitPath = join(dirPath, ".git");
+  return existsSync(gitPath);
+}
+
+/**
+ * Get the set of git-tracked files for a specific git root.
+ * Uses `git ls-files` to get all tracked files, which respects .gitignore.
+ * Results are cached per git root.
+ */
+function getGitTrackedFilesForRoot(gitRoot: string): Set<string> | null {
   // Check cache first
-  if (gitignoreCache.has(projectRoot)) {
-    return gitignoreCache.get(projectRoot)!;
+  if (gitignoreCache.has(gitRoot)) {
+    return gitignoreCache.get(gitRoot)!;
   }
 
   try {
-    // Check if this is a git repository
-    const gitDir = join(projectRoot, ".git");
-    if (!existsSync(gitDir)) {
-      return null; // Not a git repo
-    }
-
     // Get list of tracked files
     const output = execSync("git ls-files", {
-      cwd: projectRoot,
+      cwd: gitRoot,
       encoding: "utf-8",
       timeout: 5000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -181,12 +184,60 @@ function getGitTrackedFiles(projectRoot: string): Set<string> | null {
         .split("\n")
         .filter((f) => f),
     );
-    gitignoreCache.set(projectRoot, files);
+    gitignoreCache.set(gitRoot, files);
     return files;
   } catch {
     // Git command failed, return null to fall back to default behavior
     return null;
   }
+}
+
+/**
+ * Get the set of git-tracked files for a project.
+ * Uses `git ls-files` to get all tracked files, which respects .gitignore.
+ * Results are cached per project root.
+ */
+function getGitTrackedFiles(projectRoot: string): Set<string> | null {
+  // Check if this is a git repository
+  if (!isGitRepository(projectRoot)) {
+    return null; // Not a git repo
+  }
+  return getGitTrackedFilesForRoot(projectRoot);
+}
+
+/**
+ * Determine the git context for a folder being listed.
+ * Returns:
+ * - { type: 'git', trackedFiles, gitRoot, prefix } if folder is inside a git repo
+ * - { type: 'nested-git', trackedFiles, gitRoot } if folder IS a nested git repo (submodule or separate repo)
+ * - { type: 'none' } if not in any git repo
+ */
+function getGitContextForFolder(
+  projectRoot: string,
+  folderRelativePath: string,
+): {
+  type: "git" | "nested-git" | "none";
+  trackedFiles: Set<string> | null;
+  gitRoot?: string;
+  prefix?: string;
+} {
+  const folderFullPath = folderRelativePath ? join(projectRoot, folderRelativePath) : projectRoot;
+
+  // Check if THIS folder is a git repo (submodule or nested repo)
+  if (folderRelativePath && isGitRepository(folderFullPath)) {
+    // This folder has its own .git - treat it as a separate repo
+    const trackedFiles = getGitTrackedFilesForRoot(folderFullPath);
+    return { type: "nested-git", trackedFiles, gitRoot: folderFullPath };
+  }
+
+  // Check if project root is a git repo
+  if (isGitRepository(projectRoot)) {
+    const trackedFiles = getGitTrackedFilesForRoot(projectRoot);
+    return { type: "git", trackedFiles, gitRoot: projectRoot, prefix: folderRelativePath };
+  }
+
+  // Not in any git repo
+  return { type: "none", trackedFiles: null };
 }
 
 /**
@@ -553,9 +604,6 @@ export function registerAgentRoutes(
       const projectRoot = agent.project;
 
       try {
-        // Get git-tracked files for gitignore-aware filtering
-        const trackedFiles = getGitTrackedFiles(projectRoot);
-
         interface TreeNode {
           name: string;
           type: "file" | "dir";
@@ -564,7 +612,21 @@ export function registerAgentRoutes(
           children?: TreeNode[];
         }
 
-        function buildTree(dirPath: string, relativePath: string, depth: number): TreeNode[] {
+        /**
+         * Build tree recursively, handling nested git repos at each level.
+         * @param dirPath - Full path to directory
+         * @param relativePath - Path relative to projectRoot
+         * @param depth - How many levels deep to recurse
+         * @param currentGitTrackedFiles - Tracked files from the current git context (null = use fallback)
+         * @param gitRelativePath - Path relative to the current git root (for filtering)
+         */
+        function buildTree(
+          dirPath: string,
+          relativePath: string,
+          depth: number,
+          currentGitTrackedFiles: Set<string> | null,
+          gitRelativePath: string = "",
+        ): TreeNode[] {
           if (depth <= 0) return [];
 
           try {
@@ -572,28 +634,45 @@ export function registerAgentRoutes(
             const result: TreeNode[] = [];
 
             for (const entry of entries) {
+              // Path relative to project root (used for response and sensitive check)
               const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+              const fullPath = join(dirPath, entry.name);
 
-              // Use gitignore-aware filtering
-              if (!shouldShowInTree(projectRoot, relPath, entry.isDirectory(), trackedFiles)) {
+              // Path relative to current git root (used for git tracking check)
+              const entryGitRelPath = gitRelativePath ? `${gitRelativePath}/${entry.name}` : entry.name;
+
+              // Use gitignore-aware filtering with path relative to git root
+              if (!shouldShowInTree(projectRoot, entryGitRelPath, entry.isDirectory(), currentGitTrackedFiles)) {
                 continue;
               }
 
-              // Also skip sensitive files in tree view
+              // Also skip sensitive files in tree view (use project-relative path)
               if (isSensitivePath(relPath)) {
                 continue;
               }
 
-              const fullPath = join(dirPath, entry.name);
-
               if (entry.isDirectory()) {
+                // Check if this directory is a nested git repo (submodule or separate repo)
+                let childGitTrackedFiles = currentGitTrackedFiles;
+                let childGitRelativePath = entryGitRelPath;
+
+                if (isGitRepository(fullPath)) {
+                  // This folder has its own .git - get its tracked files
+                  // Reset the git-relative path since we're in a new git root
+                  childGitTrackedFiles = getGitTrackedFilesForRoot(fullPath);
+                  childGitRelativePath = "";
+                }
+
                 // If we can recurse (depth > 1), include children
                 // Otherwise, set children to undefined for lazy loading
                 result.push({
                   name: entry.name,
                   type: "dir",
                   path: relPath,
-                  children: depth > 1 ? buildTree(fullPath, relPath, depth - 1) : undefined,
+                  children:
+                    depth > 1
+                      ? buildTree(fullPath, relPath, depth - 1, childGitTrackedFiles, childGitRelativePath)
+                      : undefined,
                 });
               } else if (entry.isFile()) {
                 try {
@@ -620,7 +699,9 @@ export function registerAgentRoutes(
           }
         }
 
-        const tree = buildTree(projectRoot, "", 3); // Max depth of 3 initially
+        // Get initial git tracked files from project root
+        const rootGitTrackedFiles = getGitTrackedFiles(projectRoot);
+        const tree = buildTree(projectRoot, "", 3, rootGitTrackedFiles, ""); // Max depth of 3 initially
         return json({ ok: true, root: projectRoot, tree });
       } catch (error) {
         return json({ ok: false, error: String(error) }, 500);
@@ -657,21 +738,24 @@ export function registerAgentRoutes(
       const fullPath = validation.fullPath;
 
       try {
-        // Get git-tracked files for gitignore-aware filtering
-        const trackedFiles = getGitTrackedFiles(projectRoot);
+        // Get git context for this specific folder (handles submodules and nested repos)
+        const gitContext = getGitContextForFolder(projectRoot, relativePath);
 
         const entries = readdirSync(fullPath, { withFileTypes: true });
         const result: any[] = [];
 
         for (const entry of entries) {
+          // For nested git repos, the relative path is just the entry name (relative to the nested git root)
+          // For regular git repos, use the full relative path from project root
           const entryRelPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+          const entryPathForFiltering = gitContext.type === "nested-git" ? entry.name : entryRelPath;
 
-          // Use gitignore-aware filtering
-          if (!shouldShowInTree(projectRoot, entryRelPath, entry.isDirectory(), trackedFiles)) {
+          // Use gitignore-aware filtering with the appropriate tracked files
+          if (!shouldShowInTree(projectRoot, entryPathForFiltering, entry.isDirectory(), gitContext.trackedFiles)) {
             continue;
           }
 
-          // Skip sensitive files
+          // Skip sensitive files (always check full relative path)
           if (isSensitivePath(entryRelPath)) {
             continue;
           }
