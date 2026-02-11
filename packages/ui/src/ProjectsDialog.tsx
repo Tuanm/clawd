@@ -216,6 +216,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
   const [fileLoading, setFileLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [projectRoot, setProjectRoot] = useState<string>("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Load agents when dialog opens
   useEffect(() => {
@@ -466,12 +467,30 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
 
           {/* Main content area */}
           {agents.length > 0 && (
-            <div className="projects-main">
+            <div className="projects-main" style={{ position: "relative" }}>
+              {/* Expand button when sidebar is collapsed */}
+              {sidebarCollapsed && (
+                <button className="projects-expand-btn" onClick={() => setSidebarCollapsed(false)} title="Show sidebar">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </button>
+              )}
+
               {/* Left sidebar - file tree */}
-              <div className="projects-sidebar">
+              <div className={`projects-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
                 {projectRoot && (
                   <div className="projects-root-path" title={projectRoot}>
-                    {projectRoot.split("/").pop() || projectRoot}
+                    <span className="projects-root-name">{projectRoot.split("/").pop() || projectRoot}</span>
+                    <button
+                      className="projects-sidebar-toggle"
+                      onClick={() => setSidebarCollapsed(true)}
+                      title="Hide sidebar"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polyline points="15 18 9 12 15 6" />
+                      </svg>
+                    </button>
                   </div>
                 )}
                 {loading && <div className="projects-loading">Loading...</div>}
@@ -496,7 +515,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
               </div>
 
               {/* Right panel - file content */}
-              <div className="projects-content">
+              <div className="projects-content" style={{ marginLeft: sidebarCollapsed ? "32px" : "0" }}>
                 {fileLoading && <div className="projects-content-loading">Loading file...</div>}
                 {!fileLoading && !selectedFile && (
                   <div className="projects-content-empty">Select a file to view its content</div>

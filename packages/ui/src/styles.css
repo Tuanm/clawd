@@ -4286,7 +4286,7 @@ textarea {
 
 .projects-dialog {
   width: min(95vw, 1200px);
-  height: min(90vh, 800px);
+  height: min(95vh, 900px);
   display: flex;
   flex-direction: column;
 }
@@ -4326,6 +4326,74 @@ textarea {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.projects-root-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.projects-sidebar-toggle {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: hsl(var(--text-dim));
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+}
+
+.projects-sidebar-toggle:hover {
+  background: hsl(var(--bg-highlight));
+  color: hsl(var(--text));
+}
+
+/* Collapsed sidebar state */
+.projects-sidebar.collapsed {
+  width: 0;
+  min-width: 0;
+  border-right: none;
+  overflow: hidden;
+}
+
+.projects-sidebar.collapsed .projects-root-path,
+.projects-sidebar.collapsed .projects-tree,
+.projects-sidebar.collapsed .projects-loading,
+.projects-sidebar.collapsed .projects-error,
+.projects-sidebar.collapsed .projects-empty {
+  display: none;
+}
+
+/* Expand button shown when sidebar is collapsed */
+.projects-expand-btn {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 32px;
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8px;
+  border: none;
+  background: hsl(var(--bg-dim) / 0.8);
+  border-right: 1px solid hsl(var(--border-dim));
+  color: hsl(var(--text-dim));
+  cursor: pointer;
+}
+
+.projects-expand-btn:hover {
+  background: hsl(var(--bg-highlight));
+  color: hsl(var(--text));
 }
 
 .projects-tree {
