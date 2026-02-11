@@ -489,6 +489,64 @@ export function isSandboxEnabled(): boolean {
 }
 
 // ============================================================================
+// Path Validation
+// ============================================================================
+
+/**
+ * Validate that a working directory is within allowed boundaries.
+ * Security: This is a defense-in-depth check that runs BEFORE sandbox wrapping.
+ * The sandbox itself provides kernel-level enforcement, but this catches
+ * invalid paths early with clear error messages.
+ *
+ * Allowed paths:
+ * - Within projectRoot (the agent's assigned project directory)
+ * - Within /tmp (for temporary files)
+ *
+ * Security considerations:
+ * - Uses realpath resolution to prevent symlink traversal attacks
+ * - Normalizes paths to prevent ../ traversal
+ * - Fails closed (throws on any validation error)
+ *
+ * @param cwd - The working directory to validate
+ * @param projectRoot - The agent's project root
+ * @throws Error if cwd is outside allowed boundaries
+ */
+function validateWorkingDirectory(cwd: string, projectRoot: string): void {
+  // Resolve to absolute path, normalizing any ../ sequences
+  let resolvedCwd: string;
+  try {
+    // Use resolve first (works even if path doesn't exist yet)
+    resolvedCwd = resolve(cwd);
+
+    // If path exists, also verify via realpath to catch symlink attacks
+    if (existsSync(cwd)) {
+      const realCwd = realpathSync(cwd);
+      // If realpath differs significantly from resolved path, it's a symlink
+      // that might be trying to escape. Use the realpath for validation.
+      resolvedCwd = realCwd;
+    }
+  } catch (err) {
+    // If we can't resolve the path, fail closed
+    throw new Error(`SANDBOX SECURITY: Cannot resolve working directory "${cwd}": ${err}`);
+  }
+
+  // Normalize projectRoot too
+  const resolvedProjectRoot = resolve(projectRoot);
+
+  // Check if cwd is within allowed boundaries
+  const isWithinProjectRoot = resolvedCwd === resolvedProjectRoot || resolvedCwd.startsWith(`${resolvedProjectRoot}/`);
+  const isWithinTmp = resolvedCwd === "/tmp" || resolvedCwd.startsWith("/tmp/");
+
+  if (!isWithinProjectRoot && !isWithinTmp) {
+    throw new Error(
+      `SANDBOX SECURITY: Working directory "${cwd}" (resolved: "${resolvedCwd}") is outside allowed boundaries. ` +
+        `Allowed: ${resolvedProjectRoot} or /tmp. ` +
+        `This is a security restriction to prevent unauthorized file system access.`,
+    );
+  }
+}
+
+// ============================================================================
 // Command Wrapping
 // ============================================================================
 
@@ -501,6 +559,7 @@ export function isSandboxEnabled(): boolean {
  * @param command - The shell command to wrap
  * @param cwd - Working directory (defaults to project root)
  * @returns The wrapped command string ready for shell execution
+ * @throws Error if cwd is outside allowed boundaries
  */
 export async function wrapCommandForSandbox(command: string, cwd?: string): Promise<string> {
   if (!isSandboxReady()) {
@@ -509,6 +568,10 @@ export async function wrapCommandForSandbox(command: string, cwd?: string): Prom
 
   const projectRoot = getSandboxProjectRoot();
   const workDir = cwd || projectRoot;
+
+  // SECURITY: Validate working directory before sandbox wrapping
+  // This is defense-in-depth - the sandbox also enforces boundaries at kernel level
+  validateWorkingDirectory(workDir, projectRoot);
   const plat = detectPlatform();
   const escapedCmd = command.replace(/'/g, "'\\''");
 
