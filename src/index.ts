@@ -30,14 +30,16 @@ if (config.daemon) {
   // Build command line args without -d/--daemon
   const args = Bun.argv.slice(2).filter((arg) => arg !== "-d" && arg !== "--daemon");
 
-  // Spawn detached background process
-  const proc = Bun.spawn([Bun.argv[0], Bun.argv[1], ...args], {
+  // Use nohup to properly daemonize the process
+  // This ensures the process survives after parent exits
+  const proc = Bun.spawn(["nohup", Bun.argv[0], Bun.argv[1], ...args], {
     stdio: ["ignore", "ignore", "ignore"],
     env: { ...process.env },
   });
 
-  // Detach from parent - unref() not available in Bun, but setting stdio to ignore
-  // and not awaiting the process should allow the parent to exit
+  // Unref to allow parent to exit immediately
+  proc.unref();
+
   console.log(`[clawd-app] Started in background (PID: ${proc.pid})`);
   console.log(`[clawd-app] To stop: kill ${proc.pid}`);
   process.exit(0);
