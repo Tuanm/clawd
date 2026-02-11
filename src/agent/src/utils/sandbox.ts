@@ -507,12 +507,13 @@ export async function wrapCommandForSandbox(command: string, cwd?: string): Prom
     return command;
   }
 
-  const workDir = cwd || sandboxProjectRoot;
+  const projectRoot = getSandboxProjectRoot();
+  const workDir = cwd || projectRoot;
   const plat = detectPlatform();
   const escapedCmd = command.replace(/'/g, "'\\''");
 
   if (plat === "linux") {
-    const bwrapPrefix = getBwrapPrefix({ projectRoot: sandboxProjectRoot, workDir });
+    const bwrapPrefix = getBwrapPrefix({ projectRoot, workDir });
     return `${bwrapPrefix} bash -c '${escapedCmd}'`;
   } else if (plat === "macos") {
     const prefix = getMacOSCommandPrefix(workDir);
