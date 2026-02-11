@@ -29,20 +29,27 @@ if (!validateConfig(config)) {
 if (config.daemon) {
   // Build command line args without -d/--daemon
   const args = Bun.argv.slice(2).filter((arg) => arg !== "-d" && arg !== "--daemon");
+  const argsStr = args.map((a) => `"${a}"`).join(" ");
 
-  // Use nohup to properly daemonize the process
-  // This ensures the process survives after parent exits
-  const proc = Bun.spawn(["nohup", Bun.argv[0], Bun.argv[1], ...args], {
-    stdio: ["ignore", "ignore", "ignore"],
+  // Use shell with nohup and & to properly daemonize
+  // Redirect stdout/stderr to /dev/null and use setsid for new session
+  const cmd = `nohup "${Bun.argv[0]}" "${Bun.argv[1]}" ${argsStr} > /dev/null 2>&1 & echo $!`;
+
+  const result = Bun.spawnSync(["sh", "-c", cmd], {
     env: { ...process.env },
   });
 
-  // Unref to allow parent to exit immediately
-  proc.unref();
+  const pid = result.stdout.toString().trim();
 
-  console.log(`[clawd-app] Started in background (PID: ${proc.pid})`);
-  console.log(`[clawd-app] To stop: kill ${proc.pid}`);
-  process.exit(0);
+  if (pid && /^\d+$/.test(pid)) {
+    console.log(`[clawd-app] Started in background (PID: ${pid})`);
+    console.log(`[clawd-app] To stop: kill ${pid}`);
+    process.exit(0);
+  } else {
+    console.error("[clawd-app] Failed to start daemon");
+    console.error(result.stderr.toString());
+    process.exit(1);
+  }
 }
 
 // ============================================================================
@@ -1152,3 +1159,4 @@ process.on("SIGINT", async () => {
   await workerManager.stop();
   process.exit(0);
 });
+
