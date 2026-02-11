@@ -1130,4 +1130,3 @@ process.on("SIGINT", async () => {
   await workerManager.stop();
   process.exit(0);
 });
-

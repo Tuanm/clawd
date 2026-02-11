@@ -8,10 +8,10 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Agent, type AgentConfig } from "./agent/src/agent/agent";
 import { getToken } from "./agent/src/api/client";
-import { setProjectHash } from "./agent/src/tools/tools";
+import { setProjectHash, runWithAgentContext } from "./agent/src/tools/tools";
 import { initializeSandbox } from "./agent/src/utils/sandbox";
 import { setDebug } from "./agent/src/utils/debug";
 import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
@@ -349,87 +349,104 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
     const { chatApiUrl, channel, agentId, model, projectRoot } = this.config;
 
     const projectHash = `${channel}_${agentId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const resolvedProjectRoot = resolve(projectRoot);
 
     this.log(`Running agent in-process: session=${sessionName}, project-hash=${projectHash}`);
 
-    try {
-      // Initialize sandbox
-      await initializeSandbox(projectRoot, this.config.yolo);
+    // Wrap the entire agent execution in AgentContext for per-agent isolation.
+    // This ensures getSandboxProjectRoot() and getProjectHash() return the correct
+    // values for THIS agent, even when multiple agents run concurrently.
+    return runWithAgentContext(
+      {
+        projectRoot: resolvedProjectRoot,
+        projectHash,
+        agentId,
+        channel,
+      },
+      async () => {
+        try {
+          // Initialize sandbox (still sets fallback for non-context code paths)
+          await initializeSandbox(projectRoot, this.config.yolo);
 
-      // Set project hash for data isolation
-      setProjectHash(projectHash);
+          // Set project hash fallback (for backward compatibility)
+          setProjectHash(projectHash);
 
-      // Enable debug if configured
-      if (this.config.debug) {
-        setDebug(true);
-      }
+          // Enable debug if configured
+          if (this.config.debug) {
+            setDebug(true);
+          }
 
-      // Load CLAWD.md context
-      const clawdContext = this.loadClawdInstructions();
+          // Load CLAWD.md context
+          const clawdContext = this.loadClawdInstructions();
 
-      // Get GitHub token
-      const token = getToken();
-      if (!token) {
-        this.log("No GitHub token found");
-        return { success: false, output: "No GitHub token found. Run: gh auth login && gh auth refresh -s copilot" };
-      }
+          // Get GitHub token
+          const token = getToken();
+          if (!token) {
+            this.log("No GitHub token found");
+            return {
+              success: false,
+              output: "No GitHub token found. Run: gh auth login && gh auth refresh -s copilot",
+            };
+          }
 
-      // Create agent config
-      const agentConfig: AgentConfig = {
-        model,
-        maxIterations: 0, // Unlimited for worker mode
-        additionalContext: clawdContext || undefined,
-        onToken: (token) => {
-          process.stdout.write(token);
-        },
-        onToolCall: (name, args) => {
-          this.log(`Tool: ${name}`);
-        },
-        onToolResult: (name, result) => {
-          this.log(`Tool result: ${name} ${result.success ? "ok" : "err"}`);
-        },
-      };
+          // Create agent config
+          const agentConfig: AgentConfig = {
+            model,
+            maxIterations: 0, // Unlimited for worker mode
+            additionalContext: clawdContext || undefined,
+            onToken: (token) => {
+              process.stdout.write(token);
+            },
+            onToolCall: (name, args) => {
+              this.log(`Tool: ${name}`);
+            },
+            onToolResult: (name, result) => {
+              this.log(`Tool result: ${name} ${result.success ? "ok" : "err"}`);
+            },
+          };
 
-      // Create agent
-      let agent: Agent | null = null;
-      try {
-        agent = new Agent(token, agentConfig);
-
-        // Create and register clawd-chat plugin for chat integration
-        const pluginConfig: ClawdChatConfig = {
-          type: "clawd-chat",
-          apiUrl: chatApiUrl,
-          channel,
-          agentId,
-        };
-
-        const plugin = {
-          plugin: createClawdChatPlugin(pluginConfig),
-          toolPlugin: createClawdChatToolPlugin(pluginConfig),
-        };
-        await agent.usePlugin(plugin);
-
-        // Run the agent with the prompt
-        const result = await agent.run(prompt, sessionName);
-
-        this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
-
-        await agent.close();
-        agent = null; // Prevent double-close in finally
-
-        return { success: true, output: result.content };
-      } finally {
-        // Ensure agent is always cleaned up, even on error
-        if (agent) {
+          // Create agent
+          let agent: Agent | null = null;
           try {
+            agent = new Agent(token, agentConfig);
+
+            // Create and register clawd-chat plugin for chat integration
+            const pluginConfig: ClawdChatConfig = {
+              type: "clawd-chat",
+              apiUrl: chatApiUrl,
+              channel,
+              agentId,
+            };
+
+            const plugin = {
+              plugin: createClawdChatPlugin(pluginConfig),
+              toolPlugin: createClawdChatToolPlugin(pluginConfig),
+            };
+            await agent.usePlugin(plugin);
+
+            // Run the agent with the prompt
+            const result = await agent.run(prompt, sessionName);
+
+            this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
+
             await agent.close();
-          } catch {}
+            agent = null; // Prevent double-close in finally
+
+            return { success: true, output: result.content };
+          } finally {
+            // Ensure agent is always cleaned up, even on error
+            if (agent) {
+              try {
+                await agent.close();
+              } catch {}
+            }
+          }
+        } catch (error) {
+          this.log(`Failed to run agent: ${error}`);
+          return { success: false, output: String(error) };
         }
-      }
-    } catch (error) {
-      this.log(`Failed to run agent: ${error}`);
-      return { success: false, output: String(error) };
-    }
+      },
+    );
   }
 
   /** Load agent identity from {projectRoot}/.clawd/agents.json */

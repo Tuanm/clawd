@@ -91,28 +91,43 @@ function normalizeToolArgs(args: Record<string, any>): Record<string, any> {
 // Re-export sandbox functions used by other modules (index.ts, worker-loop.ts, etc.)
 export { setSandboxProjectRoot, getSandboxProjectRoot, enableSandbox } from "../utils/sandbox";
 
+// Re-export agent context functions for worker-loop.ts
+export { runWithAgentContext, getAgentContext } from "../utils/agent-context";
+
+// Import getAgentContext for internal use
+import { getAgentContext } from "../utils/agent-context";
+
 // Project hash for data isolation (agents, jobs, etc.)
-// Set via --project-hash flag or auto-generated from SHA-256 of cwd
-let projectHash: string = "";
+// NOTE: projectHashFallback is kept for backward compatibility with CLI mode (single agent).
+// In clawd-app mode with multiple agents, the hash is read from AgentContext.
+let projectHashFallback: string = "";
 
 /**
- * Set the project hash for data isolation.
- * When set, all agent/job data goes to ~/.clawd/projects/{hash}/
+ * Set the project hash for data isolation (CLI mode / backward compatibility).
+ * In clawd-app mode with multiple agents, use runWithAgentContext instead.
  */
 export function setProjectHash(hash: string) {
-  projectHash = hash;
+  projectHashFallback = hash;
 }
 
 /**
- * Get the project hash. If not set, auto-generates from SHA-256 of project root.
+ * Get the project hash.
+ * In clawd-app mode: returns value from AgentContext (per-agent isolation).
+ * In CLI mode: returns fallback or auto-generates from SHA-256 of project root.
  */
 export function getProjectHash(): string {
-  if (!projectHash) {
+  // First try to get from AgentContext (concurrent agent support)
+  const ctx = getAgentContext();
+  if (ctx?.projectHash) {
+    return ctx.projectHash;
+  }
+  // Fallback to global (CLI mode / backward compatibility)
+  if (!projectHashFallback) {
     const { createHash } = require("node:crypto");
     const root = getSandboxProjectRoot();
-    projectHash = createHash("sha256").update(root).digest("hex").slice(0, 12);
+    projectHashFallback = createHash("sha256").update(root).digest("hex").slice(0, 12);
   }
-  return projectHash;
+  return projectHashFallback;
 }
 
 /**

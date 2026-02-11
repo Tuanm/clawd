@@ -16,13 +16,16 @@ import { spawn, execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { resolve, join, dirname } from "node:path";
+import { getAgentContext } from "./agent-context";
 
 // ============================================================================
 // State
 // ============================================================================
 
 let sandboxInitialized = false;
-let sandboxProjectRoot: string = "";
+// NOTE: sandboxProjectRoot is now primarily read from AgentContext for concurrent agent support.
+// This fallback is kept for backward compatibility with CLI mode (single agent).
+let sandboxProjectRootFallback: string = "";
 let sandboxIsEnabled: boolean = false;
 
 // Cached agent environment variables (loaded once at startup)
@@ -372,7 +375,8 @@ function getMacOSCommandPrefix(workDir: string): string {
   const home = process.env.HOME || homedir();
 
   // Resolve real paths -- macOS symlinks /tmp -> /private/tmp, /etc -> /private/etc
-  const realProjectDir = safeRealpath(sandboxProjectRoot);
+  // Use getSandboxProjectRoot() to get the correct project root for this agent
+  const realProjectDir = safeRealpath(getSandboxProjectRoot());
   const realTmpDir = safeRealpath("/tmp");
   const realHomeDir = safeRealpath(home);
   const realClawdDir = safeRealpath(join(home, ".clawd"));
@@ -415,18 +419,19 @@ export async function initializeSandbox(projectRoot: string, yolo: boolean = fal
     return;
   }
 
-  sandboxProjectRoot = resolve(projectRoot);
+  // Store as fallback for CLI mode (single agent without context)
+  sandboxProjectRootFallback = resolve(projectRoot);
   const plat = detectPlatform();
 
   if (plat === "linux" && isBwrapAvailable()) {
     sandboxInitialized = true;
     sandboxIsEnabled = true;
-    console.error(`[Sandbox] Enabled via bwrap, restricted to: ${sandboxProjectRoot}, /tmp`);
+    console.error(`[Sandbox] Enabled via bwrap, restricted to: ${sandboxProjectRootFallback}, /tmp`);
     console.error(`[Sandbox] Use --yolo to disable restrictions`);
   } else if (plat === "macos" && isSandboxExecAvailable()) {
     sandboxInitialized = true;
     sandboxIsEnabled = true;
-    console.error(`[Sandbox] Enabled via sandbox-exec, restricted to: ${sandboxProjectRoot}, /tmp`);
+    console.error(`[Sandbox] Enabled via sandbox-exec, restricted to: ${sandboxProjectRootFallback}, /tmp`);
     console.error(`[Sandbox] Use --yolo to disable restrictions`);
   } else {
     console.error(`[Sandbox] No supported sandbox available (platform: ${plat}), running without sandbox`);
@@ -435,20 +440,29 @@ export async function initializeSandbox(projectRoot: string, yolo: boolean = fal
 }
 
 /**
- * Set the sandbox project root (used by tools.ts for path validation).
+ * Set the sandbox project root (used by CLI mode for single agent).
+ * In clawd-app mode with multiple agents, use runWithAgentContext instead.
  */
 export function setSandboxProjectRoot(root: string) {
-  sandboxProjectRoot = resolve(root);
+  sandboxProjectRootFallback = resolve(root);
 }
 
 /**
  * Get the sandbox project root.
+ * In clawd-app mode: returns value from AgentContext (per-agent isolation).
+ * In CLI mode: returns the fallback global value.
  */
 export function getSandboxProjectRoot(): string {
-  if (!sandboxProjectRoot) {
-    sandboxProjectRoot = process.cwd();
+  // First try to get from AgentContext (concurrent agent support)
+  const ctx = getAgentContext();
+  if (ctx?.projectRoot) {
+    return ctx.projectRoot;
   }
-  return sandboxProjectRoot;
+  // Fallback to global (CLI mode / backward compatibility)
+  if (!sandboxProjectRootFallback) {
+    sandboxProjectRootFallback = process.cwd();
+  }
+  return sandboxProjectRootFallback;
 }
 
 /**
