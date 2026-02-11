@@ -25,6 +25,14 @@ const POLL_INTERVAL = 200; // 200ms for fast response
 const CONTINUATION_RETRY_DELAY = 2000; // 2s delay before retrying unprocessed
 const MAX_MESSAGE_LENGTH = 10000;
 
+// Agent identity configuration from .clawd/agents.json
+interface AgentIdentityConfig {
+  roles?: string[];
+  description?: string;
+  directives?: string[];
+  model?: string;
+}
+
 interface Message {
   ts: string;
   user: string;
@@ -424,11 +432,73 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
     }
   }
 
+  /** Load agent identity from {projectRoot}/.clawd/agents.json */
+  private loadAgentIdentity(): string {
+    const { projectRoot, agentId } = this.config;
+    const configPath = join(projectRoot, ".clawd", "agents.json");
+    if (!existsSync(configPath)) return "";
+
+    let config: Record<string, AgentIdentityConfig>;
+    try {
+      config = JSON.parse(readFileSync(configPath, "utf-8"));
+    } catch (e) {
+      this.log(`Failed to parse .clawd/agents.json: ${e}`);
+      return "";
+    }
+
+    const agent = config[agentId];
+    if (!agent) {
+      this.log(`Agent "${agentId}" not found in .clawd/agents.json, skipping identity injection`);
+      return "";
+    }
+
+    const sections: string[] = [];
+
+    // 1. Own identity
+    sections.push(`## Your Identity & Roles\n\nYou are "${agentId}". ${agent.description || ""}`);
+
+    // 2. Standing directives (behavioral rules that persist across sessions)
+    if (agent.directives && agent.directives.length > 0) {
+      sections.push(
+        `### Standing Directives\n\nThese are your standing behavioral rules. Follow them at ALL times, even after long conversations:\n\n${agent.directives.map((d: string) => `- ${d}`).join("\n")}`,
+      );
+    }
+
+    // 3. Load detailed role files
+    const rolesDir = join(projectRoot, ".clawd", "roles");
+    for (const role of agent.roles || []) {
+      const rolePath = join(rolesDir, `${role}.md`);
+      if (existsSync(rolePath)) {
+        try {
+          const content = readFileSync(rolePath, "utf-8");
+          sections.push(`### Role: ${role}\n\n${content}`);
+        } catch {
+          // Ignore read errors for individual role files
+        }
+      }
+    }
+
+    // 4. Summary of other agents (so this agent knows who else is available)
+    const others = Object.entries(config)
+      .filter(([name]) => name !== agentId)
+      .map(([name, cfg]) => {
+        const roles = cfg.roles?.join(", ") || "no roles";
+        return `- "${name}" (roles: ${roles}): ${cfg.description || "No description"}`;
+      });
+
+    if (others.length > 0) {
+      sections.push(`## Other Agents in This Project\n\n${others.join("\n")}`);
+    }
+
+    return sections.join("\n\n");
+  }
+
   /** Load CLAWD.md instructions from project root */
   private loadClawdInstructions(): string {
     const { projectRoot } = this.config;
     const contexts: string[] = [];
 
+    // 1. Global CLAWD.md from ~/.clawd/CLAWD.md
     const globalPath = join(homedir(), ".clawd", "CLAWD.md");
     if (existsSync(globalPath)) {
       try {
@@ -436,11 +506,18 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
       } catch {}
     }
 
+    // 2. Project CLAWD.md from {projectRoot}/CLAWD.md
     const projectPath = join(projectRoot, "CLAWD.md");
     if (existsSync(projectPath) && projectPath !== globalPath) {
       try {
         contexts.push(`## Project-Specific Instructions\n\n${readFileSync(projectPath, "utf-8")}`);
       } catch {}
+    }
+
+    // 3. Agent identity from {projectRoot}/.clawd/agents.json
+    const identity = this.loadAgentIdentity();
+    if (identity) {
+      contexts.push(`# Agent Identity & Configuration\n\n${identity}`);
     }
 
     return contexts.join("\n\n---\n\n");
