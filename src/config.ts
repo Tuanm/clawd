@@ -5,7 +5,6 @@
  * The agent runs in-process (no separate clawd binary needed).
  */
 
-import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 export interface AppConfig {
@@ -15,23 +14,25 @@ export interface AppConfig {
   chatApiUrl: string;
   /** Whether to open the browser on startup */
   openBrowser: boolean;
-  /** Project root directory (default: cwd) */
+  /** Default project root directory (fallback for agents without project config) */
   projectRoot: string;
   /** Enable debug logging */
   debug: boolean;
   /** Disable sandbox + unlimited iterations for agents */
   yolo: boolean;
+  /** Run in daemon (background) mode */
+  daemon: boolean;
 }
 
 /** Parse CLI arguments and build config */
 export function loadConfig(): AppConfig {
   let values: {
     port?: string;
-    "project-root"?: string;
     "no-browser"?: boolean;
     help?: boolean;
     debug?: boolean;
     yolo?: boolean;
+    daemon?: boolean;
   };
 
   try {
@@ -39,11 +40,11 @@ export function loadConfig(): AppConfig {
       args: Bun.argv.slice(2),
       options: {
         port: { type: "string", short: "p" },
-        "project-root": { type: "string", short: "r" },
         "no-browser": { type: "boolean" },
         help: { type: "boolean", short: "h" },
         debug: { type: "boolean" },
         yolo: { type: "boolean" },
+        daemon: { type: "boolean", short: "d" },
       },
       allowPositionals: false,
     });
@@ -66,15 +67,15 @@ export function loadConfig(): AppConfig {
   }
 
   const port = parseInt(values.port || process.env.CHAT_PORT || "3456", 10);
-  const projectRoot = values["project-root"] ? resolve(values["project-root"]) : process.cwd();
 
   return {
     port,
     chatApiUrl: `http://localhost:${port}`,
     openBrowser: !values["no-browser"],
-    projectRoot,
+    projectRoot: process.cwd(),
     debug: values.debug || false,
     yolo: values.yolo || false,
+    daemon: values.daemon || false,
   };
 }
 
@@ -84,13 +85,13 @@ export function validateConfig(_config: AppConfig): boolean {
 }
 
 function printUsage() {
-  console.log(`Claw'd App - All-in-one desktop app
+  console.log(`Claw'd App
 
 Usage: clawd-app [options]
 
 Options:
   -p, --port <port>            Server port (default: 3456)
-  -r, --project-root <path>    Project root directory (default: current directory)
+  -d, --daemon                 Run in background (daemon mode)
   --no-browser                 Don't open browser on startup
   --yolo                       Disable sandbox + unlimited iterations for agents
   --debug                      Enable debug logging
@@ -99,7 +100,7 @@ Options:
 Examples:
   clawd-app
   clawd-app --port 8080
-  clawd-app --project-root /path/to/project
+  clawd-app --daemon
   clawd-app --no-browser --debug
 `);
 }

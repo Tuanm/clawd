@@ -1,5 +1,5 @@
 /**
- * Claw'd App - All-in-one entry point
+ * Claw'd App
  *
  * Combines:
  * - clawd-chat server (HTTP/WebSocket API + SQLite)
@@ -21,6 +21,26 @@ const config = loadConfig();
 // Validate config
 if (!validateConfig(config)) {
   process.exit(1);
+}
+
+// ============================================================================
+// Daemon Mode - spawn background process and exit
+// ============================================================================
+if (config.daemon) {
+  // Build command line args without -d/--daemon
+  const args = Bun.argv.slice(2).filter((arg) => arg !== "-d" && arg !== "--daemon");
+
+  // Spawn detached background process
+  const proc = Bun.spawn([Bun.argv[0], Bun.argv[1], ...args], {
+    stdio: ["ignore", "ignore", "ignore"],
+    env: { ...process.env },
+  });
+
+  // Detach from parent - unref() not available in Bun, but setting stdio to ignore
+  // and not awaiting the process should allow the parent to exit
+  console.log(`[clawd-app] Started in background (PID: ${proc.pid})`);
+  console.log(`[clawd-app] To stop: kill ${proc.pid}`);
+  process.exit(0);
 }
 
 // ============================================================================
