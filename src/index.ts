@@ -945,7 +945,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     if (path === "/api/plans.getTasks") {
       const plan_id = url.searchParams.get("plan_id");
       if (!plan_id) return json({ ok: false, error: "plan_id required" }, 400);
-      return json({ ok: true, ...getTasksForPlan(plan_id) });
+      return json({ ok: true, phases: getTasksForPlan(plan_id) });
     }
 
     if ((path === "/api/plans.addPhase" || path === "/api/phases.add") && req.method === "POST") {
@@ -1130,3 +1130,4 @@ process.on("SIGINT", async () => {
   await workerManager.stop();
   process.exit(0);
 });
+
