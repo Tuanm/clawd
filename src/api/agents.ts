@@ -17,10 +17,231 @@
  *   GET  /api/app.project.tree?channel=<ch>&agent_id=<id>  - Get project directory tree
  *   GET  /api/app.project.listDir?channel=<ch>&agent_id=<id>&path=<p>  - List directory contents
  *   GET  /api/app.project.readFile?channel=<ch>&agent_id=<id>&path=<p> - Read file content
+ *
+ * Security:
+ *   - Path validation prevents traversal attacks (../, absolute paths)
+ *   - Paths are validated to be within project root
+ *   - Sensitive files are blocked (.env, .git/*, credentials, etc.)
+ *   - .gitignore patterns are respected for file listing
  */
 
 import type { Database } from "bun:sqlite";
 import type { WorkerManager } from "../worker-manager";
+import { execSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { resolve, join, relative, isAbsolute, basename, dirname } from "node:path";
+
+// ============================================================================
+// Security: Sensitive file patterns (blocked from reading)
+// ============================================================================
+
+/**
+ * Patterns for sensitive files that should NEVER be exposed via the API.
+ * These are blocked even if they're tracked in git.
+ */
+const SENSITIVE_PATTERNS = [
+  // Environment and secrets
+  /^\.env($|\.)/i, // .env, .env.local, .env.production, etc.
+  /^\.secret/i, // .secrets, .secret.json, etc.
+  /credentials/i, // Any file with "credentials" in name
+  /^\.aws$/, // AWS credentials directory
+  /^\.ssh$/, // SSH keys directory
+  /^\.gnupg$/, // GPG keys
+  /^\.npmrc$/, // npm auth tokens
+  /^\.pypirc$/, // PyPI auth tokens
+  /^\.netrc$/, // Network credentials
+  /^\.docker$/, // Docker config with auth
+  /^\.kube$/, // Kubernetes config
+
+  // Private keys
+  /\.pem$/i, // SSL/TLS private keys
+  /\.key$/i, // Generic key files
+  /id_rsa/i, // SSH private keys
+  /id_ed25519/i, // SSH ed25519 keys
+  /id_ecdsa/i, // SSH ECDSA keys
+  /id_dsa/i, // SSH DSA keys
+
+  // Git internals (prevent reading git objects)
+  /^\.git\//, // Anything inside .git directory
+];
+
+/**
+ * Check if a file path matches any sensitive pattern.
+ */
+function isSensitivePath(relativePath: string): boolean {
+  const pathLower = relativePath.toLowerCase();
+
+  // Check each segment of the path
+  const segments = relativePath.split("/");
+  for (const segment of segments) {
+    for (const pattern of SENSITIVE_PATTERNS) {
+      if (pattern.test(segment)) {
+        return true;
+      }
+    }
+  }
+
+  // Also check the full path for patterns like .git/
+  for (const pattern of SENSITIVE_PATTERNS) {
+    if (pattern.test(relativePath)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// ============================================================================
+// Security: Path validation (sandbox-style)
+// ============================================================================
+
+/**
+ * Validate and resolve a relative path within a project root.
+ * Returns the full resolved path if valid, or null if invalid.
+ *
+ * Security checks:
+ * 1. Reject paths with ".." traversal
+ * 2. Reject absolute paths
+ * 3. Resolve symlinks and verify final path is within project root
+ * 4. Block sensitive files (credentials, keys, etc.)
+ */
+function validateProjectPath(
+  projectRoot: string,
+  relativePath: string,
+  options: { allowSensitive?: boolean } = {},
+): { valid: true; fullPath: string; relativePath: string } | { valid: false; error: string } {
+  // Check for traversal attempts
+  if (relativePath.includes("..")) {
+    return { valid: false, error: "Path traversal (..) not allowed" };
+  }
+
+  // Check for absolute paths
+  if (isAbsolute(relativePath)) {
+    return { valid: false, error: "Absolute paths not allowed" };
+  }
+
+  // Resolve the full path
+  const fullPath = resolve(projectRoot, relativePath);
+
+  // Ensure the resolved path is within project root
+  const normalizedRoot = resolve(projectRoot);
+  if (!fullPath.startsWith(normalizedRoot + "/") && fullPath !== normalizedRoot) {
+    return { valid: false, error: "Path outside project root" };
+  }
+
+  // Check for sensitive files (unless explicitly allowed)
+  if (!options.allowSensitive && isSensitivePath(relativePath)) {
+    return { valid: false, error: "Access to sensitive files is not allowed" };
+  }
+
+  // Compute the normalized relative path
+  const normalizedRelPath = relative(normalizedRoot, fullPath);
+
+  return { valid: true, fullPath, relativePath: normalizedRelPath };
+}
+
+// ============================================================================
+// Gitignore support
+// ============================================================================
+
+/**
+ * Cache for gitignore checking per project root
+ */
+const gitignoreCache = new Map<string, Set<string>>();
+
+/**
+ * Get the set of git-tracked files for a project.
+ * Uses `git ls-files` to get all tracked files, which respects .gitignore.
+ * Results are cached per project root.
+ */
+function getGitTrackedFiles(projectRoot: string): Set<string> | null {
+  // Check cache first
+  if (gitignoreCache.has(projectRoot)) {
+    return gitignoreCache.get(projectRoot)!;
+  }
+
+  try {
+    // Check if this is a git repository
+    const gitDir = join(projectRoot, ".git");
+    if (!existsSync(gitDir)) {
+      return null; // Not a git repo
+    }
+
+    // Get list of tracked files
+    const output = execSync("git ls-files", {
+      cwd: projectRoot,
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const files = new Set(
+      output
+        .trim()
+        .split("\n")
+        .filter((f) => f),
+    );
+    gitignoreCache.set(projectRoot, files);
+    return files;
+  } catch {
+    // Git command failed, return null to fall back to default behavior
+    return null;
+  }
+}
+
+/**
+ * Check if a path should be shown based on git tracking.
+ * For directories, checks if any tracked file is inside it.
+ * Falls back to default ignore patterns if not a git repo.
+ */
+function shouldShowInTree(
+  projectRoot: string,
+  relativePath: string,
+  isDirectory: boolean,
+  trackedFiles: Set<string> | null,
+): boolean {
+  // Always hide .git directory itself
+  if (relativePath === ".git" || relativePath.startsWith(".git/")) {
+    return false;
+  }
+
+  // If we have git tracking info
+  if (trackedFiles !== null) {
+    if (isDirectory) {
+      // Show directory if any tracked file is inside it
+      const prefix = relativePath + "/";
+      for (const file of trackedFiles) {
+        if (file.startsWith(prefix) || file === relativePath) {
+          return true;
+        }
+      }
+      return false;
+    } else {
+      // Show file if it's tracked
+      return trackedFiles.has(relativePath);
+    }
+  }
+
+  // Fallback: use default ignore patterns (not a git repo)
+  const FALLBACK_IGNORE = [
+    "node_modules",
+    "dist",
+    "build",
+    ".env",
+    ".clawd",
+    "__pycache__",
+    ".venv",
+    "vendor",
+    ".next",
+    ".nuxt",
+    "coverage",
+    ".cache",
+    ".turbo",
+  ];
+
+  const name = basename(relativePath);
+  return !FALLBACK_IGNORE.includes(name);
+}
 
 /** Available AI models */
 const AVAILABLE_MODELS = [
@@ -332,30 +553,8 @@ export function registerAgentRoutes(
       const projectRoot = agent.project;
 
       try {
-        const { readdirSync, statSync } = require("node:fs");
-        const { join, relative } = require("node:path");
-
-        // Patterns to ignore
-        const IGNORE_PATTERNS = [
-          "node_modules",
-          ".git",
-          "dist",
-          "build",
-          ".env",
-          ".clawd",
-          "__pycache__",
-          ".venv",
-          "vendor",
-          ".next",
-          ".nuxt",
-          "coverage",
-          ".cache",
-          ".turbo",
-        ];
-
-        function shouldIgnore(name: string): boolean {
-          return IGNORE_PATTERNS.includes(name) || name.startsWith(".");
-        }
+        // Get git-tracked files for gitignore-aware filtering
+        const trackedFiles = getGitTrackedFiles(projectRoot);
 
         interface TreeNode {
           name: string;
@@ -373,10 +572,19 @@ export function registerAgentRoutes(
             const result: TreeNode[] = [];
 
             for (const entry of entries) {
-              if (shouldIgnore(entry.name)) continue;
+              const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+
+              // Use gitignore-aware filtering
+              if (!shouldShowInTree(projectRoot, relPath, entry.isDirectory(), trackedFiles)) {
+                continue;
+              }
+
+              // Also skip sensitive files in tree view
+              if (isSensitivePath(relPath)) {
+                continue;
+              }
 
               const fullPath = join(dirPath, entry.name);
-              const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
 
               if (entry.isDirectory()) {
                 // If we can recurse (depth > 1), include children
@@ -440,47 +648,35 @@ export function registerAgentRoutes(
 
       const projectRoot = agent.project;
 
-      // Security: validate path
-      if (relativePath.includes("..") || require("node:path").isAbsolute(relativePath)) {
-        return json({ ok: false, error: "invalid path" }, 400);
+      // Security: validate path using sandbox-style validation
+      const validation = validateProjectPath(projectRoot, relativePath, { allowSensitive: false });
+      if (!validation.valid) {
+        return json({ ok: false, error: validation.error }, 400);
       }
 
-      const { join, resolve } = require("node:path");
-      const fullPath = resolve(projectRoot, relativePath);
-
-      // Ensure path is within project root
-      if (!fullPath.startsWith(projectRoot)) {
-        return json({ ok: false, error: "path outside project root" }, 400);
-      }
+      const fullPath = validation.fullPath;
 
       try {
-        const { readdirSync, statSync } = require("node:fs");
-
-        const IGNORE_PATTERNS = [
-          "node_modules",
-          ".git",
-          "dist",
-          "build",
-          ".env",
-          ".clawd",
-          "__pycache__",
-          ".venv",
-          "vendor",
-          ".next",
-          ".nuxt",
-          "coverage",
-          ".cache",
-          ".turbo",
-        ];
+        // Get git-tracked files for gitignore-aware filtering
+        const trackedFiles = getGitTrackedFiles(projectRoot);
 
         const entries = readdirSync(fullPath, { withFileTypes: true });
         const result: any[] = [];
 
         for (const entry of entries) {
-          if (IGNORE_PATTERNS.includes(entry.name) || entry.name.startsWith(".")) continue;
+          const entryRelPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+
+          // Use gitignore-aware filtering
+          if (!shouldShowInTree(projectRoot, entryRelPath, entry.isDirectory(), trackedFiles)) {
+            continue;
+          }
+
+          // Skip sensitive files
+          if (isSensitivePath(entryRelPath)) {
+            continue;
+          }
 
           const entryFullPath = join(fullPath, entry.name);
-          const entryRelPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
 
           if (entry.isDirectory()) {
             result.push({
@@ -540,22 +736,15 @@ export function registerAgentRoutes(
 
       const projectRoot = agent.project;
 
-      // Security: validate path
-      if (relativePath.includes("..") || require("node:path").isAbsolute(relativePath)) {
-        return json({ ok: false, error: "invalid path" }, 400);
+      // Security: validate path using sandbox-style validation (block sensitive files)
+      const validation = validateProjectPath(projectRoot, relativePath, { allowSensitive: false });
+      if (!validation.valid) {
+        return json({ ok: false, error: validation.error }, 400);
       }
 
-      const { resolve } = require("node:path");
-      const fullPath = resolve(projectRoot, relativePath);
-
-      // Ensure path is within project root
-      if (!fullPath.startsWith(projectRoot)) {
-        return json({ ok: false, error: "path outside project root" }, 400);
-      }
+      const fullPath = validation.fullPath;
 
       try {
-        const { readFileSync, statSync } = require("node:fs");
-
         const stats = statSync(fullPath);
         const MAX_FILE_SIZE = 500 * 1024; // 500KB limit
 
@@ -564,10 +753,11 @@ export function registerAgentRoutes(
 
         if (stats.size > MAX_FILE_SIZE) {
           // Read only first 500KB
+          const { openSync, readSync, closeSync } = require("node:fs");
           const buffer = Buffer.alloc(MAX_FILE_SIZE);
-          const fd = require("node:fs").openSync(fullPath, "r");
-          require("node:fs").readSync(fd, buffer, 0, MAX_FILE_SIZE, 0);
-          require("node:fs").closeSync(fd);
+          const fd = openSync(fullPath, "r");
+          readSync(fd, buffer, 0, MAX_FILE_SIZE, 0);
+          closeSync(fd);
           content = buffer.toString("utf-8");
           truncated = true;
         } else {
