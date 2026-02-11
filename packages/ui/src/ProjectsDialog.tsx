@@ -1,8 +1,30 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { ClawdAvatar } from "./MessageList";
+import Prism from "prismjs";
+import "prismjs/components/prism-typescript";
+import "prismjs/components/prism-javascript";
+import "prismjs/components/prism-jsx";
+import "prismjs/components/prism-tsx";
+import "prismjs/components/prism-json";
+import "prismjs/components/prism-markdown";
+import "prismjs/components/prism-bash";
+import "prismjs/components/prism-css";
+import "prismjs/components/prism-python";
+import "prismjs/components/prism-yaml";
+import "prismjs/themes/prism-tomorrow.css";
 
 const API_URL = "";
+
+// Highlight a single line of code using Prism
+function highlightCode(line: string, language: string): string {
+  const grammar = Prism.languages[language];
+  if (!grammar) {
+    // No grammar available, escape HTML and return
+    return line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  return Prism.highlight(line, grammar, language);
+}
 
 interface Agent {
   channel: string;
@@ -113,6 +135,7 @@ function TreeNodeItem({
   node,
   depth,
   expanded,
+  loadingDirs,
   onToggle,
   onSelect,
   selectedPath,
@@ -120,12 +143,14 @@ function TreeNodeItem({
   node: TreeNode;
   depth: number;
   expanded: Set<string>;
+  loadingDirs: Set<string>;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
   selectedPath: string | null;
 }) {
   const isExpanded = expanded.has(node.path);
   const isSelected = selectedPath === node.path;
+  const isLoading = loadingDirs.has(node.path);
   const ext = node.name.split(".").pop()?.toLowerCase() || "";
 
   return (
@@ -143,7 +168,7 @@ function TreeNodeItem({
       >
         {node.type === "dir" && (
           <span className="projects-tree-chevron">
-            <ChevronIcon expanded={isExpanded} />
+            {isLoading ? <span className="projects-tree-spinner" /> : <ChevronIcon expanded={isExpanded} />}
           </span>
         )}
         <span className="projects-tree-icon">
@@ -162,6 +187,7 @@ function TreeNodeItem({
               node={child}
               depth={depth + 1}
               expanded={expanded}
+              loadingDirs={loadingDirs}
               onToggle={onToggle}
               onSelect={onSelect}
               selectedPath={selectedPath}
@@ -184,6 +210,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<FileContent | null>(null);
   const [loading, setLoading] = useState(false);
   const [fileLoading, setFileLoading] = useState(false);
@@ -202,6 +229,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
       setSelectedAgentId(null);
       setTree([]);
       setExpanded(new Set());
+      setLoadingDirs(new Set());
       setSelectedFile(null);
       setError(null);
       setProjectRoot("");
@@ -293,17 +321,78 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
     [channel, selectedAgentId],
   );
 
-  const handleToggle = useCallback((path: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
+  // Helper to update tree nodes with lazy-loaded children
+  const updateTreeNode = useCallback((nodes: TreeNode[], path: string, children: TreeNode[]): TreeNode[] => {
+    return nodes.map((node) => {
+      if (node.path === path) {
+        return { ...node, children };
       }
-      return next;
+      if (node.children && path.startsWith(node.path + "/")) {
+        return { ...node, children: updateTreeNode(node.children, path, children) };
+      }
+      return node;
     });
   }, []);
+
+  // Find a node by path
+  const findNode = useCallback((nodes: TreeNode[], path: string): TreeNode | null => {
+    for (const node of nodes) {
+      if (node.path === path) return node;
+      if (node.children) {
+        const found = findNode(node.children, path);
+        if (found) return found;
+      }
+    }
+    return null;
+  }, []);
+
+  // Load directory contents lazily
+  const loadDirectory = useCallback(
+    async (dirPath: string) => {
+      if (!selectedAgentId) return;
+
+      setLoadingDirs((prev) => new Set(prev).add(dirPath));
+
+      try {
+        const res = await fetch(
+          `${API_URL}/api/app.project.listDir?channel=${encodeURIComponent(channel)}&agent_id=${encodeURIComponent(selectedAgentId)}&path=${encodeURIComponent(dirPath)}`,
+        );
+        const data = await res.json();
+        if (data.ok) {
+          setTree((prev) => updateTreeNode(prev, dirPath, data.entries));
+        }
+      } catch {
+        // Silent fail
+      } finally {
+        setLoadingDirs((prev) => {
+          const next = new Set(prev);
+          next.delete(dirPath);
+          return next;
+        });
+      }
+    },
+    [channel, selectedAgentId, updateTreeNode],
+  );
+
+  const handleToggle = useCallback(
+    (path: string) => {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) {
+          next.delete(path);
+        } else {
+          next.add(path);
+          // Check if we need to lazy load
+          const node = findNode(tree, path);
+          if (node && node.type === "dir" && node.children === undefined) {
+            loadDirectory(path);
+          }
+        }
+        return next;
+      });
+    },
+    [findNode, loadDirectory, tree],
+  );
 
   const handleSelect = useCallback(
     (path: string) => {
@@ -397,6 +486,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
                       node={node}
                       depth={0}
                       expanded={expanded}
+                      loadingDirs={loadingDirs}
                       onToggle={handleToggle}
                       onSelect={handleSelect}
                       selectedPath={selectedFile?.path || null}
@@ -420,9 +510,23 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
                         {selectedFile.truncated && " (truncated)"}
                       </span>
                     </div>
-                    <pre className="projects-file-content">
-                      <code className={`language-${selectedFile.language}`}>{selectedFile.content}</code>
-                    </pre>
+                    <div className="projects-file-content">
+                      <table className="code-lines">
+                        <tbody>
+                          {selectedFile.content.split("\n").map((line, i) => (
+                            <tr key={i} className="code-line">
+                              <td className="line-number">{i + 1}</td>
+                              <td
+                                className="line-content"
+                                dangerouslySetInnerHTML={{
+                                  __html: highlightCode(line, selectedFile.language),
+                                }}
+                              />
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </>
                 )}
               </div>

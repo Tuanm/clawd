@@ -4472,3 +4472,91 @@ textarea {
 .projects-file-content code {
   font-family: inherit;
 }
+
+/* Syntax highlighting for code viewer */
+.code-lines {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+.code-line {
+  line-height: 1.5;
+}
+
+.line-number {
+  padding: 0 12px 0 8px;
+  text-align: right;
+  vertical-align: top;
+  color: hsl(var(--text-dim));
+  opacity: 0.5;
+  user-select: none;
+  -webkit-user-select: none;
+  white-space: nowrap;
+  border-right: 1px solid hsl(var(--border-dim));
+  font-size: 12px;
+}
+
+.line-content {
+  padding-left: 12px;
+  white-space: pre;
+  word-break: break-all;
+}
+
+/* Syntax highlighting colors */
+.hl-keyword {
+  color: #c586c0;
+}
+
+.hl-string {
+  color: #ce9178;
+}
+
+.hl-number {
+  color: #b5cea8;
+}
+
+.hl-comment {
+  color: #6a9955;
+  font-style: italic;
+}
+
+.hl-type {
+  color: #4ec9b0;
+}
+
+/* Light mode overrides */
+@media (prefers-color-scheme: light) {
+  .hl-keyword {
+    color: #af00db;
+  }
+  .hl-string {
+    color: #a31515;
+  }
+  .hl-number {
+    color: #098658;
+  }
+  .hl-comment {
+    color: #008000;
+  }
+  .hl-type {
+    color: #267f99;
+  }
+}
+
+/* Loading spinner for lazy-loading directories */
+.projects-tree-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid hsl(var(--text-dim));
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spinner-spin 0.8s linear infinite;
+}
+
+@keyframes spinner-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

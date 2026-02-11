@@ -379,11 +379,13 @@ export function registerAgentRoutes(
               const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
 
               if (entry.isDirectory()) {
+                // If we can recurse (depth > 1), include children
+                // Otherwise, set children to undefined for lazy loading
                 result.push({
                   name: entry.name,
                   type: "dir",
                   path: relPath,
-                  children: buildTree(fullPath, relPath, depth - 1),
+                  children: depth > 1 ? buildTree(fullPath, relPath, depth - 1) : undefined,
                 });
               } else if (entry.isFile()) {
                 try {
