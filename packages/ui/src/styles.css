@@ -3965,6 +3965,29 @@ body {
   height: 16px;
 }
 
+/* Projects button */
+.projects-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 4px;
+}
+
+.projects-btn:hover {
+  color: hsl(var(--accent));
+  background: hsl(var(--text) / 5%);
+}
+
+.projects-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 .search-modal-overlay {
   position: fixed;
   top: 0;
@@ -4255,4 +4278,197 @@ input,
 textarea {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* ============================================================================
+   Projects Dialog
+   ============================================================================ */
+
+.projects-dialog {
+  width: min(95vw, 1200px);
+  height: min(90vh, 800px);
+  display: flex;
+  flex-direction: column;
+}
+
+.projects-dialog-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.projects-main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  border-top: 1px solid hsl(var(--border-dim));
+}
+
+/* Sidebar (file tree) */
+.projects-sidebar {
+  width: 280px;
+  min-width: 200px;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid hsl(var(--border-dim));
+  background: hsl(var(--bg-dim) / 0.5);
+}
+
+.projects-root-path {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: hsl(var(--text-dim));
+  background: hsl(var(--bg-dim));
+  border-bottom: 1px solid hsl(var(--border-dim));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.projects-tree {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 0;
+}
+
+.projects-tree-node {
+  user-select: none;
+}
+
+.projects-tree-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: hsl(var(--text));
+  white-space: nowrap;
+}
+
+.projects-tree-item:hover {
+  background: hsl(var(--bg-highlight));
+}
+
+.projects-tree-item.selected {
+  background: hsl(var(--accent) / 0.15);
+  color: hsl(var(--accent));
+}
+
+.projects-tree-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  color: hsl(var(--text-dim));
+}
+
+.projects-tree-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  color: hsl(var(--text-dim));
+}
+
+.projects-tree-item.selected .projects-tree-icon {
+  color: hsl(var(--accent));
+}
+
+.projects-tree-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.projects-tree-size {
+  font-size: 11px;
+  color: hsl(var(--text-dim));
+  margin-left: auto;
+  padding-left: 8px;
+}
+
+.projects-tree-children {
+  /* Indentation handled by padding-left in JS */
+}
+
+/* Loading and error states */
+.projects-loading,
+.projects-error,
+.projects-empty {
+  padding: 16px;
+  font-size: 13px;
+  color: hsl(var(--text-dim));
+  text-align: center;
+}
+
+.projects-error {
+  color: hsl(0 70% 60%);
+}
+
+/* Content panel (file viewer) */
+.projects-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: hsl(var(--bg));
+}
+
+.projects-content-loading,
+.projects-content-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: hsl(var(--text-dim));
+}
+
+.projects-file-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: hsl(var(--bg-dim));
+  border-bottom: 1px solid hsl(var(--border-dim));
+}
+
+.projects-file-path {
+  font-size: 13px;
+  font-weight: 500;
+  color: hsl(var(--text));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projects-file-meta {
+  font-size: 12px;
+  color: hsl(var(--text-dim));
+  white-space: nowrap;
+  margin-left: 16px;
+}
+
+.projects-file-content {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+  background: hsl(var(--bg));
+  color: hsl(var(--text));
+  white-space: pre;
+  tab-size: 2;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.projects-file-content code {
+  font-family: inherit;
 }

@@ -3,6 +3,7 @@ import AgentDialog from "./AgentDialog";
 import MessageComposer from "./MessageComposer";
 import MessageList, { StreamOutputDialog } from "./MessageList";
 import PlanModal from "./PlanModal";
+import ProjectsDialog from "./ProjectsDialog";
 import SearchModal from "./SearchModal";
 import { UnreadBadge } from "./UnreadBadge";
 
@@ -452,6 +453,7 @@ export default function App({ channel: initialChannel }: Props) {
   const [channelAgents, setChannelAgents] = useState<Record<string, SeenByAgent[]>>({});
   const [showPlanModal, setShowPlanModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
+  const [showProjectsDialog, setShowProjectsDialog] = useState(false);
   const [showAgentDialog, setShowAgentDialog] = useState(false);
   const [jumpToMessageTs, setJumpToMessageTs] = useState<string | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
@@ -1847,6 +1849,20 @@ export default function App({ channel: initialChannel }: Props) {
             </svg>
           </button>
         }
+        projectsButton={
+          <button className="projects-btn" onClick={() => setShowProjectsDialog(true)} title="Browse Project Files">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+            </svg>
+          </button>
+        }
       />
       <StreamOutputDialog
         open={streamDialogOpen}
@@ -1875,6 +1891,11 @@ export default function App({ channel: initialChannel }: Props) {
         }}
       />
       <AgentDialog channel={activeChannel} isOpen={showAgentDialog} onClose={() => setShowAgentDialog(false)} />
+      <ProjectsDialog
+        channel={activeChannel}
+        isOpen={showProjectsDialog}
+        onClose={() => setShowProjectsDialog(false)}
+      />
     </div>
   );
 }

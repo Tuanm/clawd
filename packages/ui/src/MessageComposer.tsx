@@ -127,6 +127,7 @@ interface Props {
   hibernateBanner?: React.ReactNode;
   planButton?: React.ReactNode;
   searchButton?: React.ReactNode;
+  projectsButton?: React.ReactNode;
 }
 
 export default function MessageComposer({
@@ -137,6 +138,7 @@ export default function MessageComposer({
   hibernateBanner,
   planButton,
   searchButton,
+  projectsButton,
 }: Props) {
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -455,6 +457,12 @@ export default function MessageComposer({
                 {searchButton}
               </>
             )}
+            {projectsButton && (
+              <>
+                <div className="toolbar-divider" />
+                {projectsButton}
+              </>
+            )}
           </div>
         )}
 
@@ -519,6 +527,7 @@ export default function MessageComposer({
             {/* Plan and Search buttons - show when toolbar is hidden */}
             {!showToolbar && planButton && planButton}
             {!showToolbar && searchButton && searchButton}
+            {!showToolbar && projectsButton && projectsButton}
           </div>
           <input
             ref={fileInputRef}

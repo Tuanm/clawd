@@ -11,6 +11,12 @@
  *   POST /api/app.agents.update               - Update agent config (model, active)
  *   GET  /api/app.agents.status               - Get worker loop status for all agents
  *   GET  /api/app.models.list                 - List available AI models
+ *   GET  /api/app.folders.list                - List directories (for folder picker)
+ *
+ * Project File Browser (read-only):
+ *   GET  /api/app.project.tree?channel=<ch>&agent_id=<id>  - Get project directory tree
+ *   GET  /api/app.project.listDir?channel=<ch>&agent_id=<id>&path=<p>  - List directory contents
+ *   GET  /api/app.project.readFile?channel=<ch>&agent_id=<id>&path=<p> - Read file content
  */
 
 import type { Database } from "bun:sqlite";
@@ -296,6 +302,315 @@ export function registerAgentRoutes(
           }))
           .sort((a: any, b: any) => a.name.localeCompare(b.name));
         return json({ ok: true, path: dir, folders });
+      } catch (error) {
+        return json({ ok: false, error: String(error) }, 500);
+      }
+    }
+
+    // ========================================================================
+    // Project File Browser API (read-only)
+    // ========================================================================
+
+    // Get project directory tree for an agent
+    if (path === "/api/app.project.tree") {
+      const channel = url.searchParams.get("channel");
+      const agentId = url.searchParams.get("agent_id");
+
+      if (!channel || !agentId) {
+        return json({ ok: false, error: "channel and agent_id required" }, 400);
+      }
+
+      // Get agent's project root from database
+      const agent = db
+        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .get(channel, agentId) as { project: string } | null;
+
+      if (!agent || !agent.project) {
+        return json({ ok: false, error: "agent not found or no project configured" }, 404);
+      }
+
+      const projectRoot = agent.project;
+
+      try {
+        const { readdirSync, statSync } = require("node:fs");
+        const { join, relative } = require("node:path");
+
+        // Patterns to ignore
+        const IGNORE_PATTERNS = [
+          "node_modules",
+          ".git",
+          "dist",
+          "build",
+          ".env",
+          ".clawd",
+          "__pycache__",
+          ".venv",
+          "vendor",
+          ".next",
+          ".nuxt",
+          "coverage",
+          ".cache",
+          ".turbo",
+        ];
+
+        function shouldIgnore(name: string): boolean {
+          return IGNORE_PATTERNS.includes(name) || name.startsWith(".");
+        }
+
+        interface TreeNode {
+          name: string;
+          type: "file" | "dir";
+          path: string;
+          size?: number;
+          children?: TreeNode[];
+        }
+
+        function buildTree(dirPath: string, relativePath: string, depth: number): TreeNode[] {
+          if (depth <= 0) return [];
+
+          try {
+            const entries = readdirSync(dirPath, { withFileTypes: true });
+            const result: TreeNode[] = [];
+
+            for (const entry of entries) {
+              if (shouldIgnore(entry.name)) continue;
+
+              const fullPath = join(dirPath, entry.name);
+              const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+
+              if (entry.isDirectory()) {
+                result.push({
+                  name: entry.name,
+                  type: "dir",
+                  path: relPath,
+                  children: buildTree(fullPath, relPath, depth - 1),
+                });
+              } else if (entry.isFile()) {
+                try {
+                  const stats = statSync(fullPath);
+                  result.push({
+                    name: entry.name,
+                    type: "file",
+                    path: relPath,
+                    size: stats.size,
+                  });
+                } catch {
+                  // Skip files we can't stat
+                }
+              }
+            }
+
+            // Sort: directories first, then files, alphabetically
+            return result.sort((a, b) => {
+              if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+              return a.name.localeCompare(b.name);
+            });
+          } catch {
+            return [];
+          }
+        }
+
+        const tree = buildTree(projectRoot, "", 3); // Max depth of 3 initially
+        return json({ ok: true, root: projectRoot, tree });
+      } catch (error) {
+        return json({ ok: false, error: String(error) }, 500);
+      }
+    }
+
+    // List directory contents (lazy loading)
+    if (path === "/api/app.project.listDir") {
+      const channel = url.searchParams.get("channel");
+      const agentId = url.searchParams.get("agent_id");
+      const relativePath = url.searchParams.get("path") || "";
+
+      if (!channel || !agentId) {
+        return json({ ok: false, error: "channel and agent_id required" }, 400);
+      }
+
+      // Get agent's project root from database
+      const agent = db
+        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .get(channel, agentId) as { project: string } | null;
+
+      if (!agent || !agent.project) {
+        return json({ ok: false, error: "agent not found or no project configured" }, 404);
+      }
+
+      const projectRoot = agent.project;
+
+      // Security: validate path
+      if (relativePath.includes("..") || require("node:path").isAbsolute(relativePath)) {
+        return json({ ok: false, error: "invalid path" }, 400);
+      }
+
+      const { join, resolve } = require("node:path");
+      const fullPath = resolve(projectRoot, relativePath);
+
+      // Ensure path is within project root
+      if (!fullPath.startsWith(projectRoot)) {
+        return json({ ok: false, error: "path outside project root" }, 400);
+      }
+
+      try {
+        const { readdirSync, statSync } = require("node:fs");
+
+        const IGNORE_PATTERNS = [
+          "node_modules",
+          ".git",
+          "dist",
+          "build",
+          ".env",
+          ".clawd",
+          "__pycache__",
+          ".venv",
+          "vendor",
+          ".next",
+          ".nuxt",
+          "coverage",
+          ".cache",
+          ".turbo",
+        ];
+
+        const entries = readdirSync(fullPath, { withFileTypes: true });
+        const result: any[] = [];
+
+        for (const entry of entries) {
+          if (IGNORE_PATTERNS.includes(entry.name) || entry.name.startsWith(".")) continue;
+
+          const entryFullPath = join(fullPath, entry.name);
+          const entryRelPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+
+          if (entry.isDirectory()) {
+            result.push({
+              name: entry.name,
+              type: "dir",
+              path: entryRelPath,
+            });
+          } else if (entry.isFile()) {
+            try {
+              const stats = statSync(entryFullPath);
+              result.push({
+                name: entry.name,
+                type: "file",
+                path: entryRelPath,
+                size: stats.size,
+              });
+            } catch {
+              // Skip files we can't stat
+            }
+          }
+        }
+
+        // Sort: directories first, then files, alphabetically
+        result.sort((a, b) => {
+          if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+
+        return json({ ok: true, path: relativePath, entries: result });
+      } catch (error) {
+        return json({ ok: false, error: String(error) }, 500);
+      }
+    }
+
+    // Read file content (read-only)
+    if (path === "/api/app.project.readFile") {
+      const channel = url.searchParams.get("channel");
+      const agentId = url.searchParams.get("agent_id");
+      const relativePath = url.searchParams.get("path") || "";
+
+      if (!channel || !agentId) {
+        return json({ ok: false, error: "channel and agent_id required" }, 400);
+      }
+
+      if (!relativePath) {
+        return json({ ok: false, error: "path required" }, 400);
+      }
+
+      // Get agent's project root from database
+      const agent = db
+        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .get(channel, agentId) as { project: string } | null;
+
+      if (!agent || !agent.project) {
+        return json({ ok: false, error: "agent not found or no project configured" }, 404);
+      }
+
+      const projectRoot = agent.project;
+
+      // Security: validate path
+      if (relativePath.includes("..") || require("node:path").isAbsolute(relativePath)) {
+        return json({ ok: false, error: "invalid path" }, 400);
+      }
+
+      const { resolve } = require("node:path");
+      const fullPath = resolve(projectRoot, relativePath);
+
+      // Ensure path is within project root
+      if (!fullPath.startsWith(projectRoot)) {
+        return json({ ok: false, error: "path outside project root" }, 400);
+      }
+
+      try {
+        const { readFileSync, statSync } = require("node:fs");
+
+        const stats = statSync(fullPath);
+        const MAX_FILE_SIZE = 500 * 1024; // 500KB limit
+
+        let content: string;
+        let truncated = false;
+
+        if (stats.size > MAX_FILE_SIZE) {
+          // Read only first 500KB
+          const buffer = Buffer.alloc(MAX_FILE_SIZE);
+          const fd = require("node:fs").openSync(fullPath, "r");
+          require("node:fs").readSync(fd, buffer, 0, MAX_FILE_SIZE, 0);
+          require("node:fs").closeSync(fd);
+          content = buffer.toString("utf-8");
+          truncated = true;
+        } else {
+          content = readFileSync(fullPath, "utf-8");
+        }
+
+        // Detect language from extension for syntax highlighting
+        const ext = relativePath.split(".").pop()?.toLowerCase() || "";
+        const languageMap: Record<string, string> = {
+          ts: "typescript",
+          tsx: "typescript",
+          js: "javascript",
+          jsx: "javascript",
+          json: "json",
+          md: "markdown",
+          py: "python",
+          rs: "rust",
+          go: "go",
+          rb: "ruby",
+          java: "java",
+          c: "c",
+          cpp: "cpp",
+          h: "c",
+          hpp: "cpp",
+          css: "css",
+          scss: "scss",
+          html: "html",
+          xml: "xml",
+          yaml: "yaml",
+          yml: "yaml",
+          toml: "toml",
+          sh: "bash",
+          bash: "bash",
+          zsh: "bash",
+          sql: "sql",
+        };
+
+        return json({
+          ok: true,
+          path: relativePath,
+          content,
+          size: stats.size,
+          truncated,
+          language: languageMap[ext] || "plaintext",
+        });
       } catch (error) {
         return json({ ok: false, error: String(error) }, 500);
       }
