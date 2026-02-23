@@ -87,7 +87,7 @@ Usage: clawd-app [options]
 Options:
   -p, --port <port>            Server port (default: 3456)
   --no-browser                 Don't open browser on startup
-  --yolo                       Disable sandbox + unlimited iterations for agents
+  --yolo                       Disable sandbox restrictions for agents
   --debug                      Enable debug logging
   -h, --help                   Show this help message
 

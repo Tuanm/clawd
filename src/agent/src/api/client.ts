@@ -4,7 +4,9 @@
 
 import http2 from "node:http2";
 import { EventEmitter } from "node:events";
-import { API_URL, API_PATH, COPILOT_API_URL } from "./config";
+import { getBaseUrlForProvider, getCopilotToken } from "./provider-config";
+
+const COPILOT_API_URL = "https://api.githubcopilot.com";
 
 // ============================================================================
 // Types
@@ -167,6 +169,9 @@ function sleep(ms: number): Promise<void> {
 export class CopilotClient extends EventEmitter {
   private token: string;
   private client: http2.ClientHttp2Session | null = null;
+  readonly model: string;
+  private baseUrl: string;
+  private apiPath: string = "/chat/completions";
 
   // Enable debug logging: CopilotClient.debug = true or use --debug flag
   static set debug(value: boolean) {
@@ -176,9 +181,11 @@ export class CopilotClient extends EventEmitter {
     return isApiDebugEnabled();
   }
 
-  constructor(token: string) {
+  constructor(token: string, options?: { model?: string; baseUrl?: string }) {
     super();
     this.token = token;
+    this.model = options?.model || "claude-opus-4.6";
+    this.baseUrl = options?.baseUrl || COPILOT_API_URL;
   }
 
   private getClient(): Promise<http2.ClientHttp2Session> {
@@ -194,7 +201,7 @@ export class CopilotClient extends EventEmitter {
         this.client = null;
       }, CONNECT_TIMEOUT_MS);
 
-      this.client = http2.connect(API_URL);
+      this.client = http2.connect(this.baseUrl);
 
       this.client.on("connect", () => {
         clearTimeout(timer);
@@ -240,7 +247,7 @@ export class CopilotClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const headers = {
         ":method": "POST",
-        ":path": API_PATH,
+        ":path": this.apiPath,
         Authorization: `Bearer ${this.token}`,
         "X-Interaction-Id": crypto.randomUUID(),
         ...BASE_HEADERS,
@@ -323,7 +330,7 @@ export class CopilotClient extends EventEmitter {
 
     const headers = {
       ":method": "POST",
-      ":path": API_PATH,
+      ":path": this.apiPath,
       Authorization: `Bearer ${this.token}`,
       "X-Interaction-Id": crypto.randomUUID(),
       ...BASE_HEADERS,
@@ -520,36 +527,3 @@ export class CopilotClient extends EventEmitter {
 
 // ============================================================================
 // Token Helper
-// ============================================================================
-
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
-
-export function getToken(): string | null {
-  // Check environment variables
-  if (process.env.COPILOT_GITHUB_TOKEN) return process.env.COPILOT_GITHUB_TOKEN;
-  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
-  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
-
-  // Read from gh CLI config (try multiple locations for cross-platform support)
-  const configPaths = [
-    join(homedir(), ".config", "gh", "hosts.yml"), // Linux/WSL
-    join(homedir(), "Library", "Application Support", "gh", "hosts.yml"), // macOS
-    join(process.env.APPDATA || "", "gh", "hosts.yml"), // Windows
-  ];
-
-  for (const hostsPath of configPaths) {
-    if (!existsSync(hostsPath)) continue;
-
-    try {
-      const content = readFileSync(hostsPath, "utf-8");
-      const match = content.match(/oauth_token:\s*(\S+)/);
-      if (match) return match[1];
-    } catch {
-      continue;
-    }
-  }
-
-  return null;
-}

@@ -7,6 +7,7 @@ const API_URL = "";
 interface Agent {
   channel: string;
   agent_id: string;
+  provider: string;
   model: string;
   project: string;
   active: boolean;
@@ -87,7 +88,8 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
 
   // Add form state
   const [newName, setNewName] = useState("");
-  const [newModel, setNewModel] = useState("claude-sonnet-4.5");
+  const [newProvider, setNewProvider] = useState("copilot");
+  const [newModel, setNewModel] = useState("default");
   const [newProject, setNewProject] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -114,11 +116,19 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setShowAddForm(false);
       setError(null);
       setNewName("");
-      setNewModel("claude-sonnet-4.5");
+      setNewProvider("copilot");
+      setNewModel("default");
       setNewProject("");
       setShowFolderBrowser(false);
     }
   }, [isOpen]);
+
+  // Update project default when channel changes
+  useEffect(() => {
+    if (channel) {
+      setNewProject(`/tmp/clawd/spaces/${channel}`);
+    }
+  }, [channel]);
 
   // Focus name input when add form shows
   useEffect(() => {
@@ -150,15 +160,17 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
         body: JSON.stringify({
           channel,
           agent_id: newName.trim(),
-          model: newModel.trim() || "claude-sonnet-4.5",
+          provider: newProvider.trim().toLowerCase(),
+          model: newModel.trim() || "default",
           project: newProject.trim(),
         }),
       });
       const data = await res.json();
       if (data.ok) {
         setNewName("");
-        setNewModel("claude-sonnet-4.5");
-        setNewProject("");
+        setNewProvider("copilot");
+        setNewModel("default");
+        setNewProject(`/tmp/clawd/spaces/${channel}`);
         setShowAddForm(false);
         setSelectedAgentId(newName.trim());
         await loadAgents();
@@ -170,7 +182,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [channel, newName, newModel, newProject, loadAgents]);
+  }, [channel, newName, newProvider, newModel, newProject, loadAgents]);
 
   const handleRemoveAgent = useCallback(
     async (agentId: string) => {
@@ -298,6 +310,13 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
               <input
                 type="text"
                 className="agent-field-input"
+                placeholder="Provider"
+                value={selectedAgent.provider || "copilot"}
+                readOnly
+              />
+              <input
+                type="text"
+                className="agent-field-input"
                 placeholder="Model"
                 value={selectedAgent.model}
                 readOnly
@@ -334,6 +353,16 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                     setShowAddForm(false);
                     setError(null);
                   }
+                }}
+              />
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Provider (copilot/openai/anthropic)"
+                value={newProvider}
+                onChange={(e) => setNewProvider(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAddAgent();
                 }}
               />
               <input

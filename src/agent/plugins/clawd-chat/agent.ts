@@ -762,6 +762,13 @@ having to generate large base64 content as a tool argument (which causes stream 
 The tool reads the file locally, auto-detects MIME type from extension, and uploads it via HTTP
 to the chat server. Returns a file_id that can be used with chat_send_message_with_files.
 
+**File Size Limit:** Max 10MB per file. For larger files, upload to a cloud service and share the link instead.
+
+**For Images/Videos:**
+- Screenshots and small images work best
+- For large images: Use Gemini vision API to analyze and describe instead of uploading raw bytes
+- For videos: Upload to YouTube or cloud storage and share the link
+
 **WORKFLOW:**
 1. chat_upload_local_file(file_path="/path/to/image.png", channel="chat-task") -> returns file_id
 2. chat_send_message_with_files(channel="chat-task", text="Here's the file", file_ids=["F..."])

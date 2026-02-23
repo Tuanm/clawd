@@ -494,6 +494,25 @@ get_project_root()
 
 This returns the correct base path for all file operations.
 
+## 5. File Reading Best Practices
+
+**IMPORTANT:** Never read entire large files without checking size first.
+
+**For Attached Files:**
+- Check file size BEFORE reading: use "ls -lh <filename>" to check size
+- Files >1MB will be rejected - use partial reads instead
+- Use start_line/end_line parameters to read specific sections
+
+**For Code Files:**
+1. Use "grep" to find relevant patterns first
+2. Then view() specific line ranges: view(path="file.ts", start_line=100, end_line=150)
+3. Never view() an entire file without checking size
+
+**For Images/Videos:**
+- Do NOT upload large images to chat (max 10MB)
+- Use Gemini vision API to analyze images instead: describe the image using vision capabilities
+- For large videos: upload to YouTube/cloud and share the link
+
 ## CRITICAL RULES
 
 1. YOU MUST ALWAYS STAY IN THE PROJECT ROOT: ${PROJECT_ROOT}

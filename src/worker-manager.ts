@@ -14,7 +14,9 @@ export interface AgentConfig {
   channel: string;
   /** Agent display name (e.g., "Claw'd") */
   agentId: string;
-  /** Model to use (e.g., "claude-opus-4.6") */
+  /** Provider to use (e.g., "copilot", "openai", "anthropic") */
+  provider?: string;
+  /** Model to use (e.g., "default", "sonnet", "opus") */
   model: string;
   /** Whether the agent is active (auto-start on startup) */
   active: boolean;
@@ -69,6 +71,7 @@ export class WorkerManager {
     const loopConfig: WorkerLoopConfig = {
       channel: agent.channel,
       agentId: agent.agentId,
+      provider: agent.provider,
       model: agent.model,
       projectRoot: agent.project || this.config.projectRoot,
       chatApiUrl: this.config.chatApiUrl,
@@ -80,7 +83,9 @@ export class WorkerManager {
     this.loops.set(key, loop);
     loop.start();
 
-    console.log(`[WorkerManager] Started agent: ${key} (model: ${agent.model})`);
+    console.log(
+      `[WorkerManager] Started agent: ${key} (provider: ${agent.provider || "copilot"}, model: ${agent.model})`,
+    );
     return true;
   }
 
@@ -132,7 +137,8 @@ export class WorkerManager {
         return data.agents.map((a: any) => ({
           channel: a.channel,
           agentId: a.agent_id,
-          model: a.model || "claude-sonnet-4.5",
+          provider: a.provider || "copilot",
+          model: a.model || "default",
           active: a.active !== false,
           project: a.project || "",
         }));

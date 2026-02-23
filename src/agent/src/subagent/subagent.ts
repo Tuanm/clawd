@@ -9,7 +9,8 @@
 
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { CopilotClient, getToken, type Message, type ToolCall, type ToolDefinition } from "../api/client";
+import { CopilotClient, type Message, type ToolCall, type ToolDefinition } from "../api/client";
+import { getCopilotToken } from "../api/provider-config";
 import { toolDefinitions, executeTool } from "../tools/tools";
 import { PluginManager, type SubAgentPlugin, type PluginContext, type ToolResultInfo } from "./plugin";
 import {
@@ -273,9 +274,9 @@ You have access to tools for file operations, code execution, and more.
 ${this.allowSubAgents ? "You can spawn sub-agents to parallelize work." : ""}
 Be concise and efficient.`;
 
-    const token = getToken();
+    const token = getCopilotToken();
     if (!token) {
-      throw new Error("No GitHub token found. Set COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN.");
+      throw new Error("No GitHub token found in ~/.clawd/config.json");
     }
     this.client = new CopilotClient(token);
   }

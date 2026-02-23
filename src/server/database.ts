@@ -328,8 +328,6 @@ export function initDatabase() {
   } catch {
     /* Table already exists */
   }
-
-  console.log("[OK] Database initialized at", DB_PATH);
 }
 
 // Migration: Remove C- or C prefix from channel IDs

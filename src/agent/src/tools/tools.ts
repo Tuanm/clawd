@@ -457,7 +457,20 @@ registerTool(
 
 registerTool(
   "view",
-  "View the contents of a file or list directory contents.",
+  `View the contents of a file or list directory contents.
+
+**Large File Warning:** Do NOT read entire large files (>1MB) - this wastes tokens and may exceed context limits.
+
+**For Large Files:**
+- Use start_line/end_line to read specific sections
+- For images/videos: Use Gemini or describe tool instead of reading raw bytes
+- For code: Read only the relevant functions/classes you need
+- Use "grep" to find specific patterns first, then view just those lines
+
+**Best Practices:**
+- Always check file size first with "ls -lh" before reading
+- Use grep to locate relevant sections, then view those specific lines
+- For binaries/images: Skip entirely or use specialized vision tools`,
   {
     path: {
       type: "string",
@@ -512,6 +525,19 @@ registerTool(
           return { success: true, output };
         }
 
+        // Check file size before reading
+        const sizeResult = await runInSandbox("stat", ["-c", "%s", resolvedPath]);
+        if (sizeResult.success) {
+          const fileSize = parseInt(sizeResult.stdout.trim(), 10);
+          if (fileSize > 1024 * 1024) {
+            return {
+              success: false,
+              output: "",
+              error: `File too large (${(fileSize / 1024 / 1024).toFixed(1)}MB). Use start_line/end_line to read specific sections, or use grep to find relevant parts first.`,
+            };
+          }
+        }
+
         // Read file
         const catArgs = [resolvedPath];
         const result = await runInSandbox("cat", catArgs);
@@ -536,7 +562,7 @@ registerTool(
         }
 
         if (content.length > 50000) {
-          content = `${content.slice(0, 50000)}\n... (truncated)`;
+          content = `${content.slice(0, 50000)}\n\n[Content truncated - file too large. Use view() with start_line/end_line to read specific sections, or use grep to find relevant parts first.]`;
         }
 
         return { success: true, output: content };
@@ -548,6 +574,15 @@ registerTool(
       }
 
       const stat = statSync(resolvedPath);
+
+      // Check file size before reading
+      if (stat.size > 1024 * 1024) {
+        return {
+          success: false,
+          output: "",
+          error: `File too large (${(stat.size / 1024 / 1024).toFixed(1)}MB). Use start_line/end_line to read specific sections, or use grep to find relevant parts first.`,
+        };
+      }
 
       if (stat.isDirectory()) {
         const entries = readdirSync(resolvedPath, { withFileTypes: true });
@@ -1883,7 +1918,7 @@ registerTool(
 
       // Truncate if needed
       if (content.length > max_length) {
-        content = `${content.substring(0, max_length)}\n\n[Content truncated...]`;
+        content = `${content.substring(0, max_length)}\n\n[Content truncated - file too large. Use view() with start_line/end_line parameters to read specific sections, or use grep to find relevant parts first.]`;
       }
 
       return { success: true, output: content };

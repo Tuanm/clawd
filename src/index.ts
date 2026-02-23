@@ -10,13 +10,55 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
+import { parseArgs } from "node:util";
+
+// Check for --help BEFORE importing other modules (to avoid database initialization)
+const parsedArgs = parseArgs({
+  args: Bun.argv.slice(2),
+  options: {
+    port: { type: "string", short: "p" },
+    "no-browser": { type: "boolean" },
+    help: { type: "boolean", short: "h" },
+    debug: { type: "boolean" },
+    yolo: { type: "boolean" },
+  },
+  allowPositionals: false,
+});
+
+if (parsedArgs.values.help) {
+  console.log(`Claw'd App
+
+Usage: clawd-app [options]
+
+Options:
+  -p, --port <port>            Server port (default: 3456)
+  --no-browser                 Don't open browser on startup
+  --yolo                       Disable sandbox restrictions for agents
+  --debug                      Enable debug logging
+  -h, --help                   Show this help message
+
+Examples:
+  clawd-app
+  clawd-app --port 8080
+  clawd-app --no-browser --debug
+`);
+  process.exit(0);
+}
+
+// Now import modules (database will initialize)
 import { registerAgentRoutes } from "./api/agents";
 import { loadConfig, validateConfig } from "./config";
 import { getEmbeddedAsset, hasEmbeddedUI, embeddedUIFileCount, embeddedUITotalSize } from "./embedded-ui";
 import { WorkerManager } from "./worker-manager";
+import { setDebug } from "./agent/src/utils/debug";
 
 // Load configuration from CLI args + env
 const config = loadConfig();
+
+// Enable debug mode if configured
+if (config.debug) {
+  setDebug(true);
+}
 
 // Validate config
 if (!validateConfig(config)) {

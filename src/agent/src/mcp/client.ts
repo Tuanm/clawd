@@ -5,6 +5,7 @@
 
 import { spawn, type Subprocess } from "bun";
 import { EventEmitter } from "node:events";
+import { isDebugEnabled } from "../utils/debug";
 
 // ============================================================================
 // Types
@@ -353,12 +354,19 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
   }
 
   async connect(): Promise<void> {
+    if (isDebugEnabled()) {
+      console.log(`[MCP] Connecting to HTTP server: ${this.url}`);
+    }
     // For HTTP, we just fetch tools/list to verify connectivity
     try {
       await this.refreshCapabilities();
       this.connected = true;
+      if (isDebugEnabled()) {
+        console.log(`[MCP] ${this.name}: Connected successfully`);
+      }
       this.emit("connected");
-    } catch (err) {
+    } catch (err: any) {
+      console.error(`[MCP] ${this.name}: Connection failed: ${err.message}`);
       this.emit("error", err);
       throw err;
     }
@@ -369,7 +377,11 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     try {
       const result = await this.request("tools/list", {});
       this.tools = result.tools || [];
-    } catch {
+      if (isDebugEnabled()) {
+        console.log(`[MCP] ${this.name}: Loaded ${this.tools.length} tools`);
+      }
+    } catch (err: any) {
+      console.error(`[MCP] ${this.name}: Failed to fetch tools: ${err.message}`);
       this.tools = [];
     }
 
@@ -377,7 +389,8 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     try {
       const result = await this.request("resources/list", {});
       this.resources = result.resources || [];
-    } catch {
+    } catch (err: any) {
+      console.error(`[MCP] ${this.name}: Failed to fetch resources: ${err.message}`);
       this.resources = [];
     }
 
@@ -385,7 +398,8 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     try {
       const result = await this.request("prompts/list", {});
       this.prompts = result.prompts || [];
-    } catch {
+    } catch (err: any) {
+      console.error(`[MCP] ${this.name}: Failed to fetch prompts: ${err.message}`);
       this.prompts = [];
     }
   }
@@ -494,18 +508,41 @@ export class MCPManager extends EventEmitter {
   }
 
   // ============================================================================
+  // Check if tool exists in any MCP server
+  // ============================================================================
+
+  hasTool(toolName: string): boolean {
+    for (const [, connection] of this.connections) {
+      const hasTool = connection.tools.some((t) => t.name === toolName);
+      if (hasTool) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ============================================================================
   // Get Tool Definitions (OpenAI format)
   // ============================================================================
 
   getToolDefinitions() {
     const definitions: any[] = [];
 
+    if (isDebugEnabled()) {
+      console.log(`[MCP] Connections: ${[...this.connections.keys()].join(", ") || "none"}`);
+    }
     for (const [serverName, connection] of this.connections) {
+      if (isDebugEnabled()) {
+        console.log(`[MCP] Server "${serverName}" tools: ${connection.tools.map((t) => t.name).join(", ") || "none"}`);
+      }
       for (const tool of connection.tools) {
+        // All tools are native (no prefix) for cleaner API calls
+        const toolName = tool.name;
+
         definitions.push({
           type: "function",
           function: {
-            name: `mcp_${serverName}_${tool.name}`,
+            name: toolName,
             description: `[MCP:${serverName}] ${tool.description}`,
             parameters: tool.inputSchema,
           },
@@ -530,27 +567,55 @@ export class MCPManager extends EventEmitter {
   }
 
   // ============================================================================
-  // Execute MCP Tool (from prefixed name)
+  // Execute MCP Tool (from tool name)
   // ============================================================================
 
   async executeMCPTool(
-    prefixedName: string,
+    toolName: string,
     args: Record<string, any>,
   ): Promise<{ success: boolean; result?: any; error?: string }> {
-    // Parse mcp_servername_toolname
-    const match = prefixedName.match(/^mcp_([^_]+)_(.+)$/);
-    if (!match) {
-      return { success: false, error: `Invalid MCP tool name: ${prefixedName}` };
+    // Check if it's a prefixed name (mcp_servername_toolname)
+    const match = toolName.match(/^mcp_([^_]+)_(.+)$/);
+    let serverName: string;
+    let actualToolName: string;
+
+    if (match) {
+      // Prefixed format (for non-chat MCP tools)
+      serverName = match[1];
+      actualToolName = match[2];
+    } else if (toolName.startsWith("chat_")) {
+      // Chat tools are native - find which server provides them
+      serverName = this.findServerForTool(toolName);
+      actualToolName = toolName;
+      if (!serverName) {
+        return { success: false, error: `Unknown tool: ${toolName}` };
+      }
+    } else {
+      // Try to find by tool name
+      serverName = this.findServerForTool(toolName);
+      actualToolName = toolName;
+      if (!serverName) {
+        return { success: false, error: `Unknown tool: ${toolName}` };
+      }
     }
 
-    const [, serverName, toolName] = match;
-
     try {
-      const result = await this.callTool(serverName, toolName, args);
+      const result = await this.callTool(serverName, actualToolName, args);
       return { success: true, result };
     } catch (error: any) {
       return { success: false, error: error.message };
     }
+  }
+
+  // Find which MCP server provides this tool
+  private findServerForTool(toolName: string): string | null {
+    for (const [serverName, connection] of this.connections) {
+      const hasTool = connection.tools.some((t) => t.name === toolName);
+      if (hasTool) {
+        return serverName;
+      }
+    }
+    return null;
   }
 
   // ============================================================================

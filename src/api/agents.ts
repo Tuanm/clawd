@@ -320,7 +320,8 @@ export function initAgentsTable(db: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       channel TEXT NOT NULL,
       agent_id TEXT NOT NULL,
-      model TEXT NOT NULL DEFAULT 'claude-sonnet-4.5',
+      provider TEXT NOT NULL DEFAULT 'copilot',
+      model TEXT NOT NULL DEFAULT 'default',
       project TEXT NOT NULL DEFAULT '',
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (strftime('%s', 'now')),
@@ -332,6 +333,13 @@ export function initAgentsTable(db: Database): void {
   // Add project column if table already exists without it
   try {
     db.exec(`ALTER TABLE channel_agents ADD COLUMN project TEXT NOT NULL DEFAULT ''`);
+  } catch {
+    // Column already exists
+  }
+
+  // Add provider column if table already exists without it
+  try {
+    db.exec(`ALTER TABLE channel_agents ADD COLUMN provider TEXT NOT NULL DEFAULT 'copilot'`);
   } catch {
     // Column already exists
   }
@@ -404,25 +412,41 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "forbidden: local access only" }, 403);
         }
         const body = await parseBody(req);
-        const { channel, agent_id, model, project } = body;
+        const { channel, agent_id, provider, model, project } = body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
         }
 
-        const agentModel = model || "claude-sonnet-4.5";
+        // Validate provider (must be copilot, openai, or anthropic)
+        const validProviders = ["copilot", "openai", "anthropic"];
+        const agentProvider = (provider || "copilot").toLowerCase();
+        if (!validProviders.includes(agentProvider)) {
+          return json(
+            { ok: false, error: `Invalid provider: ${provider}. Must be one of: copilot, openai, anthropic` },
+            400,
+          );
+        }
+
+        // Validate model (must not be empty)
+        const agentModel = (model || "default").trim();
+        if (!agentModel) {
+          return json({ ok: false, error: "model cannot be empty" }, 400);
+        }
+
         const agentProject = project || "";
 
         try {
           db.run(
-            `INSERT INTO channel_agents (channel, agent_id, model, project, active)
-             VALUES (?, ?, ?, ?, 1)
+            `INSERT INTO channel_agents (channel, agent_id, provider, model, project, active)
+             VALUES (?, ?, ?, ?, ?, 1)
              ON CONFLICT(channel, agent_id) DO UPDATE SET
+               provider = excluded.provider,
                model = excluded.model,
                project = excluded.project,
                active = 1,
                updated_at = strftime('%s', 'now')`,
-            [channel, agent_id, agentModel, agentProject],
+            [channel, agent_id, agentProvider, agentModel, agentProject],
           );
         } catch (error) {
           return json({ ok: false, error: String(error) }, 500);
@@ -432,6 +456,7 @@ export function registerAgentRoutes(
         workerManager.startAgent({
           channel,
           agentId: agent_id,
+          provider: agentProvider,
           model: agentModel,
           active: true,
           project: agentProject,
@@ -442,6 +467,7 @@ export function registerAgentRoutes(
           agent: {
             channel,
             agent_id,
+            provider: agentProvider,
             model: agentModel,
             project: agentProject,
             active: true,

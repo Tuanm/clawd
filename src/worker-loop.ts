@@ -10,7 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent, type AgentConfig } from "./agent/src/agent/agent";
-import { getToken } from "./agent/src/api/client";
+import { createProvider } from "./agent/src/api/factory";
 import { setProjectHash, runWithAgentContext } from "./agent/src/tools/tools";
 import { initializeSandbox } from "./agent/src/utils/sandbox";
 import { setDebug } from "./agent/src/utils/debug";
@@ -55,6 +55,7 @@ interface PollResult {
 export interface WorkerLoopConfig {
   channel: string;
   agentId: string;
+  provider?: string;
   model: string;
   projectRoot: string;
   chatApiUrl: string;
@@ -346,7 +347,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
 
   /** Execute a prompt using the in-process Agent */
   private async executePrompt(prompt: string, sessionName: string): Promise<{ success: boolean; output: string }> {
-    const { chatApiUrl, channel, agentId, model, projectRoot } = this.config;
+    const { chatApiUrl, channel, agentId, provider, model, projectRoot } = this.config;
 
     const projectHash = `${channel}_${agentId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
     const resolvedProjectRoot = resolve(projectRoot);
@@ -379,18 +380,9 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
           // Load CLAWD.md context
           const clawdContext = this.loadClawdInstructions();
 
-          // Get GitHub token
-          const token = getToken();
-          if (!token) {
-            this.log("No GitHub token found");
-            return {
-              success: false,
-              output: "No GitHub token found. Run: gh auth login && gh auth refresh -s copilot",
-            };
-          }
-
           // Create agent config
           const agentConfig: AgentConfig = {
+            provider,
             model,
             maxIterations: 0, // Unlimited for worker mode
             additionalContext: clawdContext || undefined,
@@ -398,17 +390,18 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               process.stdout.write(token);
             },
             onToolCall: (name, args) => {
-              this.log(`Tool: ${name}`);
+              this.log(`Tool: ${name} ${JSON.stringify(args)}`);
             },
             onToolResult: (name, result) => {
-              this.log(`Tool result: ${name} ${result.success ? "ok" : "err"}`);
+              this.log(`Tool result: ${name} ${result.success ? "ok" : "err: " + result.error}`);
             },
           };
 
           // Create agent
           let agent: Agent | null = null;
           try {
-            agent = new Agent(token, agentConfig);
+            const llmProvider = createProvider(provider);
+            agent = new Agent(llmProvider, agentConfig);
 
             // Create and register clawd-chat plugin for chat integration
             const pluginConfig: ClawdChatConfig = {

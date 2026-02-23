@@ -1,5 +1,6 @@
 import type { ServerWebSocket } from "bun";
 import { getAgent, getMessageSeenBy, type Message, type SlackMessage, toSlackMessage } from "./database";
+import { isDebugEnabled } from "../agent/src/utils/debug";
 
 interface WebSocketData {
   userId: string;
@@ -10,16 +11,21 @@ const clients = new Set<ServerWebSocket<WebSocketData>>();
 // Track multi-channel subscriptions per client (ws.data can only hold simple types)
 const clientChannels = new WeakMap<ServerWebSocket<WebSocketData>, Set<string>>();
 
+function wsDebug(...args: unknown[]) {
+  if (!isDebugEnabled()) return;
+  console.log("[WS]", ...args);
+}
+
 export function handleWebSocketOpen(ws: ServerWebSocket<WebSocketData>) {
   clients.add(ws);
   clientChannels.set(ws, new Set());
-  console.log(`[WS] Client connected (${clients.size} total)`);
+  wsDebug(`Client connected (${clients.size} total)`);
 }
 
 export function handleWebSocketClose(ws: ServerWebSocket<WebSocketData>) {
   clients.delete(ws);
   clientChannels.delete(ws);
-  console.log(`[WS] Client disconnected (${clients.size} total)`);
+  wsDebug(`Client disconnected (${clients.size} total)`);
 }
 
 /** Check if a client is subscribed to a channel */
@@ -153,7 +159,7 @@ export function broadcastMessageSeen(channel: string, messageTs: string, agentId
     is_sleeping: agent?.is_sleeping === 1,
   });
 
-  console.log(`[WS] Broadcasting message_seen: agent=${agentId}, message_ts=${messageTs}, clients=${clients.size}`);
+  wsDebug(`Broadcasting message_seen: agent=${agentId}, message_ts=${messageTs}, clients=${clients.size}`);
 
   for (const client of clients) {
     if (isSubscribed(client, channel)) {
@@ -173,7 +179,7 @@ export function broadcastAgentStreaming(channel: string, agentId: string, isStre
     avatar_color: agent?.avatar_color || "#D97853",
   });
 
-  console.log(`[WS] Broadcasting agent_streaming: agent=${agentId}, streaming=${isStreaming}, clients=${clients.size}`);
+  wsDebug(`Broadcasting agent_streaming: agent=${agentId}, streaming=${isStreaming}, clients=${clients.size}`);
 
   for (const client of clients) {
     if (isSubscribed(client, channel)) {

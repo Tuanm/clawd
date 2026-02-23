@@ -10,7 +10,9 @@
  * - Hook system for tool event handling
  */
 
-import { CopilotClient, type Message, type ToolCall, type CompletionRequest } from "../api/client";
+import type { Message, ToolCall, CompletionRequest } from "../api/client";
+import type { LLMProvider } from "../api/providers";
+import { createProvider } from "../api/factory";
 import { getSessionManager, SessionManager, type Session } from "../session/manager";
 import { CheckpointManager, type Checkpoint } from "../session/checkpoint";
 import { toolDefinitions, executeTools, type ToolResult, getSandboxProjectRoot } from "../tools/tools";
@@ -21,6 +23,7 @@ import { PluginManager, type Plugin } from "../plugins/manager";
 import { ToolPluginManager, type ToolPlugin } from "../tools/plugin";
 import { parseToolArguments, formatToolResult } from "../core/loop";
 import { initializeHooks, destroyHooks } from "../hooks/manager";
+import { isDebugEnabled } from "../utils/debug";
 
 // ============================================================================
 // Colored Logging Helpers
@@ -43,6 +46,7 @@ const logSilentError = (context: string, err: any) => {
 
 export interface AgentConfig {
   model: string;
+  provider?: string; // Provider type: "copilot", "openai", "anthropic"
   systemPrompt?: string;
   additionalContext?: string; // Additional context appended to system prompt (e.g., CLAWD.md)
   maxIterations?: number;
@@ -191,7 +195,7 @@ const DEFAULT_TOKEN_LIMIT_CHECKPOINT = 32000; // Create checkpoint early
 const DEFAULT_COMPACT_KEEP_COUNT = 30;
 
 export class Agent {
-  private client: CopilotClient;
+  private client: LLMProvider;
   private sessions: SessionManager;
   private config: AgentConfig;
   private session: Session | null = null;
@@ -210,8 +214,18 @@ export class Agent {
   private currentCheckpoint: Checkpoint | null = null;
   private token: string; // Store for checkpoint manager
 
-  constructor(token: string, config: AgentConfig) {
-    this.client = new CopilotClient(token);
+  constructor(tokenOrProvider: string | LLMProvider, config: AgentConfig) {
+    // Accept either token (legacy) or provider instance
+    if (typeof tokenOrProvider === "string") {
+      // Legacy mode: create provider from token with optional provider type
+      const providerType = config.provider as "openai" | "anthropic" | "copilot" | undefined;
+      this.client = createProvider(providerType);
+      this.token = tokenOrProvider;
+    } else {
+      // New mode: use provided provider
+      this.client = tokenOrProvider;
+      this.token = ""; // No token when provider is passed directly
+    }
     this.sessions = getSessionManager(); // Use singleton to avoid db lock contention
     this.config = {
       maxIterations: 10,
@@ -220,11 +234,27 @@ export class Agent {
     };
     this.maxContextTokens = config.maxContextTokens || (MODEL_TOKEN_LIMITS[config.model] || 100000) * 0.8; // 80% of model limit
     this.agentId = `agent-${Date.now()}`;
-    this.token = token;
     this.tokenLimitWarning = config.tokenLimitWarning ?? DEFAULT_TOKEN_LIMIT_WARNING;
     this.tokenLimitCritical = config.tokenLimitCritical ?? DEFAULT_TOKEN_LIMIT_CRITICAL;
     this.tokenLimitCheckpoint = DEFAULT_TOKEN_LIMIT_CHECKPOINT;
     this.compactKeepCount = config.compactKeepCount ?? DEFAULT_COMPACT_KEEP_COUNT;
+  }
+
+  // ============================================================================
+  // Model Accessor
+  // ============================================================================
+
+  /**
+   * Get the model to use for LLM requests.
+   * Uses provider's model if available, otherwise falls back to config.
+   */
+  private getModel(): string {
+    // Use provider's model if available (from config.json)
+    if (this.client && "model" in this.client) {
+      return (this.client as any).model;
+    }
+    // Fall back to config model (from CLI args)
+    return this.config.model || "claude-sonnet-4.5";
   }
 
   // ============================================================================
@@ -411,7 +441,7 @@ SUMMARY:`;
     if (!this.plugins) {
       this.plugins = new PluginManager({
         agentId: this.agentId,
-        model: this.config.model,
+        model: this.getModel(),
       });
       // Provide LLM client to plugins for API calls (e.g., summarization)
       this.plugins.setLLMClient(this.client);
@@ -426,6 +456,7 @@ SUMMARY:`;
     // Add MCP servers provided by this plugin
     if (mainPlugin.getMcpServers) {
       const servers = mainPlugin.getMcpServers();
+      console.log(`[Plugin] Registering ${servers.length} MCP server(s) from ${mainPlugin.name}`);
       for (const server of servers) {
         try {
           await this.mcpManager.addServer({
@@ -433,6 +464,7 @@ SUMMARY:`;
             url: server.url,
             transport: server.transport || "http",
           });
+          console.log(`[MCP] Connected to server "${server.name}" at ${server.url}`);
         } catch (err: any) {
           console.error(`[Plugin] Failed to add MCP server ${server.name}: ${err.message}`);
         }
@@ -474,14 +506,25 @@ SUMMARY:`;
 
   private getTools() {
     const tools = [...toolDefinitions];
+    const toolNames = new Set(tools.map((t) => t.function.name));
 
-    // Add MCP tools
+    // Add MCP tools (dedupe)
     const mcpTools = this.mcpManager.getToolDefinitions();
-    tools.push(...mcpTools);
+    for (const tool of mcpTools) {
+      if (!toolNames.has(tool.function.name)) {
+        tools.push(tool);
+        toolNames.add(tool.function.name);
+      }
+    }
 
-    // Add plugin tools (from ToolPlugin interface)
+    // Add plugin tools (dedupe)
     const pluginTools = this.toolPluginManager.getToolDefinitions();
-    tools.push(...pluginTools);
+    for (const tool of pluginTools) {
+      if (!toolNames.has(tool.function.name)) {
+        tools.push(tool);
+        toolNames.add(tool.function.name);
+      }
+    }
 
     return tools;
   }
@@ -504,8 +547,9 @@ SUMMARY:`;
 
     let result: ToolResult;
 
-    if (toolCall.function.name.startsWith("mcp_")) {
-      // MCP tool
+    // Check if it's an MCP tool by checking if MCP manager knows about it
+    if (this.mcpManager.hasTool(toolCall.function.name)) {
+      // MCP tool (native names - no prefix needed)
       const mcpResult = await this.mcpManager.executeMCPTool(toolCall.function.name, transformedArgs);
       result = {
         success: mcpResult.success,
@@ -791,7 +835,7 @@ SUMMARY:`;
   // ============================================================================
 
   startSession(name: string): Session {
-    this.session = this.sessions.getOrCreateSession(name, this.config.model);
+    this.session = this.sessions.getOrCreateSession(name, this.getModel());
 
     // Initialize checkpoint manager for this session
     const sessionDir = `${process.env.HOME}/.clawd/sessions/${this.session.id}`;
@@ -799,7 +843,7 @@ SUMMARY:`;
       sessionId: this.session.id,
       sessionDir,
       token: this.token,
-      model: this.config.model,
+      model: this.getModel(),
     });
 
     // Load latest checkpoint if exists
@@ -1065,8 +1109,12 @@ SUMMARY:`;
         messages = this.validateToolCallPairs(messages);
 
         // Make request
+        const toolNames = tools.map((t) => t.function.name);
+        if (isDebugEnabled()) {
+          console.log(`[Tools] Total tools for API: ${toolNames.length} - ${toolNames.join(", ")}`);
+        }
         const request: CompletionRequest = {
-          model: this.config.model,
+          model: this.getModel(),
           messages,
           tools,
           tool_choice: "auto",
@@ -1491,7 +1539,9 @@ SUMMARY:`;
             // Notify onToolResult AFTER execution
             try {
               if (this.config.verbose) {
-                console.log(`[Tool] ${toolCall.function.name}(${JSON.stringify(result.args)})`);
+                if (isDebugEnabled()) {
+                  console.log(`[Tool] ${toolCall.function.name}(${JSON.stringify(result.args)})`);
+                }
                 console.log(
                   `[Result] ${result.result.success ? "✓" : "✗"} ${(result.result.output || "").slice(0, 100)}...`,
                 );
@@ -1560,7 +1610,9 @@ SUMMARY:`;
         // No content and no tool calls - check if we just completed tools
         // If we executed tools in the previous iteration, an empty response likely means "done"
         if (toolCallHistory.length > 0 && iterations > 1) {
-          console.log("[Agent] Empty response after tool execution - task likely complete");
+          if (isDebugEnabled()) {
+            console.log("[Agent] Empty response after tool execution - task likely complete");
+          }
           finalContent = ""; // No final message, but task completed
           break;
         }
@@ -1607,7 +1659,7 @@ SUMMARY:`;
     let content = "";
 
     const request: CompletionRequest = {
-      model: this.config.model,
+      model: this.getModel(),
       messages: [{ role: "user", content: message }],
       stream: true,
     };
