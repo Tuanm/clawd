@@ -2641,6 +2641,107 @@ body {
   color: var(--text-muted);
 }
 
+/* Textarea wrapper for layered highlighting */
+.composer-textarea-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.composer-textarea-wrap .composer-raw-textarea {
+  position: relative;
+  background: transparent;
+  z-index: 2;
+}
+
+/* Highlight layer behind textarea */
+.composer-highlight-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+  border: none;
+  background: hsl(var(--text) / 3%);
+  border-radius: 8px;
+}
+
+.composer-highlight-layer code {
+  font-family: inherit;
+  color: hsl(var(--text));
+}
+
+/* Prism markdown token colors */
+.composer-highlight-layer .token.bold,
+.composer-highlight-layer .token.strong {
+  font-weight: bold;
+}
+
+.composer-highlight-layer .token.italic,
+.composer-highlight-layer .token.em {
+  font-style: italic;
+}
+
+.composer-highlight-layer .token.strikethrough {
+  text-decoration: line-through;
+}
+
+.composer-highlight-layer .token.url,
+.composer-highlight-layer .token.url-reference {
+  color: hsl(210 100% 40%);
+}
+
+.composer-highlight-layer .token.code {
+  background: hsl(var(--text) / 8%);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+}
+
+.composer-highlight-layer .token.code-snippet {
+  background: hsl(var(--text) / 8%);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+}
+
+.composer-highlight-layer .token.list {
+  color: hsl(var(--accent));
+}
+
+.composer-highlight-layer .token.blockquote {
+  color: hsl(var(--text) / 70%);
+  font-style: italic;
+}
+
+.composer-highlight-layer .token.title {
+  font-weight: bold;
+  font-size: 1.1em;
+}
+
+.composer-highlight-layer .token.hr {
+  color: hsl(var(--text) / 30%);
+}
+
+/* Show highlight mode */
+.composer-textarea-wrap.show-highlight .composer-raw-textarea {
+  color: transparent;
+  caret-color: hsl(var(--text));
+  background: hsl(var(--text) / 3%);
+  border-radius: 8px;
+}
+
 /* Format toggle button */
 .format-toggle.active {
   color: var(--accent-color);

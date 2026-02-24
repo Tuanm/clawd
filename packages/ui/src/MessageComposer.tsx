@@ -1,5 +1,15 @@
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import Prism from "prismjs";
+import "prismjs/components/prism-markdown";
+
+// Highlight markdown syntax
+function highlightMarkdown(text: string): string {
+  if (!text) return "";
+  const grammar = Prism.languages.markdown || Prism.languages.md;
+  if (!grammar) return text;
+  return Prism.highlight(text, grammar, "markdown");
+}
 
 // Copy icon for context menu
 function CopyIcon() {
@@ -466,17 +476,27 @@ export default function MessageComposer({
           </div>
         )}
 
-        {/* Plain textarea */}
-        <textarea
-          ref={textareaRef}
-          className="composer-raw-textarea"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          onContextMenu={handleTextareaContextMenu}
-          placeholder="Reply..."
-        />
+        {/* Textarea with optional markdown highlighting */}
+        <div className={`composer-textarea-wrap ${showToolbar ? "show-highlight" : ""}`}>
+          {/* Highlighted markdown layer (behind textarea) */}
+          {showToolbar && (
+            <pre className="composer-highlight-layer">
+              <code dangerouslySetInnerHTML={{ __html: highlightMarkdown(text) + "\n" }} />
+            </pre>
+          )}
+          {/* Actual textarea (on top) */}
+          <textarea
+            ref={textareaRef}
+            className="composer-raw-textarea"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onContextMenu={handleTextareaContextMenu}
+            placeholder={showToolbar ? "Write with markdown..." : "Reply..."}
+            style={showToolbar ? { color: "transparent", caretColor: "var(--text)" } : undefined}
+          />
+        </div>
 
         {/* File attachments preview */}
         {attachments.length > 0 && (
