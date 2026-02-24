@@ -2882,6 +2882,333 @@ registerTool(
 );
 
 // ============================================================================
+// Tmux Tools
+// ============================================================================
+
+/**
+ * Execute a tmux command with proper environment
+ */
+async function execTmux(args: string[]): Promise<{ success: boolean; output: string; error?: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn("tmux", args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, TERM: "xterm-256color" },
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve({ success: true, output: stdout.trim() });
+      } else {
+        resolve({ success: false, output: stdout.trim(), error: stderr.trim() || `tmux exited with code ${code}` });
+      }
+    });
+
+    proc.on("error", (err) => {
+      resolve({ success: false, output: "", error: err.message });
+    });
+  });
+}
+
+/**
+ * Get the project-specific tmux socket name
+ */
+function getTmuxSocket(): string {
+  const projectRoot = getSandboxProjectRoot();
+  // Create a safe socket name from project path hash
+  const hash = projectRoot.replace(/[^a-zA-Z0-9]/g, "_").slice(-30);
+  return `clawd_${hash}`;
+}
+
+/**
+ * Run command in tmux session (new or existing)
+ */
+registerTool(
+  "tmux_send_command",
+  "Send a command to a tmux session. Creates session if it doesn't exist. Use this to run long-running processes, servers, or interactive programs in a persistent tmux session.",
+  {
+    session: { type: "string", description: "Session name (alphanumeric, no spaces)" },
+    command: { type: "string", description: "Command to run" },
+    cwd: { type: "string", description: "Working directory (defaults to project root)" },
+  },
+  ["session", "command"],
+  async ({ session, command, cwd }) => {
+    // Validate session name
+    if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
+      return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)" };
+    }
+
+    const projectRoot = getSandboxProjectRoot();
+    const workDir = cwd || projectRoot;
+    const socket = getTmuxSocket();
+
+    // Check if session exists
+    const listResult = await execTmux(["-L", socket, "list-sessions", "-F", "#{session_name}"]);
+    const sessions = listResult.success ? listResult.output.split("\n").filter(Boolean) : [];
+    const sessionExists = sessions.includes(session);
+
+    // Build the command - cd to workdir first
+    const cdCmd = `cd "${workDir}" && ${command}`;
+
+    if (!sessionExists) {
+      // Create new session and send command
+      const createResult = await execTmux(["-L", socket, "new-session", "-d", "-s", session, cdCmd]);
+      if (!createResult.success) {
+        return { success: false, error: createResult.error || "Failed to create session" };
+      }
+      return {
+        success: true,
+        output: JSON.stringify({
+          session,
+          status: "created",
+          command: command.slice(0, 100) + (command.length > 100 ? "..." : ""),
+          cwd: workDir,
+        }),
+      };
+    } else {
+      // Send command to existing session (run in the default pane)
+      const sendResult = await execTmux(["-L", socket, "send-keys", "-t", session, cdCmd, "C-m"]);
+      if (!sendResult.success) {
+        return { success: false, error: sendResult.error || "Failed to send command" };
+      }
+      return {
+        success: true,
+        output: JSON.stringify({
+          session,
+          status: "command_sent",
+          command: command.slice(0, 100) + (command.length > 100 ? "..." : ""),
+        }),
+      };
+    }
+  },
+);
+
+/**
+ * List tmux sessions for this project
+ */
+registerTool(
+  "tmux_list",
+  "List all tmux sessions for this project. Shows session names and their current state.",
+  {},
+  [],
+  async () => {
+    const socket = getTmuxSocket();
+
+    // List sessions with details
+    const result = await execTmux([
+      "-L",
+      socket,
+      "list-sessions",
+      "-F",
+      "#{session_name}|#{session_created}|#{session_windows}",
+    ]);
+
+    if (!result.success || !result.output) {
+      return {
+        success: true,
+        output: JSON.stringify({ sessions: [], message: "No tmux sessions for this project" }),
+      };
+    }
+
+    const sessions = result.output
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [name, created, windows] = line.split("|");
+        return { name, created, windows };
+      });
+
+    return {
+      success: true,
+      output: JSON.stringify({ sessions }),
+    };
+  },
+);
+
+/**
+ * Kill a tmux session
+ */
+registerTool(
+  "tmux_kill",
+  "Kill a tmux session. This terminates the session and all processes running in it.",
+  {
+    session: { type: "string", description: "Session name to kill" },
+  },
+  ["session"],
+  async ({ session }) => {
+    const socket = getTmuxSocket();
+
+    const result = await execTmux(["-L", socket, "kill-session", "-t", session]);
+
+    if (!result.success) {
+      return { success: false, error: result.error || "Failed to kill session" };
+    }
+
+    return {
+      success: true,
+      output: JSON.stringify({ session, status: "killed" }),
+    };
+  },
+);
+
+/**
+ * Capture tmux pane output
+ */
+registerTool(
+  "tmux_capture",
+  "Capture the visible output from a tmux session pane. Useful for seeing the output of long-running programs or interactive sessions.",
+  {
+    session: { type: "string", description: "Session name" },
+    clear: { type: "boolean", description: "Clear the pane history after capturing" },
+  },
+  ["session"],
+  async ({ session, clear = false }) => {
+    const socket = getTmuxSocket();
+
+    // Capture pane content
+    const captureArgs = ["-L", socket, "capture-pane", "-t", session, "-p"];
+    if (clear) {
+      captureArgs.push("-C"); // Clear history after capture
+    }
+
+    const result = await execTmux(captureArgs);
+
+    if (!result.success) {
+      return { success: false, error: result.error || "Failed to capture pane" };
+    }
+
+    return {
+      success: true,
+      output: JSON.stringify({
+        session,
+        output: result.output,
+        truncated: result.output.length > 50000,
+      }),
+    };
+  },
+);
+
+/**
+ * Send raw input to tmux session
+ */
+registerTool(
+  "tmux_send_input",
+  "Send raw keystrokes to a tmux session. Use this to interact with interactive programs (vim, nano, less, etc.). Send special keys using: Enter= C-m, Tab= C-i, Esc= C-[, Arrow keys= A-up, A-down, etc.",
+  {
+    session: { type: "string", description: "Session name" },
+    keys: {
+      type: "string",
+      description: "Keys to send (supports special keys: C-m=Enter, C-i=Tab, C-[=Esc, A-up=Up arrow, etc.)",
+    },
+  },
+  ["session", "keys"],
+  async ({ session, keys }) => {
+    const socket = getTmuxSocket();
+
+    // Convert special key notation
+    let parsedKeys = keys
+      .replace(/C-m/gi, "Enter")
+      .replace(/C-i/gi, "Tab")
+      .replace(/C-\[/gi, "Escape")
+      .replace(/C-c/gi, "C-c")
+      .replace(/C-d/gi, "C-d")
+      .replace(/A-/gi, "A-");
+
+    const result = await execTmux(["-L", socket, "send-keys", "-t", session, parsedKeys, "Enter"]);
+
+    if (!result.success) {
+      return { success: false, error: result.error || "Failed to send keys" };
+    }
+
+    return {
+      success: true,
+      output: JSON.stringify({
+        session,
+        keys_sent: keys,
+        status: "sent",
+      }),
+    };
+  },
+);
+
+/**
+ * Create a new window in a tmux session
+ */
+registerTool(
+  "tmux_new_window",
+  "Create a new window in an existing tmux session.",
+  {
+    session: { type: "string", description: "Session name" },
+    window: { type: "string", description: "Window name (optional)" },
+    command: { type: "string", description: "Command to run in window (optional)" },
+  },
+  ["session"],
+  async ({ session, window, command }) => {
+    const socket = getTmuxSocket();
+
+    const args = ["-L", socket, "new-window", "-t", session];
+    if (window) args.push("-n", window);
+    if (command) args.push(command);
+
+    const result = await execTmux(args);
+
+    if (!result.success) {
+      return { success: false, error: result.error || "Failed to create window" };
+    }
+
+    return {
+      success: true,
+      output: JSON.stringify({
+        session,
+        window: window || result.output.trim(),
+        status: "created",
+      }),
+    };
+  },
+);
+
+/**
+ * Kill a window in a tmux session
+ */
+registerTool(
+  "tmux_kill_window",
+  "Kill a specific window in a tmux session.",
+  {
+    session: { type: "string", description: "Session name" },
+    window: { type: "string", description: "Window name or index (e.g., 0, 1, or window name)" },
+  },
+  ["session", "window"],
+  async ({ session, window }) => {
+    const socket = getTmuxSocket();
+
+    const result = await execTmux(["-L", socket, "kill-window", "-t", `${session}:${window}`]);
+
+    if (!result.success) {
+      return { success: false, error: result.error || "Failed to kill window" };
+    }
+
+    return {
+      success: true,
+      output: JSON.stringify({
+        session,
+        window,
+        status: "killed",
+      }),
+    };
+  },
+);
+
+// ============================================================================
 // Sub-Agent Cleanup
 // ============================================================================
 
