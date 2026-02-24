@@ -22,6 +22,8 @@ export interface AgentConfig {
   active: boolean;
   /** Per-agent project root */
   project?: string;
+  /** Whether the agent is sleeping (paused) */
+  sleeping?: boolean;
 }
 
 export class WorkerManager {
@@ -81,10 +83,17 @@ export class WorkerManager {
 
     const loop = new WorkerLoop(loopConfig);
     this.loops.set(key, loop);
+
+    // Set sleeping state before starting (if was sleeping before restart)
+    if (agent.sleeping) {
+      loop.setSleeping(true);
+      console.log(`[WorkerManager] Agent ${key} starting in sleep mode`);
+    }
+
     loop.start();
 
     console.log(
-      `[WorkerManager] Started agent: ${key} (provider: ${agent.provider || "copilot"}, model: ${agent.model})`,
+      `[WorkerManager] Started agent: ${key} (provider: ${agent.provider || "copilot"}, model: ${agent.model}, sleeping: ${agent.sleeping || false})`,
     );
     return true;
   }
@@ -154,6 +163,7 @@ export class WorkerManager {
           model: a.model || "default",
           active: a.active !== false,
           project: a.project || "",
+          sleeping: a.sleeping === true,
         }));
       }
     } catch (error) {
