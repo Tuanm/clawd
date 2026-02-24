@@ -13,17 +13,47 @@ import { dirname, extname, join } from "node:path";
 import { parseArgs } from "node:util";
 
 // Check for --help BEFORE importing other modules (to avoid database initialization)
-const parsedArgs = parseArgs({
-  args: Bun.argv.slice(2),
-  options: {
-    port: { type: "string", short: "p" },
-    "no-browser": { type: "boolean" },
-    help: { type: "boolean", short: "h" },
-    debug: { type: "boolean" },
-    yolo: { type: "boolean" },
-  },
-  allowPositionals: false,
-});
+let parsedArgs: ReturnType<typeof parseArgs>;
+try {
+  parsedArgs = parseArgs({
+    args: Bun.argv.slice(2),
+    options: {
+      host: { type: "string" },
+      port: { type: "string", short: "p" },
+      "no-browser": { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+      debug: { type: "boolean" },
+      yolo: { type: "boolean" },
+    },
+    allowPositionals: false,
+  });
+} catch (error: any) {
+  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
+    const match = error.message?.match(/Unknown option '(.+?)'/);
+    const unknownOpt = match ? match[1] : "unknown";
+    console.error(`Error: Unknown option '${unknownOpt}'`);
+    console.error("");
+    console.log(`Claw'd App
+
+Usage: clawd-app [options]
+
+Options:
+  --host <host>                Server host (default: 0.0.0.0)
+  -p, --port <port>           Server port (default: 3456)
+  --no-browser                 Don't open browser on startup
+  --yolo                      Disable sandbox restrictions for agents
+  --debug                     Enable debug logging
+  -h, --help                  Show this help message
+
+Examples:
+  clawd-app
+  clawd-app --host localhost --port 8080
+  clawd-app --no-browser --debug
+`);
+    process.exit(1);
+  }
+  throw error;
+}
 
 if (parsedArgs.values.help) {
   console.log(`Claw'd App
@@ -31,15 +61,16 @@ if (parsedArgs.values.help) {
 Usage: clawd-app [options]
 
 Options:
-  -p, --port <port>            Server port (default: 3456)
+  --host <host>                Server host (default: 0.0.0.0)
+  -p, --port <port>           Server port (default: 3456)
   --no-browser                 Don't open browser on startup
-  --yolo                       Disable sandbox restrictions for agents
-  --debug                      Enable debug logging
-  -h, --help                   Show this help message
+  --yolo                      Disable sandbox restrictions for agents
+  --debug                     Enable debug logging
+  -h, --help                  Show this help message
 
 Examples:
   clawd-app
-  clawd-app --port 8080
+  clawd-app --host localhost --port 8080
   clawd-app --no-browser --debug
 `);
   process.exit(0);
@@ -137,6 +168,7 @@ import {
 // Initialize
 // ============================================================================
 
+const HOST = config.host;
 const PORT = config.port;
 
 // Database is initialized at module load time in database.ts (before prepared statements)
@@ -306,6 +338,7 @@ async function parseBody(req: Request): Promise<Record<string, any>> {
 // ============================================================================
 
 const server = Bun.serve({
+  hostname: HOST,
   port: PORT,
   maxRequestBodySize: 100 * 1024 * 1024,
   reusePort: true,
@@ -1112,8 +1145,8 @@ console.log(`
 +---------------------------------------------------------------+
 |  Claw'd App                                                   |
 +---------------------------------------------------------------+
-|  HTTP:      http://localhost:${PORT}                             |
-|  WebSocket: ws://localhost:${PORT}/ws                            |
+|  HTTP:      http://${HOST}:${PORT}                             |
+|  WebSocket: ws://${HOST}:${PORT}/ws                            |
 |  UI:        ${hasEmbeddedUI ? `embedded (${embeddedUIFileCount} files, ${(embeddedUITotalSize / 1024 / 1024).toFixed(1)}MB)` : UI_DIR ? UI_DIR : "(not found)"}
 |  Agent:     in-process
 +---------------------------------------------------------------+

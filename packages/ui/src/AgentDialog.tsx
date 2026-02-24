@@ -358,7 +358,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
               <input
                 type="text"
                 className="agent-field-input"
-                placeholder="Provider (copilot/openai/anthropic)"
+                placeholder="Provider (copilot/openai/anthropic/ollama)"
                 value={newProvider}
                 onChange={(e) => setNewProvider(e.target.value)}
                 onKeyDown={(e) => {

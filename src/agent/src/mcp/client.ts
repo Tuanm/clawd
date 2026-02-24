@@ -385,21 +385,27 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
       this.tools = [];
     }
 
-    // Fetch resources
+    // Fetch resources (optional - may not be implemented)
     try {
       const result = await this.request("resources/list", {});
       this.resources = result.resources || [];
     } catch (err: any) {
-      console.error(`[MCP] ${this.name}: Failed to fetch resources: ${err.message}`);
+      // Resources are optional - only log in debug mode
+      if (isDebugEnabled()) {
+        console.log(`[MCP] ${this.name}: No resources (optional): ${err.message}`);
+      }
       this.resources = [];
     }
 
-    // Fetch prompts
+    // Fetch prompts (optional - may not be implemented)
     try {
       const result = await this.request("prompts/list", {});
       this.prompts = result.prompts || [];
     } catch (err: any) {
-      console.error(`[MCP] ${this.name}: Failed to fetch prompts: ${err.message}`);
+      // Prompts are optional - only log in debug mode
+      if (isDebugEnabled()) {
+        console.log(`[MCP] ${this.name}: No prompts (optional): ${err.message}`);
+      }
       this.prompts = [];
     }
   }
@@ -588,6 +594,8 @@ export class MCPManager extends EventEmitter {
       serverName = this.findServerForTool(toolName);
       actualToolName = toolName;
       if (!serverName) {
+        const availableTools = this.getAllTools().map((t) => t.tool.name);
+        console.error(`[MCP] Unknown chat tool: ${toolName}. Available: ${availableTools.join(", ")}`);
         return { success: false, error: `Unknown tool: ${toolName}` };
       }
     } else {
@@ -599,10 +607,18 @@ export class MCPManager extends EventEmitter {
       }
     }
 
+    if (isDebugEnabled()) {
+      console.log(`[MCP] Executing tool: ${actualToolName} on server: ${serverName} with args:`, args);
+    }
+
     try {
       const result = await this.callTool(serverName, actualToolName, args);
+      if (isDebugEnabled()) {
+        console.log(`[MCP] Tool result:`, result);
+      }
       return { success: true, result };
     } catch (error: any) {
+      console.error(`[MCP] Tool error: ${toolName}:`, error.message);
       return { success: false, error: error.message };
     }
   }

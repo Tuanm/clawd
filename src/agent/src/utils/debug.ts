@@ -2,11 +2,11 @@
  * Debug Utilities
  *
  * Provides runtime-configurable debug logging.
- * Can be enabled via --debug flag or setDebug() function.
+ * Can be enabled via --debug flag, CLAWD_DEBUG env var, or setDebug() function.
  */
 
 // Global debug state (set at runtime)
-let debugEnabled = false;
+let debugEnabled = !!process.env.CLAWD_DEBUG;
 
 /**
  * Enable or disable debug mode at runtime

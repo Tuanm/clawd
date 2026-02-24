@@ -447,15 +447,17 @@ export class CopilotClient extends EventEmitter {
               let existing = currentToolCalls.get(idx);
 
               if (!existing) {
+                // Use provided id if available (Copilot/OpenAI), otherwise use index (Ollama)
+                // This handles both cases: Copilot sends id, Ollama doesn't
+                const toolId = tc.id || String(idx);
                 existing = {
-                  id: tc.id || "",
+                  id: toolId,
                   type: "function",
                   function: { name: "", arguments: "" },
                 };
                 currentToolCalls.set(idx, existing);
               }
 
-              if (tc.id) existing.id = tc.id;
               if (tc.function?.name) existing.function.name = tc.function.name;
               if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
             }

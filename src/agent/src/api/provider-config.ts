@@ -10,7 +10,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { ProviderConfig, CopilotProviderConfig, Config, ProviderType } from "./providers";
+import type { ProviderConfig, CopilotProviderConfig, OllamaProviderConfig, Config, ProviderType } from "./providers";
 
 // ============================================================================
 // Config Caching
@@ -71,9 +71,9 @@ export function clearConfigCache(): void {
 function getDefaultConfig(): Config {
   return {
     providers: {
-      anthropic: {
-        base_url: "https://api.anthropic.com",
-        models: { default: "claude-sonnet-4-6" },
+      ollama: {
+        base_url: "https://ollama.com",
+        models: { default: "glm-5:cloud" },
       },
     },
   };
@@ -86,7 +86,10 @@ function getDefaultConfig(): Config {
 export function getSelectedProvider(): ProviderType {
   const config = loadConfig();
 
-  // Check if any provider is configured
+  // Check if any provider is configured (order matters - first match wins)
+  if (config.providers?.ollama?.base_url) {
+    return "ollama";
+  }
   if (config.providers?.copilot?.enabled !== false && config.providers?.copilot?.token) {
     return "copilot";
   }
@@ -104,11 +107,16 @@ export function getSelectedProvider(): ProviderType {
 /**
  * Get provider configuration for a specific provider type
  */
-export function getProviderConfig(providerType: ProviderType): ProviderConfig | CopilotProviderConfig | undefined {
+export function getProviderConfig(
+  providerType: ProviderType,
+): ProviderConfig | CopilotProviderConfig | OllamaProviderConfig | undefined {
   const config = loadConfig();
   const provider = config.providers?.[providerType];
   if (providerType === "copilot") {
     return provider as CopilotProviderConfig | undefined;
+  }
+  if (providerType === "ollama") {
+    return provider as OllamaProviderConfig | undefined;
   }
   return provider as ProviderConfig | undefined;
 }
@@ -155,9 +163,10 @@ export function getModelForProvider(providerType: ProviderType): string {
 
   // Default models
   const defaultModels: Record<ProviderType, string> = {
-    anthropic: "MiniMax-M2.1",
+    anthropic: "claude-sonnet-4-6",
     openai: "gpt-4o",
-    copilot: "claude-opus-4.6",
+    copilot: "claude-sonnet-4.6",
+    ollama: "glm-5:cloud",
   };
 
   return defaultModels[providerType];

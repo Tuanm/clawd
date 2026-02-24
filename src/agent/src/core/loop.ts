@@ -12,6 +12,7 @@
 import { EventEmitter } from "node:events";
 import type { Message, ToolCall, ToolDefinition, CompletionResponse } from "../api/client";
 import type { ToolResult } from "../tools/tools";
+import { isDebugEnabled } from "../utils/debug";
 
 // ============================================================================
 // Types
@@ -190,6 +191,11 @@ export class AgenticLoop extends EventEmitter {
           tools,
           this.config.model,
         );
+
+        // Debug: Log LLM response
+        if (isDebugEnabled()) {
+          console.log(`[LLM] Response:`, JSON.stringify(assistantMessage, null, 2));
+        }
 
         // Check abort after LLM call
         if (this.aborted) break;

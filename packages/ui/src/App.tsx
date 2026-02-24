@@ -54,12 +54,6 @@ interface Props {
 
 const API_URL = "";
 
-// Check if accessing from localhost (enables agent management features)
-const isLocalAccess = () => {
-  const hostname = window.location.hostname;
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-};
-
 // Header Clawd SVG (smaller version)
 function ClawdLogo({ sleeping = false, hasUnread = false }: { sleeping?: boolean; hasUnread?: boolean }) {
   const color = sleeping ? "hsl(0 0% 60%)" : "hsl(15 63.1% 59.6%)";
@@ -1686,9 +1680,9 @@ export default function App({ channel: initialChannel }: Props) {
               ))}
           </div>
           <div
-            className={`connection-indicator ${!connected ? "reconnecting" : ""} ${isLocalAccess() ? "clickable" : ""}`}
+            className={`connection-indicator ${!connected ? "reconnecting" : ""} clickable`}
             title="Agent"
-            onClick={isLocalAccess() ? () => setShowAgentDialog(true) : undefined}
+            onClick={() => setShowAgentDialog(true)}
           >
             <CopilotLogo />
           </div>

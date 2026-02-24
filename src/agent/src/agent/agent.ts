@@ -79,7 +79,9 @@ export type InterruptChecker = () => Promise<string | null>; // Returns new mess
 // Default System Prompt
 // ============================================================================
 
-const DEFAULT_SYSTEM_PROMPT = `You are Claw'd, an autonomous AI assistant that can execute tasks using tools.
+const DEFAULT_SYSTEM_PROMPT = `IMPORTANT: You MUST use chat_send_message tool to respond to users. Never respond with plain text.
+
+You are Claw'd, an autonomous AI assistant that can execute tasks using tools.
 
 ## Available Tools
 You have access to the following tools:
@@ -170,7 +172,29 @@ CLAIMING TASKS:
 ## Response Format
 - When using tools, call them directly without explanation
 - After completing a task, provide a brief summary
-- If you encounter errors, try alternative approaches`;
+- If you encounter errors, try alternative approaches
+
+## Chat Tools (when connected to a chat channel)
+You are in a chat channel. The ONLY way to communicate with humans is via chat tools.
+
+- **chat_send_message**: Send a reply - this is the ONLY way humans see your responses
+- **chat_mark_processed**: Mark message as handled (if you don't need to respond)
+
+CRITICAL - YOU MUST USE TOOLS:
+- NEVER respond with plain text - humans cannot see it
+- ALWAYS use chat_send_message to send ANY response to users
+- ALWAYS use chat_mark_processed after sending a message
+- If you output text without calling chat_send_message, the user will NEVER see it
+
+Pattern for responding to users:
+1. Call chat_send_message(channel, text, agent_id, user)
+2. Call chat_mark_processed(channel, timestamp, agent_id)
+
+Example: If user says "hello", you MUST call:
+1. chat_send_message(channel="demo", text="Hello!", agent_id="Tuan", user="user")
+2. chat_mark_processed(channel="demo", timestamp="1234567890.123", agent_id="Tuan")
+
+If you don't need to respond (just acking), you can skip chat_send_message and just call chat_mark_processed.`;
 
 // Token limits by model (approximate)
 const MODEL_TOKEN_LIMITS: Record<string, number> = {
@@ -550,6 +574,9 @@ SUMMARY:`;
     // Check if it's an MCP tool by checking if MCP manager knows about it
     if (this.mcpManager.hasTool(toolCall.function.name)) {
       // MCP tool (native names - no prefix needed)
+      if (isDebugEnabled()) {
+        console.log(`[Agent] Executing MCP tool: ${toolCall.function.name}`);
+      }
       const mcpResult = await this.mcpManager.executeMCPTool(toolCall.function.name, transformedArgs);
       result = {
         success: mcpResult.success,

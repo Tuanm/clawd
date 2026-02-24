@@ -353,24 +353,6 @@ export function registerAgentRoutes(
   // Initialize table
   initAgentsTable(db);
 
-  // Helper to check if request comes from localhost
-  function isLocalRequest(req: Request, bunServer?: any): boolean {
-    if (bunServer && typeof bunServer.requestIP === "function") {
-      const ip = bunServer.requestIP(req);
-      if (ip) {
-        const addr = ip.address;
-        return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
-      }
-    }
-    // Fallback: check URL hostname
-    try {
-      const url = new URL(req.url);
-      return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1";
-    } catch {
-      return false;
-    }
-  }
-
   return (req: Request, url: URL, path: string, bunServer?: any): Response | null => {
     // List agents
     if (path === "/api/app.agents.list") {
@@ -408,9 +390,6 @@ export function registerAgentRoutes(
     // Add agent
     if (path === "/api/app.agents.add" && req.method === "POST") {
       return handleAsync(async () => {
-        if (!isLocalRequest(req, bunServer)) {
-          return json({ ok: false, error: "forbidden: local access only" }, 403);
-        }
         const body = await parseBody(req);
         const { channel, agent_id, provider, model, project } = body;
 
@@ -418,12 +397,12 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "channel and agent_id required" }, 400);
         }
 
-        // Validate provider (must be copilot, openai, or anthropic)
-        const validProviders = ["copilot", "openai", "anthropic"];
+        // Validate provider (must be copilot, openai, anthropic, or ollama)
+        const validProviders = ["copilot", "openai", "anthropic", "ollama"];
         const agentProvider = (provider || "copilot").toLowerCase();
         if (!validProviders.includes(agentProvider)) {
           return json(
-            { ok: false, error: `Invalid provider: ${provider}. Must be one of: copilot, openai, anthropic` },
+            { ok: false, error: `Invalid provider: ${provider}. Must be one of: copilot, openai, anthropic, ollama` },
             400,
           );
         }
@@ -480,9 +459,6 @@ export function registerAgentRoutes(
     // Remove agent
     if (path === "/api/app.agents.remove" && req.method === "POST") {
       return handleAsync(async () => {
-        if (!isLocalRequest(req, bunServer)) {
-          return json({ ok: false, error: "forbidden: local access only" }, 403);
-        }
         const body = await parseBody(req);
         const { channel, agent_id } = body;
 
@@ -503,9 +479,6 @@ export function registerAgentRoutes(
     // Update agent config
     if (path === "/api/app.agents.update" && req.method === "POST") {
       return handleAsync(async () => {
-        if (!isLocalRequest(req, bunServer)) {
-          return json({ ok: false, error: "forbidden: local access only" }, 403);
-        }
         const body = await parseBody(req);
         const { channel, agent_id, model, active, project } = body;
 

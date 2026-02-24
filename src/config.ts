@@ -8,6 +8,8 @@
 import { parseArgs } from "node:util";
 
 export interface AppConfig {
+  /** HTTP server host */
+  host: string;
   /** HTTP server port */
   port: number;
   /** Base URL for the chat API (self) */
@@ -25,6 +27,7 @@ export interface AppConfig {
 /** Parse CLI arguments and build config */
 export function loadConfig(): AppConfig {
   let values: {
+    host?: string;
     port?: string;
     "no-browser"?: boolean;
     help?: boolean;
@@ -36,6 +39,7 @@ export function loadConfig(): AppConfig {
     const parsed = parseArgs({
       args: Bun.argv.slice(2),
       options: {
+        host: { type: "string" },
         port: { type: "string", short: "p" },
         "no-browser": { type: "boolean" },
         help: { type: "boolean", short: "h" },
@@ -62,11 +66,13 @@ export function loadConfig(): AppConfig {
     process.exit(0);
   }
 
+  const host = values.host || process.env.CHAT_HOST || "0.0.0.0";
   const port = parseInt(values.port || process.env.CHAT_PORT || "3456", 10);
 
   return {
+    host,
     port,
-    chatApiUrl: `http://localhost:${port}`,
+    chatApiUrl: `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`,
     openBrowser: !values["no-browser"],
     projectRoot: process.cwd(),
     debug: values.debug || false,
@@ -85,15 +91,16 @@ function printUsage() {
 Usage: clawd-app [options]
 
 Options:
-  -p, --port <port>            Server port (default: 3456)
+  --host <host>               Server host (default: 0.0.0.0)
+  -p, --port <port>           Server port (default: 3456)
   --no-browser                 Don't open browser on startup
   --yolo                       Disable sandbox restrictions for agents
   --debug                      Enable debug logging
-  -h, --help                   Show this help message
+  -h, --help                  Show this help message
 
 Examples:
   clawd-app
-  clawd-app --port 8080
+  clawd-app --host localhost --port 8080
   clawd-app --no-browser --debug
 `);
 }

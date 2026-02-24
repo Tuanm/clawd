@@ -12,8 +12,8 @@ const clients = new Set<ServerWebSocket<WebSocketData>>();
 const clientChannels = new WeakMap<ServerWebSocket<WebSocketData>, Set<string>>();
 
 function wsDebug(...args: unknown[]) {
-  if (!isDebugEnabled()) return;
-  console.log("[WS]", ...args);
+  // Disabled - WS logs are too verbose
+  return;
 }
 
 export function handleWebSocketOpen(ws: ServerWebSocket<WebSocketData>) {

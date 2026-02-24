@@ -107,7 +107,7 @@ export interface LLMProvider {
 // Provider Types
 // ============================================================================
 
-export type ProviderType = "openai" | "anthropic" | "copilot";
+export type ProviderType = "openai" | "anthropic" | "copilot" | "ollama";
 
 export interface ProviderConfig {
   // Common
@@ -119,10 +119,21 @@ export interface ProviderConfig {
     opus?: string;
     [key: string]: string | undefined;
   };
+  // Custom headers for API requests
+  headers?: Record<string, string>;
 }
 
 export interface CopilotProviderConfig {
   token?: string;
+}
+
+export interface OllamaProviderConfig {
+  api_key?: string;
+  base_url?: string;
+  models?: {
+    default?: string;
+    [key: string]: string | undefined;
+  };
 }
 
 export interface Config {
@@ -130,5 +141,6 @@ export interface Config {
     anthropic?: ProviderConfig;
     openai?: ProviderConfig;
     copilot?: CopilotProviderConfig;
+    ollama?: OllamaProviderConfig;
   };
 }
