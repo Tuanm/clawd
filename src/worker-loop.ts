@@ -66,6 +66,7 @@ export interface WorkerLoopConfig {
 export class WorkerLoop {
   private config: WorkerLoopConfig;
   private running = false;
+  private sleeping = false;
   private isProcessing = false;
   private abortController: AbortController | null = null;
 
@@ -79,6 +80,16 @@ export class WorkerLoop {
 
   get isRunning(): boolean {
     return this.running;
+  }
+
+  get isSleeping(): boolean {
+    return this.sleeping;
+  }
+
+  /** Set sleeping state */
+  setSleeping(sleeping: boolean): void {
+    this.sleeping = sleeping;
+    this.log(sleeping ? "Agent sleeping" : "Agent awake");
   }
 
   /** Start the polling loop */
@@ -109,6 +120,12 @@ export class WorkerLoop {
     while (this.running) {
       try {
         if (this.isProcessing) {
+          await Bun.sleep(POLL_INTERVAL);
+          continue;
+        }
+
+        // Skip if agent is sleeping
+        if (this.sleeping) {
           await Bun.sleep(POLL_INTERVAL);
           continue;
         }

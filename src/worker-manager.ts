@@ -106,6 +106,19 @@ export class WorkerManager {
     return true;
   }
 
+  /** Set agent sleeping state */
+  setAgentSleeping(channel: string, agentId: string, sleeping: boolean): boolean {
+    const key = `${channel}:${agentId}`;
+    const loop = this.loops.get(key);
+
+    if (!loop) {
+      return false;
+    }
+
+    loop.setSleeping(sleeping);
+    return true;
+  }
+
   /** Restart an agent (e.g., after model change) */
   async restartAgent(agent: AgentConfig): Promise<boolean> {
     await this.stopAgent(agent.channel, agent.agentId);

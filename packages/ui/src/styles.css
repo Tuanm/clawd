@@ -814,6 +814,17 @@ body {
   opacity: 0.88;
 }
 
+.agent-action-btn--warning {
+  background: none;
+  border: 1px solid hsl(38 92% 50% / 40%);
+  color: hsl(38 92% 50%);
+}
+
+.agent-action-btn--warning:hover:not(:disabled) {
+  background: hsl(38 92% 50% / 10%);
+  border-color: hsl(38 92% 50% / 60%);
+}
+
 .agent-action-btn--danger {
   background: none;
   border: 1px solid hsl(0 72% 51% / 30%);

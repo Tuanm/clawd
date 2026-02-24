@@ -11,6 +11,7 @@ interface Agent {
   model: string;
   project: string;
   active: boolean;
+  sleeping: boolean;
   running: boolean;
   avatar_color: string | null;
 }
@@ -207,6 +208,28 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     [channel, loadAgents],
   );
 
+  const handleToggleSleep = useCallback(
+    async (agentId: string, currentlySleeping: boolean) => {
+      setError(null);
+      try {
+        const res = await fetch(`${API_URL}/api/app.agents.update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel, agent_id: agentId, sleeping: !currentlySleeping }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          await loadAgents();
+        } else {
+          setError(data.error || "Failed to toggle sleep");
+        }
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [channel, loadAgents],
+  );
+
   const loadFolders = useCallback(async (path: string) => {
     setFolderLoading(true);
     try {
@@ -329,10 +352,16 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 readOnly
               />
               <button
+                className={`agent-action-btn ${selectedAgent.sleeping ? "agent-action-btn--accent" : "agent-action-btn--warning"}`}
+                onClick={() => handleToggleSleep(selectedAgent.agent_id, selectedAgent.sleeping)}
+              >
+                {selectedAgent.sleeping ? "Awake" : "Sleep"}
+              </button>
+              <button
                 className="agent-action-btn agent-action-btn--danger"
                 onClick={() => handleRemoveAgent(selectedAgent.agent_id)}
               >
-                Remove
+                Kill
               </button>
             </div>
           )}

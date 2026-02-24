@@ -324,6 +324,7 @@ export function initAgentsTable(db: Database): void {
       model TEXT NOT NULL DEFAULT 'default',
       project TEXT NOT NULL DEFAULT '',
       active INTEGER NOT NULL DEFAULT 1,
+      sleeping INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (strftime('%s', 'now')),
       updated_at TEXT NOT NULL DEFAULT (strftime('%s', 'now')),
       UNIQUE(channel, agent_id)
@@ -381,6 +382,7 @@ export function registerAgentRoutes(
       const enriched = agents.map((a: any) => ({
         ...a,
         active: a.active === 1,
+        sleeping: a.sleeping === 1,
         running: workerManager.isAgentRunning(a.channel, a.agent_id),
       }));
 
@@ -480,7 +482,7 @@ export function registerAgentRoutes(
     if (path === "/api/app.agents.update" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
-        const { channel, agent_id, model, active, project } = body;
+        const { channel, agent_id, model, active, project, sleeping } = body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
@@ -501,6 +503,10 @@ export function registerAgentRoutes(
         if (active !== undefined) {
           updates.push("active = ?");
           params.push(active ? 1 : 0);
+        }
+        if (sleeping !== undefined) {
+          updates.push("sleeping = ?");
+          params.push(sleeping ? 1 : 0);
         }
 
         if (updates.length === 0) {
@@ -536,11 +542,17 @@ export function registerAgentRoutes(
           }
         }
 
+        // Update sleeping state if changed
+        if (sleeping !== undefined) {
+          workerManager.setAgentSleeping(channel, agent_id, sleeping === true || sleeping === 1);
+        }
+
         return json({
           ok: true,
           agent: {
             ...agent,
             active: agent.active === 1,
+            sleeping: agent.sleeping === 1,
             running: workerManager.isAgentRunning(channel, agent_id),
           },
         });
