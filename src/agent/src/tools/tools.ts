@@ -95,7 +95,7 @@ export { setSandboxProjectRoot, getSandboxProjectRoot, enableSandbox } from "../
 export { runWithAgentContext, getAgentContext, getContextAgentId } from "../utils/agent-context";
 
 // Import getAgentContext for internal use
-import { getAgentContext } from "../utils/agent-context";
+import { getAgentContext, getContextAgentId } from "../utils/agent-context";
 
 // Project hash for data isolation (agents, jobs, etc.)
 // NOTE: projectHashFallback is kept for backward compatibility with CLI mode (single agent).
