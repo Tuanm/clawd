@@ -1,15 +1,10 @@
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import Prism from "prismjs";
-import "prismjs/components/prism-markdown";
-
-// Highlight markdown syntax
-function highlightMarkdown(text: string): string {
-  if (!text) return "";
-  const grammar = Prism.languages.markdown || Prism.languages.md;
-  if (!grammar) return text;
-  return Prism.highlight(text, grammar, "markdown");
-}
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import rehypeRaw from "rehype-raw";
 
 // Copy icon for context menu
 function CopyIcon() {
@@ -135,7 +130,6 @@ interface Props {
   disabled?: boolean;
   thinkingBanner?: React.ReactNode;
   hibernateBanner?: React.ReactNode;
-  planButton?: React.ReactNode;
   searchButton?: React.ReactNode;
   projectsButton?: React.ReactNode;
 }
@@ -146,7 +140,6 @@ export default function MessageComposer({
   disabled,
   thinkingBanner,
   hibernateBanner,
-  planButton,
   searchButton,
   projectsButton,
 }: Props) {
@@ -159,6 +152,7 @@ export default function MessageComposer({
     const stored = localStorage.getItem("chat-composer-toolbar");
     return stored === "true";
   });
+  const [showPreview, setShowPreview] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCounterRef = useRef(0);
@@ -455,12 +449,6 @@ export default function MessageComposer({
                 <path d="M4 3h16c.55 0 1 .45 1 1v16c0 .55-.45 1-1 1H4c-.55 0-1-.45-1-1V4c0-.55.45-1 1-1zm1 2v14h14V5H5zm3.4 10.6L4.8 12l3.6-3.6L9.8 7l-5 5 5 5-1.4-1.4zm7.2 0l3.6-3.6-3.6-3.6L14.2 7l5 5-5 5 1.4-1.4z" />
               </svg>
             </button>
-            {planButton && (
-              <>
-                <div className="toolbar-divider" />
-                {planButton}
-              </>
-            )}
             {searchButton && (
               <>
                 <div className="toolbar-divider" />
@@ -476,15 +464,18 @@ export default function MessageComposer({
           </div>
         )}
 
-        {/* Textarea with optional markdown highlighting */}
-        <div className={`composer-textarea-wrap ${showToolbar ? "show-highlight" : ""}`}>
-          {/* Highlighted markdown layer (behind textarea) */}
-          {showToolbar && (
-            <pre className="composer-highlight-layer">
-              <code dangerouslySetInnerHTML={{ __html: highlightMarkdown(text) + "\n" }} />
-            </pre>
-          )}
-          {/* Actual textarea (on top) */}
+        {/* Textarea or preview */}
+        {showPreview ? (
+          <div className="composer-preview">
+            {text ? (
+              <Markdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeRaw]}>
+                {text}
+              </Markdown>
+            ) : (
+              <span className="composer-preview-empty">Nothing to preview</span>
+            )}
+          </div>
+        ) : (
           <textarea
             ref={textareaRef}
             className="composer-raw-textarea"
@@ -493,10 +484,9 @@ export default function MessageComposer({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             onContextMenu={handleTextareaContextMenu}
-            placeholder={showToolbar ? "Write with markdown..." : "Reply..."}
-            style={showToolbar ? { color: "transparent", caretColor: "hsl(var(--text))" } : undefined}
+            placeholder="Reply..."
           />
-        </div>
+        )}
 
         {/* File attachments preview */}
         {attachments.length > 0 && (
@@ -544,8 +534,18 @@ export default function MessageComposer({
                 <path d="M5 17v2h14v-2H5zm4.5-4.2h5l.9 2.2h2.1L12.75 4h-1.5L6.5 15h2.1l.9-2.2zM12 5.98L13.87 11h-3.74L12 5.98z" />
               </svg>
             </button>
-            {/* Plan and Search buttons - show when toolbar is hidden */}
-            {!showToolbar && planButton && planButton}
+            {/* Preview toggle button */}
+            <button
+              className={`action-btn preview-toggle ${showPreview ? "active" : ""}`}
+              onClick={() => setShowPreview(!showPreview)}
+              title={showPreview ? "Show raw text" : "Preview rendered markdown"}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </button>
+            {/* Search and Projects buttons - show when toolbar is hidden */}
             {!showToolbar && searchButton && searchButton}
             {!showToolbar && projectsButton && projectsButton}
           </div>

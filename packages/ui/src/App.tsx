@@ -1812,22 +1812,6 @@ export default function App({ channel: initialChannel }: Props) {
             </div>
           ) : null
         }
-        planButton={
-          <button className="plan-btn" onClick={() => setShowPlanModal(true)} title="View Project Plan">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M9 11l3 3L22 4" />
-              <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
-            </svg>
-            Plan
-          </button>
-        }
         searchButton={
           <button className="search-btn" onClick={() => setShowSearchModal(true)} title="Search Messages">
             <svg
