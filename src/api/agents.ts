@@ -344,6 +344,13 @@ export function initAgentsTable(db: Database): void {
   } catch {
     // Column already exists
   }
+
+  // Add sleeping column if table already exists without it
+  try {
+    db.exec(`ALTER TABLE channel_agents ADD COLUMN sleeping INTEGER NOT NULL DEFAULT 0`);
+  } catch {
+    // Column already exists
+  }
 }
 
 /** Register agent management API routes */

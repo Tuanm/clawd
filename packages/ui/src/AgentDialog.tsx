@@ -351,18 +351,20 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 value={selectedAgent.project || ""}
                 readOnly
               />
-              <button
-                className={`agent-action-btn ${selectedAgent.sleeping ? "agent-action-btn--accent" : "agent-action-btn--warning"}`}
-                onClick={() => handleToggleSleep(selectedAgent.agent_id, selectedAgent.sleeping)}
-              >
-                {selectedAgent.sleeping ? "Awake" : "Sleep"}
-              </button>
-              <button
-                className="agent-action-btn agent-action-btn--danger"
-                onClick={() => handleRemoveAgent(selectedAgent.agent_id)}
-              >
-                Kill
-              </button>
+              <div className="agent-buttons">
+                <button
+                  className={`agent-action-btn ${selectedAgent.sleeping ? "agent-action-btn--accent" : "agent-action-btn--warning"}`}
+                  onClick={() => handleToggleSleep(selectedAgent.agent_id, selectedAgent.sleeping)}
+                >
+                  {selectedAgent.sleeping ? "Awake" : "Sleep"}
+                </button>
+                <button
+                  className="agent-action-btn agent-action-btn--danger"
+                  onClick={() => handleRemoveAgent(selectedAgent.agent_id)}
+                >
+                  Kill
+                </button>
+              </div>
             </div>
           )}
 
