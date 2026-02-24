@@ -72,3 +72,12 @@ export function getContextProjectHash(): string {
   const ctx = getAgentContext();
   return ctx?.projectHash || "";
 }
+
+/**
+ * Get the agent ID from context.
+ * Returns empty string if not in a context.
+ */
+export function getContextAgentId(): string {
+  const ctx = getAgentContext();
+  return ctx?.agentId || "";
+}

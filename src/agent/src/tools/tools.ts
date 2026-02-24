@@ -92,7 +92,7 @@ function normalizeToolArgs(args: Record<string, any>): Record<string, any> {
 export { setSandboxProjectRoot, getSandboxProjectRoot, enableSandbox } from "../utils/sandbox";
 
 // Re-export agent context functions for worker-loop.ts
-export { runWithAgentContext, getAgentContext } from "../utils/agent-context";
+export { runWithAgentContext, getAgentContext, getContextAgentId } from "../utils/agent-context";
 
 // Import getAgentContext for internal use
 import { getAgentContext } from "../utils/agent-context";
@@ -2921,13 +2921,16 @@ async function execTmux(args: string[]): Promise<{ success: boolean; output: str
 }
 
 /**
- * Get the project-specific tmux socket name
+ * Get the agent-specific tmux socket name
+ * Uses project hash + agent ID for full isolation between agents
  */
 function getTmuxSocket(): string {
   const projectRoot = getSandboxProjectRoot();
-  // Create a safe socket name from project path hash
-  const hash = projectRoot.replace(/[^a-zA-Z0-9]/g, "_").slice(-30);
-  return `clawd_${hash}`;
+  const agentId = getContextAgentId() || "default";
+  // Create a safe socket name from project path hash and agent ID
+  const hash = projectRoot.replace(/[^a-zA-Z0-9]/g, "_").slice(-20);
+  const safeAgent = agentId.replace(/[^a-zA-Z0-9]/g, "_").slice(-20);
+  return `clawd_${hash}_${safeAgent}`;
 }
 
 /**
