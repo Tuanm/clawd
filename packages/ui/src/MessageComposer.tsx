@@ -464,11 +464,47 @@ export default function MessageComposer({
           </div>
         )}
 
-        {/* Textarea or preview */}
-        {showPreview ? (
+        {/* Textarea or preview - only when toolbar is enabled */}
+        {showToolbar && showPreview ? (
           <div className="composer-preview">
             {text ? (
-              <Markdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeRaw]}>
+              <Markdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex, rehypeRaw]}
+                components={{
+                  // Code blocks and inline code
+                  code: ({ className, children }) => {
+                    const match = /language-(\w+)/.exec(className || "");
+                    const isBlock = match || String(children).includes("\n");
+                    return isBlock ? (
+                      <code className={`code-block ${className || ""}`}>{children}</code>
+                    ) : (
+                      <code className="code-inline">{children}</code>
+                    );
+                  },
+                  // Tables with proper styling
+                  table: ({ children }) => (
+                    <div className="table-wrapper">
+                      <table>{children}</table>
+                    </div>
+                  ),
+                  // Links
+                  a: ({ href, children }) => (
+                    <a href={href} target="_blank" rel="noopener noreferrer">
+                      {children}
+                    </a>
+                  ),
+                  // Task lists
+                  input: ({ type, checked, ...props }) => {
+                    if (type === "checkbox") {
+                      return <input type="checkbox" checked={checked} disabled className="task-checkbox" />;
+                    }
+                    return <input type={type} {...props} />;
+                  },
+                  // Blockquotes
+                  blockquote: ({ children }) => <blockquote>{children}</blockquote>,
+                }}
+              >
                 {text}
               </Markdown>
             ) : (
@@ -534,17 +570,19 @@ export default function MessageComposer({
                 <path d="M5 17v2h14v-2H5zm4.5-4.2h5l.9 2.2h2.1L12.75 4h-1.5L6.5 15h2.1l.9-2.2zM12 5.98L13.87 11h-3.74L12 5.98z" />
               </svg>
             </button>
-            {/* Preview toggle button */}
-            <button
-              className={`action-btn preview-toggle ${showPreview ? "active" : ""}`}
-              onClick={() => setShowPreview(!showPreview)}
-              title={showPreview ? "Show raw text" : "Preview rendered markdown"}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-            </button>
+            {/* Preview toggle button - only show when toolbar is enabled */}
+            {showToolbar && (
+              <button
+                className={`action-btn preview-toggle ${showPreview ? "active" : ""}`}
+                onClick={() => setShowPreview(!showPreview)}
+                title={showPreview ? "Show raw text" : "Preview rendered markdown"}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            )}
             {/* Search and Projects buttons - show when toolbar is hidden */}
             {!showToolbar && searchButton && searchButton}
             {!showToolbar && projectsButton && projectsButton}

@@ -2663,7 +2663,7 @@ body {
   color: var(--accent-color);
 }
 
-/* Composer preview */
+/* Composer preview - match message-content styling */
 .composer-preview {
   min-height: 24px;
   max-height: 200px;
@@ -2672,7 +2672,103 @@ body {
   border-radius: 8px;
   overflow-y: auto;
   font-size: 15px;
-  line-height: 1.4;
+  line-height: 1.46668;
+  color: var(--text-primary);
+  word-wrap: break-word;
+}
+
+.composer-preview p {
+  margin: 0 0 4px;
+}
+
+.composer-preview p:last-child {
+  margin-bottom: 0;
+}
+
+.composer-preview ul,
+.composer-preview ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.composer-preview code {
+  font-family: Monaco, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: hsl(var(--text) / 10%);
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: hsl(var(--accent));
+}
+
+.composer-preview pre {
+  background: hsl(var(--text) / 10%);
+  padding: 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 4px 0;
+}
+
+.composer-preview pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.composer-preview strong {
+  font-weight: 600;
+}
+
+.composer-preview a {
+  color: hsl(var(--accent));
+  text-decoration: none;
+}
+
+.composer-preview a:hover {
+  text-decoration: underline;
+}
+
+.composer-preview .table-wrapper {
+  overflow-x: auto;
+  margin: 4px 0;
+}
+
+.composer-preview table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.composer-preview th,
+.composer-preview td {
+  border: 1px solid hsl(var(--text) / 15%);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.composer-preview th {
+  background: hsl(var(--text) / 5%);
+  font-weight: 600;
+}
+
+.composer-preview blockquote {
+  border-left: 3px solid hsl(var(--text) / 30%);
+  margin: 4px 0;
+  padding-left: 12px;
+  color: hsl(var(--text) / 70%);
+}
+
+.composer-preview .task-checkbox {
+  margin-right: 6px;
+}
+
+.composer-preview hr {
+  border: none;
+  border-top: 1px solid hsl(var(--text) / 20%);
+  margin: 8px 0;
+}
+
+.composer-preview img {
+  max-width: 100%;
+  border-radius: 4px;
 }
 
 .composer-preview-empty {
