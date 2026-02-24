@@ -494,7 +494,7 @@ export default function MessageComposer({
             onPaste={handlePaste}
             onContextMenu={handleTextareaContextMenu}
             placeholder={showToolbar ? "Write with markdown..." : "Reply..."}
-            style={showToolbar ? { color: "transparent", caretColor: "var(--text)" } : undefined}
+            style={showToolbar ? { color: "transparent", caretColor: "hsl(var(--text))" } : undefined}
           />
         </div>
 

@@ -2671,8 +2671,7 @@ body {
   pointer-events: none;
   z-index: 1;
   border: none;
-  background: hsl(var(--text) / 3%);
-  border-radius: 8px;
+  background: transparent;
 }
 
 .composer-highlight-layer code {
@@ -2734,12 +2733,10 @@ body {
   color: hsl(var(--text) / 30%);
 }
 
-/* Show highlight mode */
+/* Show highlight mode - keep textarea styling same, just show colors */
 .composer-textarea-wrap.show-highlight .composer-raw-textarea {
   color: transparent;
   caret-color: hsl(var(--text));
-  background: hsl(var(--text) / 3%);
-  border-radius: 8px;
 }
 
 /* Format toggle button */
