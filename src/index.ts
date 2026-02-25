@@ -78,6 +78,7 @@ Examples:
 
 // Now import modules (database will initialize)
 import { registerAgentRoutes } from "./api/agents";
+import { registerArticleRoutes } from "./api/articles";
 import { loadConfig, validateConfig } from "./config";
 import { getEmbeddedAsset, hasEmbeddedUI, embeddedUIFileCount, embeddedUITotalSize } from "./embedded-ui";
 import { WorkerManager } from "./worker-manager";
@@ -178,6 +179,9 @@ const workerManager = new WorkerManager(config);
 
 // Register agent management API routes
 const handleAgentRoute = registerAgentRoutes(db, workerManager);
+
+// Register article management API routes
+const handleArticleRoute = registerArticleRoutes(db);
 
 // ============================================================================
 // UI static file serving
@@ -394,6 +398,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     // Agent management routes (handled by registerAgentRoutes)
     const agentResponse = handleAgentRoute(req, url, path, bunServer);
     if (agentResponse) return agentResponse;
+
+    // Article management routes (handled by registerArticleRoutes)
+    const articleResponse = handleArticleRoute(req, url, path, bunServer);
+    if (articleResponse) return articleResponse;
 
     // ---- clawd-chat standard routes ----
 

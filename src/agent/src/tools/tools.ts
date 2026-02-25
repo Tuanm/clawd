@@ -92,10 +92,10 @@ function normalizeToolArgs(args: Record<string, any>): Record<string, any> {
 export { setSandboxProjectRoot, getSandboxProjectRoot, enableSandbox } from "../utils/sandbox";
 
 // Re-export agent context functions for worker-loop.ts
-export { runWithAgentContext, getAgentContext, getContextAgentId } from "../utils/agent-context";
+export { runWithAgentContext, getAgentContext, getContextAgentId, getContextChannel } from "../utils/agent-context";
 
 // Import getAgentContext for internal use
-import { getAgentContext, getContextAgentId } from "../utils/agent-context";
+import { getAgentContext, getContextAgentId, getContextChannel } from "../utils/agent-context";
 
 // Project hash for data isolation (agents, jobs, etc.)
 // NOTE: projectHashFallback is kept for backward compatibility with CLI mode (single agent).
@@ -3208,6 +3208,210 @@ registerTool(
         status: "killed",
       }),
     };
+  },
+);
+
+// ============================================================================
+// Article Tools
+// ============================================================================
+
+registerTool(
+  "article_create",
+  "Create a new article (blog post, documentation, etc.). The article is stored and can be published to the channel. Use markdown for content.",
+  {
+    title: { type: "string", description: "Article title" },
+    content: { type: "string", description: "Article content in markdown format" },
+    description: { type: "string", description: "Short description/summary (optional)" },
+    thumbnail_url: { type: "string", description: "URL for thumbnail image (optional)" },
+    tags: { type: "array", description: "Array of tags for the article (optional)", items: { type: "string" } },
+    published: { type: "boolean", description: "Whether to publish immediately (default: false)" },
+  },
+  ["title", "content"],
+  async ({ title, content, description, thumbnail_url, tags, published }) => {
+    const channel = getContextChannel();
+    const agentId = getContextAgentId() || "agent";
+
+    try {
+      const res = await fetch(`${API_URL}/api/articles.create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: channel,
+          author: agentId,
+          title,
+          content,
+          description: description || "",
+          thumbnail_url: thumbnail_url || "",
+          tags: tags || [],
+          published: published || false,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        return {
+          success: true,
+          output: JSON.stringify({
+            id: data.article.id,
+            title: data.article.title,
+            url: `/articles/${data.article.id}`,
+            published: data.article.published === 1,
+          }),
+        };
+      }
+      return { success: false, error: data.error || "Failed to create article" };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  },
+);
+
+registerTool(
+  "article_list",
+  "List articles in a channel. Shows recent articles with metadata.",
+  {
+    channel: { type: "string", description: "Channel ID (optional, defaults to current)" },
+    limit: { type: "number", description: "Max articles to return (default: 10)" },
+    offset: { type: "number", description: "Pagination offset (default: 0)" },
+    published_only: { type: "boolean", description: "Only show published articles (default: true)" },
+  },
+  [],
+  async ({ channel, limit = 10, offset = 0, published_only = true }) => {
+    const currentChannel = channel || getContextChannel();
+
+    try {
+      const url = new URL(`${API_URL}/api/articles.list`);
+      url.searchParams.set("channel", currentChannel);
+      url.searchParams.set("limit", String(limit));
+      url.searchParams.set("offset", String(offset));
+      url.searchParams.set("published", String(published_only));
+
+      const res = await fetch(url.toString());
+      const data = await res.json();
+      if (data.ok) {
+        return {
+          success: true,
+          output: JSON.stringify({
+            articles: data.articles.map((a: any) => ({
+              id: a.id,
+              title: a.title,
+              description: a.description,
+              author: a.author,
+              published: a.published === 1,
+              created_at: a.created_at,
+            })),
+          }),
+        };
+      }
+      return { success: false, error: data.error || "Failed to list articles" };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  },
+);
+
+registerTool(
+  "article_get",
+  "Get a specific article by ID. Returns full content and metadata.",
+  {
+    id: { type: "string", description: "Article ID" },
+  },
+  ["id"],
+  async ({ id }) => {
+    try {
+      const res = await fetch(`${API_URL}/api/articles.get?id=${encodeURIComponent(id)}`);
+      const data = await res.json();
+      if (data.ok) {
+        return {
+          success: true,
+          output: JSON.stringify({
+            id: data.article.id,
+            title: data.article.title,
+            description: data.article.description,
+            author: data.article.author,
+            content: data.article.content,
+            thumbnail_url: data.article.thumbnail_url,
+            tags: JSON.parse(data.article.tags_json || "[]"),
+            published: data.article.published === 1,
+            created_at: data.article.created_at,
+            updated_at: data.article.updated_at,
+          }),
+        };
+      }
+      return { success: false, error: data.error || "Article not found" };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  },
+);
+
+registerTool(
+  "article_update",
+  "Update an existing article.",
+  {
+    id: { type: "string", description: "Article ID" },
+    title: { type: "string", description: "New title (optional)" },
+    content: { type: "string", description: "New content (optional)" },
+    description: { type: "string", description: "New description (optional)" },
+    thumbnail_url: { type: "string", description: "New thumbnail URL (optional)" },
+    tags: { type: "array", description: "New tags (optional)", items: { type: "string" } },
+    published: { type: "boolean", description: "Publish/unpublish (optional)" },
+  },
+  ["id"],
+  async ({ id, title, content, description, thumbnail_url, tags, published }) => {
+    try {
+      const res = await fetch(`${API_URL}/api/articles.update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id,
+          ...(title !== undefined && { title }),
+          ...(content !== undefined && { content }),
+          ...(description !== undefined && { description }),
+          ...(thumbnail_url !== undefined && { thumbnail_url }),
+          ...(tags !== undefined && { tags }),
+          ...(published !== undefined && { published }),
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        return {
+          success: true,
+          output: JSON.stringify({
+            id: data.article.id,
+            title: data.article.title,
+            updated_at: data.article.updated_at,
+          }),
+        };
+      }
+      return { success: false, error: data.error || "Failed to update article" };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  },
+);
+
+registerTool(
+  "article_delete",
+  "Delete an article.",
+  {
+    id: { type: "string", description: "Article ID to delete" },
+  },
+  ["id"],
+  async ({ id }) => {
+    try {
+      const res = await fetch(`${API_URL}/api/articles.delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        return { success: true, output: JSON.stringify({ id, deleted: true }) };
+      }
+      return { success: false, error: data.error || "Failed to delete article" };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
   },
 );
 

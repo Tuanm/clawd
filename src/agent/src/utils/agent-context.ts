@@ -81,3 +81,12 @@ export function getContextAgentId(): string {
   const ctx = getAgentContext();
   return ctx?.agentId || "";
 }
+
+/**
+ * Get the channel from context.
+ * Returns empty string if not in a context.
+ */
+export function getContextChannel(): string {
+  const ctx = getAgentContext();
+  return ctx?.channel || "";
+}

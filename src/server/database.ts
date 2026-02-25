@@ -217,6 +217,23 @@ export function initDatabase() {
     );
     CREATE INDEX IF NOT EXISTS idx_message_seen_ts ON message_seen(message_ts);
 
+    -- Articles (blog posts, documentation, etc.)
+    CREATE TABLE IF NOT EXISTS articles (
+      id TEXT PRIMARY KEY,
+      channel TEXT NOT NULL,
+      author TEXT,
+      title TEXT NOT NULL,
+      description TEXT,
+      thumbnail_url TEXT,
+      content TEXT NOT NULL,
+      tags_json TEXT DEFAULT '[]',
+      published INTEGER DEFAULT 0,
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_articles_channel ON articles(channel);
+    CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published);
+
     -- Create default bot user if not exists (legacy, will be deprecated)
     INSERT OR IGNORE INTO users (id, name, is_bot) VALUES ('UBOT', 'Copilot Agent', 1);
 
