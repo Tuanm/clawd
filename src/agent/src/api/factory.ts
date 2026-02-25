@@ -616,10 +616,25 @@ class OllamaProvider implements LLMProvider {
               index: idx,
               function: {
                 name: tc.function.name,
-                arguments:
-                  typeof tc.function.arguments === "string"
-                    ? tc.function.arguments
-                    : JSON.stringify(tc.function.arguments || {}),
+                arguments: (() => {
+                  const args = tc.function.arguments;
+                  // Always ensure arguments is a valid JSON string
+                  if (args === null || args === undefined) {
+                    return "{}";
+                  }
+                  if (typeof args === "string") {
+                    // Try to parse and re-stringify to ensure valid JSON
+                    try {
+                      const parsed = JSON.parse(args);
+                      return JSON.stringify(parsed);
+                    } catch {
+                      // If not valid JSON, wrap it as a string value
+                      return JSON.stringify({ _raw: args });
+                    }
+                  }
+                  // It's an object - stringify it
+                  return JSON.stringify(args);
+                })(),
               },
             })),
           };
