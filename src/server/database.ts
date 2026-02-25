@@ -40,8 +40,8 @@ initDatabase();
 export const preparedStatements = {
   // Insert message
   insertMessage: db.prepare(
-    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, agent_id, mentions_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ),
 
   // Get message by ts
@@ -264,6 +264,12 @@ export function initDatabase() {
   }
 
   try {
+    db.exec(`ALTER TABLE messages ADD COLUMN article_json TEXT`);
+  } catch {
+    /* Column already exists */
+  }
+
+  try {
     db.exec(`ALTER TABLE agent_seen ADD COLUMN last_processed_ts TEXT`);
   } catch {
     /* Column already exists */
@@ -467,6 +473,7 @@ export interface Message {
   edited_at: number | null;
   files_json: string;
   reactions_json: string;
+  article_json: string | null;
   created_at: number;
 }
 
@@ -496,6 +503,13 @@ export interface SlackMessage {
   seen_by?: string[] | { agent_id: string; avatar_color: string; is_sleeping?: boolean }[];
   is_sleeping?: boolean;
   is_streaming?: boolean;
+  article?: {
+    id: string;
+    title: string;
+    description: string;
+    author: string;
+    thumbnail_url: string;
+  };
 }
 
 export interface SlackFile {
@@ -560,6 +574,18 @@ export function toSlackMessage(msg: Message): SlackMessage {
       const mentions = JSON.parse(msg.mentions_json);
       if (mentions.length > 0) {
         result.mentions = mentions;
+      }
+    } catch {
+      /* Invalid JSON */
+    }
+  }
+
+  // Parse and include article attachment
+  if (msg.article_json) {
+    try {
+      const article = JSON.parse(msg.article_json);
+      if (article && article.id) {
+        result.article = article;
       }
     } catch {
       /* Invalid JSON */

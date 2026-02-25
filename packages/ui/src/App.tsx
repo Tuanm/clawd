@@ -550,6 +550,10 @@ export default function App({ channel: initialChannel }: Props) {
       if (target.closest(".composer-raw-textarea")) {
         return; // Let composer handle it
       }
+      // Allow right-click on article page context menu
+      if (target.closest(".message-context-menu")) {
+        return; // Let article context menu handle it
+      }
       e.preventDefault();
     };
     document.addEventListener("contextmenu", handleContextMenu);

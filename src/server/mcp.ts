@@ -285,11 +285,16 @@ Returns JSON:
 {
   "ok": true,
   "files": [
-    { "id": "F...", "name": "...", "mimetype": "...", "size": number, "content_base64"?: "..." }
+    { "id": "F...", "name": "...", "mimetype": "...", "size": number, "content_base64"?: "...", "image_hint"?: "..." }
   ]
 }
 
-Use this to get all attachments from a message at once.`,
+Use this to get all attachments from a message at once.
+
+**IMPORTANT FOR IMAGES:**
+- By default (include_content=false), images return an \`image_hint\` instead of base64 content
+- The hint explains how to use vision tools (Claude, Gemini, GPT-4V) to analyze images
+- This avoids context token limits from large image base64 data`,
     inputSchema: {
       type: "object",
       properties: {
@@ -322,7 +327,7 @@ Use this to get all attachments from a message at once.`,
 
 Args:
   - file_id (string): File ID from message attachments
-  - include_content (boolean): Include base64 content (default: true)
+  - include_content (boolean): Include base64 content (default: false, images return hint instead)
   - optimize (boolean): For images, return compressed/resized version (default: false)
   - max_width (number): Max width for optimized images (default: 1280)
   - max_height (number): Max height for optimized images (default: 720)
@@ -337,7 +342,7 @@ Returns JSON:
     "name": "...",
     "mimetype": "...",
     "size": number,
-    "content_base64": "...",  // Base64-encoded file content
+    "content_base64"?: "...",  // Only if include_content=true and file is small enough
     "original_size"?: number, // Only if optimized
     "optimized_size"?: number // Only if optimized
   }
@@ -345,7 +350,12 @@ Returns JSON:
 
 Use this to read file attachments from messages.
 For large files (>1MB), use chat_read_file_range instead.
-For images, use optimize=true to get compressed version and save context tokens.`,
+
+**IMPORTANT FOR IMAGES:**
+- By default (include_content=false), images return a hint instead of base64 content
+- The response will include \`image_hint\` explaining how to read the image
+- For images, use a vision model (e.g., Gemini, GPT-4V) or Claude's native vision instead of base64
+- This avoids context token limits from large image base64 data`,
     inputSchema: {
       type: "object",
       properties: {
@@ -355,8 +365,8 @@ For images, use optimize=true to get compressed version and save context tokens.
         },
         include_content: {
           type: "boolean",
-          description: "Include base64 content (false for metadata only)",
-          default: true,
+          description: "Include base64 content (false to get image hint instead for vision tools)",
+          default: false,
         },
         optimize: {
           type: "boolean",
@@ -1553,8 +1563,16 @@ async function executeToolCall(
             download_url: `/api/files/${file.id}`,
           };
 
-          // Include base64 content if requested and file is small enough (<1MB)
-          if (includeContent && file.size < 1024 * 1024) {
+          // For images without explicit include_content, return a hint instead of base64
+          if (!includeContent && file.mimetype.startsWith("image/")) {
+            fileInfo.image_hint =
+              `This is an image file (${file.name}). ` +
+              `To analyze or describe this image, use a vision-capable model ` +
+              `(e.g., Claude with vision, Gemini, GPT-4V) or the ai_multimodal tool. ` +
+              `Do NOT attempt to read the image as base64 as it may exceed context limits. ` +
+              `The image can be viewed at: /api/files/${file.id}`;
+          } else if (includeContent && file.size < 1024 * 1024) {
+            // Include base64 content if requested and file is small enough (<1MB)
             try {
               const fileData = await Bun.file(file.path).arrayBuffer();
               fileInfo.content_base64 = Buffer.from(fileData).toString("base64");
@@ -1572,7 +1590,7 @@ async function executeToolCall(
 
       case "chat_download_file": {
         const fileId = args.file_id as string;
-        const includeContent = args.include_content !== false;
+        const includeContent = args.include_content === true;
         const optimize = args.optimize === true;
         const maxWidth = (args.max_width as number) || 1280;
         const maxHeight = (args.max_height as number) || 720;
@@ -1606,8 +1624,16 @@ async function executeToolCall(
             },
           };
 
-          // If optimize=true and it's an image, use optimized version
-          if (optimize && file.mimetype.startsWith("image/") && includeContent) {
+          // For images without explicit include_content, return a hint instead of base64
+          if (!includeContent && file.mimetype.startsWith("image/")) {
+            (response.file as Record<string, unknown>).image_hint =
+              `This is an image file (${file.name}). ` +
+              `To analyze or describe this image, use a vision-capable model ` +
+              `(e.g., Claude with vision, Gemini, GPT-4V) or the ai_multimodal tool. ` +
+              `Do NOT attempt to read the image as base64 as it may exceed context limits. ` +
+              `The image can be viewed at: /api/files/${file.id}`;
+          } else if (optimize && file.mimetype.startsWith("image/") && includeContent) {
+            // If optimize=true and it's an image, use optimized version
             try {
               const optimized = await getOptimizedFile(fileId, { maxWidth, maxHeight, quality, maxBytes });
               if (optimized) {

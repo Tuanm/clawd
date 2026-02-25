@@ -40,6 +40,7 @@ export interface PostMessageRequest {
   subtype?: string;
   html_preview?: string;
   code_preview?: CodePreview;
+  article_json?: string;
 }
 
 export interface UpdateMessageRequest {
@@ -92,6 +93,7 @@ export function postMessage(req: PostMessageRequest) {
     req.subtype || null,
     req.html_preview || null,
     codePreviewJson,
+    req.article_json || null,
     agentId,
     mentionsJson,
   );

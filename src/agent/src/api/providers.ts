@@ -136,6 +136,15 @@ export interface OllamaProviderConfig {
   };
 }
 
+// MCP Server configuration
+export interface MCPServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string; // For HTTP transport
+  transport?: "stdio" | "http";
+}
+
 export interface Config {
   providers: {
     anthropic?: ProviderConfig;
@@ -143,4 +152,5 @@ export interface Config {
     copilot?: CopilotProviderConfig;
     ollama?: OllamaProviderConfig;
   };
+  mcp_servers?: Record<string, MCPServerConfig>;
 }

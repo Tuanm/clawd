@@ -10,7 +10,14 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { ProviderConfig, CopilotProviderConfig, OllamaProviderConfig, Config, ProviderType } from "./providers";
+import type {
+  ProviderConfig,
+  CopilotProviderConfig,
+  OllamaProviderConfig,
+  Config,
+  ProviderType,
+  MCPServerConfig,
+} from "./providers";
 
 // ============================================================================
 // Config Caching
@@ -194,4 +201,41 @@ export function getApiKeyForProvider(providerType: ProviderType): string | undef
 export function getCopilotToken(): string | null {
   const config = loadConfig();
   return config.providers?.copilot?.token || null;
+}
+
+// ============================================================================
+// MCP Server Configuration
+// ============================================================================
+
+/**
+ * Get all MCP servers from config
+ * Returns MCP servers defined in ~/.clawd/config.json under mcp_servers
+ */
+export function getMCPServers(): Record<string, MCPServerConfig> {
+  const config = loadConfig();
+  return config.mcp_servers || {};
+}
+
+/**
+ * Get a specific MCP server by name
+ */
+export function getMCPServer(name: string): MCPServerConfig | undefined {
+  const servers = getMCPServers();
+  return servers[name];
+}
+
+/**
+ * Get all MCP server names configured
+ */
+export function getMCPServerNames(): string[] {
+  const servers = getMCPServers();
+  return Object.keys(servers);
+}
+
+/**
+ * Check if any MCP servers are configured
+ */
+export function hasMCPServers(): boolean {
+  const servers = getMCPServers();
+  return Object.keys(servers).length > 0;
 }

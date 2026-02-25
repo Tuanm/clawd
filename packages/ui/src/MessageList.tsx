@@ -40,6 +40,14 @@ interface Message {
   thinking_text?: string; // Streamed thinking tokens (separate from content)
   mentions_json?: string;
   seen_by?: { agent_id: string; avatar_color: string; is_sleeping?: boolean }[];
+  // Article attachment
+  article?: {
+    id: string;
+    title: string;
+    description: string;
+    author: string;
+    thumbnail_url: string;
+  };
 }
 
 // Pending message type
@@ -90,6 +98,19 @@ function LinkIcon() {
   );
 }
 
+// Share icon component
+function ShareIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+      <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+    </svg>
+  );
+}
+
 // Edit icon for retrying failed messages
 function EditIcon() {
   return (
@@ -101,7 +122,7 @@ function EditIcon() {
 }
 
 // Copy icon component
-function CopyIcon() {
+export function CopyIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
@@ -111,7 +132,7 @@ function CopyIcon() {
 }
 
 // Check icon for copied state
-function CheckIcon() {
+export function CheckIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <polyline points="20 6 9 17 4 12" />
@@ -165,7 +186,7 @@ function ChevronUpIcon() {
 }
 
 // Pre block wrapper with copy button (button is OUTSIDE the scrollable pre)
-function PreBlock({ children }: { children: React.ReactNode }) {
+export function PreBlock({ children }: { children: React.ReactNode }) {
   const [copied, setCopied] = useState(false);
 
   // Extract code text from children (pre > code > text)
@@ -212,7 +233,7 @@ function PreBlock({ children }: { children: React.ReactNode }) {
 }
 
 // Mermaid diagram component
-function MermaidDiagram({ chart }: { chart: string }) {
+export function MermaidDiagram({ chart }: { chart: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
@@ -246,7 +267,7 @@ function MermaidDiagram({ chart }: { chart: string }) {
 }
 
 // Callout/Admonition component (GitHub-style)
-function Callout({ type, children }: { type: string; children: React.ReactNode }) {
+export function Callout({ type, children }: { type: string; children: React.ReactNode }) {
   const icons: Record<string, string> = {
     note: "📝",
     tip: "💡",
@@ -359,11 +380,13 @@ export function ClawdAvatar({
   streaming = false,
   standing = false,
   color: customColor,
+  title,
 }: {
   sleeping?: boolean;
   streaming?: boolean;
   standing?: boolean;
   color?: string;
+  title?: string;
 }) {
   // Default color is orange, but can be overridden by agent's avatar color
   const defaultColor = "hsl(15 63.1% 59.6%)";
@@ -375,7 +398,7 @@ export function ClawdAvatar({
   const wrapperClass = streaming ? "clawd-avatar-streaming" : standing ? "clawd-avatar-standing" : "";
 
   return (
-    <div className={wrapperClass}>
+    <div className={wrapperClass} title={title}>
       <svg width="32" height="26" viewBox="0 0 66 52" fill="none" className="clawd-avatar-svg">
         {/* Left arm */}
         <rect x="0" y="13" width="6" height="13" fill={color} className="clawd-arm" />
@@ -461,6 +484,8 @@ interface ContextMenuState {
   y: number;
   ts: string;
   text: string;
+  channel?: string; // Channel for sharing as article
+  content?: string; // Message content for sharing as article
 }
 
 // Context menu component
@@ -488,7 +513,7 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
   // Position menu so it doesn't overflow viewport
   const adjustedPosition = useMemo(() => {
     const menuWidth = 180;
-    const menuHeight = 80;
+    const menuHeight = 120;
     let x = menu.x;
     let y = menu.y;
     if (x + menuWidth > window.innerWidth) {
@@ -510,6 +535,38 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
     onClose();
   };
 
+  const shareAsArticle = async () => {
+    if (!menu.content || !menu.channel) {
+      onClose();
+      return;
+    }
+    try {
+      // Extract title from content (first line or first 50 chars)
+      const title = menu.content.split("\n")[0].slice(0, 50) || "Shared message";
+      // Create article
+      const res = await fetch("/api/articles.create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          content: menu.content,
+          channel: menu.channel,
+          published: true,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok && data.article) {
+        // Copy article URL to clipboard and open in new tab
+        const articleUrl = `${window.location.origin}/articles/${data.article.id}`;
+        await navigator.clipboard.writeText(articleUrl);
+        window.open(articleUrl, "_blank");
+      }
+    } catch (err) {
+      console.error("Failed to share article:", err);
+    }
+    onClose();
+  };
+
   return createPortal(
     <div ref={menuRef} className="message-context-menu" style={{ left: adjustedPosition.x, top: adjustedPosition.y }}>
       <button className="context-menu-item" onClick={copyReference}>
@@ -519,6 +576,10 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
       <button className="context-menu-item" onClick={copyMessage}>
         <CopyIcon />
         <span>Copy message</span>
+      </button>
+      <button className="context-menu-item" onClick={shareAsArticle}>
+        <ShareIcon />
+        <span>Share</span>
       </button>
     </div>,
     document.body,
@@ -827,6 +888,7 @@ export default function MessageList({
   streamingAgentIds = [],
   hasMoreOlder = false,
   hasMoreNewer = false,
+  channel,
   loadingOlder = false,
   loadingNewer = false,
   isAtLatest = true,
@@ -873,16 +935,21 @@ export default function MessageList({
   const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Handle right-click on message
-  const handleMessageContextMenu = useCallback((e: React.MouseEvent, msg: Message) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      ts: msg.ts,
-      text: msg.text,
-    });
-  }, []);
+  const handleMessageContextMenu = useCallback(
+    (e: React.MouseEvent, msg: Message) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        ts: msg.ts,
+        text: msg.text,
+        channel, // Channel for sharing
+        content: msg.text, // Use text content for sharing
+      });
+    },
+    [channel],
+  );
 
   // Handle touch start for long press (mobile)
   const handleTouchStart = useCallback((e: React.TouchEvent, msg: Message) => {
@@ -1414,7 +1481,8 @@ export default function MessageList({
         }
 
         // Check if this is a streaming message (agent is actively typing)
-        const isStreaming = isAgentMessage(msg) && msg.is_streaming === true;
+        // Exclude article messages from streaming state
+        const isStreaming = isAgentMessage(msg) && msg.is_streaming === true && !msg.article;
         const isThinkingPlaceholder = msg.ts.startsWith("thinking_");
 
         return (
@@ -1472,8 +1540,11 @@ export default function MessageList({
                 {!continuation && (
                   <div className="message-header">
                     <span className="message-sender">{getLabel(msg.user, msg.agent_id)}</span>
-                    <span className="message-time" title={isStreaming ? undefined : formatFullTime(msg.ts)}>
-                      {isStreaming ? "Thinking..." : formatTime(msg.ts)}
+                    <span
+                      className="message-time"
+                      title={isStreaming && !msg.article ? undefined : formatFullTime(msg.ts)}
+                    >
+                      {isStreaming && !msg.article ? "Thinking..." : formatTime(msg.ts)}
                     </span>
                   </div>
                 )}
@@ -1494,67 +1565,70 @@ export default function MessageList({
                   const isExpanded = expandedMessages.has(msg.ts);
                   const displayText =
                     isLong && !isExpanded ? `${msg.text.slice(0, MESSAGE_COLLAPSE_THRESHOLD)}...` : msg.text;
+                  const isArticleMessage = msg.subtype === "article";
                   return (
                     <>
-                      <div className={`message-content ${isLong && !isExpanded ? "collapsed" : ""}`}>
-                        <Markdown
-                          remarkPlugins={[remarkGfm, remarkMath]}
-                          rehypePlugins={[rehypeKatex, rehypeRaw]}
-                          components={{
-                            // Handle pre element - wrap with copy button outside scroll area
-                            pre: ({ children }) => <PreBlock>{children}</PreBlock>,
-                            code: ({ className, children }) => {
-                              const match = /language-(\w+)/.exec(className || "");
-                              const lang = match ? match[1] : "";
-                              const code = String(children).replace(/\n$/, "");
+                      {isArticleMessage ? null : (
+                        <div className={`message-content ${isLong && !isExpanded ? "collapsed" : ""}`}>
+                          <Markdown
+                            remarkPlugins={[remarkGfm, remarkMath]}
+                            rehypePlugins={[rehypeKatex, rehypeRaw]}
+                            components={{
+                              // Handle pre element - wrap with copy button outside scroll area
+                              pre: ({ children }) => <PreBlock>{children}</PreBlock>,
+                              code: ({ className, children }) => {
+                                const match = /language-(\w+)/.exec(className || "");
+                                const lang = match ? match[1] : "";
+                                const code = String(children).replace(/\n$/, "");
 
-                              // Mermaid diagrams
-                              if (lang === "mermaid") {
-                                return <MermaidDiagram chart={code} />;
-                              }
-
-                              // Regular code - just return code element (pre handles the copy button)
-                              return <code className={className}>{children}</code>;
-                            },
-                            // Handle GitHub-style callouts in blockquotes
-                            blockquote: ({ children }) => {
-                              // Check if first child is a paragraph starting with [!TYPE]
-                              const firstChild = (children as any)?.[0];
-                              if (firstChild?.props?.children) {
-                                const text = String(firstChild.props.children);
-                                const calloutMatch = text.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i);
-                                if (calloutMatch) {
-                                  const type = calloutMatch[1].toLowerCase();
-                                  const content = text.replace(calloutMatch[0], "");
-                                  return <Callout type={type}>{content}</Callout>;
+                                // Mermaid diagrams
+                                if (lang === "mermaid") {
+                                  return <MermaidDiagram chart={code} />;
                                 }
-                              }
-                              return <blockquote>{children}</blockquote>;
-                            },
-                            // Tables with proper styling
-                            table: ({ children }) => (
-                              <div className="table-wrapper">
-                                <table>{children}</table>
-                              </div>
-                            ),
-                            a: ({ href, children }) => (
-                              <a href={href} target="_blank" rel="noopener noreferrer">
-                                {children}
-                              </a>
-                            ),
-                            // Task lists
-                            input: ({ type, checked, ...props }) => {
-                              if (type === "checkbox") {
-                                return <input type="checkbox" checked={checked} disabled className="task-checkbox" />;
-                              }
-                              return <input type={type} {...props} />;
-                            },
-                          }}
-                        >
-                          {processMessageText(displayText)}
-                        </Markdown>
-                      </div>
-                      {isLong && (
+
+                                // Regular code - just return code element (pre handles the copy button)
+                                return <code className={className}>{children}</code>;
+                              },
+                              // Handle GitHub-style callouts in blockquotes
+                              blockquote: ({ children }) => {
+                                // Check if first child is a paragraph starting with [!TYPE]
+                                const firstChild = (children as any)?.[0];
+                                if (firstChild?.props?.children) {
+                                  const text = String(firstChild.props.children);
+                                  const calloutMatch = text.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i);
+                                  if (calloutMatch) {
+                                    const type = calloutMatch[1].toLowerCase();
+                                    const content = text.replace(calloutMatch[0], "");
+                                    return <Callout type={type}>{content}</Callout>;
+                                  }
+                                }
+                                return <blockquote>{children}</blockquote>;
+                              },
+                              // Tables with proper styling
+                              table: ({ children }) => (
+                                <div className="table-wrapper">
+                                  <table>{children}</table>
+                                </div>
+                              ),
+                              a: ({ href, children }) => (
+                                <a href={href} target="_blank" rel="noopener noreferrer">
+                                  {children}
+                                </a>
+                              ),
+                              // Task lists
+                              input: ({ type, checked, ...props }) => {
+                                if (type === "checkbox") {
+                                  return <input type="checkbox" checked={checked} disabled className="task-checkbox" />;
+                                }
+                                return <input type={type} {...props} />;
+                              },
+                            }}
+                          >
+                            {processMessageText(displayText)}
+                          </Markdown>
+                        </div>
+                      )}
+                      {isLong && !isArticleMessage && (
                         <span className="message-expand-toggle" onClick={() => toggleExpanded(msg.ts)}>
                           {isExpanded ? "Less" : "More"}
                         </span>
@@ -1571,6 +1645,27 @@ export default function MessageList({
                     startLine={msg.code_preview.start_line}
                     highlightLines={msg.code_preview.highlight_lines}
                   />
+                )}
+                {msg.article && (
+                  <div
+                    className="message-article-card"
+                    onClick={() => window.open(`/articles/${msg.article!.id}`, "_blank")}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => e.key === "Enter" && window.open(`/articles/${msg.article!.id}`, "_blank")}
+                  >
+                    {msg.article.thumbnail_url && (
+                      <div className="article-card-thumbnail">
+                        <img src={msg.article.thumbnail_url} alt={msg.article.title} />
+                      </div>
+                    )}
+                    <div className="article-card-content">
+                      <div className="article-card-title">{msg.article.title}</div>
+                      {msg.article.description && (
+                        <div className="article-card-description">{msg.article.description}</div>
+                      )}
+                    </div>
+                  </div>
                 )}
                 {msg.files && msg.files.length > 0 && (
                   <div className="message-files">

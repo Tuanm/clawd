@@ -103,7 +103,12 @@ export function registerArticleRoutes(
           return json({ ok: false, error: "Article not found" }, 404);
         }
 
-        return json({ ok: true, article });
+        // Get avatar_color from agents table
+        const agentStmt = db.prepare("SELECT avatar_color FROM agents WHERE id = ? AND channel = ?");
+        const agent = agentStmt.get(article.author, article.channel) as { avatar_color: string } | null;
+        const avatar_color = agent?.avatar_color || "#D97853";
+
+        return json({ ok: true, article: { ...article, avatar_color } });
       });
     }
 

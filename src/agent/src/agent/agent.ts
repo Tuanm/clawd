@@ -487,8 +487,13 @@ SUMMARY:`;
             name: server.name,
             url: server.url,
             transport: server.transport || "http",
+            command: server.command,
+            args: server.args,
+            env: server.env,
           });
-          console.log(`[MCP] Connected to server "${server.name}" at ${server.url}`);
+          console.log(
+            `[MCP] Connected to server "${server.name}"${server.transport === "stdio" ? ` (command: ${server.command})` : ` at ${server.url}`}`,
+          );
         } catch (err: any) {
           console.error(`[Plugin] Failed to add MCP server ${server.name}: ${err.message}`);
         }

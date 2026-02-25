@@ -30,9 +30,19 @@ function registerServiceWorker() {
 
 registerServiceWorker();
 
+// Import ArticlePage
+import ArticlePage from "./ArticlePage";
+
 // Simple path-based routing
 function Router() {
   const path = window.location.pathname;
+
+  // Match article paths: /articles/{id}
+  const articleMatch = path.match(/^\/articles\/([^/]+)\/?$/);
+  if (articleMatch) {
+    const articleId = articleMatch[1];
+    return <ArticlePage articleId={articleId} />;
+  }
 
   // Match both patterns:
   // - /spaces/{channel-id} (legacy)

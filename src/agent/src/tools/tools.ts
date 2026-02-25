@@ -3232,7 +3232,7 @@ registerTool(
     const agentId = getContextAgentId() || "agent";
 
     try {
-      const res = await fetch(`${API_URL}/api/articles.create`, {
+      const res = await fetch(`${chatApiUrl}/api/articles.create`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3279,7 +3279,7 @@ registerTool(
     const currentChannel = channel || getContextChannel();
 
     try {
-      const url = new URL(`${API_URL}/api/articles.list`);
+      const url = new URL(`${chatApiUrl}/api/articles.list`);
       url.searchParams.set("channel", currentChannel);
       url.searchParams.set("limit", String(limit));
       url.searchParams.set("offset", String(offset));
@@ -3318,7 +3318,7 @@ registerTool(
   ["id"],
   async ({ id }) => {
     try {
-      const res = await fetch(`${API_URL}/api/articles.get?id=${encodeURIComponent(id)}`);
+      const res = await fetch(`${chatApiUrl}/api/articles.get?id=${encodeURIComponent(id)}`);
       const data = await res.json();
       if (data.ok) {
         return {
@@ -3359,7 +3359,7 @@ registerTool(
   ["id"],
   async ({ id, title, content, description, thumbnail_url, tags, published }) => {
     try {
-      const res = await fetch(`${API_URL}/api/articles.update`, {
+      const res = await fetch(`${chatApiUrl}/api/articles.update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3399,7 +3399,7 @@ registerTool(
   ["id"],
   async ({ id }) => {
     try {
-      const res = await fetch(`${API_URL}/api/articles.delete`, {
+      const res = await fetch(`${chatApiUrl}/api/articles.delete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
@@ -3409,6 +3409,71 @@ registerTool(
         return { success: true, output: JSON.stringify({ id, deleted: true }) };
       }
       return { success: false, error: data.error || "Failed to delete article" };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  },
+);
+
+registerTool(
+  "chat_send_article",
+  "Send an article as a message to the chat. This posts an article card to the channel that links to the full article page.",
+  {
+    article_id: { type: "string", description: "Article ID to send to chat" },
+    channel: { type: "string", description: "Channel ID (optional, defaults to current channel)" },
+  },
+  ["article_id"],
+  async ({ article_id, channel }) => {
+    const currentChannel = channel || getContextChannel();
+    const agentId = getContextAgentId() || "agent";
+
+    if (!currentChannel) {
+      return { success: false, error: "Channel not specified" };
+    }
+
+    try {
+      // First get the article details
+      const articleRes = await fetch(`${chatApiUrl}/api/articles.get?id=${encodeURIComponent(article_id)}`);
+      const articleData = await articleRes.json();
+
+      if (!articleData.ok || !articleData.article) {
+        return { success: false, error: "Article not found" };
+      }
+
+      const article = articleData.article;
+
+      // Send message with article attachment
+      const msgRes = await fetch(`${chatApiUrl}/api/chat.postMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: currentChannel,
+          user: "UBOT",
+          agent_id: agentId,
+          text: `Article: ${article.title}`,
+          subtype: "article",
+          article_json: JSON.stringify({
+            id: article.id,
+            title: article.title,
+            description: article.description,
+            author: article.author,
+            thumbnail_url: article.thumbnail_url,
+          }),
+        }),
+      });
+      const msgData = await msgRes.json();
+
+      if (msgData.ok) {
+        return {
+          success: true,
+          output: JSON.stringify({
+            message_ts: msgData.ts,
+            article_id: article.id,
+            article_url: `/articles/${article.id}`,
+          }),
+        };
+      }
+      return { success: false, error: msgData.error || "Failed to send article message" };
     } catch (err) {
       return { success: false, error: String(err) };
     }

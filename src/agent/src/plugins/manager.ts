@@ -53,8 +53,11 @@ export interface PluginHooks {
 
 export interface MCPServerSpec {
   name: string;
-  url: string;
+  url?: string;
   transport?: "http" | "stdio";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
 }
 
 export interface Plugin {

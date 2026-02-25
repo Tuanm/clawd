@@ -526,6 +526,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         subtype: body.subtype,
         html_preview: body.html_preview,
         code_preview: body.code_preview,
+        article_json: body.article_json,
       });
       if (result.ok && body.files && Array.isArray(body.files) && body.files.length > 0) {
         attachFilesToMessage(
