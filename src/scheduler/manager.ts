@@ -91,7 +91,7 @@ export class SchedulerManager {
 
     // Abort all running jobs
     for (const [, controller] of this.runningJobs) {
-      controller.abort();
+      controller.abort("shutdown");
     }
 
     // Wait up to 30s for running jobs to finish
@@ -112,6 +112,19 @@ export class SchedulerManager {
 
     closeDb();
     console.log("[Scheduler] Stopped");
+  }
+
+  registerRecoveredJob(jobId: string, controller: AbortController): void {
+    this.runningJobs.set(jobId, controller);
+  }
+
+  unregisterRecoveredJob(jobId: string): void {
+    this.runningJobs.delete(jobId);
+  }
+
+  checkJobCompletion(jobId: string): void {
+    const job = getJob(jobId);
+    if (job) this.checkCompletion(job);
   }
 
   // --- CRUD (called by ToolPlugin) ---
@@ -211,7 +224,7 @@ export class SchedulerManager {
     // Don't delete from runningJobs here — the executeJob finally block handles cleanup
     const controller = this.runningJobs.get(id);
     if (controller) {
-      controller.abort();
+      controller.abort("cancelled");
     }
 
     const result = dbCancelJob(id, callerAgent, callerChannel);
@@ -333,7 +346,7 @@ export class SchedulerManager {
     // Timeout
     const timeout = setTimeout(
       () => {
-        controller.abort();
+        controller.abort("timeout");
       },
       (job.timeout_seconds || DEFAULT_TIMEOUT_SECONDS) * 1000,
     );
@@ -341,27 +354,25 @@ export class SchedulerManager {
     try {
       const output = await this.jobExecutor(job, runId, controller);
 
-      if (controller.signal.aborted) {
-        completeRun(runId, "timeout", "Job exceeded time limit");
-        this.handleJobError(job, new Error("timeout"));
-      } else {
-        completeRun(runId, "success", undefined, output?.slice(0, 500));
-        incrementRunCount(job.id);
-        resetErrors(job.id);
-        this.checkCompletion(job);
-      }
+      completeRun(runId, "success", undefined, output?.slice(0, 500));
+      incrementRunCount(job.id);
+      resetErrors(job.id);
+      this.checkCompletion(job);
       purgeOldRuns(job.id);
     } catch (err: any) {
+      const wasAborted = controller.signal.aborted;
       const errMsg = err.message || String(err);
-      completeRun(runId, "error", errMsg);
-      this.handleJobError(job, err);
+      const status = wasAborted && controller.signal.reason === "timeout" ? "timeout" : "error";
+      completeRun(runId, status, errMsg);
+      this.handleJobError(job, err, wasAborted);
     } finally {
       clearTimeout(timeout);
       this.runningJobs.delete(job.id);
     }
   }
 
-  private handleJobError(job: ScheduledJob, err: any): void {
+  private handleJobError(job: ScheduledJob, err: any, wasAborted = false): void {
+    if (wasAborted) return; // Don't increment error counters for aborted jobs
     const errMsg = err.message || String(err);
     console.error(`[Scheduler] Job ${job.id} "${job.title}" error:`, errMsg);
 

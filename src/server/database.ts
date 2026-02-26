@@ -41,8 +41,8 @@ initDatabase();
 export const preparedStatements = {
   // Insert message
   insertMessage: db.prepare(
-    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json, subspace_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ),
 
   // Get message by ts
@@ -297,6 +297,43 @@ export function initDatabase() {
     /* Column already exists */
   }
 
+  // Add subspace_json column to messages for sub-space preview cards
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN subspace_json TEXT`);
+  } catch {
+    /* Column already exists */
+  }
+
+  // Create spaces table for sub-agent chat sessions
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS spaces (
+      id TEXT PRIMARY KEY,
+      channel TEXT NOT NULL,
+      space_channel TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      description TEXT,
+      agent_id TEXT NOT NULL,
+      agent_color TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','completed','failed','timed_out')),
+      source TEXT NOT NULL,
+      source_id TEXT,
+      card_message_ts TEXT,
+      timeout_seconds INTEGER NOT NULL DEFAULT 300,
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      result_summary TEXT,
+      locked INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_spaces_channel ON spaces(channel);
+    CREATE INDEX IF NOT EXISTS idx_spaces_status ON spaces(status);
+  `);
+  // Partial unique index: only one active space per scheduler job
+  try {
+    db.exec(`CREATE UNIQUE INDEX idx_spaces_active_source ON spaces(source_id) WHERE status='active' AND source='scheduler'`);
+  } catch {
+    /* Index already exists */
+  }
+
   // Create agents table if not exists (for older DBs)
   try {
     db.exec(`
@@ -475,6 +512,7 @@ export interface Message {
   files_json: string;
   reactions_json: string;
   article_json: string | null;
+  subspace_json: string | null;
   created_at: number;
 }
 
@@ -511,6 +549,17 @@ export interface SlackMessage {
     author: string;
     thumbnail_url: string;
   };
+  subspace?: SubspacePreview;
+}
+
+export interface SubspacePreview {
+  id: string;
+  title: string;
+  description?: string;
+  agent_id: string;
+  agent_color: string;
+  status: "active" | "completed" | "failed" | "timed_out";
+  channel: string;
 }
 
 export interface SlackFile {
@@ -593,7 +642,25 @@ export function toSlackMessage(msg: Message): SlackMessage {
     }
   }
 
+  // Parse and include subspace preview
+  if (msg.subspace_json) {
+    try {
+      const subspace = JSON.parse(msg.subspace_json);
+      if (subspace && subspace.id) {
+        result.subspace = subspace;
+      }
+    } catch {
+      /* Invalid JSON */
+    }
+  }
+
   return result;
+}
+
+export function updateSubspaceStatus(ts: string, channel: string, newSubspaceJson: string) {
+  const now = Math.floor(Date.now() / 1000);
+  db.run(`UPDATE messages SET subspace_json = ?, edited_at = ? WHERE ts = ? AND channel = ?`, [newSubspaceJson, now, ts, channel]);
+  return db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(ts) || null;
 }
 
 // Agent Registry Types & Functions

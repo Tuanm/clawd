@@ -406,6 +406,11 @@ export default function App({ channel: initialChannel }: Props) {
   // Active channel (can be switched without page reload)
   const [activeChannel, setActiveChannel] = useState(initialChannel);
 
+  // Space mode detection
+  const isSpaceChannel = activeChannel.includes(":space:");
+  const parentChannel = isSpaceChannel ? activeChannel.split(":space:")[0] : null;
+  const spaceId = isSpaceChannel ? activeChannel.split(":space:")[1] : null;
+
   // Per-channel state stored in a Map
   const [channelStates, setChannelStates] = useState<Map<string, ChannelState>>(() => {
     const map = new Map();
@@ -438,7 +443,7 @@ export default function App({ channel: initialChannel }: Props) {
   const [openChannels, setOpenChannels] = useState<string[]>(() => {
     const stored = getStoredChannels();
     // Always include current channel
-    if (!stored.includes(initialChannel)) {
+    if (!stored.includes(initialChannel) && !initialChannel.includes(":space:")) {
       return addStoredChannel(initialChannel);
     }
     return stored;
@@ -448,6 +453,12 @@ export default function App({ channel: initialChannel }: Props) {
   const [showPlanModal, setShowPlanModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showProjectsDialog, setShowProjectsDialog] = useState(false);
+  const [spaceInfo, setSpaceInfo] = useState<{
+    title: string;
+    status: "active" | "completed" | "failed" | "timed_out";
+  } | null>(null);
+  const [spaceError, setSpaceError] = useState(false);
+  const isSpaceLocked = spaceInfo != null && spaceInfo.status !== "active";
   const [showAgentDialog, setShowAgentDialog] = useState(false);
   const [jumpToMessageTs, setJumpToMessageTs] = useState<string | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
@@ -623,11 +634,25 @@ export default function App({ channel: initialChannel }: Props) {
     fetchAllChannelAgents();
   }, [showChannelDialog, openChannels]);
 
-  // Add current channel to stored list on mount
+  // Add current channel to stored list on mount (skip space channels)
   useEffect(() => {
-    const updated = addStoredChannel(initialChannel);
-    setOpenChannels(updated);
+    if (!initialChannel.includes(":space:")) {
+      const updated = addStoredChannel(initialChannel);
+      setOpenChannels(updated);
+    }
   }, [initialChannel]);
+
+  // Fetch space info when in space mode
+  useEffect(() => {
+    if (!isSpaceChannel || !spaceId) return;
+    fetch(`/api/spaces.get?id=${spaceId}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data) setSpaceInfo({ title: data.title, status: data.status });
+        else setSpaceError(true);
+      })
+      .catch(() => setSpaceError(true));
+  }, [isSpaceChannel, spaceId]);
 
   // Validate stored channels and remove inaccessible ones
   useEffect(() => {
@@ -1746,6 +1771,28 @@ export default function App({ channel: initialChannel }: Props) {
         </div>
       )}
 
+      {isSpaceChannel && spaceError && (
+        <div className="space-locked-banner">
+          Sub-space not found.{" "}
+          <button className="space-back-btn" onClick={() => window.location.href = `/${parentChannel}`}>← Back to channel</button>
+        </div>
+      )}
+      {isSpaceChannel && spaceInfo && (
+        <div className="space-header">
+          <button className="space-back-btn" onClick={() => window.location.href = `/${parentChannel}`} title="Back to channel">
+            ← Back
+          </button>
+          <span className="space-header-title">{spaceInfo.title}</span>
+          <span className={`subspace-card-status subspace-status-${spaceInfo.status}`}>
+            {spaceInfo.status === "active" ? "🔄 Active" :
+             spaceInfo.status === "completed" ? "✅ Done" :
+             spaceInfo.status === "failed" ? "❌ Failed" : "⏰ Timed Out"}
+          </span>
+        </div>
+      )}
+      {isSpaceChannel && isSpaceLocked && spaceInfo && (
+        <div className="space-locked-banner">This sub-space is {spaceInfo.status === "completed" ? "completed" : spaceInfo.status === "timed_out" ? "timed out" : "closed"}. No new messages can be sent.</div>
+      )}
       <div className="messages-wrapper">
         <MessageList
           messages={messages}
@@ -1795,7 +1842,7 @@ export default function App({ channel: initialChannel }: Props) {
       <MessageComposer
         onSend={sendMessage}
         channel={activeChannel}
-        disabled={!channelStates.get(activeChannel)?.loaded}
+        disabled={!channelStates.get(activeChannel)?.loaded || (isSpaceChannel && isSpaceLocked)}
         thinkingBanner={
           streamingAgents.length > 0 ? (
             <div className="thinking-banner" onClick={() => setStreamDialogOpen(true)} title="Click to see thoughts">

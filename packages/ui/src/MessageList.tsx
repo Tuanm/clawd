@@ -48,6 +48,16 @@ interface Message {
     author: string;
     thumbnail_url: string;
   };
+  // Sub-space attachment
+  subspace?: {
+    id: string;
+    title: string;
+    description?: string;
+    agent_id: string;
+    agent_color: string;
+    status: "active" | "completed" | "failed" | "timed_out";
+    channel: string;
+  };
 }
 
 // Pending message type
@@ -1664,6 +1674,31 @@ export default function MessageList({
                       {msg.article.description && (
                         <div className="article-card-description">{msg.article.description}</div>
                       )}
+                    </div>
+                  </div>
+                )}
+                {msg.subspace && (
+                  <div
+                    className="message-subspace-card"
+                    onClick={() => window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => e.key === "Enter" && (window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`)}
+                  >
+                    <div className="subspace-card-icon" style={{ backgroundColor: msg.subspace.agent_color || "#6366f1" }}>
+                      🤖
+                    </div>
+                    <div className="subspace-card-content">
+                      <div className="subspace-card-title">{msg.subspace.title}</div>
+                      {msg.subspace.description && (
+                        <div className="subspace-card-description">{msg.subspace.description}</div>
+                      )}
+                    </div>
+                    <div className={`subspace-card-status subspace-status-${msg.subspace.status}`}>
+                      {msg.subspace.status === "active" ? "🔄 Active" :
+                       msg.subspace.status === "completed" ? "✅ Done" :
+                       msg.subspace.status === "failed" ? "❌ Failed" :
+                       "⏰ Timed Out"}
                     </div>
                   </div>
                 )}

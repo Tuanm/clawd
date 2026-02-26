@@ -24,6 +24,10 @@ export function listChannels() {
 
 // POST /api/conversations.create
 export function createChannel(name: string, userId = "UHUMAN") {
+  if (name.includes(":space:")) {
+    return { ok: false, error: "Channel names cannot contain ':space:'" };
+  }
+
   const id = generateId("C");
 
   db.run(`INSERT INTO channels (id, name, created_by) VALUES (?, ?, ?)`, [id, name, userId]);

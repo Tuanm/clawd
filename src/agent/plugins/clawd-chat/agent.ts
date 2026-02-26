@@ -25,6 +25,8 @@ export interface ClawdChatConfig {
   pollInterval?: number;
   /** If true, this agent is a worker/sub-agent (uses UWORKER- prefix instead of UBOT) */
   isWorker?: boolean;
+  /** If true, this agent is a space sub-agent */
+  isSpaceAgent?: boolean;
 }
 
 interface ChatMessage {
@@ -72,7 +74,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
   const _SUMMARY_TTL = 30 * 60 * 1000; // Refresh summary every 30 minutes
 
   // Determine user ID based on whether this is a worker/sub-agent
-  const userId = config.isWorker ? `UWORKER-${config.agentId}` : "UBOT";
+  const userId = (config.isWorker || config.isSpaceAgent) ? `UWORKER-${config.agentId}` : "UBOT";
 
   // ============================================================================
   // API Helpers
@@ -431,7 +433,18 @@ ${recentTopics.join("\n")}`;
     // Provide clawd-chat MCP server for chat tools + any additional MCP servers from config
     getMcpServers() {
       // Workers only get tools through ToolPlugin — skip MCP to prevent scheduler tool access (S6)
-      if (config.isWorker) return [];
+      if (config.isWorker && !config.isSpaceAgent) return [];
+
+      // Space agents get ONLY clawd-chat MCP with scope=space filter (chat_* tools only)
+      if (config.isSpaceAgent) {
+        return [
+          {
+            name: "clawd-chat",
+            url: `${apiUrl}/mcp?scope=space`,
+            transport: "http" as const,
+          },
+        ];
+      }
 
       const servers: ReturnType<typeof getMCPServers> = getMCPServers();
 
@@ -499,8 +512,8 @@ ${recentTopics.join("\n")}`;
 
           let context = "";
 
-          // Add worker-specific instructions if this is a sub-agent
-          if (config.isWorker) {
+          // Add worker-specific instructions if this is a sub-agent or space agent
+          if (config.isWorker || config.isSpaceAgent) {
             const workerId = `UWORKER-${config.agentId}`;
             context += `<worker_identity>
 You are a SUB-AGENT WORKER, not the main bot.
@@ -696,11 +709,15 @@ RICH CONTENT FEATURES (use with chat_send_message):
       },
 
       async transformToolArgs(name: string, args: any, _ctx: PluginContext) {
-        // Auto-inject user ID for chat_send_message when worker
-        if (config.isWorker && name === "chat_send_message") {
+        // SP21: Space agents — force channel on ALL chat_* tools
+        if (config.isSpaceAgent && name.startsWith("chat_")) {
+          args = { ...args, channel: config.channel };
+        }
+        // Auto-inject user ID for chat_send_message when worker or space agent
+        if ((config.isWorker || config.isSpaceAgent) && name === "chat_send_message") {
           return {
             ...args,
-            user: userId, // Inject worker user ID
+            user: userId,
           };
         }
         return args;

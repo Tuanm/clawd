@@ -187,10 +187,22 @@ const PORT = config.port;
 const scheduler = new SchedulerManager(config, broadcastUpdate);
 setMcpScheduler(scheduler);
 
+// Initialize space management
+import { SpaceManager } from "./spaces/manager";
+import { SpaceWorkerManager } from "./spaces/worker";
+
+const spaceManager = new SpaceManager();
+const spaceWorkerManager = new SpaceWorkerManager(
+  { chatApiUrl: config.chatApiUrl, projectRoot: config.projectRoot, debug: config.debug, yolo: config.yolo },
+  spaceManager,
+);
+
 // Initialize runner (sets job/reminder executors on scheduler)
 initRunner({
   appConfig: config,
   scheduler,
+  spaceManager,
+  spaceWorkerManager,
   getAgentConfig: async (channel: string) => {
     try {
       const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`);
@@ -1178,6 +1190,24 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       return json({ ok: true, channel, last_seen_ts: result?.last_seen_ts || null });
     }
 
+    // Spaces API
+    if (path === "/api/spaces.list") {
+      const channel = url.searchParams.get("channel");
+      if (!channel) return json({ ok: false, error: "channel required" }, 400);
+      const { listSpaces } = await import("./spaces/db");
+      const status = url.searchParams.get("status") || undefined;
+      return json({ ok: true, spaces: listSpaces(channel, status) });
+    }
+
+    if (path === "/api/spaces.get") {
+      const id = url.searchParams.get("id");
+      if (!id) return json({ ok: false, error: "id required" }, 400);
+      const { getSpace } = await import("./spaces/db");
+      const space = getSpace(id);
+      if (!space) return json({ ok: false, error: "not_found" }, 404);
+      return json({ ok: true, space });
+    }
+
     return json({ ok: false, error: "not_found" }, 404);
   } catch (error) {
     console.error("[ERROR]", error);
@@ -1200,11 +1230,130 @@ console.log(`
 +---------------------------------------------------------------+
 `);
 
+// Helper for space recovery notifications
+async function postToChannel(apiUrl: string, channel: string, text: string, agentId: string): Promise<void> {
+  await fetch(`${apiUrl}/api/chat.postMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ channel, text, user: "UWORKER-SCHEDULER", agent_id: agentId }),
+  });
+}
+
 // Start worker manager (loads agents from DB, starts polling loops)
 setTimeout(async () => {
   try {
     await workerManager.start();
     scheduler.start();
+
+    // Space recovery AFTER scheduler.start() — prevents runningJobs.clear() from wiping recovered registrations
+    const activeSpaces = spaceManager.getActiveSpaces();
+    if (activeSpaces.length > 0) {
+      console.log(`[Spaces] Recovering ${activeSpaces.length} active space(s)...`);
+      for (const space of activeSpaces) {
+        try {
+          // Validate source job for scheduler spaces
+          if (space.source === "scheduler" && space.source_id) {
+            const { getJob } = await import("./scheduler/db");
+            const job = getJob(space.source_id);
+            if (!job || job.status === "cancelled" || job.status === "failed") {
+              spaceManager.failSpace(space.id, "Source job no longer active");
+              continue;
+            }
+          }
+
+          // Check remaining timeout
+          const remainingMs = Math.max(0, space.created_at + space.timeout_seconds * 1000 - Date.now());
+          if (remainingMs <= 0) {
+            spaceManager.timeoutSpace(space.id);
+            continue;
+          }
+
+          // Check MAX limit
+          if (spaceWorkerManager.runningCount() >= 5) {
+            spaceManager.failSpace(space.id, "Max workers exceeded on recovery");
+            continue;
+          }
+
+          // Get agent config
+          const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`);
+          const data = (await res.json()) as any;
+          const agentEntry = data.ok && Array.isArray(data.agents)
+            ? data.agents.find((a: any) => a.channel === space.channel && a.active !== false)
+            : null;
+          if (!agentEntry) {
+            spaceManager.failSpace(space.id, "Agent not configured");
+            continue;
+          }
+          const agentConfig = {
+            provider: agentEntry.provider || "copilot",
+            model: agentEntry.model || "default",
+            agentId: agentEntry.agent_id,
+          };
+
+          // Create abort controller with remaining timeout
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort("timeout"), remainingMs);
+          let settled = false;
+          const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            const isTimeout = controller.signal.reason === "timeout";
+            const won = isTimeout
+              ? spaceManager.timeoutSpace(space.id)
+              : spaceManager.failSpace(space.id, String(controller.signal.reason));
+            if (won) {
+              const emoji = isTimeout ? "⏰" : "❌";
+              postToChannel(config.chatApiUrl, space.channel, `${emoji} Space ${isTimeout ? "timed_out" : "failed"}: ${space.title}`, agentConfig.agentId).catch(() => {});
+            }
+            spaceWorkerManager.stopSpaceWorker(space.id);
+          };
+          controller.signal.addEventListener("abort", onAbort, { once: true });
+
+          const promise = spaceWorkerManager.startSpaceWorker(space, agentConfig);
+
+          // Register to prevent tick re-execution
+          if (space.source === "scheduler" && space.source_id) {
+            scheduler.registerRecoveredJob(space.source_id, controller);
+          }
+
+          promise
+            .then(async (summary) => {
+              settled = true;
+              if (space.source === "scheduler" && space.source_id) {
+                const { insertRun, completeRun, incrementRunCount, resetErrors, purgeOldRuns } = await import("./scheduler/db");
+                const runId = crypto.randomUUID();
+                insertRun(runId, space.source_id);
+                completeRun(runId, "success", undefined, summary?.slice(0, 500));
+                incrementRunCount(space.source_id);
+                resetErrors(space.source_id);
+                scheduler.checkJobCompletion(space.source_id);
+                purgeOldRuns(space.source_id);
+              }
+            })
+            .catch((err: Error) => {
+              if (!settled) {
+                settled = true;
+                const won = spaceManager.failSpace(space.id, err.message);
+                if (won) postToChannel(config.chatApiUrl, space.channel, `❌ Space failed: ${space.title}`, agentConfig.agentId).catch(() => {});
+                spaceWorkerManager.stopSpaceWorker(space.id);
+              }
+            })
+            .finally(() => {
+              clearTimeout(timer);
+              controller.signal.removeEventListener("abort", onAbort);
+              spaceWorkerManager.stopSpaceWorker(space.id);
+              if (space.source === "scheduler" && space.source_id) {
+                scheduler.unregisterRecoveredJob(space.source_id);
+              }
+            });
+
+          console.log(`[Spaces] Recovered space ${space.id} (${space.title}), ${Math.round(remainingMs / 1000)}s remaining`);
+        } catch (err) {
+          console.error(`[Spaces] Failed to recover space ${space.id}:`, err);
+          spaceManager.failSpace(space.id, "Recovery failed");
+        }
+      }
+    }
   } catch (error) {
     console.error("[clawd-app] Failed to start worker manager:", error);
   }
@@ -1242,10 +1391,11 @@ setInterval(() => {
   }
 }, 60_000);
 
-// Graceful shutdown
+// Graceful shutdown (SP25: scheduler → spaces → workers)
 process.on("SIGTERM", async () => {
   console.log("[clawd-app] Received SIGTERM, shutting down...");
   await scheduler.stop();
+  await spaceWorkerManager.stopAll();
   await workerManager.stop();
   process.exit(0);
 });
@@ -1253,6 +1403,7 @@ process.on("SIGTERM", async () => {
 process.on("SIGINT", async () => {
   console.log("[clawd-app] Received SIGINT, shutting down...");
   await scheduler.stop();
+  await spaceWorkerManager.stopAll();
   await workerManager.stop();
   process.exit(0);
 });

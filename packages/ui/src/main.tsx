@@ -47,6 +47,15 @@ function Router() {
   // Match both patterns:
   // - /spaces/{channel-id} (legacy)
   // - /{channel-id} (new, direct)
+  // Match space paths: /{channel}/space/{spaceId}
+  const spacePageMatch = path.match(/^\/([^/]+)\/space\/([^/]+)\/?$/);
+  if (spacePageMatch) {
+    const parentChannel = spacePageMatch[1];
+    const spaceId = spacePageMatch[2];
+    const spaceChannel = `${parentChannel}:space:${spaceId}`;
+    return <App channel={spaceChannel} />;
+  }
+
   const spaceMatch = path.match(/^\/spaces\/([^/]+)\/?$/) || path.match(/^\/([^/]+)\/?$/);
 
   if (spaceMatch) {

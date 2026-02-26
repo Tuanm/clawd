@@ -41,6 +41,7 @@ export interface PostMessageRequest {
   html_preview?: string;
   code_preview?: CodePreview;
   article_json?: string;
+  subspace_json?: string;
 }
 
 export interface UpdateMessageRequest {
@@ -58,6 +59,16 @@ export interface ReactionsRequest {
 
 // POST /api/chat.postMessage - uses prepared statement
 export function postMessage(req: PostMessageRequest) {
+  // Lock check for space channels
+  if (req.channel.includes(":space:")) {
+    const space = db.query<{locked: number}, [string]>(
+      `SELECT locked FROM spaces WHERE space_channel = ?`
+    ).get(req.channel);
+    if (space?.locked) {
+      return { ok: false, error: "space_is_locked" };
+    }
+  }
+
   const ts = generateTs();
   // Default to UBOT if agent_id is provided, UHUMAN otherwise
   const user = req.user || (req.agent_id ? "UBOT" : "UHUMAN");
@@ -117,6 +128,7 @@ export function postMessage(req: PostMessageRequest) {
     req.article_json || null,
     agentId,
     mentionsJson,
+    req.subspace_json || null,
   );
 
   const msg = preparedStatements.getMessageByTs.get(ts);
@@ -141,6 +153,16 @@ export function postMessage(req: PostMessageRequest) {
 
 // POST /api/chat.update - uses prepared statement
 export function updateMessage(req: UpdateMessageRequest) {
+  // Lock check for space channels (SP2)
+  if (req.channel.includes(":space:")) {
+    const space = db
+      .query<{ locked: number }, [string]>(`SELECT locked FROM spaces WHERE space_channel = ?`)
+      .get(req.channel);
+    if (space?.locked) {
+      return { ok: false, error: "space_is_locked" };
+    }
+  }
+
   const now = Math.floor(Date.now() / 1000);
 
   // Layer 2: Apply same 50K truncation guard as postMessage
@@ -489,6 +511,16 @@ export function getConversationNewer(channel: string, newestTs: string, limit = 
 
 // POST /api/chat.delete - Delete a message
 export function deleteMessage(channel: string, ts: string) {
+  // Lock check for space channels
+  if (channel.includes(":space:")) {
+    const space = db.query<{locked: number}, [string]>(
+      `SELECT locked FROM spaces WHERE space_channel = ?`
+    ).get(channel);
+    if (space?.locked) {
+      return { ok: false, error: "space_is_locked" };
+    }
+  }
+
   const msg = db
     .query<Message, [string, string]>(`SELECT * FROM messages WHERE ts = ? AND channel = ?`)
     .get(ts, channel);

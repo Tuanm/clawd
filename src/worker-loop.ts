@@ -66,6 +66,8 @@ export interface WorkerLoopConfig {
   yolo: boolean;
   contextMode: boolean;
   scheduler?: import("./scheduler/manager").SchedulerManager;
+  isSpaceAgent?: boolean;
+  additionalPlugins?: Array<{ plugin?: import("./agent/src/plugins/manager").Plugin; toolPlugin?: import("./agent/src/tools/plugin").ToolPlugin }>;
 }
 
 export class WorkerLoop {
@@ -454,6 +456,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               apiUrl: chatApiUrl,
               channel,
               agentId,
+              isSpaceAgent: this.config.isSpaceAgent,
             };
 
             const plugin = {
@@ -461,6 +464,13 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               toolPlugin: createClawdChatToolPlugin(pluginConfig),
             };
             await agent.usePlugin(plugin);
+
+            // Register additional plugins (space tools, etc.)
+            if (this.config.additionalPlugins) {
+              for (const p of this.config.additionalPlugins) {
+                await agent.usePlugin(p);
+              }
+            }
 
             // Register scheduler tools (if scheduler is available)
             if (this.config.scheduler) {

@@ -1241,17 +1241,25 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
         };
         break;
 
-      case "tools/list":
-        result = {
-          tools: MCP_TOOLS,
-        };
+      case "tools/list": {
+        const scope = new URL(req.url, "http://localhost").searchParams.get("scope");
+        const tools = scope === "space"
+          ? MCP_TOOLS.filter((t: any) => t.name.startsWith("chat_"))
+          : MCP_TOOLS;
+        result = { tools };
         break;
+      }
 
       case "tools/call": {
+        const scope = new URL(req.url, "http://localhost").searchParams.get("scope");
         const { name, arguments: args } = params as {
           name: string;
           arguments: Record<string, unknown>;
         };
+        if (scope === "space" && !name.startsWith("chat_")) {
+          result = { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Tool not available in space scope" }) }] };
+          break;
+        }
         result = await executeToolCall(name, args || {});
         break;
       }
