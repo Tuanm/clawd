@@ -11,6 +11,13 @@ import { getOptimizedFile } from "./routes/files";
 import { getConversationHistory, getPendingMessages, postMessage } from "./routes/messages";
 import { broadcastMessageSeen, broadcastUpdate } from "./websocket";
 import { homedir } from "node:os";
+import type { SchedulerManager } from "../scheduler/manager";
+
+// Scheduler reference (set by index.ts after creation)
+let _scheduler: SchedulerManager | null = null;
+export function setMcpScheduler(scheduler: SchedulerManager): void {
+  _scheduler = scheduler;
+}
 
 /**
  * Truncate text for agent context — always active (defense in depth).
@@ -1121,6 +1128,66 @@ Best practices:
       openWorldHint: false,
     },
   },
+  // Scheduler tools
+  {
+    name: "scheduler_create",
+    description: "Create a scheduled job or reminder in a channel. Jobs spawn an agent; reminders just post a message.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        channel: { type: "string", description: "Channel ID" },
+        agent_id: { type: "string", description: "Agent ID creating the schedule" },
+        title: { type: "string", description: "Job/reminder title (max 200 chars)" },
+        prompt: { type: "string", description: "Task prompt or reminder message" },
+        schedule: { type: "string", description: 'Schedule: "in 5 minutes", "every 2 hours", cron, or ISO 8601' },
+        is_reminder: { type: "boolean", description: "If true, creates a reminder instead of a job" },
+        max_runs: { type: "number", description: "Max runs before auto-completing" },
+        timeout_seconds: { type: "number", description: "Per-run timeout (default: 300, max: 3600)" },
+      },
+      required: ["channel", "agent_id", "title", "prompt", "schedule"],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: "scheduler_list",
+    description: "List scheduled jobs and reminders in a channel.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        channel: { type: "string", description: "Channel ID" },
+        status: { type: "string", description: "Filter by status: active, paused, completed, failed, cancelled" },
+      },
+      required: ["channel"],
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "scheduler_cancel",
+    description: "Cancel a scheduled job or reminder.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Job/reminder ID" },
+        agent_id: { type: "string", description: "Agent ID (for authorization)" },
+        channel: { type: "string", description: "Channel ID (for authorization)" },
+      },
+      required: ["id", "agent_id", "channel"],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "scheduler_history",
+    description: "View run history for a scheduled job.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Job/reminder ID" },
+        limit: { type: "number", description: "Number of recent runs (default: 10, max: 50)" },
+      },
+      required: ["id"],
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
 ];
 
 // MCP JSON-RPC handler
@@ -1247,6 +1314,58 @@ async function executeToolCall(
 ): Promise<{ content: { type: string; text: string }[] }> {
   try {
     let resultText: string;
+
+    // Handle scheduler tools before main switch
+    if (name.startsWith("scheduler_")) {
+      if (!_scheduler) {
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Scheduler not available" }) }] };
+      }
+      switch (name) {
+        case "scheduler_create": {
+          const maxRuns = args.max_runs as number | undefined;
+          const timeoutSeconds = args.timeout_seconds as number | undefined;
+          if (maxRuns !== undefined && (!Number.isFinite(maxRuns) || maxRuns <= 0 || !Number.isInteger(maxRuns))) {
+            resultText = JSON.stringify({ ok: false, error: "max_runs must be a positive integer" });
+            break;
+          }
+          if (timeoutSeconds !== undefined && (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)) {
+            resultText = JSON.stringify({ ok: false, error: "timeout_seconds must be a positive number" });
+            break;
+          }
+          const r = _scheduler.createJobFromTool({
+            channel: args.channel as string,
+            agentId: args.agent_id as string,
+            title: args.title as string,
+            prompt: args.prompt as string,
+            schedule: args.schedule as string,
+            maxRuns,
+            timeoutSeconds,
+            isReminder: args.is_reminder as boolean | undefined,
+          });
+          resultText = JSON.stringify(r.success ? { ok: true, job: r.job } : { ok: false, error: r.error }, null, 2);
+          break;
+        }
+        case "scheduler_list": {
+          const jobs = _scheduler.listJobsForChannel(args.channel as string, args.status as string | undefined);
+          resultText = JSON.stringify({ ok: true, jobs }, null, 2);
+          break;
+        }
+        case "scheduler_cancel": {
+          const r = _scheduler.cancelJobFromTool(args.id as string, args.agent_id as string, args.channel as string);
+          resultText = JSON.stringify({ ok: r.success, error: r.success ? undefined : r.error }, null, 2);
+          break;
+        }
+        case "scheduler_history": {
+          const limit = Math.min((args.limit as number) || 10, 50);
+          const runs = _scheduler.getJobRunsForTool(args.id as string, limit, args.channel as string | undefined);
+          resultText = JSON.stringify({ ok: true, runs }, null, 2);
+          break;
+        }
+        default:
+          resultText = JSON.stringify({ ok: false, error: `Unknown scheduler tool: ${name}` });
+      }
+      return { content: [{ type: "text", text: resultText }] };
+    }
 
     switch (name) {
       case "chat_poll_and_ack": {

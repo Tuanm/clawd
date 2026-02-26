@@ -16,6 +16,7 @@ import { initializeSandbox } from "./agent/src/utils/sandbox";
 import { setDebug } from "./agent/src/utils/debug";
 import { smartTruncate } from "./agent/src/utils/smart-truncation";
 import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
+import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 
 // Session size limits (in estimated tokens) - tuned for 128k context
 const TOKEN_LIMIT_CRITICAL = 70000;
@@ -64,6 +65,7 @@ export interface WorkerLoopConfig {
   debug: boolean;
   yolo: boolean;
   contextMode: boolean;
+  scheduler?: import("./scheduler/manager").SchedulerManager;
 }
 
 export class WorkerLoop {
@@ -459,6 +461,20 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               toolPlugin: createClawdChatToolPlugin(pluginConfig),
             };
             await agent.usePlugin(plugin);
+
+            // Register scheduler tools (if scheduler is available)
+            if (this.config.scheduler) {
+              const schedulerToolPlugin = createSchedulerToolPlugin({
+                scheduler: this.config.scheduler,
+                channel,
+                agentId,
+              });
+              // Wrap as compound plugin with no-op lifecycle plugin
+              await agent.usePlugin({
+                plugin: { name: "scheduler", version: "1.0.0", hooks: {} },
+                toolPlugin: schedulerToolPlugin,
+              });
+            }
 
             // Run the agent with the prompt
             const result = await agent.run(prompt, sessionName);

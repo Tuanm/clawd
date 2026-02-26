@@ -1,0 +1,213 @@
+/**
+ * Scheduler Tool Plugin — 7 tools for agent-controlled scheduling
+ *
+ * Tools: schedule_job, schedule_reminder, list_schedules, cancel_schedule,
+ *        pause_schedule, resume_schedule, schedule_history
+ */
+import type { ToolPlugin, ToolRegistration } from "../src/tools/plugin";
+import type { SchedulerManager } from "../../scheduler/manager";
+
+interface SchedulerPluginConfig {
+  scheduler: SchedulerManager;
+  channel: string;
+  agentId: string;
+}
+
+export function createSchedulerToolPlugin(config: SchedulerPluginConfig): ToolPlugin {
+  const { scheduler, channel, agentId } = config;
+
+  return {
+    name: "scheduler",
+
+    getTools(): ToolRegistration[] {
+      return [
+        {
+          name: "schedule_job",
+          description:
+            "Schedule a job to run at a specific time or recurring interval. The job runs as a separate agent that posts results to this channel. " +
+            'Schedule formats: "in 5 minutes", "every 2 hours", cron "0 9 * * *" (UTC), ISO 8601 "2024-12-25T10:00:00Z".',
+          parameters: {
+            title: { type: "string", description: "Short descriptive title for the job (max 200 chars)" },
+            prompt: { type: "string", description: "The task prompt for the job agent to execute (max 10000 chars)" },
+            schedule: {
+              type: "string",
+              description: 'When to run: "in 5 minutes", "every 2 hours", cron "0 9 * * *", or ISO 8601',
+            },
+            max_runs: {
+              type: "number",
+              description: "Maximum number of runs before auto-completing (optional, for recurring jobs)",
+            },
+            timeout_seconds: {
+              type: "number",
+              description: "Max execution time per run in seconds (default: 300, max: 3600)",
+            },
+          },
+          required: ["title", "prompt", "schedule"],
+          handler: async (args) => {
+            const { title, prompt, schedule, max_runs, timeout_seconds } = args;
+            const parsedMaxRuns = max_runs !== undefined ? Number(max_runs) : undefined;
+            const parsedTimeout = timeout_seconds !== undefined ? Number(timeout_seconds) : undefined;
+            if (
+              parsedMaxRuns !== undefined &&
+              (!Number.isFinite(parsedMaxRuns) || parsedMaxRuns <= 0 || !Number.isInteger(parsedMaxRuns))
+            ) {
+              return { success: false, output: "", error: "max_runs must be a positive integer" };
+            }
+            if (parsedTimeout !== undefined && (!Number.isFinite(parsedTimeout) || parsedTimeout <= 0)) {
+              return { success: false, output: "", error: "timeout_seconds must be a positive number" };
+            }
+            const result = scheduler.createJobFromTool({
+              channel,
+              agentId,
+              title: String(title),
+              prompt: String(prompt),
+              schedule: String(schedule),
+              maxRuns: parsedMaxRuns,
+              timeoutSeconds: parsedTimeout,
+            });
+            if (!result.success) return { success: false, output: "", error: result.error! };
+            const job = result.job!;
+            return {
+              success: true,
+              output: `✅ Scheduled job "${job.title}" (ID: ${job.id})\nType: ${job.type}\nNext run: ${new Date(job.next_run).toISOString()}${job.max_runs ? `\nMax runs: ${job.max_runs}` : ""}`,
+            };
+          },
+        },
+        {
+          name: "schedule_reminder",
+          description:
+            "Schedule a simple reminder message. Unlike jobs, reminders just post a message — no agent is spawned. " +
+            'Schedule formats: "in 30 minutes", "every day", cron "0 9 * * 1" (UTC), ISO 8601.',
+          parameters: {
+            title: { type: "string", description: "Short title for the reminder (max 200 chars)" },
+            message: { type: "string", description: "The reminder message to post (max 5000 chars)" },
+            schedule: {
+              type: "string",
+              description: 'When to fire: "in 30 minutes", "every day", cron expression, or ISO 8601',
+            },
+            max_runs: {
+              type: "number",
+              description: "Maximum number of times to fire (optional, for recurring reminders)",
+            },
+          },
+          required: ["title", "message", "schedule"],
+          handler: async (args) => {
+            const { title, message, schedule, max_runs } = args;
+            const parsedMaxRuns = max_runs !== undefined ? Number(max_runs) : undefined;
+            if (
+              parsedMaxRuns !== undefined &&
+              (!Number.isFinite(parsedMaxRuns) || parsedMaxRuns <= 0 || !Number.isInteger(parsedMaxRuns))
+            ) {
+              return { success: false, output: "", error: "max_runs must be a positive integer" };
+            }
+            const result = scheduler.createJobFromTool({
+              channel,
+              agentId,
+              title: String(title),
+              prompt: String(message),
+              schedule: String(schedule),
+              maxRuns: parsedMaxRuns,
+              isReminder: true,
+            });
+            if (!result.success) return { success: false, output: "", error: result.error! };
+            const job = result.job!;
+            return {
+              success: true,
+              output: `🔔 Reminder set: "${job.title}" (ID: ${job.id})\nWill fire at: ${new Date(job.next_run).toISOString()}${job.max_runs ? `\nMax fires: ${job.max_runs}` : ""}`,
+            };
+          },
+        },
+        {
+          name: "list_schedules",
+          description:
+            "List scheduled jobs and reminders in this channel. Filter by status: active, paused, completed, failed, cancelled.",
+          parameters: {
+            status: {
+              type: "string",
+              description:
+                'Filter by status (default: "active"). Options: active, paused, completed, failed, cancelled',
+            },
+          },
+          required: [],
+          handler: async (args) => {
+            const status = args.status ? String(args.status) : undefined;
+            const jobs = scheduler.listJobsForChannel(channel, status);
+            if (jobs.length === 0)
+              return { success: true, output: `No ${status || "active"} schedules in this channel.` };
+            const lines = jobs.map((j) => {
+              const nextRun = j.status === "active" ? new Date(j.next_run).toISOString() : "—";
+              const runs = j.max_runs ? `${j.run_count}/${j.max_runs}` : String(j.run_count);
+              return `• **${j.title}** (${j.id.slice(0, 8)})\n  Type: ${j.type} | Status: ${j.status} | Next: ${nextRun} | Runs: ${runs}`;
+            });
+            return {
+              success: true,
+              output: `${status || "Active"} schedules (${jobs.length}):\n\n${lines.join("\n\n")}`,
+            };
+          },
+        },
+        {
+          name: "cancel_schedule",
+          description: "Cancel a scheduled job or reminder by ID. Only the agent that created it can cancel it.",
+          parameters: {
+            id: { type: "string", description: "The job/reminder ID to cancel" },
+          },
+          required: ["id"],
+          handler: async (args) => {
+            const result = scheduler.cancelJobFromTool(String(args.id), agentId, channel);
+            if (!result.success) return { success: false, output: "", error: result.error! };
+            return { success: true, output: `❌ Cancelled schedule: "${result.title}"` };
+          },
+        },
+        {
+          name: "pause_schedule",
+          description: "Pause an active scheduled job or reminder. It can be resumed later.",
+          parameters: {
+            id: { type: "string", description: "The job/reminder ID to pause" },
+          },
+          required: ["id"],
+          handler: async (args) => {
+            const result = scheduler.pauseJobFromTool(String(args.id), agentId, channel);
+            if (!result.success) return { success: false, output: "", error: result.error! };
+            return { success: true, output: `⏸️ Paused schedule: "${result.title}"` };
+          },
+        },
+        {
+          name: "resume_schedule",
+          description: "Resume a paused scheduled job or reminder.",
+          parameters: {
+            id: { type: "string", description: "The job/reminder ID to resume" },
+          },
+          required: ["id"],
+          handler: async (args) => {
+            const result = scheduler.resumeJobFromTool(String(args.id), agentId, channel);
+            if (!result.success) return { success: false, output: "", error: result.error! };
+            return { success: true, output: `▶️ Resumed schedule: "${result.title}"` };
+          },
+        },
+        {
+          name: "schedule_history",
+          description: "View past run history for a scheduled job, including status, duration, and errors.",
+          parameters: {
+            id: { type: "string", description: "The job/reminder ID to view history for" },
+            limit: { type: "number", description: "Number of recent runs to show (default: 10, max: 50)" },
+          },
+          required: ["id"],
+          handler: async (args) => {
+            const limit = Math.min(args.limit ? Number(args.limit) : 10, 50);
+            const runs = scheduler.getJobRunsForTool(String(args.id), limit, channel);
+            if (runs.length === 0) return { success: true, output: "No run history found for this schedule." };
+            const lines = runs.map((r, i) => {
+              const started = new Date(r.started_at).toISOString();
+              const duration = r.completed_at ? `${((r.completed_at - r.started_at) / 1000).toFixed(1)}s` : "running";
+              const status =
+                r.status === "success" ? "✅" : r.status === "error" ? "❌" : r.status === "timeout" ? "⏰" : "🔄";
+              const error = r.error_message ? ` — ${r.error_message.slice(0, 100)}` : "";
+              return `${i + 1}. ${status} ${started} (${duration})${error}`;
+            });
+            return { success: true, output: `Run history (last ${runs.length}):\n\n${lines.join("\n")}` };
+          },
+        },
+      ];
+    },
+  };
+}

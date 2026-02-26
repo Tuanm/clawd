@@ -430,6 +430,9 @@ ${recentTopics.join("\n")}`;
 
     // Provide clawd-chat MCP server for chat tools + any additional MCP servers from config
     getMcpServers() {
+      // Workers only get tools through ToolPlugin — skip MCP to prevent scheduler tool access (S6)
+      if (config.isWorker) return [];
+
       const servers: ReturnType<typeof getMCPServers> = getMCPServers();
 
       // Build MCP server list: always include clawd-chat first, then add configured servers

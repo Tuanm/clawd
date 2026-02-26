@@ -121,7 +121,7 @@ import {
   setAgentStreaming,
   toSlackMessage,
 } from "./server/database";
-import { handleMcpRequest } from "./server/mcp";
+import { handleMcpRequest, setMcpScheduler } from "./server/mcp";
 import { createChannel, getChannelInfo, listChannels } from "./server/routes/channels";
 import { attachFilesToMessage, getFile, getFileMetadata, getOptimizedFile, uploadFile } from "./server/routes/files";
 import {
@@ -171,6 +171,8 @@ import {
   handleWebSocketMessage,
   handleWebSocketOpen,
 } from "./server/websocket";
+import { SchedulerManager } from "./scheduler/manager";
+import { initRunner } from "./scheduler/runner";
 
 // ============================================================================
 // Initialize
@@ -181,8 +183,35 @@ const PORT = config.port;
 
 // Database is initialized at module load time in database.ts (before prepared statements)
 
+// Initialize scheduler
+const scheduler = new SchedulerManager(config, broadcastUpdate);
+setMcpScheduler(scheduler);
+
+// Initialize runner (sets job/reminder executors on scheduler)
+initRunner({
+  appConfig: config,
+  scheduler,
+  getAgentConfig: async (channel: string) => {
+    try {
+      const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`);
+      const data = (await res.json()) as any;
+      if (data.ok && Array.isArray(data.agents)) {
+        const agent = data.agents.find((a: any) => a.channel === channel && a.active !== false);
+        if (agent) {
+          return {
+            provider: agent.provider || "copilot",
+            model: agent.model || "default",
+            agentId: agent.agent_id,
+          };
+        }
+      }
+    } catch {}
+    return null;
+  },
+});
+
 // Initialize worker manager
-const workerManager = new WorkerManager(config);
+const workerManager = new WorkerManager(config, scheduler);
 
 // Register agent management API routes
 const handleAgentRoute = registerAgentRoutes(db, workerManager);
@@ -1175,6 +1204,7 @@ console.log(`
 setTimeout(async () => {
   try {
     await workerManager.start();
+    scheduler.start();
   } catch (error) {
     console.error("[clawd-app] Failed to start worker manager:", error);
   }
@@ -1215,12 +1245,14 @@ setInterval(() => {
 // Graceful shutdown
 process.on("SIGTERM", async () => {
   console.log("[clawd-app] Received SIGTERM, shutting down...");
+  await scheduler.stop();
   await workerManager.stop();
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
   console.log("[clawd-app] Received SIGINT, shutting down...");
+  await scheduler.stop();
   await workerManager.stop();
   process.exit(0);
 });

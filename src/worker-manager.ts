@@ -7,6 +7,7 @@
  */
 
 import type { AppConfig } from "./config";
+import type { SchedulerManager } from "./scheduler/manager";
 import { WorkerLoop, type WorkerLoopConfig } from "./worker-loop";
 
 export interface AgentConfig {
@@ -29,9 +30,11 @@ export interface AgentConfig {
 export class WorkerManager {
   private loops: Map<string, WorkerLoop> = new Map();
   private config: AppConfig;
+  private scheduler?: SchedulerManager;
 
-  constructor(config: AppConfig) {
+  constructor(config: AppConfig, scheduler?: SchedulerManager) {
     this.config = config;
+    this.scheduler = scheduler;
   }
 
   /** Start the worker manager -- loads agents from DB and starts active loops */
@@ -80,6 +83,7 @@ export class WorkerManager {
       debug: this.config.debug,
       yolo: this.config.yolo,
       contextMode: this.config.contextMode,
+      scheduler: this.scheduler,
     };
 
     const loop = new WorkerLoop(loopConfig);
