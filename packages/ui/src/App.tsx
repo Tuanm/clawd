@@ -1084,16 +1084,16 @@ export default function App({ channel: initialChannel }: Props) {
   );
 
   // Handle ?msg= URL parameter for jumping to a specific message on load
+  const isChannelLoaded = currentState.loaded;
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const msgTs = params.get("msg");
-    if (msgTs && loaded) {
+    if (msgTs && isChannelLoaded) {
       setJumpToMessageTs(msgTs);
       jumpToMessage(msgTs);
-      // Clean up URL
       window.history.replaceState({}, "", window.location.pathname);
     }
-  }, [loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isChannelLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Jump to latest messages (scroll to bottom button)
   const jumpToLatest = useCallback(async () => {
