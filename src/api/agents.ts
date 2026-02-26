@@ -30,6 +30,7 @@ import type { WorkerManager } from "../worker-manager";
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, join, relative, isAbsolute, basename, dirname } from "node:path";
+import { homedir } from "node:os";
 
 // ============================================================================
 // Security: Sensitive file patterns (blocked from reading)
@@ -579,7 +580,7 @@ export function registerAgentRoutes(
 
     // List directories (for folder picker)
     if (path === "/api/app.folders.list") {
-      const dir = url.searchParams.get("path") || process.env.HOME || "/";
+      const dir = url.searchParams.get("path") || homedir() || "/";
       try {
         const { readdirSync } = require("node:fs");
         const { join } = require("node:path");

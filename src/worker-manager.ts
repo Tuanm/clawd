@@ -79,6 +79,7 @@ export class WorkerManager {
       chatApiUrl: this.config.chatApiUrl,
       debug: this.config.debug,
       yolo: this.config.yolo,
+      contextMode: this.config.contextMode,
     };
 
     const loop = new WorkerLoop(loopConfig);

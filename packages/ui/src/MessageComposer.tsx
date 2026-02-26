@@ -524,6 +524,25 @@ export default function MessageComposer({
           />
         )}
 
+        {/* Character counter for large messages */}
+        {text.length >= 4000 && (
+          <div
+            role="status"
+            aria-live="polite"
+            aria-label="Message length counter"
+            style={{
+              padding: "2px 8px",
+              fontSize: "11px",
+              color: text.length > 30000 ? "#e67700" : "#888",
+              textAlign: "right",
+            }}
+          >
+            {text.length > 30000
+              ? `Very large (${text.length.toLocaleString()} chars) — content beyond ~30K chars will be summarized`
+              : `${text.length.toLocaleString()} characters (~${Math.ceil(text.length / 4).toLocaleString()} tokens, ~${((Math.ceil(text.length / 4) / 200000) * 100).toFixed(1)}% of context)`}
+          </div>
+        )}
+
         {/* File attachments preview */}
         {attachments.length > 0 && (
           <div className="composer-attachments">

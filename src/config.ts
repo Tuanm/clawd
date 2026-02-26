@@ -1,11 +1,12 @@
 /**
  * Configuration for clawd-app
  *
- * Loads settings from environment variables and CLI arguments.
+ * Loads settings from CLI flags and ~/.clawd/config.json.
  * The agent runs in-process (no separate clawd binary needed).
  */
 
 import { parseArgs } from "node:util";
+import { loadConfigFile } from "./config-file";
 
 export interface AppConfig {
   /** HTTP server host */
@@ -22,6 +23,8 @@ export interface AppConfig {
   debug: boolean;
   /** Disable sandbox + unlimited iterations for agents */
   yolo: boolean;
+  /** Enable context mode */
+  contextMode: boolean;
 }
 
 /** Parse CLI arguments and build config */
@@ -66,8 +69,9 @@ export function loadConfig(): AppConfig {
     process.exit(0);
   }
 
-  const host = values.host || process.env.CHAT_HOST || "0.0.0.0";
-  const port = parseInt(values.port || process.env.CHAT_PORT || "3456", 10);
+  const file = loadConfigFile();
+  const host = values.host || file.host || "0.0.0.0";
+  const port = parseInt(values.port || String(file.port || 3456), 10);
 
   return {
     host,
@@ -75,8 +79,9 @@ export function loadConfig(): AppConfig {
     chatApiUrl: `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`,
     openBrowser: !values["no-browser"],
     projectRoot: process.cwd(),
-    debug: values.debug || false,
-    yolo: values.yolo || false,
+    debug: values.debug || file.debug || false,
+    yolo: values.yolo || file.yolo || false,
+    contextMode: true,
   };
 }
 
@@ -97,6 +102,10 @@ Options:
   --yolo                       Disable sandbox restrictions for agents
   --debug                      Enable debug logging
   -h, --help                  Show this help message
+
+  Settings can also be configured in ~/.clawd/config.json:
+    { "host": "0.0.0.0", "port": 3456, "debug": false }
+  CLI flags take precedence over config file values.
 
 Examples:
   clawd-app

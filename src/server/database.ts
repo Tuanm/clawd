@@ -1,8 +1,9 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { getDataDir } from "../config-file";
 
-const DATA_DIR = process.env.DATA_DIR || join(process.env.HOME || "/tmp", ".clawd", "data");
+const DATA_DIR = getDataDir();
 const DB_PATH = join(DATA_DIR, "chat.db");
 const ATTACHMENTS_DIR = join(DATA_DIR, "attachments");
 

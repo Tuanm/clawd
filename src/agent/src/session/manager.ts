@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync, existsSync } from "node:fs";
 import type { Message } from "../api/client";
+import { smartTruncate } from "../utils/smart-truncation";
 
 // ============================================================================
 // Helpers
@@ -232,6 +233,23 @@ export class SessionManager {
   }
 
   /**
+   * Update message content in session DB (for inline compression).
+   * Only updates content field — tool_calls/role/tool_call_id are immutable.
+   */
+  updateMessageContent(sessionId: string, messageId: number, content: string): void {
+    this.db.run("UPDATE messages SET content = ? WHERE id = ? AND session_id = ?", [content, messageId, sessionId]);
+  }
+
+  /**
+   * Get messages with their DB IDs (for inline compression updates).
+   */
+  getMessagesWithIds(sessionId: string): Array<StoredMessage> {
+    return this.db
+      .query("SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC")
+      .all(sessionId) as StoredMessage[];
+  }
+
+  /**
    * Get recent messages with validation to ensure tool call/result pairs are complete
    */
   getRecentMessagesValidated(sessionId: string, limit = 50): Message[] {
@@ -267,9 +285,12 @@ export class SessionManager {
 
       let content = row.content;
 
-      // Truncate large content
+      // Truncate large content with smart head/tail preservation
       if (content && content.length > maxContentLength) {
-        content = `${content.substring(0, maxContentLength)}\n\n[...content truncated for context...]`;
+        content = smartTruncate(content, {
+          maxLength: maxContentLength,
+          marker: "\n\n[...content truncated for context...]",
+        });
       }
 
       // For assistant messages with tool_calls, only keep the content (strip tool_calls)

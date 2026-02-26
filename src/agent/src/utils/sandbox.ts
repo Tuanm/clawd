@@ -14,7 +14,7 @@
 
 import { spawn, execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
-import { homedir, platform } from "node:os";
+import { homedir, platform, userInfo } from "node:os";
 import { resolve, join, dirname } from "node:path";
 import { getAgentContext } from "./agent-context";
 
@@ -43,7 +43,7 @@ function loadAgentEnv(): Record<string, string> {
   if (agentEnvCache !== null) return agentEnvCache;
 
   agentEnvCache = {};
-  const home = process.env.HOME || homedir();
+  const home = homedir();
   const agentEnvFile = `${home}/.clawd/.env`;
 
   if (existsSync(agentEnvFile)) {
@@ -75,14 +75,20 @@ function loadAgentEnv(): Record<string, string> {
  * These are the only env vars available inside the sandbox.
  */
 export function getSafeEnvVars(): Record<string, string> {
-  const home = process.env.HOME || homedir();
+  const home = homedir();
 
   const env: Record<string, string> = {
     HOME: home,
-    USER: process.env.USER || "clawd",
+    USER: (() => {
+      try {
+        return userInfo().username;
+      } catch {
+        return "clawd";
+      }
+    })(),
     PATH: `${home}/.clawd/bin:${home}/.bun/bin:${home}/.cargo/bin:${home}/.deno/bin:${home}/.local/bin:/usr/local/bin:/usr/bin:/bin`,
-    TERM: process.env.TERM || "xterm-256color",
-    LANG: process.env.LANG || "C.UTF-8",
+    TERM: "xterm-256color",
+    LANG: "C.UTF-8",
     SHELL: "/bin/bash",
     GIT_CONFIG_GLOBAL: `${home}/.clawd/.gitconfig`,
     GIT_SSH_COMMAND: `ssh -F /dev/null -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${home}/.clawd/.ssh/id_ed25519`,
@@ -177,7 +183,7 @@ interface BwrapOptions {
  */
 function getBwrapPrefix(options: BwrapOptions): string {
   const { projectRoot, workDir } = options;
-  const home = process.env.HOME || homedir();
+  const home = homedir();
   const sandboxResolvConf = getSandboxResolvConf();
 
   const args: string[] = [
@@ -372,7 +378,7 @@ function getMacOSCommandPrefix(workDir: string): string {
   const profilePath = "/tmp/clawd-sandbox.sb";
   writeFileSync(profilePath, profile, { mode: 0o644 });
 
-  const home = process.env.HOME || homedir();
+  const home = homedir();
 
   // Resolve real paths -- macOS symlinks /tmp -> /private/tmp, /etc -> /private/etc
   // Use getSandboxProjectRoot() to get the correct project root for this agent

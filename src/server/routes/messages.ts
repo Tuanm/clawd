@@ -62,10 +62,31 @@ export function postMessage(req: PostMessageRequest) {
   // Default to UBOT if agent_id is provided, UHUMAN otherwise
   const user = req.user || (req.agent_id ? "UBOT" : "UHUMAN");
   const sanitizedText = sanitizeText(req.text);
+
+  // Layer 2: Hard truncation at 50K chars
+  const MAX_SERVER_MESSAGE_LENGTH = 50000;
+  let truncated = false;
+  let originalLength = 0;
+  let text = sanitizedText;
+  if (text && text.length > MAX_SERVER_MESSAGE_LENGTH) {
+    originalLength = text.length;
+    truncated = true;
+    const marker = `\n\n[TRUNCATED — original message was ${originalLength} characters]`;
+    if (text.includes("[TRUNCATED")) {
+      let cp = MAX_SERVER_MESSAGE_LENGTH;
+      if (cp > 0 && cp < text.length && text.charCodeAt(cp - 1) >= 0xd800 && text.charCodeAt(cp - 1) <= 0xdbff) cp--;
+      text = text.slice(0, cp);
+    } else {
+      let cp = MAX_SERVER_MESSAGE_LENGTH - marker.length;
+      if (cp > 0 && cp < text.length && text.charCodeAt(cp - 1) >= 0xd800 && text.charCodeAt(cp - 1) <= 0xdbff) cp--;
+      text = text.slice(0, cp) + marker;
+    }
+  }
+
   const codePreviewJson = req.code_preview ? JSON.stringify(req.code_preview) : null;
 
   // Parse mentions from text
-  const mentions = parseMentions(sanitizedText);
+  const mentions = parseMentions(text);
   const mentionsJson = JSON.stringify(mentions);
 
   // If agent_id provided and it's an agent message, register the agent and update activity
@@ -89,7 +110,7 @@ export function postMessage(req: PostMessageRequest) {
     req.channel,
     req.thread_ts || null,
     user,
-    sanitizedText,
+    text,
     req.subtype || null,
     req.html_preview || null,
     codePreviewJson,
@@ -114,6 +135,7 @@ export function postMessage(req: PostMessageRequest) {
     channel: req.channel,
     ts,
     message: responseMessage,
+    ...(truncated && { truncated, originalLength }),
   };
 }
 
@@ -121,7 +143,27 @@ export function postMessage(req: PostMessageRequest) {
 export function updateMessage(req: UpdateMessageRequest) {
   const now = Math.floor(Date.now() / 1000);
 
-  preparedStatements.updateMessage.run(req.text, now, req.ts, req.channel);
+  // Layer 2: Apply same 50K truncation guard as postMessage
+  const MAX_SERVER_MESSAGE_LENGTH = 50000;
+  let text = req.text;
+  let truncated = false;
+  let originalLength: number | undefined;
+  if (text && text.length > MAX_SERVER_MESSAGE_LENGTH) {
+    originalLength = text.length;
+    const marker = `\n\n[TRUNCATED — original message was ${originalLength} characters]`;
+    if (text.includes("[TRUNCATED")) {
+      let cp = MAX_SERVER_MESSAGE_LENGTH;
+      if (cp > 0 && cp < text.length && text.charCodeAt(cp - 1) >= 0xd800 && text.charCodeAt(cp - 1) <= 0xdbff) cp--;
+      text = text.slice(0, cp);
+    } else {
+      let cp = MAX_SERVER_MESSAGE_LENGTH - marker.length;
+      if (cp > 0 && cp < text.length && text.charCodeAt(cp - 1) >= 0xd800 && text.charCodeAt(cp - 1) <= 0xdbff) cp--;
+      text = text.slice(0, cp) + marker;
+    }
+    truncated = true;
+  }
+
+  preparedStatements.updateMessage.run(text, now, req.ts, req.channel);
 
   const msg = preparedStatements.getMessageByTs.get(req.ts);
 
@@ -130,6 +172,7 @@ export function updateMessage(req: UpdateMessageRequest) {
     channel: req.channel,
     ts: req.ts,
     message: msg ? toSlackMessage(msg) : null,
+    ...(truncated && { truncated, originalLength }),
   };
 }
 

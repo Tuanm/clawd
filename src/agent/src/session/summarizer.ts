@@ -440,16 +440,14 @@ export function startSummarizerSidecar(config: { channel: string; agentId: strin
     createSummarizerWorkerScript(scriptPath);
   }
 
-  const child = spawn("bun", ["run", scriptPath], {
-    detached: true,
-    stdio: "ignore",
-    env: {
-      ...process.env,
-      SUMMARIZER_CHANNEL: config.channel,
-      SUMMARIZER_AGENT: config.agentId,
-      SUMMARIZER_SERVER: config.serverUrl,
+  const child = spawn(
+    "bun",
+    ["run", scriptPath, "--channel", config.channel, "--agent", config.agentId, "--server", config.serverUrl],
+    {
+      detached: true,
+      stdio: "ignore",
     },
-  });
+  );
 
   child.unref();
   console.log(`[Summarizer] Started sidecar process (PID: ${child.pid})`);
@@ -461,10 +459,20 @@ function createSummarizerWorkerScript(path: string): void {
  * Summarizer Worker - Runs as background sidecar
  */
 import { SessionSummarizer } from './summarizer';
+import { parseArgs } from 'node:util';
 
-const channel = process.env.SUMMARIZER_CHANNEL || 'default';
-const agentId = process.env.SUMMARIZER_AGENT || 'default';
-const serverUrl = process.env.SUMMARIZER_SERVER || 'http://localhost:3001';
+const { values } = parseArgs({
+  args: Bun.argv.slice(2),
+  options: {
+    channel: { type: 'string' },
+    agent: { type: 'string' },
+    server: { type: 'string' },
+  },
+});
+
+const channel = values.channel || 'default';
+const agentId = values.agent || 'default';
+const serverUrl = values.server || 'http://localhost:3001';
 
 const summarizer = new SessionSummarizer({
   channel,

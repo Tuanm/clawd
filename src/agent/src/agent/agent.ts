@@ -24,6 +24,11 @@ import { ToolPluginManager, type ToolPlugin } from "../tools/plugin";
 import { parseToolArguments, formatToolResult } from "../core/loop";
 import { initializeHooks, destroyHooks } from "../hooks/manager";
 import { isDebugEnabled } from "../utils/debug";
+import { getThresholds, MODEL_TOKEN_LIMITS as CENTRALIZED_MODEL_LIMITS } from "../constants/context-limits";
+import { createStatePersistencePlugin } from "../plugins/state-persistence-plugin";
+import { createContextModePlugin, type ContextModePluginResult } from "../plugins/context-mode-plugin";
+import { ContextTracker } from "../utils/context-tracker";
+import { homedir } from "node:os";
 
 // ============================================================================
 // Colored Logging Helpers
@@ -62,6 +67,7 @@ export interface AgentConfig {
   tokenLimitCritical?: number; // Emergency reset at this threshold (default: 70000)
   compactKeepCount?: number; // Messages to keep after compaction (default: 30)
   onCompaction?: (deleted: number, remaining: number) => void; // Called after compaction
+  contextMode?: boolean;
 }
 
 export interface AgentResult {
@@ -174,6 +180,12 @@ CLAIMING TASKS:
 - After completing a task, provide a brief summary
 - If you encounter errors, try alternative approaches
 
+## Context Awareness
+- When you see [TRUNCATED] markers in messages or tool output, acknowledge that only partial content is available
+- If knowledge_search() is available, use it to retrieve truncated content before answering
+- When a file was too large to include fully, explain what portion you can see and suggest alternatives (e.g., bash tools: head, tail, grep on the file path)
+- Never assume truncated content is complete — ask the user to re-send specific sections if needed
+
 ## Chat Tools (when connected to a chat channel)
 You are in a chat channel. The ONLY way to communicate with humans is via chat tools.
 
@@ -196,26 +208,19 @@ Example: If user says "hello", you MUST call:
 
 If you don't need to respond (just acking), you can skip chat_send_message and just call chat_mark_processed.`;
 
-// Token limits by model (approximate)
-const MODEL_TOKEN_LIMITS: Record<string, number> = {
-  "claude-opus-4.6": 200000,
-  "claude-opus-4.5": 200000,
-  "claude-sonnet-4.5": 200000,
-  "claude-haiku-4.5": 200000,
-  "gpt-5": 128000,
-  "gpt-5.1": 128000,
-  "gpt-5.2": 128000,
-  "gpt-4.1": 128000,
-};
+// Token limits by model — use centralized module, keep local alias for existing references
+const MODEL_TOKEN_LIMITS = CENTRALIZED_MODEL_LIMITS;
 
 // ============================================================================
 // Agent
 // ============================================================================
 
 // Default token limits for session management (scaled for 128k context window)
+// These are the legacy fallback values; dynamic thresholds from context-limits.ts
+// are used when contextMode=true.
 const DEFAULT_TOKEN_LIMIT_WARNING = 50000;
 const DEFAULT_TOKEN_LIMIT_CRITICAL = 70000;
-const DEFAULT_TOKEN_LIMIT_CHECKPOINT = 32000; // Create checkpoint early
+const DEFAULT_TOKEN_LIMIT_CHECKPOINT = 32000;
 const DEFAULT_COMPACT_KEEP_COUNT = 30;
 
 export class Agent {
@@ -237,6 +242,9 @@ export class Agent {
   private checkpointManager: CheckpointManager | null = null;
   private currentCheckpoint: Checkpoint | null = null;
   private token: string; // Store for checkpoint manager
+  private contextModePlugin: ContextModePluginResult | null = null;
+  private contextTracker: ContextTracker | null = null;
+  private compacting = false;
 
   constructor(tokenOrProvider: string | LLMProvider, config: AgentConfig) {
     // Accept either token (legacy) or provider instance
@@ -290,12 +298,30 @@ export class Agent {
    * Returns true if session was compacted/reset
    */
   private async checkAndCompactSession(): Promise<boolean> {
+    if (!this.session || this.compacting) return false;
+    this.compacting = true;
+    try {
+      return await this._doCompaction();
+    } finally {
+      this.compacting = false;
+    }
+  }
+
+  private async _doCompaction(): Promise<boolean> {
     if (!this.session) return false;
 
     const stats = this.sessions.getSessionStats(this.session.id);
     if (!stats) return false;
 
-    const tokens = stats.estimatedTokens;
+    // Phase 2.8: Inline tool result compression (runs BEFORE threshold checks)
+    // Compresses stale tool results in-place to delay compaction by 30-50%
+    if (this.config.contextMode) {
+      this.compressStaleToolResults();
+    }
+
+    // Re-check stats after inline compression
+    const freshStats = this.config.contextMode ? this.sessions.getSessionStats(this.session.id) : stats;
+    const tokens = freshStats?.estimatedTokens ?? stats.estimatedTokens;
 
     // Critical: emergency reset (but create checkpoint first)
     if (tokens >= this.tokenLimitCritical) {
@@ -304,6 +330,23 @@ export class Agent {
       }
       await this.createCheckpoint();
       this.sessions.resetSession(this.session.name);
+
+      // Inject structured recovery context when contextMode is enabled
+      if (this.config.contextMode && this.session) {
+        try {
+          const { loadWorkingState, formatForContext } = await import("../session/working-state");
+          const sessionDir = `${homedir()}/.clawd/sessions/${this.session.id}`;
+          const workingState = loadWorkingState(sessionDir);
+          const stateContext = formatForContext(workingState);
+          if (stateContext) {
+            const recovery = `[Emergency checkpoint — session reset]\n${stateContext}\n[Resume from working state above. Verify file hashes before making changes.]`;
+            this.sessions.addMessage(this.session.id, { role: "system", content: recovery });
+          }
+        } catch (err) {
+          if (this.config.verbose) console.log("[Agent] Recovery context injection failed:", err);
+        }
+      }
+
       this.config.onCompaction?.(stats.messageCount, 0);
       // Notify plugins
       if (this.plugins) {
@@ -325,6 +368,79 @@ export class Agent {
 
       // Get messages that will be compacted for LLM summarization
       const allMessages = this.sessions.getMessages(this.session.id);
+
+      if (this.config.contextMode) {
+        try {
+          // Smart compaction: importance-weighted selection (Phase 2)
+          const { scoreMessages, fitToBudget, compressMessage, repairRoleAlternation } = await import(
+            "../session/message-scoring"
+          );
+          const { loadWorkingState, formatForContext } = await import("../session/working-state");
+
+          const scored = scoreMessages(allMessages);
+          const thresholds = getThresholds(this.getModel(), true);
+          // Budget: keep messages up to 60% of effective tokens
+          const budget = Math.floor(thresholds.effective * 0.6);
+          const fitted = fitToBudget(scored, budget);
+
+          // Apply lifecycle stages
+          const keptMessages: Message[] = [];
+          for (const s of fitted) {
+            if (s.stage === "FULL" || s.isAnchor) {
+              keptMessages.push(s.message);
+            } else if (s.stage === "COMPRESSED") {
+              keptMessages.push(compressMessage(s.message));
+            }
+            // DROPPED messages are absorbed into WorkingState
+          }
+
+          // Repair role alternation
+          const repaired = repairRoleAlternation(keptMessages);
+
+          // Generate recovery summary
+          const sessionDir = `${homedir()}/.clawd/sessions/${this.session.id}`;
+          const workingState = loadWorkingState(sessionDir);
+          const stateContext = formatForContext(workingState);
+
+          let summary = `[Checkpoint ${this.checkpointManager?.getCheckpointCount() || 0} — smart compaction]\n`;
+          if (stateContext) summary += stateContext + "\n";
+          summary += `[Kept ${repaired.length} of ${allMessages.length} messages by importance score]`;
+
+          // Delete all messages and re-insert selected ones
+          this.sessions.resetSession(this.session.name);
+          // Insert summary as first message
+          this.sessions.addMessage(this.session.id, { role: "system", content: summary });
+          // Re-insert kept messages
+          for (const msg of repaired) {
+            this.sessions.addMessage(this.session.id, msg);
+          }
+
+          const deleted = allMessages.length - repaired.length;
+          if (deleted > 0) {
+            const postStats = this.sessions.getSessionStats(this.session.id);
+            const remaining = postStats.messageCount;
+            this.config.onCompaction?.(deleted, remaining);
+            if (this.plugins) {
+              try {
+                await this.plugins.onCompaction(deleted, remaining);
+              } catch {}
+            }
+            if (this.config.verbose) {
+              console.log(
+                `[Agent] Smart compacted: removed ${deleted}, kept ${repaired.length} (${keptMessages.length} selected, ${repaired.length - keptMessages.length} synthetic)`,
+              );
+            }
+          }
+          return deleted > 0;
+        } catch (err) {
+          // C26: Graceful degradation — fall through to legacy compaction
+          if (this.config.verbose) {
+            console.log("[Agent] Smart compaction failed, falling back to legacy:", err);
+          }
+        }
+      }
+
+      // Legacy compaction: keep last N messages
       const messagesToCompact = allMessages.slice(0, Math.max(0, allMessages.length - this.compactKeepCount));
 
       // Generate LLM summary of compacted messages (like Copilot CLI)
@@ -372,6 +488,56 @@ export class Agent {
     }
 
     return false;
+  }
+
+  /**
+   * Compress stale tool results in existing messages (Phase 2.8).
+   * Runs before compaction threshold checks to delay compaction by 30-50%.
+   * Only modifies session DB — chat.db is never touched (C1).
+   */
+  private compressStaleToolResults(): void {
+    if (!this.session) return;
+    try {
+      const rows = this.sessions.getMessagesWithIds(this.session.id);
+      if (rows.length < 10) return; // Too few messages to bother
+
+      const STALE_THRESHOLD = 5; // Messages older than 5 from end
+      const MIN_COMPRESS_SIZE = 4000; // Only compress if > 4KB
+      const staleStart = Math.max(0, rows.length - STALE_THRESHOLD);
+      let updated = 0;
+
+      for (let i = 0; i < staleStart; i++) {
+        const row = rows[i];
+        if (row.role !== "tool" || !row.content) continue;
+        if (row.content.length < MIN_COMPRESS_SIZE) continue;
+        if (row.content.includes("[TRUNCATED")) continue; // Already compressed
+
+        // Strip base64 content first
+        let compressed = row.content.replace(/[A-Za-z0-9+/=]{500,}/g, "[base64 content stripped]");
+
+        // If still large, use smart truncation to 20%
+        if (compressed.length > MIN_COMPRESS_SIZE) {
+          const { smartTruncate } = require("../utils/smart-truncation");
+          compressed = smartTruncate(compressed, {
+            maxLength: Math.max(200, Math.floor(compressed.length * 0.2)),
+          });
+        }
+
+        if (compressed.length < row.content.length * 0.9) {
+          this.sessions.updateMessageContent(this.session.id, row.id, compressed);
+          updated++;
+        }
+      }
+
+      if (updated > 0 && this.config.verbose) {
+        console.log(`[Agent] Compressed ${updated} stale tool results`);
+      }
+    } catch (err) {
+      // Graceful degradation — never crash (C26)
+      if (this.config.verbose) {
+        console.log("[Agent] Stale tool result compression failed:", err);
+      }
+    }
   }
 
   /**
@@ -614,6 +780,34 @@ SUMMARY:`;
         output: "",
         error: "Tool not found",
       };
+    }
+
+    // Phase 3: Compress tool result via context mode plugin (before Layer 8 + formatToolResult)
+    // Fires for ALL 3 tool branches (MCP, plugin, local). Gated behind contextMode.
+    if (this.contextModePlugin) {
+      try {
+        const compressed = this.contextModePlugin.compressToolResult(toolCall.function.name, result);
+        // Phase 4: Record compression metrics
+        if (this.contextTracker) {
+          const inputSize = toolCall.function.arguments?.length || 0;
+          this.contextTracker.recordToolCall(
+            toolCall.function.name,
+            inputSize,
+            compressed.originalSize,
+            compressed.compressedSize,
+            compressed.indexed,
+          );
+          if (toolCall.function.name === "knowledge_search") {
+            try {
+              const args = JSON.parse(toolCall.function.arguments || "{}");
+              if (args.query) this.contextTracker.recordSearch(args.query);
+            } catch {}
+          }
+        }
+        result = compressed.result;
+      } catch {
+        // C26: graceful degradation — keep original result
+      }
     }
 
     return { args: transformedArgs, result };
@@ -870,7 +1064,7 @@ SUMMARY:`;
     this.session = this.sessions.getOrCreateSession(name, this.getModel());
 
     // Initialize checkpoint manager for this session
-    const sessionDir = `${process.env.HOME}/.clawd/sessions/${this.session.id}`;
+    const sessionDir = `${homedir()}/.clawd/sessions/${this.session.id}`;
     this.checkpointManager = new CheckpointManager({
       sessionId: this.session.id,
       sessionDir,
@@ -882,6 +1076,78 @@ SUMMARY:`;
     this.currentCheckpoint = this.checkpointManager.loadLatestCheckpoint();
     if (this.currentCheckpoint && this.config.verbose) {
       console.log(`[Agent] Loaded checkpoint ${this.currentCheckpoint.number}: ${this.currentCheckpoint.title}`);
+    }
+
+    // Apply dynamic thresholds when contextMode is enabled
+    if (this.config.contextMode) {
+      const thresholds = getThresholds(this.getModel(), true);
+      this.tokenLimitWarning = thresholds.warning;
+      this.tokenLimitCritical = thresholds.critical;
+      this.tokenLimitCheckpoint = thresholds.checkpoint;
+      if (this.config.verbose) {
+        console.log(
+          `[Agent] Dynamic thresholds: checkpoint=${thresholds.checkpoint}, warning=${thresholds.warning}, critical=${thresholds.critical}`,
+        );
+      }
+    }
+
+    // Register state persistence plugin when contextMode is enabled
+    if (this.config.contextMode) {
+      const statePersistence = createStatePersistencePlugin({ contextMode: true });
+      this.usePlugin(statePersistence).catch((err) => {
+        if (this.config.verbose) {
+          console.log(`[Agent] State persistence plugin failed:`, err?.message || err);
+        }
+      });
+    }
+
+    // Register context mode plugin (FTS5 knowledge base + compression) when contextMode is enabled
+    if (this.config.contextMode && this.session) {
+      try {
+        const sessionDir = `${homedir()}/.clawd/sessions/${this.session.id}`;
+        this.contextModePlugin = createContextModePlugin({
+          sessionId: this.session.id,
+          sessionDir,
+          onCompactRequest: async () => {
+            // Prevent concurrent compaction
+            if (this.compacting) {
+              return { before: 0, after: 0 };
+            }
+            const beforeTokens = this.session ? estimateMessagesTokens(this.sessions.getMessages(this.session.id)) : 0;
+            await this.checkAndCompactSession();
+            const afterTokens = this.session ? estimateMessagesTokens(this.sessions.getMessages(this.session.id)) : 0;
+            return { before: beforeTokens, after: afterTokens };
+          },
+        });
+        this.usePlugin({
+          plugin: this.contextModePlugin.plugin,
+          toolPlugin: this.contextModePlugin.toolPlugin,
+        })
+          .then(() => {
+            if (this.config.verbose) {
+              console.log(`[Agent] Context mode plugin registered (FTS5 + compression)`);
+            }
+          })
+          .catch((err) => {
+            // C26: graceful degradation — continue without compression
+            this.contextModePlugin = null;
+            if (this.config.verbose) {
+              console.log(`[Agent] Context mode plugin failed:`, err?.message || err);
+            }
+          });
+      } catch (err: any) {
+        // C26: graceful degradation — continue without compression
+        this.contextModePlugin = null;
+        if (this.config.verbose) {
+          console.log(`[Agent] Context mode plugin failed:`, err?.message || err);
+        }
+      }
+    }
+
+    // Initialize context tracker when contextMode is enabled
+    if (this.config.contextMode) {
+      const modelLimit = MODEL_TOKEN_LIMITS[this.config.model] || 100000;
+      this.contextTracker = new ContextTracker(modelLimit);
     }
 
     // Initialize hooks (async, but we don't wait - hooks will be ready soon)
@@ -904,6 +1170,27 @@ SUMMARY:`;
     return this.session;
   }
 
+  /** Get context budget metrics (Phase 4) — used by worker-loop for WebSocket stats */
+  getContextMetrics(): {
+    usagePercent: number;
+    turnsRemaining: number;
+    totalSaved: number;
+    savingsRatio: number;
+  } | null {
+    if (!this.contextTracker) return null;
+    try {
+      const metrics = this.contextTracker.getCompressionMetrics();
+      return {
+        usagePercent: 0, // updated during prompt building
+        turnsRemaining: 0,
+        totalSaved: metrics.totalSaved,
+        savingsRatio: metrics.savingsRatio,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   // ============================================================================
   // Main Run Loop
   // ============================================================================
@@ -924,7 +1211,8 @@ SUMMARY:`;
     let iterations = 0;
     let finalContent = "";
     let contextTokens = 0;
-    let interruptCount = 0; // Track number of interrupts handled
+    let interruptCount = 0; // Track number of interrupts per full run (not per iteration)
+    const maxInterruptsPerRun = 3;
 
     // Abort controller created fresh at start of each iteration
     let signal: AbortSignal;
@@ -971,16 +1259,89 @@ SUMMARY:`;
       }
     }
 
+    // Phase 4: Context budget hint injection (only when >50% used)
+    let contextHint = "";
+    if (this.contextTracker) {
+      try {
+        const currentTokens = estimateMessagesTokens(history);
+        const systemTokens = estimateTokens(this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT);
+        const hint = this.contextTracker.getContextHint(currentTokens + systemTokens, systemTokens);
+        if (hint) contextHint = `\n\n${hint}`;
+      } catch {}
+    }
+
     const systemPrompt =
       (this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT) +
+      contextHint +
       (this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "") +
       checkpointContext +
       skillsSummary +
       pluginContext;
 
+    // Layer 6: System prompt budget — cap at 15% of raw model limit
+    const modelLimit = MODEL_TOKEN_LIMITS[this.config.model] ?? 128000;
+    const maxSystemPromptChars = Math.floor(modelLimit * 0.15 * 4); // 15% of limit in chars (~4 chars/token)
+    let finalSystemPrompt = systemPrompt;
+    if (finalSystemPrompt.length > maxSystemPromptChars) {
+      // Priority-ordered truncation: shed least valuable first
+      // 1. Skills summary (auto-generated, least critical)
+      // 2. Plugin context (auto-generated)
+      // 3. Checkpoint context
+      // 4. Additional context (CLAWD.md — user-authored, shed last among optional)
+      // 5. contextHint (tiny, always kept — most useful under pressure)
+      // 6. Base prompt (never truncated)
+      const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+      const additionalCtx = this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "";
+
+      // Try shedding in priority order
+      let assembled = basePrompt + contextHint + additionalCtx + checkpointContext + pluginContext; // dropped skills
+      if (assembled.length > maxSystemPromptChars) {
+        // Cap plugin context at 4K
+        const cappedPlugin =
+          pluginContext.length > 4000 ? pluginContext.slice(0, 4000) + "\n[Plugin context truncated]" : pluginContext;
+        assembled = basePrompt + contextHint + additionalCtx + checkpointContext + cappedPlugin;
+      }
+      if (assembled.length > maxSystemPromptChars) {
+        // Cap checkpoint at 6K (~6000 chars)
+        const cappedCheckpoint =
+          checkpointContext.length > 6000
+            ? checkpointContext.slice(0, 6000) + "\n[Checkpoint context truncated]"
+            : checkpointContext;
+        const cappedPlugin =
+          pluginContext.length > 4000 ? pluginContext.slice(0, 4000) + "\n[Plugin context truncated]" : pluginContext;
+        assembled = basePrompt + contextHint + additionalCtx + cappedCheckpoint + cappedPlugin;
+      }
+      if (assembled.length > maxSystemPromptChars) {
+        // Cap additional context (CLAWD.md) — user-authored, shed reluctantly
+        const cappedCheckpoint2 =
+          checkpointContext.length > 6000
+            ? checkpointContext.slice(0, 6000) + "\n[Checkpoint context truncated]"
+            : checkpointContext;
+        const cappedPlugin2 =
+          pluginContext.length > 4000 ? pluginContext.slice(0, 4000) + "\n[Plugin context truncated]" : pluginContext;
+        const reservedForOthers =
+          basePrompt.length + contextHint.length + cappedCheckpoint2.length + cappedPlugin2.length;
+        const maxAdditional = Math.max(0, maxSystemPromptChars - reservedForOthers);
+        const additionalMarker = "\n[CLAWD.md instructions truncated for context budget]";
+        const cappedAdditional =
+          additionalCtx.length > maxAdditional
+            ? maxAdditional >= additionalMarker.length
+              ? additionalCtx.slice(0, maxAdditional - additionalMarker.length) + additionalMarker
+              : ""
+            : additionalCtx;
+        assembled = basePrompt + contextHint + cappedAdditional + cappedCheckpoint2 + cappedPlugin2;
+      }
+      finalSystemPrompt = assembled;
+      // Final backstop: hard truncate if still over budget
+      if (finalSystemPrompt.length > maxSystemPromptChars) {
+        const backstopMsg = "\n[System prompt truncated to fit 15% budget]";
+        finalSystemPrompt = finalSystemPrompt.slice(0, maxSystemPromptChars - backstopMsg.length) + backstopMsg;
+      }
+    }
+
     // Build messages array
     let messages: Message[] = [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: finalSystemPrompt },
       ...history,
       { role: "user", content: userMessage },
     ];
@@ -1025,6 +1386,23 @@ SUMMARY:`;
         }
 
         if (newMessage) {
+          if (interruptCount >= maxInterruptsPerRun) {
+            // Skip — too many interrupts this turn
+            return false;
+          }
+          // Truncate interrupt message to prevent context overflow
+          if (newMessage.length > 10000) {
+            const intMarker = "\n\n[TRUNCATED — interrupt message too long]";
+            let cp = 10000 - intMarker.length;
+            if (
+              cp > 0 &&
+              cp < newMessage.length &&
+              newMessage.charCodeAt(cp - 1) >= 0xd800 &&
+              newMessage.charCodeAt(cp - 1) <= 0xdbff
+            )
+              cp--;
+            newMessage = newMessage.slice(0, cp) + intMarker;
+          }
           interruptCount++;
           pendingInterrupt = true; // Set flag before aborting
           logInterrupt(`New message received (interrupt #${interruptCount}), aborting current stream`);
@@ -1497,6 +1875,7 @@ SUMMARY:`;
           });
 
           // Execute tool calls one by one, checking for interrupt between each
+          let turnToolResultChars = 0;
           for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
             const toolCall = toolCalls[tcIdx];
             // Check for interrupt before each tool
@@ -1590,6 +1969,97 @@ SUMMARY:`;
               } catch (err) {
                 logSilentError("plugin.onToolResult", err);
               }
+            }
+
+            // Layer 8: Tool result size guard — universal backstop
+            // Post-execution check: truncate result BEFORE pushing to messages.
+            // Cannot pre-check because tool output size is unknown before execution.
+            {
+              // Surrogate-safe head slice helper
+              const safeHead = (s: string, len: number) => {
+                let cp = len;
+                if (cp > 0 && cp < s.length && s.charCodeAt(cp - 1) >= 0xd800 && s.charCodeAt(cp - 1) <= 0xdbff) cp--;
+                return s.slice(0, cp);
+              };
+              const modelLimit = MODEL_TOKEN_LIMITS[this.config.model] ?? 128000;
+              const effectiveBudget = modelLimit * 0.8;
+              const currentResultSize = result.result.output?.length || 0;
+              const aggCap = effectiveBudget * 0.3 * 4; // 30% of budget in chars
+              const maxToolResultChars =
+                turnToolResultChars + currentResultSize > aggCap
+                  ? Math.floor(effectiveBudget * 0.05 * 4) // aggressive: 5% when aggregate exceeded
+                  : Math.floor(effectiveBudget * 0.15 * 4); // normal: 15% of budget in chars
+
+              if (toolCall.function.name.startsWith("chat_")) {
+                // Metadata-aware truncation for chat tools: preserve ts, files_json, user
+                if (result.result.output && result.result.output.length > maxToolResultChars) {
+                  try {
+                    const parsed = JSON.parse(result.result.output);
+                    // Truncate text fields in messages while preserving metadata
+                    const visited = new WeakSet();
+                    const truncateTextFields = (obj: unknown, depth = 0): unknown => {
+                      if (depth > 20) return obj;
+                      if (Array.isArray(obj)) return obj.map((item) => truncateTextFields(item, depth + 1));
+                      if (obj && typeof obj === "object") {
+                        if (visited.has(obj as object)) return "[Circular]";
+                        visited.add(obj as object);
+                        const o = obj as Record<string, unknown>;
+                        const out: Record<string, unknown> = {};
+                        for (const [k, v] of Object.entries(o)) {
+                          if ((k === "text" || k === "summary") && typeof v === "string" && v.length > 2000) {
+                            out[k] = v.slice(0, 1500) + `\n[TRUNCATED — ${v.length} chars]` + v.slice(-300);
+                          } else if (k === "content" && typeof v === "string" && v.length > 2000) {
+                            out[k] = v.slice(0, 1500) + `\n[TRUNCATED — ${v.length} chars]` + v.slice(-300);
+                          } else {
+                            out[k] = truncateTextFields(v, depth + 1);
+                          }
+                        }
+                        return out;
+                      }
+                      return obj;
+                    };
+                    const truncated = truncateTextFields(parsed);
+                    result.result.output = JSON.stringify(truncated, null, 2);
+                    // Re-check: metadata-aware truncation may still exceed budget
+                    if (result.result.output.length > maxToolResultChars) {
+                      const marker = `\n\n[TRUNCATED — chat output was ${result.result.output.length} chars]\n\n`;
+                      const available = Math.max(0, maxToolResultChars - marker.length);
+                      const headSize = Math.max(0, Math.floor(available * 0.6));
+                      const tailSize = Math.max(0, Math.floor(available * 0.4));
+                      result.result.output =
+                        safeHead(result.result.output, headSize) +
+                        marker +
+                        (tailSize > 0 ? result.result.output.slice(-tailSize) : "");
+                    }
+                  } catch {
+                    // Not JSON — fall through to standard truncation
+                    if (result.result.output.length > maxToolResultChars) {
+                      const marker = `\n\n[TRUNCATED — tool output was ${result.result.output.length} chars]\n\n`;
+                      const available = Math.max(0, maxToolResultChars - marker.length);
+                      const headSize = Math.max(0, Math.floor(available * 0.6));
+                      const tailSize = Math.max(0, Math.floor(available * 0.4));
+                      result.result.output =
+                        safeHead(result.result.output, headSize) +
+                        marker +
+                        (tailSize > 0 ? result.result.output.slice(-tailSize) : "");
+                    }
+                  }
+                }
+              } else {
+                // Standard truncation for non-chat tools
+                if (result.result.output && result.result.output.length > maxToolResultChars) {
+                  const originalLength = result.result.output.length;
+                  const marker = `\n\n[TRUNCATED — tool output was ${originalLength} chars]\n\n`;
+                  const available = Math.max(0, maxToolResultChars - marker.length);
+                  const headSize = Math.max(0, Math.floor(available * 0.6));
+                  const tailSize = Math.max(0, Math.floor(available * 0.4));
+                  result.result.output =
+                    safeHead(result.result.output, headSize) +
+                    marker +
+                    (tailSize > 0 ? result.result.output.slice(-tailSize) : "");
+                }
+              }
+              turnToolResultChars += result.result.output?.length || 0;
             }
 
             // Format result for LLM
@@ -1726,6 +2196,10 @@ SUMMARY:`;
     try {
       await this.toolPluginManager.destroy();
     } catch {}
+
+    // Clean up context mode plugin reference
+    this.contextModePlugin = null;
+    this.contextTracker = null;
 
     // Disconnect MCP servers (per-agent instance, avoids stale global state)
     try {

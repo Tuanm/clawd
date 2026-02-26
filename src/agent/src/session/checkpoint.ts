@@ -23,6 +23,11 @@ export interface Checkpoint {
   technicalDetails: string;
   importantFiles: Array<{ path: string; description: string }>;
   nextSteps: string;
+  /** Range of message indices this checkpoint covers (incremental) */
+  messageRangeStart?: number;
+  messageRangeEnd?: number;
+  /** If true, this checkpoint only contains delta from previous */
+  isDelta?: boolean;
 }
 
 export interface CheckpointIndex {
@@ -77,13 +82,38 @@ export class CheckpointManager {
     const index = this.loadIndex();
     const number = index.checkpoints.length + 1;
 
+    // Incremental: only process messages since last checkpoint
+    let messagesToProcess = messages;
+    let messageRangeStart = 0;
+    const messageRangeEnd = messages.length;
+
+    if (previousCheckpoint?.messageRangeEnd != null && previousCheckpoint.messageRangeEnd > 0) {
+      if (previousCheckpoint.messageRangeEnd > messages.length) {
+        // Post-compaction: messages were deleted, process all remaining
+        messageRangeStart = 0;
+      } else {
+        messageRangeStart = previousCheckpoint.messageRangeEnd;
+      }
+      messagesToProcess = messages.slice(messageRangeStart);
+    }
+
     // Generate checkpoint content using LLM or fallback
     let checkpoint: Checkpoint;
 
-    if (this.client) {
-      checkpoint = await this.generateCheckpointWithLLM(messages, number, previousCheckpoint);
+    if (this.client && messagesToProcess.length > 0) {
+      checkpoint = await this.generateCheckpointWithLLM(messagesToProcess, number, previousCheckpoint);
     } else {
-      checkpoint = this.generateCheckpointFallback(messages, number, previousCheckpoint);
+      checkpoint = this.generateCheckpointFallback(messagesToProcess, number, previousCheckpoint);
+    }
+
+    // Add incremental metadata
+    checkpoint.messageRangeStart = messageRangeStart;
+    checkpoint.messageRangeEnd = messageRangeEnd;
+    checkpoint.isDelta = messageRangeStart > 0;
+
+    // Merge with previous checkpoint for full context
+    if (checkpoint.isDelta && previousCheckpoint) {
+      checkpoint = this.mergeCheckpoints(previousCheckpoint, checkpoint);
     }
 
     // Save checkpoint file
@@ -102,6 +132,52 @@ export class CheckpointManager {
     this.saveIndex(index);
 
     return checkpoint;
+  }
+
+  /**
+   * Merge a delta checkpoint with its parent to produce a full checkpoint.
+   * Previous state is carried forward; delta adds new entries.
+   */
+  private mergeCheckpoints(previous: Checkpoint, delta: Checkpoint): Checkpoint {
+    const mergedFiles = new Map<string, { path: string; description: string }>();
+    for (const f of previous.importantFiles) mergedFiles.set(f.path, f);
+    for (const f of delta.importantFiles) mergedFiles.set(f.path, f); // newer wins
+
+    // Cap unbounded growth
+    const mergedHistory = [...previous.history, ...delta.history].slice(-30);
+    const mergedWorkDone = this.mergeWorkDone(previous.workDone, delta.workDone).slice(-100);
+    const mergedTechnicalDetails = previous.technicalDetails
+      ? `${previous.technicalDetails}\n\n--- Since checkpoint ${previous.number} ---\n${delta.technicalDetails}`
+      : delta.technicalDetails;
+
+    return {
+      ...delta,
+      isDelta: false, // Merged checkpoint is a full checkpoint
+      messageRangeStart: previous.messageRangeStart ?? 0, // Full range from first checkpoint
+      history: mergedHistory,
+      workDone: mergedWorkDone,
+      technicalDetails: mergedTechnicalDetails.slice(-8000), // Cap at ~2K tokens
+      importantFiles: [...mergedFiles.values()].slice(-30), // Cap files
+      overview: delta.overview || previous.overview,
+      nextSteps: delta.nextSteps || previous.nextSteps,
+    };
+  }
+
+  /**
+   * Merge workDone lists — if a step transitions from [ ] to [x], update it.
+   */
+  private mergeWorkDone(previous: string[], delta: string[]): string[] {
+    const result = [...previous];
+    for (const item of delta) {
+      const taskText = item.replace(/^\[.\]\s*/, "").trim();
+      const existingIdx = result.findIndex((r) => r.replace(/^\[.\]\s*/, "").trim() === taskText);
+      if (existingIdx >= 0) {
+        result[existingIdx] = item; // Update status
+      } else {
+        result.push(item);
+      }
+    }
+    return result;
   }
 
   // --------------------------------------------------------------------------
@@ -133,7 +209,7 @@ Focus on:
 - What was accomplished vs what's pending`;
 
     const previousContext = previousCheckpoint
-      ? `\n\nPrevious checkpoint context:\n${previousCheckpoint.overview}\nHistory: ${previousCheckpoint.history.join(", ")}`
+      ? `\n\nPrevious checkpoint (#${previousCheckpoint.number}) context:\n${previousCheckpoint.overview}\nHistory: ${previousCheckpoint.history.join(", ")}\nThis is an INCREMENTAL checkpoint — only summarize NEW actions since the previous checkpoint. Do not repeat what was already captured.`
       : "";
 
     const conversationSummary = this.summarizeMessagesForPrompt(messages);
@@ -263,12 +339,21 @@ Focus on:
 
 Created: ${checkpoint.createdAt}
 
+<metadata>
+messageRangeStart: ${checkpoint.messageRangeStart ?? 0}
+messageRangeEnd: ${checkpoint.messageRangeEnd ?? 0}
+isDelta: ${checkpoint.isDelta ?? false}
+</metadata>
+
 <overview>
 ${checkpoint.overview}
 </overview>
 
 <history>
-${checkpoint.history.map((h, i) => `${i + 1}. ${h}`).join("\n")}
+${checkpoint.history
+  .slice(-30)
+  .map((h, i) => `${i + 1}. ${h}`)
+  .join("\n")}
 </history>
 
 <work_done>
@@ -276,7 +361,7 @@ ${checkpoint.workDone.join("\n")}
 </work_done>
 
 <technical_details>
-${checkpoint.technicalDetails}
+${checkpoint.technicalDetails.slice(-8000)}
 </technical_details>
 
 <important_files>
@@ -393,6 +478,20 @@ ${checkpoint.nextSteps}
       }
     }
 
+    // Parse incremental metadata
+    const metadataText = extractSection("metadata");
+    let messageRangeStart: number | undefined;
+    let messageRangeEnd: number | undefined;
+    let isDelta: boolean | undefined;
+    if (metadataText) {
+      const rangeStartMatch = metadataText.match(/messageRangeStart:\s*(\d+)/);
+      const rangeEndMatch = metadataText.match(/messageRangeEnd:\s*(\d+)/);
+      const isDeltaMatch = metadataText.match(/isDelta:\s*(true|false)/);
+      if (rangeStartMatch) messageRangeStart = parseInt(rangeStartMatch[1], 10);
+      if (rangeEndMatch) messageRangeEnd = parseInt(rangeEndMatch[1], 10);
+      if (isDeltaMatch) isDelta = isDeltaMatch[1] === "true";
+    }
+
     return {
       number,
       title,
@@ -403,6 +502,9 @@ ${checkpoint.nextSteps}
       technicalDetails: extractSection("technical_details"),
       importantFiles,
       nextSteps: extractSection("next_steps"),
+      messageRangeStart,
+      messageRangeEnd,
+      isDelta,
     };
   }
 

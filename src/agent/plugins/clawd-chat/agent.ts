@@ -391,7 +391,22 @@ ${recentTopics.join("\n")}`;
         const formatted = interruptingMessages
           .map((msg) => {
             const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
-            return `[ts:${msg.ts}] ${author}: ${msg.text}`;
+            const chatMarker = "\n\n[TRUNCATED — message too long]";
+            const truncatedText =
+              msg.text && msg.text.length > 10000
+                ? (() => {
+                    let cp = 10000 - chatMarker.length;
+                    if (
+                      cp > 0 &&
+                      cp < msg.text.length &&
+                      msg.text.charCodeAt(cp - 1) >= 0xd800 &&
+                      msg.text.charCodeAt(cp - 1) <= 0xdbff
+                    )
+                      cp--;
+                    return msg.text.slice(0, cp) + chatMarker;
+                  })()
+                : msg.text || "";
+            return `[ts:${msg.ts}] ${author}: ${truncatedText}`;
           })
           .join("\n\n---\n\n");
 

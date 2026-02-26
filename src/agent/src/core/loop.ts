@@ -178,8 +178,23 @@ export class AgenticLoop extends EventEmitter {
         // Check for interrupt
         const interrupt = await this.hooks.checkInterrupt?.();
         if (interrupt) {
-          // Inject interrupt as new user message
-          this.messages.push({ role: "user", content: interrupt });
+          // Inject interrupt as new user message (truncate to prevent context overflow)
+          const intMarker = "\n\n[TRUNCATED — interrupt message too long]";
+          const truncatedInterrupt =
+            interrupt.length > 10000
+              ? (() => {
+                  let cp = 10000 - intMarker.length;
+                  if (
+                    cp > 0 &&
+                    cp < interrupt.length &&
+                    interrupt.charCodeAt(cp - 1) >= 0xd800 &&
+                    interrupt.charCodeAt(cp - 1) <= 0xdbff
+                  )
+                    cp--;
+                  return interrupt.slice(0, cp) + intMarker;
+                })()
+              : interrupt;
+          this.messages.push({ role: "user", content: truncatedInterrupt });
         }
 
         // Get tools

@@ -9,9 +9,10 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { getDataDir } from "../../config-file";
 
 // Use same DATA_DIR as chat.db
-const DATA_DIR = process.env.DATA_DIR || join(process.env.HOME || "/tmp", ".clawd", "data");
+const DATA_DIR = getDataDir();
 
 // ============================================================================
 // Types

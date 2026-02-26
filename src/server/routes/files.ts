@@ -19,6 +19,11 @@ export interface FileRecord {
 
 // POST /api/files.upload
 export async function uploadFile(file: File, _channel: string, _threadTs?: string, userId = "UHUMAN") {
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+  if (file.size > MAX_FILE_SIZE) {
+    return { ok: false, error: "File too large. Maximum file size is 10MB." };
+  }
+
   const id = generateId("F");
   const ext = file.name.split(".").pop() || "";
   const filename = `${id}.${ext}`;

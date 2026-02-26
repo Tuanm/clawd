@@ -206,15 +206,15 @@ if (!values.channel) {
 }
 
 const CHANNEL = values.channel;
-const AGENT_ID = values.id || process.env.AGENT_ID || "Claw'd";
-const MODEL = values.model || process.env.MODEL || "claude-opus-4.6";
+const AGENT_ID = values.id || "Claw'd";
+const MODEL = values.model || "claude-opus-4.6";
 // Use provided project root or current working directory
 const PROJECT_ROOT = values["project-root"] ? resolve(values["project-root"]) : process.cwd();
 
-const CHAT_API_URL = process.env.CHAT_API_URL || "http://localhost:53456";
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "200", 10); // 200ms for fast response
-const CONTINUATION_RETRY_DELAY = parseInt(process.env.CONTINUATION_RETRY_DELAY || "2000", 10); // 2s delay before retrying unprocessed messages
-const MAX_MESSAGE_LENGTH = parseInt(process.env.MAX_MESSAGE_LENGTH || "10000", 10); // Max chars per message before truncation
+const CHAT_API_URL = "http://localhost:53456";
+const POLL_INTERVAL = 200; // 200ms for fast response
+const CONTINUATION_RETRY_DELAY = 2000; // 2s delay before retrying unprocessed messages
+const MAX_MESSAGE_LENGTH = 10000; // Max chars per message before truncation
 
 /**
  * Truncate message text if too long to prevent interrupt loops
@@ -224,7 +224,7 @@ function truncateText(text: string, maxLength: number = MAX_MESSAGE_LENGTH): str
   return text.slice(0, maxLength) + "\n\n[TRUNCATED - message too long]";
 }
 
-const _homeDir = process.env.HOME || "/tmp";
+const _homeDir = homedir();
 
 interface Message {
   ts: string;

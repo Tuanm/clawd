@@ -6,6 +6,7 @@
  */
 
 import type { ToolResult } from "../tools/tools";
+import { homedir } from "node:os";
 
 // ============================================================================
 // Configuration Types (from hooks.json)
@@ -127,10 +128,10 @@ export interface HookInstance {
 // ============================================================================
 
 /** Global hooks directory */
-export const GLOBAL_HOOKS_DIR = `${process.env.HOME}/.clawd/hooks`;
+export const GLOBAL_HOOKS_DIR = `${homedir()}/.clawd/hooks`;
 
 /** Global hooks config file */
-export const GLOBAL_HOOKS_CONFIG = `${process.env.HOME}/.clawd/hooks.json`;
+export const GLOBAL_HOOKS_CONFIG = `${homedir()}/.clawd/hooks.json`;
 
 /** Project hooks directory (relative to project root) */
 export const PROJECT_HOOKS_DIR = ".clawd/hooks";

@@ -10,6 +10,20 @@ import { db, generateTs, getAgent, getMessageSeenBy, type Message, markMessagesS
 import { getOptimizedFile } from "./routes/files";
 import { getConversationHistory, getPendingMessages, postMessage } from "./routes/messages";
 import { broadcastMessageSeen, broadcastUpdate } from "./websocket";
+import { homedir } from "node:os";
+
+/**
+ * Truncate text for agent context — always active (defense in depth).
+ * Applied unconditionally regardless of contextMode since this prevents
+ * the agent from re-ingesting untruncated content via MCP retrieval tools.
+ */
+function truncateForAgent(text: string | undefined | null, maxLength = 10000): string {
+  if (!text || text.length <= maxLength) return text || "";
+  const marker = "\n\n[TRUNCATED — content too long for agent context]";
+  let cp = maxLength - marker.length;
+  if (cp > 0 && cp < text.length && text.charCodeAt(cp - 1) >= 0xd800 && text.charCodeAt(cp - 1) <= 0xdbff) cp--;
+  return text.slice(0, cp) + marker;
+}
 
 // MCP Tool definitions
 const MCP_TOOLS = [
@@ -1345,7 +1359,7 @@ async function executeToolCall(
         const compactUrgent = estimatedTokens > TOKEN_CRITICAL_THRESHOLD;
 
         // Add seen_by to pending messages as well
-        const pendingWithSeenBy = pending.map((m: { ts: string }) => {
+        const pendingWithSeenBy = pending.map((m: { ts: string; text?: string }) => {
           const seenBy = getMessageSeenBy(channel, m.ts);
           const seenByWithColors = seenBy.map((aid) => {
             const agent = getAgent(aid, channel);
@@ -1357,11 +1371,15 @@ async function executeToolCall(
           return { ...m, seen_by: seenByWithColors };
         });
 
+        // Truncate message text for agent context
+        const truncatedMessages = messagesWithSeenBy.map((m) => ({ ...m, text: truncateForAgent(m.text) }));
+        const truncatedPending = pendingWithSeenBy.map((m) => ({ ...m, text: truncateForAgent(m.text) }));
+
         resultText = JSON.stringify(
           {
             ok: true,
-            messages: messagesWithSeenBy,
-            pending: pendingWithSeenBy,
+            messages: truncatedMessages,
+            pending: truncatedPending,
             last_seen_ts: messages.length > 0 ? messages[messages.length - 1].ts : null,
             last_processed_ts: lastProcessedTs,
             count: pending.length,
@@ -1496,7 +1514,7 @@ async function executeToolCall(
                 avatar_color: agent?.avatar_color || "#D97853",
               };
             });
-            return { ...m, seen_by: seenByWithColors };
+            return { ...m, text: truncateForAgent(m.text), seen_by: seenByWithColors };
           }) as typeof result.messages;
         }
 
@@ -1516,7 +1534,12 @@ async function executeToolCall(
             error: "Message not found",
           });
         } else {
-          resultText = JSON.stringify({ ok: true, message: toSlackMessage(message) }, null, 2);
+          const slackMsg = toSlackMessage(message);
+          resultText = JSON.stringify(
+            { ok: true, message: { ...slackMsg, text: truncateForAgent(slackMsg.text) } },
+            null,
+            2,
+          );
         }
         break;
       }
@@ -1731,7 +1754,7 @@ async function executeToolCall(
               end: actualEnd,
               total_size: file.size,
               ...(totalLines !== undefined && { total_lines: totalLines }),
-              content,
+              content: truncateForAgent(content),
               has_more: actualEnd < (mode === "lines" ? totalLines || 0 : file.size),
             },
             null,
@@ -2044,7 +2067,10 @@ async function executeToolCall(
         resultText = JSON.stringify(
           {
             ok: true,
-            messages: messages.map((m) => toSlackMessage(m)),
+            messages: messages.map((m) => {
+              const sm = toSlackMessage(m);
+              return { ...sm, text: truncateForAgent(sm.text) };
+            }),
             count: messages.length,
             has_more: hasMore,
           },
@@ -2059,7 +2085,7 @@ async function executeToolCall(
         const agentId = (args.agent_id as string) || "default";
 
         // Essential files to include after compaction for context restoration
-        const ESSENTIAL_FILES = [`${process.env.HOME}/.clawd/CLAWD.md`];
+        const ESSENTIAL_FILES = [`${homedir()}/.clawd/CLAWD.md`];
 
         // Read essential files content
         let essentialFilesContent = "";
@@ -2098,8 +2124,8 @@ async function executeToolCall(
             {
               ok: true,
               has_summary: true,
-              summary: summary.summary,
-              essential_files: essentialFilesContent.trim() || null,
+              summary: truncateForAgent(summary.summary),
+              essential_files: truncateForAgent(essentialFilesContent.trim()) || null,
               ts: generateTs(), // Current timestamp
               from_ts: summary.from_ts,
               to_ts: summary.to_ts,
@@ -2123,7 +2149,7 @@ async function executeToolCall(
               ok: true,
               has_summary: false,
               summary: "No prior summary - beginning of conversation",
-              essential_files: essentialFilesContent.trim() || null,
+              essential_files: truncateForAgent(essentialFilesContent.trim()) || null,
               from_ts: firstMessage?.ts || "0",
               to_ts: firstMessage?.ts || "0",
               message_count: 0,

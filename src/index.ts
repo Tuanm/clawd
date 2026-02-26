@@ -45,6 +45,9 @@ Options:
   --debug                     Enable debug logging
   -h, --help                  Show this help message
 
+  Settings can also be configured in ~/.clawd/config.json.
+  CLI flags take precedence over config file values.
+
 Examples:
   clawd-app
   clawd-app --host localhost --port 8080
@@ -68,6 +71,9 @@ Options:
   --debug                     Enable debug logging
   -h, --help                  Show this help message
 
+  Settings can also be configured in ~/.clawd/config.json.
+  CLI flags take precedence over config file values.
+
 Examples:
   clawd-app
   clawd-app --host localhost --port 8080
@@ -80,11 +86,12 @@ Examples:
 import { registerAgentRoutes } from "./api/agents";
 import { registerArticleRoutes } from "./api/articles";
 import { loadConfig, validateConfig } from "./config";
+import { loadConfigFile } from "./config-file";
 import { getEmbeddedAsset, hasEmbeddedUI, embeddedUIFileCount, embeddedUITotalSize } from "./embedded-ui";
 import { WorkerManager } from "./worker-manager";
 import { setDebug } from "./agent/src/utils/debug";
 
-// Load configuration from CLI args + env
+// Load configuration from CLI args + config file
 const config = loadConfig();
 
 // Enable debug mode if configured
@@ -191,8 +198,9 @@ const getUiDir = (): string | null => {
   // If embedded UI is available, no disk directory needed
   if (hasEmbeddedUI) return null;
 
-  if (process.env.UI_DIR && existsSync(process.env.UI_DIR)) {
-    return process.env.UI_DIR;
+  const configFile = loadConfigFile();
+  if (configFile.uiDir && existsSync(configFile.uiDir)) {
+    return configFile.uiDir;
   }
   const execDir = dirname(process.execPath);
   const execAdjacentUi = join(execDir, "ui");
@@ -595,7 +603,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const channel = formData.get("channel")?.toString() || "general";
       const threadTs = formData.get("thread_ts")?.toString();
       if (!file) return json({ ok: false, error: "no_file" }, 400);
-      return json(await uploadFile(file, channel, threadTs));
+      const uploadResult = await uploadFile(file, channel, threadTs);
+      if (!uploadResult.ok) return json(uploadResult, 413);
+      return json(uploadResult);
     }
 
     if (path.startsWith("/api/files/")) {

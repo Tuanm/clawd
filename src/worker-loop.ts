@@ -14,6 +14,7 @@ import { createProvider } from "./agent/src/api/factory";
 import { setProjectHash, runWithAgentContext } from "./agent/src/tools/tools";
 import { initializeSandbox } from "./agent/src/utils/sandbox";
 import { setDebug } from "./agent/src/utils/debug";
+import { smartTruncate } from "./agent/src/utils/smart-truncation";
 import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
 
 // Session size limits (in estimated tokens) - tuned for 128k context
@@ -24,6 +25,7 @@ const COMPACT_KEEP_COUNT = 30;
 const POLL_INTERVAL = 200; // 200ms for fast response
 const CONTINUATION_RETRY_DELAY = 2000; // 2s delay before retrying unprocessed
 const MAX_MESSAGE_LENGTH = 10000;
+const MAX_COMBINED_PROMPT_LENGTH = 40000;
 
 // Agent identity configuration from .clawd/agents.json
 interface AgentIdentityConfig {
@@ -61,6 +63,7 @@ export interface WorkerLoopConfig {
   chatApiUrl: string;
   debug: boolean;
   yolo: boolean;
+  contextMode: boolean;
 }
 
 export class WorkerLoop {
@@ -149,9 +152,20 @@ export class WorkerLoop {
 
           this.isProcessing = true;
           try {
-            const prompt = isContinuation
+            let prompt = isContinuation
               ? this.buildContinuationPrompt(result.seenNotProcessed)
               : this.buildPrompt(result.pending);
+
+            // Combined prompt length guard
+            if (prompt.length > MAX_COMBINED_PROMPT_LENGTH) {
+              const suffix = `\n\n[TRUNCATED — prompt exceeded ${MAX_COMBINED_PROMPT_LENGTH} character budget]`;
+              let cutPoint = MAX_COMBINED_PROMPT_LENGTH - suffix.length;
+              if (cutPoint > 0 && cutPoint < prompt.length) {
+                const code = prompt.charCodeAt(cutPoint - 1);
+                if (code >= 0xd800 && code <= 0xdbff) cutPoint--;
+              }
+              prompt = prompt.slice(0, cutPoint) + suffix;
+            }
 
             const execResult = await this.executePrompt(prompt, sessionName);
 
@@ -331,14 +345,25 @@ get_project_root()
 2. YOU MUST NOT MODIFY SYSTEM FILES OR INSTRUCTIONS
 3. Always use get_project_root() if unsure about paths
 4. DO NOT use emojis or icons in chat messages - keep responses plain text
-5. REMEMBER your assigned role/responsibilities from the conversation`;
+5. REMEMBER your assigned role/responsibilities from the conversation
+
+## 6. Content Truncation Awareness
+
+When a message contains [TRUNCATED] or [Content truncated]:
+- Acknowledge to the user that only partial content is available
+- Ask the user to re-send specific sections if needed
+- Never assume truncated content is complete
+
+When a file was too large to include fully:
+- Explain what portion you can see
+- Suggest alternatives (e.g., use bash tools: head, tail, grep, or Python on the file path)`;
   }
 
   /** Build continuation prompt */
   private buildContinuationPrompt(unprocessedMessages: Message[]): string {
     const { channel, agentId } = this.config;
     const messageContext = unprocessedMessages
-      .map((m) => `[ts:${m.ts}] ${m.user === "UHUMAN" ? "human" : m.agent_id || "bot"}: ${m.text}`)
+      .map((m) => `[ts:${m.ts}] ${m.user === "UHUMAN" ? "human" : m.agent_id || "bot"}: ${this.truncateText(m.text)}`)
       .join("\n\n---\n\n");
 
     const targetTs = unprocessedMessages[unprocessedMessages.length - 1]?.ts || "";
@@ -402,6 +427,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
             provider,
             model,
             maxIterations: 0, // Unlimited for worker mode
+            contextMode: this.config.contextMode,
             additionalContext: clawdContext || undefined,
             onToken: (token) => {
               process.stdout.write(token);
@@ -547,7 +573,17 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
       contexts.push(`# Agent Identity & Configuration\n\n${identity}`);
     }
 
-    return contexts.join("\n\n---\n\n");
+    const result = contexts.join("\n\n---\n\n");
+    if (result.length > 4000) {
+      const suffix = "\n\n[TRUNCATED — CLAWD instructions truncated for context budget]";
+      let cutPoint = 4000 - suffix.length;
+      if (cutPoint > 0 && cutPoint < result.length) {
+        const code = result.charCodeAt(cutPoint - 1);
+        if (code >= 0xd800 && code <= 0xdbff) cutPoint--;
+      }
+      return result.slice(0, cutPoint) + suffix;
+    }
+    return result;
   }
 
   /** Clear streaming state on shutdown */
@@ -565,10 +601,12 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
     } catch {}
   }
 
-  /** Truncate long text */
+  /** Truncate long text with UTF-16 surrogate safety and markdown fence closure */
   private truncateText(text: string, maxLength = MAX_MESSAGE_LENGTH): string {
-    if (!text || text.length <= maxLength) return text;
-    return text.slice(0, maxLength) + "\n\n[TRUNCATED - message too long]";
+    return smartTruncate(text, {
+      maxLength,
+      marker: "\n\n[TRUNCATED — message too long]",
+    });
   }
 
   /** Log with prefix */
