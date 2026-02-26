@@ -143,7 +143,7 @@ export function createSpawnAgentPlugin(
         .replace(/[\n\r]/g, " ")
         .trim()
         .slice(0, 100);
-      const subAgentId = `sub-${agentConfig.agentId}`;
+      const subAgentId = `Agent-${spaceId.slice(0, 8)}`;
 
       // 1. Create space (sub-agent registered as non-worker gets proper avatar color)
       const space = spaceManager.createSpace({

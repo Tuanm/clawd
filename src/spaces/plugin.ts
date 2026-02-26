@@ -17,30 +17,31 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
     getTools(): ToolRegistration[] {
       return [
         {
-          name: "complete_space",
-          description: "Mark this sub-space as completed with a summary of results. Call this when your task is done.",
+          name: "respond_to_parent",
+          description:
+            "Send your final result back to the parent channel and complete this sub-space. The sub-space will be locked immediately after calling this tool. Call this once your task is fully done.",
           parameters: {
-            summary: { type: "string", description: "Summary of what was accomplished" },
+            result: { type: "string", description: "The final result to send back to the parent channel" },
           },
-          required: ["summary"],
+          required: ["result"],
           handler: async (
             args: Record<string, unknown>,
           ): Promise<{ success: boolean; output: string; error?: string }> => {
-            const summary = String(args.summary || "");
-            const won = spaceManager.lockSpace(config.spaceId, "completed", summary);
+            const result = String(args.result || "");
+            const won = spaceManager.lockSpace(config.spaceId, "completed", result);
             if (!won) {
               return { success: true, output: "Space already completed by another process." };
             }
 
-            // SP26: Post result to main channel FIRST, then update card
+            // Post result to parent channel
             try {
-              const truncated = summary.length > 2000 ? summary.slice(0, 2000) + "..." : summary;
+              const truncated = result.length > 2000 ? result.slice(0, 2000) + "..." : result;
               await fetch(`${config.apiUrl}/api/chat.postMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   channel: config.mainChannel,
-                  text: `✅ **Sub-space completed:** ${truncated}`,
+                  text: truncated,
                   user: "UWORKER-SPACE",
                 }),
               });
@@ -50,10 +51,10 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
             spaceManager.updateSpaceCard(config.spaceId);
 
             // Resolve the completion promise and stop the worker
-            config.resolve(summary);
+            config.resolve(result);
             config.onComplete?.();
 
-            return { success: true, output: "Space completed successfully." };
+            return { success: true, output: "Result sent to parent channel. Sub-space locked." };
           },
         },
         {

@@ -831,7 +831,7 @@ export default function App({ channel: initialChannel }: Props) {
           // Mark stale streaming output as completed (don't delete -- dialog may be open)
           for (const [key, info] of streamingOutputRef.current.entries()) {
             if (key.startsWith(`${channelId}:`)) {
-              const agentId = key.split(":")[1];
+              const agentId = key.slice(channelId.length + 1);
               if (!serverStreaming.some((a: any) => a.agentId === agentId)) {
                 info.completed = true;
               }

@@ -1690,7 +1690,7 @@ export default function MessageList({
                     }
                   >
                     <div className="subspace-card-icon">
-                      <ClawdAvatar color={msg.subspace.agent_color} />
+                      <ClawdAvatar />
                     </div>
                     <div className="subspace-card-content">
                       <div className="subspace-card-title">{msg.subspace.title}</div>
