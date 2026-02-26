@@ -1400,23 +1400,30 @@ async function executeToolCall(
         // to avoid overwhelming the agent with ALL historical messages as "pending"
         // Only show the most recent UHUMAN message(s) as pending
         if (!lastProcessedTs && messages.length > 0) {
-          // Find all UHUMAN messages
-          const humanMessages = messages.filter((m: { user: string }) => m.user === "UHUMAN");
-          if (humanMessages.length > 1) {
-            // Set last_processed to second-to-last human message
-            // This way only the most recent human message is "pending"
-            lastProcessedTs = humanMessages[humanMessages.length - 2].ts;
-          } else if (humanMessages.length === 1) {
-            // Only one human message - leave it as pending (null lastProcessedTs is fine)
-            // Actually set to a timestamp before this message to ensure it's pending
+          // Find all actionable messages (from humans and workers)
+          const actionableMessages = messages.filter(
+            (m: { user: string; agent_id?: string }) =>
+              m.user === "UHUMAN" ||
+              m.user.startsWith("UWORKER-") ||
+              (m.user === "UBOT" && m.agent_id && m.agent_id !== agentId),
+          );
+          if (actionableMessages.length > 1) {
+            lastProcessedTs = actionableMessages[actionableMessages.length - 2].ts;
+          } else if (actionableMessages.length === 1) {
             lastProcessedTs = null;
           }
           // Note: We don't persist this auto-initialization - agent should call mark_processed
         }
 
-        // Filter pending = UHUMAN messages after last_processed_ts
+        // Filter pending = messages from others after last_processed_ts
+        // Include UHUMAN and UWORKER-* messages (scheduler, sub-agents, etc.)
+        // Exclude UBOT messages from other agents (already in context) and self-messages
         const pending = messages.filter(
-          (m: { user: string; ts: string }) => m.user === "UHUMAN" && (!lastProcessedTs || m.ts > lastProcessedTs),
+          (m: { user: string; ts: string; agent_id?: string }) =>
+            (m.user === "UHUMAN" ||
+              m.user.startsWith("UWORKER-") ||
+              (m.user === "UBOT" && m.agent_id && m.agent_id !== agentId)) &&
+            (!lastProcessedTs || m.ts > lastProcessedTs),
         );
 
         // Mark ALL messages as SEEN immediately, also update last_poll_ts
