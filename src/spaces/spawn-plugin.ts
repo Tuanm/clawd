@@ -143,14 +143,15 @@ export function createSpawnAgentPlugin(
         .replace(/[\n\r]/g, " ")
         .trim()
         .slice(0, 100);
+      const subAgentId = `sub-${agentConfig.agentId}`;
 
-      // 1. Create space (agent registered as non-worker gets proper avatar color)
+      // 1. Create space (sub-agent registered as non-worker gets proper avatar color)
       const space = spaceManager.createSpace({
         id: spaceId,
         channel: config.channel,
         title: sanitizedTitle,
         description: task.slice(0, 500),
-        agent_id: agentConfig.agentId,
+        agent_id: subAgentId,
         agent_color: agentConfig.avatar_color || "#6366f1",
         source: "spawn_agent",
         timeout_seconds: 600,
@@ -197,10 +198,10 @@ export function createSpawnAgentPlugin(
         return { success: false, output: "", error: "Failed to post task to space channel" };
       }
 
-      // 4. Start space worker
+      // 4. Start space worker (use sub-agent ID so it differs from main agent)
       let completionPromise: Promise<string>;
       try {
-        completionPromise = spaceWorkerManager.startSpaceWorker(space, agentConfig);
+        completionPromise = spaceWorkerManager.startSpaceWorker(space, { ...agentConfig, agentId: subAgentId });
       } catch (workerErr: any) {
         // Worker failed to start — mark space as failed and update card
         spaceManager.failSpace(space.id, workerErr.message);
