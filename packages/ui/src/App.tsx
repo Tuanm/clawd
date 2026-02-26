@@ -432,6 +432,7 @@ export default function App({ channel: initialChannel }: Props) {
   // Refs for stable access in effects (avoid re-renders)
   const openChannelsRef = useRef<string[]>([]);
   const channelStatesRef = useRef<Map<string, ChannelState>>(new Map());
+  const activeChannelRef = useRef(activeChannel);
 
   // Streaming output accumulator - stored outside React state for performance
   // Key: "channel:agentId", Value: StreamingAgentInfo
@@ -529,6 +530,10 @@ export default function App({ channel: initialChannel }: Props) {
   useEffect(() => {
     channelStatesRef.current = channelStates;
   }, [channelStates]);
+
+  useEffect(() => {
+    activeChannelRef.current = activeChannel;
+  }, [activeChannel]);
 
   // Update document title with unread count
   // Include active channel unread when user is scrolled up (not at bottom)
@@ -1148,6 +1153,12 @@ export default function App({ channel: initialChannel }: Props) {
         ws.send(JSON.stringify({ type: "subscribe", channel: ch }));
         subscribedChannelsRef.current.add(ch);
       });
+      // Also subscribe to active channel if not in openChannels (e.g., sub-space channels)
+      const active = activeChannelRef.current;
+      if (active && !subscribedChannelsRef.current.has(active)) {
+        ws.send(JSON.stringify({ type: "subscribe", channel: active }));
+        subscribedChannelsRef.current.add(active);
+      }
     };
 
     ws.onmessage = (event) => {
@@ -1328,8 +1339,7 @@ export default function App({ channel: initialChannel }: Props) {
 
           // Ensure this agent is in the streamingAgents list
           setChannelStates((prev) => {
-            const current = prev.get(msgChannel);
-            if (!current) return prev;
+            const current = prev.get(msgChannel) || { ...defaultChannelState };
             const alreadyTracked = current.streamingAgents.some((a) => a.agentId === data.agent_id);
             if (alreadyTracked) return prev;
             const newMap = new Map(prev);
@@ -1377,8 +1387,7 @@ export default function App({ channel: initialChannel }: Props) {
             streamingVersionRef.current++;
 
             setChannelStates((prev) => {
-              const current = prev.get(msgChannel);
-              if (!current) return prev;
+              const current = prev.get(msgChannel) || { ...defaultChannelState };
 
               const newMap = new Map(prev);
               newMap.set(msgChannel, {
@@ -1471,7 +1480,12 @@ export default function App({ channel: initialChannel }: Props) {
     // Background polling for ALL open channels - 3 seconds (WebSocket handles real-time)
     pollIntervalRef.current = window.setInterval(() => {
       // Use refs for stable access without causing effect re-runs
-      openChannelsRef.current.forEach((ch) => {
+      const channelsToPoll = new Set(openChannelsRef.current);
+      // Also poll active channel if it's a space channel (not in openChannels)
+      const active = activeChannelRef.current;
+      if (active) channelsToPoll.add(active);
+
+      channelsToPoll.forEach((ch) => {
         const state = channelStatesRef.current.get(ch);
         if (state?.loaded) {
           fetchMessages(ch, true);
