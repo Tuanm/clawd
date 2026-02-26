@@ -1237,7 +1237,7 @@ async function postToChannel(apiUrl: string, channel: string, text: string, agen
   await fetch(`${apiUrl}/api/chat.postMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ channel, text, user: "UWORKER-SCHEDULER", agent_id: agentId }),
+    body: JSON.stringify({ channel, text, user: "UBOT", agent_id: agentId }),
   });
 }
 

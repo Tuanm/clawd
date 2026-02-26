@@ -28,9 +28,7 @@ export function initRunner(config: RunnerConfig): void {
     const agentConfig = await getAgentConfig(job.channel);
     if (!agentConfig) throw new Error(`No agent configured for channel ${job.channel}`);
 
-    const safeTitle = job.title.replace(/[\n\r]/g, " ").trim();
-    const text = `🔔 **Reminder: ${safeTitle}**\n${job.prompt}`;
-    await postToChannel(appConfig.chatApiUrl, job.channel, text, agentConfig.agentId);
+    await postToChannel(appConfig.chatApiUrl, job.channel, job.prompt, "Cron");
   });
 
   // Job executor: create a sub-space with its own worker loop
@@ -61,8 +59,8 @@ export function initRunner(config: RunnerConfig): void {
       body: JSON.stringify({
         channel: job.channel,
         text: `🔄 **Sub-space: ${sanitizedTitle}**`,
-        user: "UWORKER-SCHEDULER",
-        agent_id: agentConfig.agentId,
+        user: "UBOT",
+        agent_id: "Cron",
         subtype: "subspace",
         subspace_json: JSON.stringify({
           id: space.id,
@@ -81,7 +79,7 @@ export function initRunner(config: RunnerConfig): void {
     }
 
     // 3. Post initial task to space channel
-    await postToChannel(appConfig.chatApiUrl, space.space_channel, `📋 **Task:** ${job.prompt}`, agentConfig.agentId);
+    await postToChannel(appConfig.chatApiUrl, space.space_channel, `📋 **Task:** ${job.prompt}`, "Cron");
 
     // 4. Start space worker — returns promise that resolves when complete_space is called
     const completionPromise = spaceWorkerManager.startSpaceWorker(space, agentConfig);
@@ -97,12 +95,9 @@ export function initRunner(config: RunnerConfig): void {
       const status = isTimeout ? "timed_out" : "failed";
       const won = isTimeout ? spaceManager.timeoutSpace(space.id) : spaceManager.failSpace(space.id, String(reason));
       if (won) {
-        postToChannel(
-          appConfig.chatApiUrl,
-          job.channel,
-          `${emoji} Space ${status}: ${sanitizedTitle}`,
-          agentConfig.agentId,
-        ).catch(() => {});
+        postToChannel(appConfig.chatApiUrl, job.channel, `${emoji} Space ${status}: ${sanitizedTitle}`, "Cron").catch(
+          () => {},
+        );
       }
       spaceWorkerManager.stopSpaceWorker(space.id);
     };
@@ -118,12 +113,9 @@ export function initRunner(config: RunnerConfig): void {
         settled = true;
         const won = spaceManager.failSpace(space.id, (err as Error).message);
         if (won) {
-          postToChannel(
-            appConfig.chatApiUrl,
-            job.channel,
-            `❌ Space failed: ${sanitizedTitle}`,
-            agentConfig.agentId,
-          ).catch(() => {});
+          postToChannel(appConfig.chatApiUrl, job.channel, `❌ Space failed: ${sanitizedTitle}`, "Cron").catch(
+            () => {},
+          );
         }
         spaceWorkerManager.stopSpaceWorker(space.id);
       }
@@ -142,7 +134,7 @@ async function postToChannel(apiUrl: string, channel: string, text: string, agen
     body: JSON.stringify({
       channel,
       text,
-      user: "UWORKER-SCHEDULER",
+      user: "UBOT",
       agent_id: agentId,
     }),
   });
