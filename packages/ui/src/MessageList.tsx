@@ -1492,7 +1492,7 @@ export default function MessageList({
 
         // Check if this is a streaming message (agent is actively typing)
         // Exclude article messages from streaming state
-        const isStreaming = isAgentMessage(msg) && msg.is_streaming === true && !msg.article;
+        const isStreaming = isAgentMessage(msg) && msg.is_streaming === true && !msg.article && !msg.subspace;
         const isThinkingPlaceholder = msg.ts.startsWith("thinking_");
 
         return (
@@ -1533,7 +1533,7 @@ export default function MessageList({
               >
                 {continuation ? null : // Render avatar based on agent type - support both legacy and new patterns
                 isAgentMessage(msg) ? (
-                  msg.user.startsWith("UWORKER-") ? (
+                  msg.user.startsWith("UWORKER-") && !msg.avatar_color ? (
                     <WorkerClawdAvatar />
                   ) : (
                     <ClawdAvatar
@@ -1576,9 +1576,10 @@ export default function MessageList({
                   const displayText =
                     isLong && !isExpanded ? `${msg.text.slice(0, MESSAGE_COLLAPSE_THRESHOLD)}...` : msg.text;
                   const isArticleMessage = msg.subtype === "article";
+                  const isSubspaceMessage = !!msg.subspace;
                   return (
                     <>
-                      {isArticleMessage ? null : (
+                      {isArticleMessage || isSubspaceMessage ? null : (
                         <div className={`message-content ${isLong && !isExpanded ? "collapsed" : ""}`}>
                           <Markdown
                             remarkPlugins={[remarkGfm, remarkMath]}
@@ -1679,7 +1680,7 @@ export default function MessageList({
                 )}
                 {msg.subspace && (
                   <div
-                    className="message-subspace-card"
+                    className={`message-subspace-card ${msg.subspace.status === "failed" || msg.subspace.status === "timed_out" ? "subspace-card-failed" : ""}`}
                     onClick={() => (window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`)}
                     role="button"
                     tabIndex={0}
@@ -1699,15 +1700,6 @@ export default function MessageList({
                       {msg.subspace.description && (
                         <div className="subspace-card-description">{msg.subspace.description}</div>
                       )}
-                    </div>
-                    <div className={`subspace-card-status subspace-status-${msg.subspace.status}`}>
-                      {msg.subspace.status === "active"
-                        ? "🔄 Active"
-                        : msg.subspace.status === "completed"
-                          ? "✅ Done"
-                          : msg.subspace.status === "failed"
-                            ? "❌ Failed"
-                            : "⏰ Timed Out"}
                     </div>
                   </div>
                 )}

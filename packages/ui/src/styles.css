@@ -1823,6 +1823,11 @@ body {
   flex-shrink: 0;
 }
 
+.subspace-card-failed {
+  background-color: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
 .subspace-status-active {
   color: #3b82f6;
 }

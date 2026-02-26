@@ -456,6 +456,9 @@ export default function App({ channel: initialChannel }: Props) {
   const [spaceInfo, setSpaceInfo] = useState<{
     title: string;
     status: "active" | "completed" | "failed" | "timed_out";
+    channel: string;
+    card_message_ts: string | null;
+    agent_color: string;
   } | null>(null);
   const [spaceError, setSpaceError] = useState(false);
   const isSpaceLocked = spaceInfo != null && spaceInfo.status !== "active";
@@ -648,7 +651,7 @@ export default function App({ channel: initialChannel }: Props) {
     fetch(`/api/spaces.get?id=${spaceId}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data) setSpaceInfo({ title: data.title, status: data.status });
+        if (data?.space) setSpaceInfo({ title: data.space.title, status: data.space.status, channel: data.space.channel, card_message_ts: data.space.card_message_ts, agent_color: data.space.agent_color });
         else setSpaceError(true);
       })
       .catch(() => setSpaceError(true));
@@ -1079,6 +1082,18 @@ export default function App({ channel: initialChannel }: Props) {
     },
     [activeChannel, updateChannelState],
   );
+
+  // Handle ?msg= URL parameter for jumping to a specific message on load
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const msgTs = params.get("msg");
+    if (msgTs && loaded) {
+      setJumpToMessageTs(msgTs);
+      jumpToMessage(msgTs);
+      // Clean up URL
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [loaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Jump to latest messages (scroll to bottom button)
   const jumpToLatest = useCallback(async () => {
@@ -1665,10 +1680,28 @@ export default function App({ channel: initialChannel }: Props) {
     <div className="app">
       <header className="header">
         <div className="header-left">
-          <button className="clawd-logo-button" onClick={() => setShowChannelDialog(true)} title="Switch channels">
-            <ClawdLogo sleeping={isOffline && streamingAgents.length === 0} hasUnread={hasAnyUnread} />
-          </button>
-          <span className="header-channel-name">{displayName}</span>
+          {isSpaceChannel && parentChannel ? (
+            <>
+              <button
+                className="clawd-logo-button"
+                onClick={() => {
+                  const ts = spaceInfo?.card_message_ts;
+                  window.location.href = ts ? `/${parentChannel}?msg=${ts}` : `/${parentChannel}`;
+                }}
+                title="Back to channel"
+              >
+                <ClawdLogo sleeping={false} hasUnread={false} />
+              </button>
+              <span className="header-channel-name">{parentChannel}</span>
+            </>
+          ) : (
+            <>
+              <button className="clawd-logo-button" onClick={() => setShowChannelDialog(true)} title="Switch channels">
+                <ClawdLogo sleeping={isOffline && streamingAgents.length === 0} hasUnread={hasAnyUnread} />
+              </button>
+              <span className="header-channel-name">{displayName}</span>
+            </>
+          )}
         </div>
         <div className="header-right">
           {/* Notification permission toggle - hidden once granted */}
@@ -1777,34 +1810,6 @@ export default function App({ channel: initialChannel }: Props) {
           <button className="space-back-btn" onClick={() => (window.location.href = `/${parentChannel}`)}>
             ← Back to channel
           </button>
-        </div>
-      )}
-      {isSpaceChannel && spaceInfo && (
-        <div className="space-header">
-          <button
-            className="space-back-btn"
-            onClick={() => (window.location.href = `/${parentChannel}`)}
-            title="Back to channel"
-          >
-            ← Back
-          </button>
-          <span className="space-header-title">{spaceInfo.title}</span>
-          <span className={`subspace-card-status subspace-status-${spaceInfo.status}`}>
-            {spaceInfo.status === "active"
-              ? "🔄 Active"
-              : spaceInfo.status === "completed"
-                ? "✅ Done"
-                : spaceInfo.status === "failed"
-                  ? "❌ Failed"
-                  : "⏰ Timed Out"}
-          </span>
-        </div>
-      )}
-      {isSpaceChannel && isSpaceLocked && spaceInfo && (
-        <div className="space-locked-banner">
-          This sub-space is{" "}
-          {spaceInfo.status === "completed" ? "completed" : spaceInfo.status === "timed_out" ? "timed out" : "closed"}.
-          No new messages can be sent.
         </div>
       )}
       <div className="messages-wrapper">
