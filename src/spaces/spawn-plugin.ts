@@ -183,14 +183,16 @@ export function createSpawnAgentPlugin(
         if (cardData.ts) spaceManager.updateCardTs(space.id, cardData.ts);
       }
 
-      // 3. Post task to space channel (as UHUMAN so the space worker picks it up)
+      // 3. Post task to space channel (use main agent ID so it shows correct avatar;
+      //    worker picks it up because agent_id !== worker's own agentId)
       const taskRes = await fetch(`${config.apiUrl}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channel: space.space_channel,
           text: `📋 **Task:** ${task}`,
-          user: "UHUMAN",
+          user: "UBOT",
+          agent_id: config.agentId,
         }),
       });
       if (!taskRes.ok) {
@@ -230,7 +232,8 @@ export function createSpawnAgentPlugin(
             body: JSON.stringify({
               channel: config.channel,
               text: `${emoji} Sub-space ${isTimeout ? "timed out" : "failed"}: ${sanitizedTitle}`,
-              user: "UWORKER-SPACE",
+              user: "UWORKER-SUBAGENT",
+              agent_id: subAgentId,
             }),
           }).catch(() => {});
         }

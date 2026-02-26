@@ -42,7 +42,8 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
                 body: JSON.stringify({
                   channel: config.mainChannel,
                   text: truncated,
-                  user: "UWORKER-SPACE",
+                  user: "UWORKER-SUBAGENT",
+                  agent_id: config.agentId,
                 }),
               });
             } catch {}

@@ -1285,8 +1285,7 @@ export default function App({ channel: initialChannel }: Props) {
 
           // Ensure this agent is in the streamingAgents list (triggers render once)
           setChannelStates((prev) => {
-            const current = prev.get(msgChannel);
-            if (!current) return prev;
+            const current = prev.get(msgChannel) || { ...defaultChannelState };
             const alreadyTracked = current.streamingAgents.some((a) => a.agentId === data.agent_id);
             if (alreadyTracked) return prev;
             const newMap = new Map(prev);
@@ -1347,8 +1346,7 @@ export default function App({ channel: initialChannel }: Props) {
           if (data.is_streaming) {
             // Agent started streaming - ensure tracked and mark as NOT sleeping
             setChannelStates((prev) => {
-              const current = prev.get(msgChannel);
-              if (!current) return prev;
+              const current = prev.get(msgChannel) || { ...defaultChannelState };
               const alreadyTracked = current.streamingAgents.some((a) => a.agentId === data.agent_id);
               const newMap = new Map(prev);
               newMap.set(msgChannel, {
@@ -1748,13 +1746,15 @@ export default function App({ channel: initialChannel }: Props) {
                 </div>
               ))}
           </div>
-          <div
-            className={`connection-indicator ${!connected ? "reconnecting" : ""} clickable`}
-            title="Agent"
-            onClick={() => setShowAgentDialog(true)}
-          >
-            <CopilotLogo />
-          </div>
+          {!isSpaceChannel && (
+            <div
+              className={`connection-indicator ${!connected ? "reconnecting" : ""} clickable`}
+              title="Agent"
+              onClick={() => setShowAgentDialog(true)}
+            >
+              <CopilotLogo />
+            </div>
+          )}
         </div>
       </header>
 
