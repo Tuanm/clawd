@@ -42,7 +42,6 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
                   channel: config.mainChannel,
                   text: `✅ **Sub-space completed:** ${truncated}`,
                   user: "UWORKER-SPACE",
-                  agent_id: config.agentId,
                 }),
               });
             } catch {}
