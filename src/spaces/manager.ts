@@ -6,6 +6,7 @@ import {
   atomicLockSpace,
   updateCardTs,
   getActiveSpaces,
+  deleteSpaceAgents,
   type Space,
   type CreateSpaceParams,
 } from "./db";
@@ -73,5 +74,10 @@ export class SpaceManager {
 
   updateCardTs(spaceId: string, ts: string): void {
     updateCardTs(spaceId, ts);
+  }
+
+  cleanupSpaceAgents(spaceId: string): void {
+    const space = getSpace(spaceId);
+    if (space) deleteSpaceAgents(space.space_channel);
   }
 }

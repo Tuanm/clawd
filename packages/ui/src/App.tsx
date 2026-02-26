@@ -651,7 +651,14 @@ export default function App({ channel: initialChannel }: Props) {
     fetch(`/api/spaces.get?id=${spaceId}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data?.space) setSpaceInfo({ title: data.space.title, status: data.space.status, channel: data.space.channel, card_message_ts: data.space.card_message_ts, agent_color: data.space.agent_color });
+        if (data?.space)
+          setSpaceInfo({
+            title: data.space.title,
+            status: data.space.status,
+            channel: data.space.channel,
+            card_message_ts: data.space.card_message_ts,
+            agent_color: data.space.agent_color,
+          });
         else setSpaceError(true);
       })
       .catch(() => setSpaceError(true));

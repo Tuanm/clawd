@@ -18,8 +18,6 @@ export interface SpawnPluginConfig {
   agentId: string;
   /** Chat API URL */
   apiUrl: string;
-  /** Agent color for space cards */
-  agentColor: string;
 }
 
 export interface TrackedSpace {
@@ -36,10 +34,11 @@ export function createSpawnAgentPlugin(
   config: SpawnPluginConfig,
   spaceManager: SpaceManager,
   spaceWorkerManager: SpaceWorkerManager,
-  getAgentConfig: (channel: string) => Promise<{ provider: string; model: string; agentId: string; project?: string } | null>,
+  getAgentConfig: (
+    channel: string,
+  ) => Promise<{ provider: string; model: string; agentId: string; project?: string; avatar_color?: string } | null>,
   trackedSpaces: Map<string, TrackedSpace>,
 ): ToolPlugin {
-
   return {
     name: "spawn-agent-spaces",
 
@@ -140,29 +139,32 @@ export function createSpawnAgentPlugin(
       }
 
       const spaceId = crypto.randomUUID();
-      const sanitizedTitle = name.replace(/[\n\r]/g, " ").trim().slice(0, 100);
+      const sanitizedTitle = name
+        .replace(/[\n\r]/g, " ")
+        .trim()
+        .slice(0, 100);
 
-      // 1. Create space
+      // 1. Create space (agent registered as non-worker gets proper avatar color)
       const space = spaceManager.createSpace({
         id: spaceId,
         channel: config.channel,
         title: sanitizedTitle,
         description: task.slice(0, 500),
         agent_id: agentConfig.agentId,
-        agent_color: config.agentColor,
+        agent_color: agentConfig.avatar_color || "#6366f1",
         source: "spawn_agent",
         timeout_seconds: 600,
       });
 
-      // 2. Post preview card to main channel
+      // 2. Post preview card to main channel (use main agent ID as author)
       const cardRes = await fetch(`${config.apiUrl}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channel: config.channel,
-          text: `🔄 **Sub-space: ${sanitizedTitle}**`,
-          user: `UWORKER-${config.agentId}`,
-          agent_id: agentConfig.agentId,
+          text: "",
+          user: config.agentId,
+          agent_id: config.agentId,
           subtype: "subspace",
           subspace_json: JSON.stringify({
             id: space.id,
@@ -187,7 +189,7 @@ export function createSpawnAgentPlugin(
         body: JSON.stringify({
           channel: space.space_channel,
           text: `📋 **Task:** ${task}`,
-          user: `UWORKER-${config.agentId}`,
+          user: config.agentId,
           agent_id: agentConfig.agentId,
         }),
       });
@@ -228,7 +230,7 @@ export function createSpawnAgentPlugin(
             body: JSON.stringify({
               channel: config.channel,
               text: `${emoji} Sub-space ${isTimeout ? "timed out" : "failed"}: ${sanitizedTitle}`,
-              user: `UWORKER-${config.agentId}`,
+              user: config.agentId,
               agent_id: agentConfig.agentId,
             }),
           }).catch(() => {});
@@ -268,6 +270,8 @@ export function createSpawnAgentPlugin(
         .finally(() => {
           controller.signal.removeEventListener("abort", onAbort);
           spaceWorkerManager.stopSpaceWorker(space.id);
+          // Kill the sub-agent immediately
+          spaceManager.cleanupSpaceAgents(space.id);
           // Evict from memory after 30 minutes (DB fallback still works)
           const evictTimer = setTimeout(() => trackedSpaces.delete(spaceId), 30 * 60 * 1000);
           if (typeof evictTimer === "object" && "unref" in evictTimer) (evictTimer as any).unref();
@@ -312,14 +316,22 @@ export function createSpawnAgentPlugin(
       if (mode === "any" && completed.length > 0) {
         return {
           success: true,
-          output: JSON.stringify({ mode, completed: completed.length, total: agentIds.length, agents: statuses }, null, 2),
+          output: JSON.stringify(
+            { mode, completed: completed.length, total: agentIds.length, agents: statuses },
+            null,
+            2,
+          ),
         };
       }
 
       if (mode === "all" && completed.length === agentIds.length) {
         return {
           success: true,
-          output: JSON.stringify({ mode, completed: completed.length, total: agentIds.length, agents: statuses }, null, 2),
+          output: JSON.stringify(
+            { mode, completed: completed.length, total: agentIds.length, agents: statuses },
+            null,
+            2,
+          ),
         };
       }
 

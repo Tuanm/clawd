@@ -46,8 +46,8 @@ export function createSpaceRecord(params: CreateSpaceParams): Space {
     // Direct INSERT for space channel (NOT using createChannel — it generates its own IDs)
     db.run(`INSERT INTO channels (id, name, created_by) VALUES (?, ?, ?)`, [spaceChannel, spaceChannel, "UBOT"]);
 
-    // Register agent for this channel
-    getOrRegisterAgent(params.agent_id, spaceChannel, true);
+    // Register agent for this space channel (non-worker to get proper avatar color)
+    getOrRegisterAgent(params.agent_id, spaceChannel, false);
 
     // Insert space record
     db.run(
@@ -106,4 +106,8 @@ export function updateCardTs(id: string, ts: string) {
 
 export function getActiveSpaces(): Space[] {
   return db.query<Space, []>(`SELECT * FROM spaces WHERE status = 'active' AND locked = 0`).all();
+}
+
+export function deleteSpaceAgents(spaceChannel: string): void {
+  db.run(`DELETE FROM agents WHERE channel = ?`, [spaceChannel]);
 }

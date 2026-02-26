@@ -1689,11 +1689,8 @@ export default function MessageList({
                       (window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`)
                     }
                   >
-                    <div
-                      className="subspace-card-icon"
-                      style={{ backgroundColor: msg.subspace.agent_color || "#6366f1" }}
-                    >
-                      🤖
+                    <div className="subspace-card-icon">
+                      <ClawdAvatar color={msg.subspace.agent_color} />
                     </div>
                     <div className="subspace-card-content">
                       <div className="subspace-card-title">{msg.subspace.title}</div>

@@ -501,7 +501,6 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
                   channel,
                   agentId,
                   apiUrl: chatApiUrl,
-                  agentColor: "#6366f1",
                 },
                 this.config.spaceManager,
                 this.config.spaceWorkerManager,
@@ -512,7 +511,14 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
                     const data = (await res.json()) as any;
                     if (data.ok && Array.isArray(data.agents)) {
                       const agent = data.agents.find((a: any) => a.channel === ch && a.active !== false);
-                      if (agent) return { provider: agent.provider || "copilot", model: agent.model || "default", agentId: agent.agent_id, project: agent.project };
+                      if (agent)
+                        return {
+                          provider: agent.provider || "copilot",
+                          model: agent.model || "default",
+                          agentId: agent.agent_id,
+                          project: agent.project,
+                          avatar_color: agent.avatar_color,
+                        };
                     }
                   } catch {}
                   return null;
