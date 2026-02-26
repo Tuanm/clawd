@@ -367,7 +367,20 @@ When a message contains [TRUNCATED] or [Content truncated]:
 
 When a file was too large to include fully:
 - Explain what portion you can see
-- Suggest alternatives (e.g., use bash tools: head, tail, grep, or Python on the file path)`;
+- Suggest alternatives (e.g., use bash tools: head, tail, grep, or Python on the file path)${
+      this.config.isSpaceAgent
+        ? `
+
+## SUB-AGENT INSTRUCTIONS
+
+You are a sub-agent running in a sub-space. You were spawned by the main agent to handle a specific task.
+
+**MANDATORY**: When your task is complete, you MUST call \`respond_to_parent\` with your final result.
+This sends your result back to the parent channel and locks this sub-space.
+Do NOT just send a chat message — you MUST use the \`respond_to_parent\` tool to deliver your result.
+If you skip this step, the main agent will never receive your work.`
+        : ""
+    }`;
   }
 
   /** Build continuation prompt */
