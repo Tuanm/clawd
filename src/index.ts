@@ -224,6 +224,7 @@ initRunner({
 
 // Initialize worker manager
 const workerManager = new WorkerManager(config, scheduler);
+workerManager.setSpaceInfra(spaceManager, spaceWorkerManager);
 
 // Register agent management API routes
 const handleAgentRoute = registerAgentRoutes(db, workerManager);
@@ -576,6 +577,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         html_preview: body.html_preview,
         code_preview: body.code_preview,
         article_json: body.article_json,
+        subspace_json: body.subspace_json,
       });
       if (result.ok && body.files && Array.isArray(body.files) && body.files.length > 0) {
         attachFilesToMessage(
@@ -1277,9 +1279,10 @@ setTimeout(async () => {
           // Get agent config
           const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`);
           const data = (await res.json()) as any;
-          const agentEntry = data.ok && Array.isArray(data.agents)
-            ? data.agents.find((a: any) => a.channel === space.channel && a.active !== false)
-            : null;
+          const agentEntry =
+            data.ok && Array.isArray(data.agents)
+              ? data.agents.find((a: any) => a.channel === space.channel && a.active !== false)
+              : null;
           if (!agentEntry) {
             spaceManager.failSpace(space.id, "Agent not configured");
             continue;
@@ -1303,7 +1306,12 @@ setTimeout(async () => {
               : spaceManager.failSpace(space.id, String(controller.signal.reason));
             if (won) {
               const emoji = isTimeout ? "⏰" : "❌";
-              postToChannel(config.chatApiUrl, space.channel, `${emoji} Space ${isTimeout ? "timed_out" : "failed"}: ${space.title}`, agentConfig.agentId).catch(() => {});
+              postToChannel(
+                config.chatApiUrl,
+                space.channel,
+                `${emoji} Space ${isTimeout ? "timed_out" : "failed"}: ${space.title}`,
+                agentConfig.agentId,
+              ).catch(() => {});
             }
             spaceWorkerManager.stopSpaceWorker(space.id);
           };
@@ -1320,7 +1328,9 @@ setTimeout(async () => {
             .then(async (summary) => {
               settled = true;
               if (space.source === "scheduler" && space.source_id) {
-                const { insertRun, completeRun, incrementRunCount, resetErrors, purgeOldRuns } = await import("./scheduler/db");
+                const { insertRun, completeRun, incrementRunCount, resetErrors, purgeOldRuns } = await import(
+                  "./scheduler/db"
+                );
                 const runId = crypto.randomUUID();
                 insertRun(runId, space.source_id);
                 completeRun(runId, "success", undefined, summary?.slice(0, 500));
@@ -1334,7 +1344,13 @@ setTimeout(async () => {
               if (!settled) {
                 settled = true;
                 const won = spaceManager.failSpace(space.id, err.message);
-                if (won) postToChannel(config.chatApiUrl, space.channel, `❌ Space failed: ${space.title}`, agentConfig.agentId).catch(() => {});
+                if (won)
+                  postToChannel(
+                    config.chatApiUrl,
+                    space.channel,
+                    `❌ Space failed: ${space.title}`,
+                    agentConfig.agentId,
+                  ).catch(() => {});
                 spaceWorkerManager.stopSpaceWorker(space.id);
               }
             })
@@ -1347,7 +1363,9 @@ setTimeout(async () => {
               }
             });
 
-          console.log(`[Spaces] Recovered space ${space.id} (${space.title}), ${Math.round(remainingMs / 1000)}s remaining`);
+          console.log(
+            `[Spaces] Recovered space ${space.id} (${space.title}), ${Math.round(remainingMs / 1000)}s remaining`,
+          );
         } catch (err) {
           console.error(`[Spaces] Failed to recover space ${space.id}:`, err);
           spaceManager.failSpace(space.id, "Recovery failed");

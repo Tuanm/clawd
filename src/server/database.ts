@@ -329,7 +329,9 @@ export function initDatabase() {
   `);
   // Partial unique index: only one active space per scheduler job
   try {
-    db.exec(`CREATE UNIQUE INDEX idx_spaces_active_source ON spaces(source_id) WHERE status='active' AND source='scheduler'`);
+    db.exec(
+      `CREATE UNIQUE INDEX idx_spaces_active_source ON spaces(source_id) WHERE status='active' AND source='scheduler'`,
+    );
   } catch {
     /* Index already exists */
   }
@@ -659,7 +661,12 @@ export function toSlackMessage(msg: Message): SlackMessage {
 
 export function updateSubspaceStatus(ts: string, channel: string, newSubspaceJson: string) {
   const now = Math.floor(Date.now() / 1000);
-  db.run(`UPDATE messages SET subspace_json = ?, edited_at = ? WHERE ts = ? AND channel = ?`, [newSubspaceJson, now, ts, channel]);
+  db.run(`UPDATE messages SET subspace_json = ?, edited_at = ? WHERE ts = ? AND channel = ?`, [
+    newSubspaceJson,
+    now,
+    ts,
+    channel,
+  ]);
   return db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(ts) || null;
 }
 

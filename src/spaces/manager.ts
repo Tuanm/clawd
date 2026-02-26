@@ -1,7 +1,13 @@
 import {
-  createSpaceRecord, getSpace, getSpaceByChannel, listSpaces,
-  atomicLockSpace, updateCardTs, getActiveSpaces,
-  type Space, type CreateSpaceParams
+  createSpaceRecord,
+  getSpace,
+  getSpaceByChannel,
+  listSpaces,
+  atomicLockSpace,
+  updateCardTs,
+  getActiveSpaces,
+  type Space,
+  type CreateSpaceParams,
 } from "./db";
 import { updateSubspaceStatus, type Message } from "../server/database";
 import { broadcastUpdate } from "../server/websocket";

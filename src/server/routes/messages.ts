@@ -61,9 +61,9 @@ export interface ReactionsRequest {
 export function postMessage(req: PostMessageRequest) {
   // Lock check for space channels
   if (req.channel.includes(":space:")) {
-    const space = db.query<{locked: number}, [string]>(
-      `SELECT locked FROM spaces WHERE space_channel = ?`
-    ).get(req.channel);
+    const space = db
+      .query<{ locked: number }, [string]>(`SELECT locked FROM spaces WHERE space_channel = ?`)
+      .get(req.channel);
     if (space?.locked) {
       return { ok: false, error: "space_is_locked" };
     }
@@ -513,9 +513,9 @@ export function getConversationNewer(channel: string, newestTs: string, limit = 
 export function deleteMessage(channel: string, ts: string) {
   // Lock check for space channels
   if (channel.includes(":space:")) {
-    const space = db.query<{locked: number}, [string]>(
-      `SELECT locked FROM spaces WHERE space_channel = ?`
-    ).get(channel);
+    const space = db
+      .query<{ locked: number }, [string]>(`SELECT locked FROM spaces WHERE space_channel = ?`)
+      .get(channel);
     if (space?.locked) {
       return { ok: false, error: "space_is_locked" };
     }

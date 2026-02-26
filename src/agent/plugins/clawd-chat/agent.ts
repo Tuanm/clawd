@@ -74,7 +74,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
   const _SUMMARY_TTL = 30 * 60 * 1000; // Refresh summary every 30 minutes
 
   // Determine user ID based on whether this is a worker/sub-agent
-  const userId = (config.isWorker || config.isSpaceAgent) ? `UWORKER-${config.agentId}` : "UBOT";
+  const userId = config.isWorker || config.isSpaceAgent ? `UWORKER-${config.agentId}` : "UBOT";
 
   // ============================================================================
   // API Helpers

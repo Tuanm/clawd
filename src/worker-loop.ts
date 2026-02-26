@@ -17,6 +17,7 @@ import { setDebug } from "./agent/src/utils/debug";
 import { smartTruncate } from "./agent/src/utils/smart-truncation";
 import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
+import type { TrackedSpace } from "./spaces/spawn-plugin";
 
 // Session size limits (in estimated tokens) - tuned for 128k context
 const TOKEN_LIMIT_CRITICAL = 70000;
@@ -67,7 +68,12 @@ export interface WorkerLoopConfig {
   contextMode: boolean;
   scheduler?: import("./scheduler/manager").SchedulerManager;
   isSpaceAgent?: boolean;
-  additionalPlugins?: Array<{ plugin?: import("./agent/src/plugins/manager").Plugin; toolPlugin?: import("./agent/src/tools/plugin").ToolPlugin }>;
+  spaceManager?: import("./spaces/manager").SpaceManager;
+  spaceWorkerManager?: import("./spaces/worker").SpaceWorkerManager;
+  additionalPlugins?: Array<{
+    plugin?: import("./agent/src/plugins/manager").Plugin;
+    toolPlugin?: import("./agent/src/tools/plugin").ToolPlugin;
+  }>;
 }
 
 export class WorkerLoop {
@@ -76,6 +82,7 @@ export class WorkerLoop {
   private sleeping = false;
   private isProcessing = false;
   private abortController: AbortController | null = null;
+  private trackedSpaces = new Map<string, TrackedSpace>();
 
   constructor(config: WorkerLoopConfig) {
     this.config = config;
@@ -483,6 +490,38 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               await agent.usePlugin({
                 plugin: { name: "scheduler", version: "1.0.0", hooks: {} },
                 toolPlugin: schedulerToolPlugin,
+              });
+            }
+
+            // Register spawn-agent space plugin (intercepts spawn_agent/wait_for_agents/get_agent_report)
+            if (this.config.spaceManager && this.config.spaceWorkerManager && !this.config.isSpaceAgent) {
+              const { createSpawnAgentPlugin } = await import("./spaces/spawn-plugin");
+              const spawnPlugin = createSpawnAgentPlugin(
+                {
+                  channel,
+                  agentId,
+                  apiUrl: chatApiUrl,
+                  agentColor: "#6366f1",
+                },
+                this.config.spaceManager,
+                this.config.spaceWorkerManager,
+                async (ch: string) => {
+                  // Fetch agent config for the channel
+                  try {
+                    const res = await fetch(`${chatApiUrl}/api/app.agents.list`);
+                    const data = (await res.json()) as any;
+                    if (data.ok && Array.isArray(data.agents)) {
+                      const agent = data.agents.find((a: any) => a.channel === ch && a.active !== false);
+                      if (agent) return { provider: agent.provider || "copilot", model: agent.model || "default", agentId: agent.agent_id, project: agent.project };
+                    }
+                  } catch {}
+                  return null;
+                },
+                this.trackedSpaces,
+              );
+              await agent.usePlugin({
+                plugin: { name: "spawn-agent-spaces", version: "1.0.0", hooks: {} },
+                toolPlugin: spawnPlugin,
               });
             }
 

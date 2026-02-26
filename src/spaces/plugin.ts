@@ -23,7 +23,9 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
             summary: { type: "string", description: "Summary of what was accomplished" },
           },
           required: ["summary"],
-          handler: async (args: Record<string, unknown>): Promise<{ success: boolean; output: string; error?: string }> => {
+          handler: async (
+            args: Record<string, unknown>,
+          ): Promise<{ success: boolean; output: string; error?: string }> => {
             const summary = String(args.summary || "");
             const won = spaceManager.lockSpace(config.spaceId, "completed", summary);
             if (!won) {

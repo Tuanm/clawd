@@ -81,9 +81,7 @@ export class SpaceWorkerManager {
         yolo: this.config.yolo,
         contextMode: true,
         isSpaceAgent: true,
-        additionalPlugins: [
-          { toolPlugin: spacePlugin },
-        ],
+        additionalPlugins: [{ toolPlugin: spacePlugin }],
       });
 
       entry.loop = loop;

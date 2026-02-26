@@ -1243,9 +1243,7 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
 
       case "tools/list": {
         const scope = new URL(req.url, "http://localhost").searchParams.get("scope");
-        const tools = scope === "space"
-          ? MCP_TOOLS.filter((t: any) => t.name.startsWith("chat_"))
-          : MCP_TOOLS;
+        const tools = scope === "space" ? MCP_TOOLS.filter((t: any) => t.name.startsWith("chat_")) : MCP_TOOLS;
         result = { tools };
         break;
       }
@@ -1257,7 +1255,11 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
           arguments: Record<string, unknown>;
         };
         if (scope === "space" && !name.startsWith("chat_")) {
-          result = { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Tool not available in space scope" }) }] };
+          result = {
+            content: [
+              { type: "text", text: JSON.stringify({ ok: false, error: "Tool not available in space scope" }) },
+            ],
+          };
           break;
         }
         result = await executeToolCall(name, args || {});

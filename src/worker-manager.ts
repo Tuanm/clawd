@@ -10,6 +10,9 @@ import type { AppConfig } from "./config";
 import type { SchedulerManager } from "./scheduler/manager";
 import { WorkerLoop, type WorkerLoopConfig } from "./worker-loop";
 
+import type { SpaceManager } from "./spaces/manager";
+import type { SpaceWorkerManager } from "./spaces/worker";
+
 export interface AgentConfig {
   /** Channel ID (e.g., "chat-task") */
   channel: string;
@@ -31,10 +34,17 @@ export class WorkerManager {
   private loops: Map<string, WorkerLoop> = new Map();
   private config: AppConfig;
   private scheduler?: SchedulerManager;
+  private spaceManager?: SpaceManager;
+  private spaceWorkerManager?: SpaceWorkerManager;
 
   constructor(config: AppConfig, scheduler?: SchedulerManager) {
     this.config = config;
     this.scheduler = scheduler;
+  }
+
+  setSpaceInfra(spaceManager: SpaceManager, spaceWorkerManager: SpaceWorkerManager): void {
+    this.spaceManager = spaceManager;
+    this.spaceWorkerManager = spaceWorkerManager;
   }
 
   /** Start the worker manager -- loads agents from DB and starts active loops */
@@ -84,6 +94,8 @@ export class WorkerManager {
       yolo: this.config.yolo,
       contextMode: this.config.contextMode,
       scheduler: this.scheduler,
+      spaceManager: this.spaceManager,
+      spaceWorkerManager: this.spaceWorkerManager,
     };
 
     const loop = new WorkerLoop(loopConfig);

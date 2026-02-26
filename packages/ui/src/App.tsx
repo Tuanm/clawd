@@ -646,8 +646,8 @@ export default function App({ channel: initialChannel }: Props) {
   useEffect(() => {
     if (!isSpaceChannel || !spaceId) return;
     fetch(`/api/spaces.get?id=${spaceId}`)
-      .then(res => res.ok ? res.json() : null)
-      .then(data => {
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
         if (data) setSpaceInfo({ title: data.title, status: data.status });
         else setSpaceError(true);
       })
@@ -1774,24 +1774,38 @@ export default function App({ channel: initialChannel }: Props) {
       {isSpaceChannel && spaceError && (
         <div className="space-locked-banner">
           Sub-space not found.{" "}
-          <button className="space-back-btn" onClick={() => window.location.href = `/${parentChannel}`}>← Back to channel</button>
+          <button className="space-back-btn" onClick={() => (window.location.href = `/${parentChannel}`)}>
+            ← Back to channel
+          </button>
         </div>
       )}
       {isSpaceChannel && spaceInfo && (
         <div className="space-header">
-          <button className="space-back-btn" onClick={() => window.location.href = `/${parentChannel}`} title="Back to channel">
+          <button
+            className="space-back-btn"
+            onClick={() => (window.location.href = `/${parentChannel}`)}
+            title="Back to channel"
+          >
             ← Back
           </button>
           <span className="space-header-title">{spaceInfo.title}</span>
           <span className={`subspace-card-status subspace-status-${spaceInfo.status}`}>
-            {spaceInfo.status === "active" ? "🔄 Active" :
-             spaceInfo.status === "completed" ? "✅ Done" :
-             spaceInfo.status === "failed" ? "❌ Failed" : "⏰ Timed Out"}
+            {spaceInfo.status === "active"
+              ? "🔄 Active"
+              : spaceInfo.status === "completed"
+                ? "✅ Done"
+                : spaceInfo.status === "failed"
+                  ? "❌ Failed"
+                  : "⏰ Timed Out"}
           </span>
         </div>
       )}
       {isSpaceChannel && isSpaceLocked && spaceInfo && (
-        <div className="space-locked-banner">This sub-space is {spaceInfo.status === "completed" ? "completed" : spaceInfo.status === "timed_out" ? "timed out" : "closed"}. No new messages can be sent.</div>
+        <div className="space-locked-banner">
+          This sub-space is{" "}
+          {spaceInfo.status === "completed" ? "completed" : spaceInfo.status === "timed_out" ? "timed out" : "closed"}.
+          No new messages can be sent.
+        </div>
       )}
       <div className="messages-wrapper">
         <MessageList

@@ -1823,10 +1823,18 @@ body {
   flex-shrink: 0;
 }
 
-.subspace-status-active { color: #3b82f6; }
-.subspace-status-completed { color: #22c55e; }
-.subspace-status-failed { color: #ef4444; }
-.subspace-status-timed_out { color: #f97316; }
+.subspace-status-active {
+  color: #3b82f6;
+}
+.subspace-status-completed {
+  color: #22c55e;
+}
+.subspace-status-failed {
+  color: #ef4444;
+}
+.subspace-status-timed_out {
+  color: #f97316;
+}
 
 /* Space Header */
 .space-header {

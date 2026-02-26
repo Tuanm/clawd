@@ -1680,12 +1680,18 @@ export default function MessageList({
                 {msg.subspace && (
                   <div
                     className="message-subspace-card"
-                    onClick={() => window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`}
+                    onClick={() => (window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`)}
                     role="button"
                     tabIndex={0}
-                    onKeyDown={(e) => e.key === "Enter" && (window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`)}
+                    onKeyDown={(e) =>
+                      e.key === "Enter" &&
+                      (window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`)
+                    }
                   >
-                    <div className="subspace-card-icon" style={{ backgroundColor: msg.subspace.agent_color || "#6366f1" }}>
+                    <div
+                      className="subspace-card-icon"
+                      style={{ backgroundColor: msg.subspace.agent_color || "#6366f1" }}
+                    >
                       🤖
                     </div>
                     <div className="subspace-card-content">
@@ -1695,10 +1701,13 @@ export default function MessageList({
                       )}
                     </div>
                     <div className={`subspace-card-status subspace-status-${msg.subspace.status}`}>
-                      {msg.subspace.status === "active" ? "🔄 Active" :
-                       msg.subspace.status === "completed" ? "✅ Done" :
-                       msg.subspace.status === "failed" ? "❌ Failed" :
-                       "⏰ Timed Out"}
+                      {msg.subspace.status === "active"
+                        ? "🔄 Active"
+                        : msg.subspace.status === "completed"
+                          ? "✅ Done"
+                          : msg.subspace.status === "failed"
+                            ? "❌ Failed"
+                            : "⏰ Timed Out"}
                     </div>
                   </div>
                 )}

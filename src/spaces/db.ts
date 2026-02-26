@@ -38,15 +38,13 @@ export function createSpaceRecord(params: CreateSpaceParams): Space {
 
   const txn = db.transaction(() => {
     // SP4: Validate parent channel exists
-    const parent = db.query<{id: string}, [string]>(`SELECT id FROM channels WHERE id = ?`).get(params.channel);
+    const parent = db.query<{ id: string }, [string]>(`SELECT id FROM channels WHERE id = ?`).get(params.channel);
     if (!parent) {
       throw new Error(`Parent channel '${params.channel}' does not exist`);
     }
 
     // Direct INSERT for space channel (NOT using createChannel — it generates its own IDs)
-    db.run(`INSERT INTO channels (id, name, created_by) VALUES (?, ?, ?)`, [
-      spaceChannel, spaceChannel, "UBOT"
-    ]);
+    db.run(`INSERT INTO channels (id, name, created_by) VALUES (?, ?, ?)`, [spaceChannel, spaceChannel, "UBOT"]);
 
     // Register agent for this channel
     getOrRegisterAgent(params.agent_id, spaceChannel, true);
@@ -67,7 +65,7 @@ export function createSpaceRecord(params: CreateSpaceParams): Space {
         params.source_id || null,
         params.timeout_seconds || 300,
         now,
-      ]
+      ],
     );
   });
 
@@ -86,7 +84,9 @@ export function getSpaceByChannel(spaceChannel: string): Space | null {
 
 export function listSpaces(channel: string, status?: string): Space[] {
   if (status) {
-    return db.query<Space, [string, string]>(`SELECT * FROM spaces WHERE channel = ? AND status = ? ORDER BY created_at DESC`).all(channel, status);
+    return db
+      .query<Space, [string, string]>(`SELECT * FROM spaces WHERE channel = ? AND status = ? ORDER BY created_at DESC`)
+      .all(channel, status);
   }
   return db.query<Space, [string]>(`SELECT * FROM spaces WHERE channel = ? ORDER BY created_at DESC`).all(channel);
 }
@@ -95,7 +95,7 @@ export function atomicLockSpace(id: string, status: string, resultOrError?: stri
   const now = Date.now();
   const result = db.run(
     `UPDATE spaces SET locked = 1, status = ?, completed_at = ?, result_summary = ? WHERE id = ? AND locked = 0`,
-    [status, now, resultOrError || null, id]
+    [status, now, resultOrError || null, id],
   );
   return result.changes > 0;
 }

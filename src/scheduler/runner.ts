@@ -12,7 +12,9 @@ interface RunnerConfig {
   scheduler: SchedulerManager;
   spaceManager: SpaceManager;
   spaceWorkerManager: SpaceWorkerManager;
-  getAgentConfig: (channel: string) => Promise<{ provider: string; model: string; agentId: string; project?: string } | null>;
+  getAgentConfig: (
+    channel: string,
+  ) => Promise<{ provider: string; model: string; agentId: string; project?: string } | null>;
 }
 
 /**
@@ -79,12 +81,7 @@ export function initRunner(config: RunnerConfig): void {
     }
 
     // 3. Post initial task to space channel
-    await postToChannel(
-      appConfig.chatApiUrl,
-      space.space_channel,
-      `📋 **Task:** ${job.prompt}`,
-      agentConfig.agentId,
-    );
+    await postToChannel(appConfig.chatApiUrl, space.space_channel, `📋 **Task:** ${job.prompt}`, agentConfig.agentId);
 
     // 4. Start space worker — returns promise that resolves when complete_space is called
     const completionPromise = spaceWorkerManager.startSpaceWorker(space, agentConfig);
@@ -98,11 +95,14 @@ export function initRunner(config: RunnerConfig): void {
       const isTimeout = reason === "timeout";
       const emoji = isTimeout ? "⏰" : "❌";
       const status = isTimeout ? "timed_out" : "failed";
-      const won = isTimeout
-        ? spaceManager.timeoutSpace(space.id)
-        : spaceManager.failSpace(space.id, String(reason));
+      const won = isTimeout ? spaceManager.timeoutSpace(space.id) : spaceManager.failSpace(space.id, String(reason));
       if (won) {
-        postToChannel(appConfig.chatApiUrl, job.channel, `${emoji} Space ${status}: ${sanitizedTitle}`, agentConfig.agentId).catch(() => {});
+        postToChannel(
+          appConfig.chatApiUrl,
+          job.channel,
+          `${emoji} Space ${status}: ${sanitizedTitle}`,
+          agentConfig.agentId,
+        ).catch(() => {});
       }
       spaceWorkerManager.stopSpaceWorker(space.id);
     };
@@ -118,7 +118,12 @@ export function initRunner(config: RunnerConfig): void {
         settled = true;
         const won = spaceManager.failSpace(space.id, (err as Error).message);
         if (won) {
-          postToChannel(appConfig.chatApiUrl, job.channel, `❌ Space failed: ${sanitizedTitle}`, agentConfig.agentId).catch(() => {});
+          postToChannel(
+            appConfig.chatApiUrl,
+            job.channel,
+            `❌ Space failed: ${sanitizedTitle}`,
+            agentConfig.agentId,
+          ).catch(() => {});
         }
         spaceWorkerManager.stopSpaceWorker(space.id);
       }
