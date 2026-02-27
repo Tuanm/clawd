@@ -379,15 +379,15 @@ export class SessionManager {
   getSessionStats(sessionId: string): { messageCount: number; totalBytes: number; estimatedTokens: number } {
     const row = this.db
       .query(
-        `SELECT COUNT(*) as count, COALESCE(SUM(LENGTH(content)), 0) as bytes 
+        `SELECT COUNT(*) as count, COALESCE(SUM(LENGTH(content)), 0) + COALESCE(SUM(LENGTH(tool_calls)), 0) as bytes 
        FROM messages WHERE session_id = ?`,
       )
       .get(sessionId) as { count: number; bytes: number } | null;
 
     const messageCount = row?.count || 0;
     const totalBytes = row?.bytes || 0;
-    // Rough estimate: ~4 chars per token on average
-    const estimatedTokens = Math.ceil(totalBytes / 4);
+    // Conservative estimate: ~3 chars per token (code-heavy agent sessions use ~2.8)
+    const estimatedTokens = Math.ceil(totalBytes / 3);
 
     return { messageCount, totalBytes, estimatedTokens };
   }

@@ -35,7 +35,10 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
 
             // Post result to parent channel
             try {
-              const truncated = result.length > 2000 ? result.slice(0, 2000) + "..." : result;
+              const truncated =
+                result.length > 10000
+                  ? result.slice(0, 10000) + "\n\n[Result truncated — full result available in sub-space]"
+                  : result;
               const ctrl = new AbortController();
               const timer = setTimeout(() => ctrl.abort(), 10000);
               await fetch(`${config.apiUrl}/api/chat.postMessage`, {

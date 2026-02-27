@@ -165,7 +165,12 @@ export function mapModelName(model: string): string {
 export function getModelForProvider(providerType: ProviderType): string {
   const providerConfig = getProviderConfig(providerType);
   if (providerConfig && providerConfig.models?.default) {
-    return mapModelName(providerConfig.models.default);
+    const configModel = providerConfig.models.default;
+    const resolved = mapModelName(configModel);
+    if (configModel !== resolved) {
+      console.log(`[Provider] Model mapping: "${configModel}" → "${resolved}" (${providerType})`);
+    }
+    return resolved;
   }
 
   // Default models

@@ -60,19 +60,23 @@ function readWithIdleTimeout(
 export function createProvider(providerType?: ProviderType): LLMProvider {
   const selectedType = providerType || getSelectedProvider();
 
-  switch (selectedType) {
-    case "openai":
-      return createOpenAIProvider();
-    case "anthropic":
-      return createAnthropicProvider();
-    case "copilot":
-      return createCopilotProvider();
-    case "ollama":
-      return createOllamaProvider();
-    default:
-      // Default to copilot
-      return createCopilotProvider();
-  }
+  const provider = (() => {
+    switch (selectedType) {
+      case "openai":
+        return createOpenAIProvider();
+      case "anthropic":
+        return createAnthropicProvider();
+      case "copilot":
+        return createCopilotProvider();
+      case "ollama":
+        return createOllamaProvider();
+      default:
+        return createCopilotProvider();
+    }
+  })();
+
+  console.log(`[Provider] type=${selectedType}, model=${(provider as any).model}`);
+  return provider;
 }
 
 /**

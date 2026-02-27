@@ -317,37 +317,52 @@ export class Agent {
 
     // Re-check stats after inline compression
     const freshStats = this.config.contextMode ? this.sessions.getSessionStats(this.session.id) : stats;
-    const tokens = freshStats?.estimatedTokens ?? stats.estimatedTokens;
+    // Add overhead for system prompt + tool definitions (not stored in session DB)
+    const SYSTEM_PROMPT_OVERHEAD = 12000;
+    const tokens = (freshStats?.estimatedTokens ?? stats.estimatedTokens) + SYSTEM_PROMPT_OVERHEAD;
 
-    // Critical: emergency reset (but create checkpoint first)
+    // Critical: aggressive compaction (keep minimal context, avoid full wipe)
     if (tokens >= this.tokenLimitCritical) {
       if (this.config.verbose) {
-        console.log(`[Agent] ⚠️ CRITICAL: ${tokens} tokens, creating checkpoint and resetting...`);
+        console.log(`[Agent] ⚠️ CRITICAL: ${tokens} tokens, creating checkpoint and compacting aggressively...`);
       }
       await this.createCheckpoint();
-      this.sessions.resetSession(this.session.name);
 
-      // Inject structured recovery context when contextMode is enabled
-      if (this.config.contextMode && this.session) {
-        try {
-          const { loadWorkingState, formatForContext } = await import("../session/working-state");
-          const sessionDir = `${homedir()}/.clawd/sessions/${this.session.id}`;
-          const workingState = loadWorkingState(sessionDir);
-          const stateContext = formatForContext(workingState);
-          if (stateContext) {
-            const recovery = `[Emergency checkpoint — session reset]\n${stateContext}\n[Resume from working state above. Verify file hashes before making changes.]`;
-            this.sessions.addMessage(this.session.id, { role: "system", content: recovery });
+      // Aggressive compaction — keep last 15 messages instead of wiping everything.
+      // Full reset causes the agent to lose all context and exit prematurely.
+      const aggressiveKeepCount = 15;
+      const summary = `[Emergency compaction — context exceeded critical limit (${tokens} tokens)]`;
+      this.sessions.compactSessionByName(this.session.name, aggressiveKeepCount, summary);
+
+      // Re-check: if still over critical after aggressive compaction, do full reset as last resort
+      const postStats = this.sessions.getSessionStats(this.session.id);
+      const postTokens = postStats?.estimatedTokens ?? 0;
+      if (postTokens >= this.tokenLimitCritical) {
+        console.log(`[Agent] Still at ${postTokens} tokens after compaction, full reset as last resort`);
+        this.sessions.resetSession(this.session.name);
+        // Inject recovery context
+        if (this.config.contextMode && this.session) {
+          try {
+            const { loadWorkingState, formatForContext } = await import("../session/working-state");
+            const sessionDir = `${homedir()}/.clawd/sessions/${this.session.id}`;
+            const workingState = loadWorkingState(sessionDir);
+            const stateContext = formatForContext(workingState);
+            if (stateContext) {
+              const recovery = `[Emergency checkpoint — session reset]\n${stateContext}\n[Resume from working state above. Verify file hashes before making changes.]`;
+              this.sessions.addMessage(this.session.id, { role: "system", content: recovery });
+            }
+          } catch (err) {
+            if (this.config.verbose) console.log("[Agent] Recovery context injection failed:", err);
           }
-        } catch (err) {
-          if (this.config.verbose) console.log("[Agent] Recovery context injection failed:", err);
         }
       }
 
-      this.config.onCompaction?.(stats.messageCount, 0);
+      const remaining = postTokens < this.tokenLimitCritical ? (postStats?.messageCount ?? 0) : 0;
+      this.config.onCompaction?.(stats.messageCount, remaining);
       // Notify plugins
       if (this.plugins) {
         try {
-          await this.plugins.onCompaction(stats.messageCount, 0);
+          await this.plugins.onCompaction(stats.messageCount, remaining);
         } catch (err) {
           // Ignore plugin errors
         }
@@ -1203,7 +1218,7 @@ SUMMARY:`;
     }
 
     const session = this.session!;
-    const toolCallHistory: AgentResult["toolCalls"] = [];
+    let toolCallHistory: AgentResult["toolCalls"] = [];
     let iterations = 0;
     let finalContent = "";
     let contextTokens = 0;
@@ -1491,6 +1506,11 @@ SUMMARY:`;
             messages = [{ role: "system", content: updatedSystemPrompt }, ...sessionMessages];
             contextTokens = estimateMessagesTokens(messages);
             _needsValidation = true; // Re-validate after compaction
+
+            // Clear stale tool history — prevents premature exit on empty response
+            // after compaction (line 2110 check: toolCallHistory.length > 0 && iterations > 1)
+            toolCallHistory = [];
+            emptyResponseCount = 0;
           }
         }
 
@@ -1614,55 +1634,92 @@ SUMMARY:`;
           const isPromptTooLong =
             errorMsg.includes("prompt is too long") ||
             errorMsg.includes("context_length_exceeded") ||
-            (errorMsg.includes("400") && errorMsg.includes("maximum"));
+            errorMsg.includes("prompt_tokens_exceeded") ||
+            errorMsg.includes("prompt token count") ||
+            (errorMsg.includes("400") && errorMsg.includes("maximum")) ||
+            (errorMsg.includes("exceeds") && errorMsg.includes("limit"));
 
           if (isPromptTooLong) {
-            console.log(`\n[SessionManager] Reset session "${session.name}"\n`);
+            // Parse actual token count from API error for calibrated reduction
+            // Matches: "128186 exceeds...128000", "count of 128186 exceeds the limit of 128000"
+            const tokenMatch =
+              errorMsg.match(/(\d{4,})\s*(?:exceeds|>|exceed).*?(\d{4,})/) ||
+              errorMsg.match(/(\d{4,}).*?(?:limit|maximum).*?(\d{4,})/);
+            const actualTokens = tokenMatch ? parseInt(tokenMatch[1]) : 0;
+            const apiLimit = tokenMatch ? parseInt(tokenMatch[2]) : (MODEL_TOKEN_LIMITS[this.getModel()] ?? 128000);
 
-            // Emergency context reduction - reset session and keep only the latest user message
-            this.sessions.resetSession(session.name);
-            this.config.onCompaction?.(messages.length - 1, 0);
-            // Notify plugins
+            // Calculate correction factor: how much our estimate underestimates reality
+            const correctionFactor = actualTokens > 0 && contextTokens > 0 ? actualTokens / contextTokens : 1.5; // Default: assume 50% underestimate
+
+            // Target 70% of API limit for headroom, then divide by correction factor
+            // to get the effective budget our estimator should use
+            const targetTokens = Math.floor((apiLimit * 0.7) / correctionFactor);
+            const beforeCount = messages.length;
+
+            console.log(
+              `[Agent] Prompt too long: actual=${actualTokens}, estimated=${contextTokens}, ` +
+                `correction=${correctionFactor.toFixed(2)}x, target=${targetTokens}`,
+            );
+
+            // Temporarily lower maxContextTokens to use corrected limit for truncation
+            const savedMaxTokens = this.maxContextTokens;
+            this.maxContextTokens = targetTokens;
+            messages = this.truncateContext(messages);
+            this.maxContextTokens = savedMaxTokens;
+            contextTokens = estimateMessagesTokens(messages);
+
+            // If truncation didn't remove enough (still >90% of original), fall back to minimal
+            if (messages.length > beforeCount * 0.9 || contextTokens > targetTokens * 1.2) {
+              // Find latest user message
+              let latestUserContent = userMessage;
+              for (let i = messages.length - 1; i >= 0; i--) {
+                if (messages[i].role === "user" && messages[i].content) {
+                  latestUserContent = messages[i].content as string;
+                  break;
+                }
+              }
+
+              // Update system prompt
+              let updatedCheckpointContext = "";
+              if (this.currentCheckpoint && this.checkpointManager) {
+                updatedCheckpointContext = `\n\n${this.checkpointManager.formatForContext(this.currentCheckpoint)}`;
+              }
+              const updatedSystemPrompt =
+                (this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT) +
+                (this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "") +
+                updatedCheckpointContext +
+                skillsSummary +
+                pluginContext;
+
+              messages = [
+                { role: "system", content: updatedSystemPrompt },
+                { role: "user", content: latestUserContent },
+              ];
+              contextTokens = estimateMessagesTokens(messages);
+            }
+
+            // Sync session DB: compact to match in-memory messages count
+            const nonSystemCount = messages.filter((m) => m.role !== "system").length;
+            const summary = `[Context overflow — compacted (actual ${actualTokens} tokens exceeded ${apiLimit} limit)]`;
+            this.sessions.compactSessionByName(session.name, Math.max(nonSystemCount, 5), summary);
+
+            const remaining = messages.length - 1;
+            this.config.onCompaction?.(beforeCount - 1, remaining);
             if (this.plugins) {
               try {
-                await this.plugins.onCompaction(messages.length - 1, 0);
+                await this.plugins.onCompaction(beforeCount - 1, remaining);
               } catch (err) {
                 logSilentError("plugin.onCompaction", err);
               }
             }
 
-            // Rebuild messages with just system prompt + latest user message
-            let latestUserContent = userMessage;
-            // Find the most recent user message in the array
-            for (let i = messages.length - 1; i >= 0; i--) {
-              if (messages[i].role === "user" && messages[i].content) {
-                latestUserContent = messages[i].content as string;
-                break;
-              }
-            }
-
-            // Update checkpoint context if available
-            let updatedCheckpointContext = "";
-            if (this.currentCheckpoint && this.checkpointManager) {
-              updatedCheckpointContext = `\n\n${this.checkpointManager.formatForContext(this.currentCheckpoint)}`;
-            }
-            const updatedSystemPrompt =
-              (this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT) +
-              (this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "") +
-              updatedCheckpointContext +
-              skillsSummary +
-              pluginContext;
-
-            messages = [
-              { role: "system", content: updatedSystemPrompt },
-              { role: "user", content: latestUserContent },
-            ];
-            contextTokens = estimateMessagesTokens(messages);
+            // Clear stale tool history to prevent premature exit after compaction
+            toolCallHistory = [];
+            emptyResponseCount = 0;
 
             console.log(
-              `[Compaction] Removed ${iterations > 0 ? "old messages" : "context"}, kept latest user message`,
+              `[Compaction] Reduced from ${beforeCount} to ${messages.length} messages (~${contextTokens} est. tokens), retrying...`,
             );
-            console.log(`[Agent] Reduced context to ${contextTokens} tokens, retrying...\n`);
 
             _needsValidation = true;
             continue;

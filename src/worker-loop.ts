@@ -338,7 +338,12 @@ export class WorkerLoop {
       .map((m) => {
         const hasFiles = m.files && m.files.length > 0;
         const fileInfo = hasFiles ? `\n[Attached files: ${m.files!.map((f) => f.name).join(", ")}]` : "";
-        const author = m.user === "UHUMAN" ? "human" : m.agent_id || m.user || "unknown";
+        const author =
+          m.user === "UHUMAN"
+            ? "human"
+            : m.user?.startsWith("UWORKER-")
+              ? `[Sub-agent: ${m.agent_id || "unknown"}]`
+              : m.agent_id || m.user || "unknown";
         const text = this.truncateText(m.text);
         return `[ts:${m.ts}] ${author}: ${text}${fileInfo}`;
       })
@@ -427,7 +432,10 @@ If you skip this step, the main agent will never receive your work.`
   private buildContinuationPrompt(unprocessedMessages: Message[]): string {
     const { channel, agentId } = this.config;
     const messageContext = unprocessedMessages
-      .map((m) => `[ts:${m.ts}] ${m.user === "UHUMAN" ? "human" : m.agent_id || "bot"}: ${this.truncateText(m.text)}`)
+      .map(
+        (m) =>
+          `[ts:${m.ts}] ${m.user === "UHUMAN" ? "human" : m.user?.startsWith("UWORKER-") ? `[Sub-agent: ${m.agent_id || "unknown"}]` : m.agent_id || "bot"}: ${this.truncateText(m.text)}`,
+      )
       .join("\n\n---\n\n");
 
     const targetTs = unprocessedMessages[unprocessedMessages.length - 1]?.ts || "";
