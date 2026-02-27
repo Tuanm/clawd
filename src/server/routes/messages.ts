@@ -69,6 +69,15 @@ export function postMessage(req: PostMessageRequest) {
     }
   }
 
+  // Auto-create channel if it doesn't exist (ensures FK consistency)
+  if (!req.channel.includes(":space:")) {
+    db.run(`INSERT OR IGNORE INTO channels (id, name, created_by) VALUES (?, ?, ?)`, [
+      req.channel,
+      req.channel,
+      "UHUMAN",
+    ]);
+  }
+
   const ts = generateTs();
   // Default to UBOT if agent_id is provided, UHUMAN otherwise
   const user = req.user || (req.agent_id ? "UBOT" : "UHUMAN");
