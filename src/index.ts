@@ -183,6 +183,12 @@ const PORT = config.port;
 
 // Database is initialized at module load time in database.ts (before prepared statements)
 
+// Run channel ID migration on startup (normalizes legacy C-prefixed IDs to names)
+const migrated = migrateChannelIds();
+if (migrated.length > 0) {
+  console.log(`[Migration] Normalized ${migrated.length} channel ID(s):`, migrated);
+}
+
 // Initialize scheduler
 const scheduler = new SchedulerManager(config, broadcastUpdate);
 setMcpScheduler(scheduler);
@@ -484,7 +490,8 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     // Migration
     if (path === "/api/admin.migrateChannels" && req.method === "POST") {
-      return json({ ok: true, migrated: migrateChannelIds(), count: migrateChannelIds().length });
+      const migrated = migrateChannelIds();
+      return json({ ok: true, migrated, count: migrated.length });
     }
 
     if (path === "/api/admin.renameChannel" && req.method === "POST") {

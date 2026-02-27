@@ -445,7 +445,7 @@ Please:
 1. Review the unprocessed messages above
 2. If you already responded to them, just mark them as processed
 3. If not completed, continue and COMPLETE the task
-4. ALWAYS use chat_send_message for ANY response to users - NEVER output plain text
+4. ALWAYS use chat_send_message for ANY response — NEVER output plain text. After sending, output only "[SENT]"
 5. MUST call: chat_mark_processed(channel="${channel}", timestamp="${targetTs}", agent_id="${agentId}")
 
 DO NOT skip marking as processed - this is why you're being prompted again.`;

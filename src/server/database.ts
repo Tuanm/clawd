@@ -393,75 +393,70 @@ export function initDatabase() {
   }
 }
 
-// Migration: Remove C- or C prefix from channel IDs
+// Migration: Normalize channel IDs to use channel name as ID
+// Previously createChannel generated random C-prefixed IDs (e.g. Cm1abc...),
+// but the system uses channel names everywhere. This migration updates all
+// tables to use the channel name as the canonical identifier.
 export function migrateChannelIds() {
   const results: string[] = [];
 
-  // Get all distinct channels with C- or starting with C followed by alphanumeric
-  const channels = db
-    .query<{ channel: string }, []>(
-      `SELECT DISTINCT channel FROM messages WHERE channel LIKE 'C-%' OR channel LIKE 'C%'`,
-    )
+  // Build mapping from old ID -> name for channels where id !== name
+  const mismatchedChannels = db
+    .query<{ id: string; name: string }, []>(`SELECT id, name FROM channels WHERE id != name`)
     .all();
 
-  for (const { channel } of channels) {
-    // Remove C- prefix or just C prefix
-    let newChannel = channel;
-    if (channel.startsWith("C-")) {
-      newChannel = channel.slice(2);
-    } else if (channel.startsWith("C") && channel.length > 1 && /^C[0-9]/.test(channel)) {
-      // C001 -> general (special case for default channel)
-      newChannel = channel === "C001" ? "general" : channel.slice(1);
-    }
-
-    if (newChannel !== channel) {
-      // Update messages
-      db.run(`UPDATE messages SET channel = ? WHERE channel = ?`, [newChannel, channel]);
-      results.push(`messages: ${channel} -> ${newChannel}`);
-    }
+  if (mismatchedChannels.length === 0) {
+    return results;
   }
 
-  // Update channels table
-  const channelRows = db.query<{ id: string }, []>(`SELECT id FROM channels WHERE id LIKE 'C-%' OR id LIKE 'C%'`).all();
-  for (const { id } of channelRows) {
-    let newId = id;
-    if (id.startsWith("C-")) {
-      newId = id.slice(2);
-    } else if (id.startsWith("C") && id.length > 1 && /^C[0-9]/.test(id)) {
-      newId = id === "C001" ? "general" : id.slice(1);
+  for (const { id: oldId, name } of mismatchedChannels) {
+    // Skip space channels (they use composite IDs like "demo:space:uuid")
+    if (oldId.includes(":space:")) continue;
+
+    const newId = name;
+
+    // Check if a channel with the target name already exists as an ID
+    const existing = db.query<{ id: string }, [string]>(`SELECT id FROM channels WHERE id = ?`).get(newId);
+
+    // Update all tables that reference this channel
+    const tables: Array<{ table: string; column: string }> = [
+      { table: "messages", column: "channel" },
+      { table: "agent_seen", column: "channel" },
+      { table: "agent_status", column: "channel" },
+      { table: "agents", column: "channel" },
+      { table: "message_seen", column: "channel" },
+      { table: "summaries", column: "channel" },
+      { table: "articles", column: "channel" },
+      { table: "spaces", column: "channel" },
+    ];
+
+    // Also migrate channel_agents if it exists
+    try {
+      db.query(`SELECT 1 FROM channel_agents LIMIT 0`).get();
+      tables.push({ table: "channel_agents", column: "channel" });
+    } catch {
+      // Table doesn't exist yet
     }
 
-    if (newId !== id) {
-      // Check if new channel already exists
-      const existing = db.query<{ id: string }, [string]>(`SELECT id FROM channels WHERE id = ?`).get(newId);
-      if (existing) {
-        // Delete old channel (messages already migrated)
-        db.run(`DELETE FROM channels WHERE id = ?`, [id]);
-        results.push(`channels: deleted ${id} (merged with ${newId})`);
-      } else {
-        db.run(`UPDATE channels SET id = ? WHERE id = ?`, [newId, id]);
-        results.push(`channels: ${id} -> ${newId}`);
+    for (const { table, column } of tables) {
+      try {
+        const stmt = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`);
+        const info = stmt.run(newId, oldId);
+        if ((info as any).changes > 0) {
+          results.push(`${table}: ${oldId} -> ${newId} (${(info as any).changes} rows)`);
+        }
+      } catch {
+        // Table or column may not exist in all schemas
       }
     }
-  }
 
-  // Update agent_seen table
-  const agentSeenRows = db
-    .query<{ channel: string }, []>(
-      `SELECT DISTINCT channel FROM agent_seen WHERE channel LIKE 'C-%' OR channel LIKE 'C%'`,
-    )
-    .all();
-  for (const { channel } of agentSeenRows) {
-    let newChannel = channel;
-    if (channel.startsWith("C-")) {
-      newChannel = channel.slice(2);
-    } else if (channel.startsWith("C") && channel.length > 1 && /^C[0-9]/.test(channel)) {
-      newChannel = channel === "C001" ? "general" : channel.slice(1);
-    }
-
-    if (newChannel !== channel) {
-      db.run(`UPDATE agent_seen SET channel = ? WHERE channel = ?`, [newChannel, channel]);
-      results.push(`agent_seen: ${channel} -> ${newChannel}`);
+    // Update channels table itself
+    if (existing) {
+      db.run(`DELETE FROM channels WHERE id = ?`, [oldId]);
+      results.push(`channels: deleted ${oldId} (merged with ${newId})`);
+    } else {
+      db.run(`UPDATE channels SET id = ?, name = ? WHERE id = ?`, [newId, name, oldId]);
+      results.push(`channels: ${oldId} -> ${newId}`);
     }
   }
 
