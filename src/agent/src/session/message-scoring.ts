@@ -63,10 +63,13 @@ export function scoreMessages(messages: Message[]): ScoredMessage[] {
     referenceCount.set(i, 0);
   }
   // Simple reference detection: later messages mentioning earlier content keywords
-  for (let i = 1; i < total; i++) {
+  // Limit to last 50 messages checking last 50 earlier messages to avoid O(n²) on large sessions
+  const refStart = Math.max(1, total - 50);
+  for (let i = refStart; i < total; i++) {
     const content = contentMap.get(i) || "";
     if (content.length < 10) continue;
-    for (let j = 0; j < i; j++) {
+    const jStart = Math.max(0, i - 50);
+    for (let j = jStart; j < i; j++) {
       const earlier = contentMap.get(j) || "";
       if (earlier.length < 10) continue;
       // Check if later message references earlier by file paths or key phrases
@@ -337,12 +340,14 @@ function buildAtomicGroups(messages: Message[]): Map<number, string> {
 // ── Heuristic Detectors ────────────────────────────────────────────
 
 function extractKeyTerms(text: string): string[] {
+  // Limit scan to first 2000 chars to avoid slow regex on large tool outputs
+  const sample = text.length > 2000 ? text.slice(0, 2000) : text;
   const terms: string[] = [];
   // File paths
-  const paths = text.match(/[\w/.-]+\.(ts|js|py|go|rs|json|yaml|md)/g);
+  const paths = sample.match(/[\w/.-]+\.(ts|js|py|go|rs|json|yaml|md)/g);
   if (paths) terms.push(...paths.slice(0, 3));
   // Function names
-  const funcs = text.match(/(?:function|def|fn|func)\s+(\w+)/g);
+  const funcs = sample.match(/(?:function|def|fn|func)\s+(\w+)/g);
   if (funcs) terms.push(...funcs.slice(0, 2));
   return terms;
 }
