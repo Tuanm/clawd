@@ -1,4 +1,4 @@
-import { db, generateId } from "../database";
+import { db } from "../database";
 
 export interface Channel {
   id: string;
@@ -28,7 +28,9 @@ export function createChannel(name: string, userId = "UHUMAN") {
     return { ok: false, error: "Channel names cannot contain ':space:'" };
   }
 
-  const id = generateId("C");
+  // Use name as ID — the entire system (worker loops, messages, agent_seen, spaces)
+  // references channels by name, not by generated ID.
+  const id = name;
 
   db.run(`INSERT INTO channels (id, name, created_by) VALUES (?, ?, ?)`, [id, name, userId]);
 
