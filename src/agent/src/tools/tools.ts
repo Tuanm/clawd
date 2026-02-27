@@ -1548,6 +1548,13 @@ export function setChatApiUrl(url: string) {
   chatApiUrl = url;
 }
 
+// Helper: fetch with timeout to prevent hangs on self-calls to localhost
+function toolFetch(url: string, options: RequestInit = {}, ms = 15000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
 // ============================================================================
 // Task Tools - Call server API
 // ============================================================================
@@ -1578,7 +1585,7 @@ registerTool(
   ["title"],
   async ({ title, description, priority, tags, due_at }) => {
     try {
-      const res = await fetch(`${chatApiUrl}/api/tasks.create`, {
+      const res = await toolFetch(`${chatApiUrl}/api/tasks.create`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1621,7 +1628,7 @@ registerTool(
       if (status) params.set("status", status);
       if (limit) params.set("limit", String(limit));
 
-      const res = await fetch(`${chatApiUrl}/api/tasks.list?${params}`);
+      const res = await toolFetch(`${chatApiUrl}/api/tasks.list?${params}`);
       const data = (await res.json()) as any;
       if (!data.ok) return { success: false, output: "", error: data.error };
 
@@ -1664,7 +1671,7 @@ registerTool(
   ["task_id"],
   async ({ task_id }) => {
     try {
-      const res = await fetch(`${chatApiUrl}/api/tasks.get?task_id=${encodeURIComponent(task_id)}`);
+      const res = await toolFetch(`${chatApiUrl}/api/tasks.get?task_id=${encodeURIComponent(task_id)}`);
       const data = (await res.json()) as any;
       if (!data.ok) return { success: false, output: "", error: data.error };
 
@@ -1707,7 +1714,7 @@ registerTool(
   ["task_id"],
   async ({ task_id, status, priority, title, claimer }) => {
     try {
-      const res = await fetch(`${chatApiUrl}/api/tasks.update`, {
+      const res = await toolFetch(`${chatApiUrl}/api/tasks.update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ task_id, status, priority, title, claimer }),
@@ -1741,7 +1748,7 @@ registerTool(
   ["task_id"],
   async ({ task_id }) => {
     try {
-      const res = await fetch(`${chatApiUrl}/api/tasks.update`, {
+      const res = await toolFetch(`${chatApiUrl}/api/tasks.update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ task_id, status: "done" }),
@@ -1763,7 +1770,7 @@ registerTool(
   ["task_id"],
   async ({ task_id }) => {
     try {
-      const res = await fetch(`${chatApiUrl}/api/tasks.delete`, {
+      const res = await toolFetch(`${chatApiUrl}/api/tasks.delete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ task_id }),
@@ -1790,7 +1797,7 @@ registerTool(
   ["task_id", "name"],
   async ({ task_id, name, url, file_id }) => {
     try {
-      const res = await fetch(`${chatApiUrl}/api/tasks.addAttachment`, {
+      const res = await toolFetch(`${chatApiUrl}/api/tasks.addAttachment`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1821,7 +1828,7 @@ registerTool(
   ["task_id", "text"],
   async ({ task_id, text }) => {
     try {
-      const res = await fetch(`${chatApiUrl}/api/tasks.addComment`, {
+      const res = await toolFetch(`${chatApiUrl}/api/tasks.addComment`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ task_id, text, author: currentAgentId }),
@@ -1865,12 +1872,15 @@ registerTool(
     const { url, raw = false, max_length = 10000 } = args;
 
     try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
       const response = await fetch(url, {
         headers: {
           "User-Agent": "Mozilla/5.0 (compatible; ClawdAgent/1.0)",
           Accept: "text/html,application/json,text/plain,*/*",
         },
-      });
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
 
       if (!response.ok) {
         return {
@@ -1953,13 +1963,16 @@ registerTool(
       // Use DuckDuckGo HTML search (more reliable than API)
       const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
 
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15000);
       const response = await fetch(searchUrl, {
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           Accept: "text/html",
         },
-      });
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
 
       if (!response.ok) {
         return {
@@ -3232,7 +3245,7 @@ registerTool(
     const agentId = getContextAgentId() || "agent";
 
     try {
-      const res = await fetch(`${chatApiUrl}/api/articles.create`, {
+      const res = await toolFetch(`${chatApiUrl}/api/articles.create`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3285,7 +3298,7 @@ registerTool(
       url.searchParams.set("offset", String(offset));
       url.searchParams.set("published", String(published_only));
 
-      const res = await fetch(url.toString());
+      const res = await toolFetch(url.toString());
       const data = await res.json();
       if (data.ok) {
         return {
@@ -3318,7 +3331,7 @@ registerTool(
   ["id"],
   async ({ id }) => {
     try {
-      const res = await fetch(`${chatApiUrl}/api/articles.get?id=${encodeURIComponent(id)}`);
+      const res = await toolFetch(`${chatApiUrl}/api/articles.get?id=${encodeURIComponent(id)}`);
       const data = await res.json();
       if (data.ok) {
         return {
@@ -3359,7 +3372,7 @@ registerTool(
   ["id"],
   async ({ id, title, content, description, thumbnail_url, tags, published }) => {
     try {
-      const res = await fetch(`${chatApiUrl}/api/articles.update`, {
+      const res = await toolFetch(`${chatApiUrl}/api/articles.update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3399,7 +3412,7 @@ registerTool(
   ["id"],
   async ({ id }) => {
     try {
-      const res = await fetch(`${chatApiUrl}/api/articles.delete`, {
+      const res = await toolFetch(`${chatApiUrl}/api/articles.delete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
@@ -3433,7 +3446,7 @@ registerTool(
 
     try {
       // First get the article details
-      const articleRes = await fetch(`${chatApiUrl}/api/articles.get?id=${encodeURIComponent(article_id)}`);
+      const articleRes = await toolFetch(`${chatApiUrl}/api/articles.get?id=${encodeURIComponent(article_id)}`);
       const articleData = await articleRes.json();
 
       if (!articleData.ok || !articleData.article) {
@@ -3443,7 +3456,7 @@ registerTool(
       const article = articleData.article;
 
       // Send message with article attachment
-      const msgRes = await fetch(`${chatApiUrl}/api/chat.postMessage`, {
+      const msgRes = await toolFetch(`${chatApiUrl}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

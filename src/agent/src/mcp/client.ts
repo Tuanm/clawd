@@ -230,13 +230,20 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
       const message = `${JSON.stringify(request)}\n`;
       (this.process!.stdin as any).write(message);
 
-      // Timeout
-      setTimeout(() => {
+      // Timeout — clear on resolve/reject to prevent leak
+      const timer = setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id);
           reject(new Error(`MCP request timed out: ${method}`));
         }
       }, 30000);
+
+      // Wrap original resolve/reject to clear timer
+      const original = this.pendingRequests.get(id)!;
+      this.pendingRequests.set(id, {
+        resolve: (val: any) => { clearTimeout(timer); original.resolve(val); },
+        reject: (err: any) => { clearTimeout(timer); original.reject(err); },
+      });
     });
   }
 
@@ -419,11 +426,19 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
       params,
     };
 
-    const response = await fetch(this.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    let response: Response;
+    try {
+      response = await fetch(this.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) {
       throw new Error(`HTTP error: ${response.status}`);

@@ -205,7 +205,11 @@ initRunner({
   spaceWorkerManager,
   getAgentConfig: async (channel: string) => {
     try {
-      const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`, { signal: ctrl.signal }).finally(() =>
+        clearTimeout(timer),
+      );
       const data = (await res.json()) as any;
       if (data.ok && Array.isArray(data.agents)) {
         const agent = data.agents.find((a: any) => a.channel === channel && a.active !== false);
@@ -721,10 +725,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       );
 
       const messagesToMark = db
-        .query<{ ts: string }, [string, string, string]>(
-          `SELECT ts FROM messages WHERE channel = ? AND ts <= ? AND (agent_id IS NULL OR agent_id != ?)`,
+        .query<{ ts: string }, [string, string, string, number]>(
+          `SELECT ts FROM messages WHERE channel = ? AND ts <= ? AND (agent_id IS NULL OR agent_id != ?) ORDER BY ts DESC LIMIT ?`,
         )
-        .all(channel, lastSeenTs, agentId);
+        .all(channel, lastSeenTs, agentId, 200);
       if (messagesToMark.length > 0) {
         markMessagesSeen(
           channel,
@@ -1234,11 +1238,14 @@ console.log(`
 
 // Helper for space recovery notifications
 async function postToChannel(apiUrl: string, channel: string, text: string, agentId: string): Promise<void> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
   await fetch(`${apiUrl}/api/chat.postMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ channel, text, user: "UBOT", agent_id: agentId }),
-  });
+    signal: ctrl.signal,
+  }).finally(() => clearTimeout(timer));
 }
 
 // Start worker manager (loads agents from DB, starts polling loops)
@@ -1277,7 +1284,11 @@ setTimeout(async () => {
           }
 
           // Get agent config
-          const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`);
+          const recoverCtrl = new AbortController();
+          const recoverTimer = setTimeout(() => recoverCtrl.abort(), 10000);
+          const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`, { signal: recoverCtrl.signal }).finally(
+            () => clearTimeout(recoverTimer),
+          );
           const data = (await res.json()) as any;
           const agentEntry =
             data.ok && Array.isArray(data.agents)
@@ -1410,18 +1421,26 @@ setInterval(() => {
 }, 60_000);
 
 // Graceful shutdown (SP25: scheduler → spaces → workers)
-process.on("SIGTERM", async () => {
-  console.log("[clawd-app] Received SIGTERM, shutting down...");
-  await scheduler.stop();
-  await spaceWorkerManager.stopAll();
-  await workerManager.stop();
+// Force-exit after 8s to prevent hang if cleanup gets stuck
+let shutdownInProgress = false;
+const gracefulShutdown = async (signal: string) => {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
+  console.log(`[clawd-app] Received ${signal}, shutting down...`);
+  const forceTimer = setTimeout(() => {
+    console.error("[clawd-app] Shutdown timed out after 8s, forcing exit");
+    process.exit(1);
+  }, 8000);
+  forceTimer.unref();
+  try {
+    await scheduler.stop();
+    await spaceWorkerManager.stopAll();
+    await workerManager.stop();
+  } catch (err) {
+    console.error("[clawd-app] Error during shutdown:", err);
+  }
   process.exit(0);
-});
+};
 
-process.on("SIGINT", async () => {
-  console.log("[clawd-app] Received SIGINT, shutting down...");
-  await scheduler.stop();
-  await spaceWorkerManager.stopAll();
-  await workerManager.stop();
-  process.exit(0);
-});
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));

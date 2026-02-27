@@ -70,6 +70,7 @@ export interface WorkerLoopConfig {
   isSpaceAgent?: boolean;
   spaceManager?: import("./spaces/manager").SpaceManager;
   spaceWorkerManager?: import("./spaces/worker").SpaceWorkerManager;
+  onLoopExit?: () => void;
   additionalPlugins?: Array<{
     plugin?: import("./agent/src/plugins/manager").Plugin;
     toolPlugin?: import("./agent/src/tools/plugin").ToolPlugin;
@@ -82,6 +83,8 @@ export class WorkerLoop {
   private sleeping = false;
   private isProcessing = false;
   private abortController: AbortController | null = null;
+  private activeAgent: import("./agent/src/agent/agent").Agent | null = null;
+  private stoppedPromise: { resolve: () => void } | null = null;
   private trackedSpaces = new Map<string, TrackedSpace>();
 
   constructor(config: WorkerLoopConfig) {
@@ -115,12 +118,28 @@ export class WorkerLoop {
     this.loop();
   }
 
-  /** Stop the polling loop */
+  /** Stop the polling loop and cancel any active agent */
   async stop(): Promise<void> {
     if (!this.running) return;
     this.log("Stopping worker loop");
     this.running = false;
     this.abortController?.abort();
+    // Cancel the active agent if one is running
+    if (this.activeAgent) {
+      try {
+        this.activeAgent.cancel();
+      } catch {}
+    }
+    // Wait for processing to finish (max 3s)
+    if (this.isProcessing) {
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          this.stoppedPromise = { resolve };
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+      ]);
+      this.stoppedPromise = null;
+    }
     await this.clearStreamingState();
   }
 
@@ -186,15 +205,21 @@ export class WorkerLoop {
             }
           } finally {
             this.isProcessing = false;
+            this.stoppedPromise?.resolve();
+            this.stoppedPromise = null;
           }
         }
       } catch (error) {
         this.log(`Loop error (continuing): ${error}`);
         this.isProcessing = false;
+        this.stoppedPromise?.resolve();
+        this.stoppedPromise = null;
       }
 
       await Bun.sleep(POLL_INTERVAL);
     }
+    // Notify that the loop has exited (used by space workers to settle promises)
+    this.config.onLoopExit?.();
   }
 
   /** Poll for pending messages */
@@ -211,9 +236,15 @@ export class WorkerLoop {
     };
 
     try {
+      const fetchWithTimeout = (url: string, ms = 10000) => {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), ms);
+        return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(timer));
+      };
+
       const [lastSeenRes, lastProcessedRes] = await Promise.all([
-        fetch(`${chatApiUrl}/api/agent.getLastSeen?agent_id=${agentId}&channel=${channel}`),
-        fetch(`${chatApiUrl}/api/agent.getLastProcessed?agent_id=${agentId}&channel=${channel}`),
+        fetchWithTimeout(`${chatApiUrl}/api/agent.getLastSeen?agent_id=${agentId}&channel=${channel}`),
+        fetchWithTimeout(`${chatApiUrl}/api/agent.getLastProcessed?agent_id=${agentId}&channel=${channel}`),
       ]);
 
       const lastSeenData = (await lastSeenRes.json()) as any;
@@ -222,7 +253,9 @@ export class WorkerLoop {
       const serverLastSeen = lastSeenData.ok ? lastSeenData.last_seen_ts : null;
       const serverLastProcessed = lastProcessedData.ok ? lastProcessedData.last_processed_ts : null;
 
-      const res = await fetch(`${chatApiUrl}/api/messages.pending?channel=${channel}&include_bot=true&limit=50`);
+      const res = await fetchWithTimeout(
+        `${chatApiUrl}/api/messages.pending?channel=${channel}&include_bot=true&limit=50`,
+      );
       const data = (await res.json()) as any;
 
       if (!data.ok) return { ...empty, serverLastProcessed, serverLastSeen };
@@ -255,11 +288,14 @@ export class WorkerLoop {
       // Mark all messages as seen
       if (messages.length > 0) {
         const maxTs = messages.reduce((max, m) => (m.ts > max ? m.ts : max), "0");
+        const markCtrl = new AbortController();
+        const markTimer = setTimeout(() => markCtrl.abort(), 10000);
         await fetch(`${chatApiUrl}/api/agent.markSeen`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ agent_id: agentId, channel, last_seen_ts: maxTs }),
-        });
+          signal: markCtrl.signal,
+        }).finally(() => clearTimeout(markTimer));
       }
 
       return { ok: true, messages, pending, unseen, seenNotProcessed, serverLastProcessed, serverLastSeen };
@@ -272,6 +308,8 @@ export class WorkerLoop {
   /** Send a message to the channel */
   private async sendMessage(text: string): Promise<boolean> {
     try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
       const res = await fetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -281,7 +319,8 @@ export class WorkerLoop {
           user: "UBOT",
           agent_id: this.config.agentId,
         }),
-      });
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
       const data = (await res.json()) as any;
       return data.ok;
     } catch {
@@ -469,6 +508,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
           try {
             const llmProvider = createProvider(provider);
             agent = new Agent(llmProvider, agentConfig);
+            this.activeAgent = agent;
 
             // Create and register clawd-chat plugin for chat integration
             const pluginConfig: ClawdChatConfig = {
@@ -520,7 +560,11 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
                 async (ch: string) => {
                   // Fetch agent config for the channel
                   try {
-                    const res = await fetch(`${chatApiUrl}/api/app.agents.list`);
+                    const ctrl = new AbortController();
+                    const timer = setTimeout(() => ctrl.abort(), 10000);
+                    const res = await fetch(`${chatApiUrl}/api/app.agents.list`, { signal: ctrl.signal }).finally(() =>
+                      clearTimeout(timer),
+                    );
                     const data = (await res.json()) as any;
                     if (data.ok && Array.isArray(data.agents)) {
                       const agent = data.agents.find((a: any) => a.channel === ch && a.active !== false);
@@ -555,6 +599,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
             return { success: true, output: result.content };
           } finally {
             // Ensure agent is always cleaned up, even on error
+            this.activeAgent = null;
             if (agent) {
               try {
                 await agent.close();
@@ -673,6 +718,8 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
   /** Clear streaming state on shutdown */
   private async clearStreamingState(): Promise<void> {
     try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 3000);
       await fetch(`${this.config.chatApiUrl}/api/agent.setStreaming`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -681,7 +728,8 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
           channel: this.config.channel,
           is_streaming: false,
         }),
-      });
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
     } catch {}
   }
 

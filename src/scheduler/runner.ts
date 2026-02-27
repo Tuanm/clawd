@@ -53,6 +53,8 @@ export function initRunner(config: RunnerConfig): void {
     });
 
     // 2. Post preview card to main channel
+    const cardCtrl = new AbortController();
+    const cardTimer = setTimeout(() => cardCtrl.abort(), 10000);
     const cardRes = await fetch(`${appConfig.chatApiUrl}/api/chat.postMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -72,7 +74,8 @@ export function initRunner(config: RunnerConfig): void {
           channel: space.channel,
         }),
       }),
-    });
+      signal: cardCtrl.signal,
+    }).finally(() => clearTimeout(cardTimer));
     if (cardRes.ok) {
       const cardData = (await cardRes.json()) as any;
       if (cardData.ts) spaceManager.updateCardTs(space.id, cardData.ts);
@@ -128,6 +131,8 @@ export function initRunner(config: RunnerConfig): void {
 }
 
 async function postToChannel(apiUrl: string, channel: string, text: string, agentId: string): Promise<void> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
   const res = await fetch(`${apiUrl}/api/chat.postMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -137,7 +142,8 @@ async function postToChannel(apiUrl: string, channel: string, text: string, agen
       user: "UBOT",
       agent_id: agentId,
     }),
-  });
+    signal: ctrl.signal,
+  }).finally(() => clearTimeout(timer));
 
   if (!res.ok) {
     throw new Error(`Failed to post message: ${res.status}`);

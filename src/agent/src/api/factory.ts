@@ -115,17 +115,25 @@ class OpenAIProvider implements LLMProvider {
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        ...request,
-        stream: false,
-      }),
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 120000);
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          ...request,
+          stream: false,
+        }),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) {
       const error = await response.text();
@@ -146,6 +154,7 @@ class OpenAIProvider implements LLMProvider {
         ...request,
         stream: true,
       }),
+      signal,
     });
 
     if (!response.ok) {
@@ -283,11 +292,19 @@ class AnthropicProvider implements LLMProvider {
       );
     }
 
-    const response = await fetch(this.getEndpoint(), {
-      method: "POST",
-      headers: this.getHeaders(),
-      body: JSON.stringify(anthropicRequest),
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 120000);
+    let response: Response;
+    try {
+      response = await fetch(this.getEndpoint(), {
+        method: "POST",
+        headers: this.getHeaders(),
+        body: JSON.stringify(anthropicRequest),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) {
       const error = await response.text();
@@ -324,6 +341,7 @@ class AnthropicProvider implements LLMProvider {
       method: "POST",
       headers: this.getHeaders(),
       body: JSON.stringify(anthropicRequest),
+      signal,
     });
 
     if (!response.ok) {
@@ -754,11 +772,19 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     const ollamaRequest = this.toOllamaRequest(request, false);
 
-    const response = await fetch(this.getEndpoint(), {
-      method: "POST",
-      headers: this.getHeaders(),
-      body: JSON.stringify(ollamaRequest),
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 120000);
+    let response: Response;
+    try {
+      response = await fetch(this.getEndpoint(), {
+        method: "POST",
+        headers: this.getHeaders(),
+        body: JSON.stringify(ollamaRequest),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) {
       const error = await response.text();
@@ -776,6 +802,7 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
       method: "POST",
       headers: this.getHeaders(),
       body: JSON.stringify(ollamaRequest),
+      signal,
     });
 
     if (!response.ok) {

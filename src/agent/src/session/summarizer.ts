@@ -135,6 +135,8 @@ export class SessionSummarizer {
    */
   private async fetchDbMessages(): Promise<any[]> {
     try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
       const response = await fetch(`${this.config.serverUrl}/api/conversations.history`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -142,7 +144,8 @@ export class SessionSummarizer {
           channel: this.config.channel,
           limit: 500, // Fetch more for summarization
         }),
-      });
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
 
       if (response.ok) {
         const data = (await response.json()) as {

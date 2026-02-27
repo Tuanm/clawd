@@ -11,6 +11,13 @@ import type { ToolResult } from "../agent/src/tools/tools";
 import type { SpaceManager } from "./manager";
 import type { SpaceWorkerManager } from "./worker";
 
+// Fetch with timeout to prevent hangs on self-calls
+function timedFetch(url: string, options: RequestInit = {}, ms = 10000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
 export interface SpawnPluginConfig {
   /** Parent channel where the main agent operates */
   channel: string;
@@ -158,7 +165,7 @@ export function createSpawnAgentPlugin(
       });
 
       // 2. Post preview card to main channel (use main agent ID as author)
-      const cardRes = await fetch(`${config.apiUrl}/api/chat.postMessage`, {
+      const cardRes = await timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -185,7 +192,7 @@ export function createSpawnAgentPlugin(
 
       // 3. Post task to space channel (use main agent ID so it shows correct avatar;
       //    worker picks it up because agent_id !== worker's own agentId)
-      const taskRes = await fetch(`${config.apiUrl}/api/chat.postMessage`, {
+      const taskRes = await timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -226,7 +233,7 @@ export function createSpawnAgentPlugin(
           : spaceManager.failSpace(space.id, String(controller.signal.reason));
         if (won) {
           const emoji = isTimeout ? "⏰" : "❌";
-          fetch(`${config.apiUrl}/api/chat.postMessage`, {
+          timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

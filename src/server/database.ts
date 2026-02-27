@@ -883,11 +883,8 @@ export function markMessagesSeen(channel: string, agentId: string, messageTsList
   db.transaction(() => {
     for (const ts of messageTsList) {
       markSeenStmt.run(ts, channel, agentId, now);
-      // Check if a row was actually inserted (not ignored due to existing)
-      if (
-        (db.query(`SELECT changes()`).get() as { "changes()": number }) &&
-        (db.query(`SELECT changes()`).get() as { "changes()": number })["changes()"] > 0
-      ) {
+      const result = db.query(`SELECT changes()`).get() as { "changes()": number };
+      if (result && result["changes()"] > 0) {
         newlySeen.push(ts);
       }
     }

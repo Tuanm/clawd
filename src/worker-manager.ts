@@ -169,7 +169,11 @@ export class WorkerManager {
   /** Load agent configs from the chat server database via API */
   private async loadAgentsFromDb(): Promise<AgentConfig[]> {
     try {
-      const res = await fetch(`${this.config.chatApiUrl}/api/app.agents.list`);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      const res = await fetch(`${this.config.chatApiUrl}/api/app.agents.list`, { signal: ctrl.signal }).finally(() =>
+        clearTimeout(timer),
+      );
       const data = (await res.json()) as any;
 
       if (data.ok && Array.isArray(data.agents)) {

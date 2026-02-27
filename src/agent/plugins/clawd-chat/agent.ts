@@ -76,13 +76,20 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
   // Determine user ID based on whether this is a worker/sub-agent
   const userId = config.isWorker || config.isSpaceAgent ? `UWORKER-${config.agentId}` : "UBOT";
 
+  // Fetch with timeout to prevent hangs on self-calls to localhost
+  const timedFetch = (url: string, options: RequestInit = {}, ms = 15000): Promise<Response> => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+  };
+
   // ============================================================================
   // API Helpers
   // ============================================================================
 
   async function setAgentStreaming(isStreaming: boolean): Promise<void> {
     try {
-      await fetch(`${apiUrl}/api/agent.setStreaming`, {
+      await timedFetch(`${apiUrl}/api/agent.setStreaming`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -98,7 +105,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
 
   async function streamToken(token: string, tokenType: "content" | "thinking" | "event" = "content"): Promise<void> {
     try {
-      await fetch(`${apiUrl}/api/agent.streamToken`, {
+      await timedFetch(`${apiUrl}/api/agent.streamToken`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -120,7 +127,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
     result?: any,
   ): Promise<void> {
     try {
-      await fetch(`${apiUrl}/api/agent.streamToolCall`, {
+      await timedFetch(`${apiUrl}/api/agent.streamToolCall`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -138,7 +145,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
   }
 
   async function _sendMessage(text: string): Promise<string> {
-    const response = await fetch(`${apiUrl}/mcp`, {
+    const response = await timedFetch(`${apiUrl}/mcp`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -164,7 +171,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
 
   async function _updateMessage(ts: string, text: string): Promise<void> {
     try {
-      await fetch(`${apiUrl}/mcp`, {
+      await timedFetch(`${apiUrl}/mcp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -188,7 +195,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
 
   async function getChatHistory(limit: number = 50): Promise<ChatMessage[]> {
     try {
-      const response = await fetch(`${apiUrl}/mcp`, {
+      const response = await timedFetch(`${apiUrl}/mcp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -296,7 +303,7 @@ ${recentTopics.join("\n")}`;
   }
 
   async function getNewMessages(afterTs: string): Promise<ChatMessage[]> {
-    const response = await fetch(`${apiUrl}/mcp`, {
+    const response = await timedFetch(`${apiUrl}/mcp`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -320,7 +327,7 @@ ${recentTopics.join("\n")}`;
   }
 
   async function markProcessed(ts: string): Promise<void> {
-    await fetch(`${apiUrl}/mcp`, {
+    await timedFetch(`${apiUrl}/mcp`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -343,7 +350,7 @@ ${recentTopics.join("\n")}`;
   // so the UI shows messages are acknowledged without marking them as handled
   async function markAsSeen(ts: string): Promise<void> {
     try {
-      await fetch(`${apiUrl}/api/agent.markSeen`, {
+      await timedFetch(`${apiUrl}/api/agent.markSeen`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -920,10 +927,14 @@ chat_send_message_with_files(
               formData.append("file", file);
               formData.append("channel", channel);
 
-              const response = await fetch(`${apiUrl}/api/files.upload`, {
-                method: "POST",
-                body: formData,
-              });
+              const response = await timedFetch(
+                `${apiUrl}/api/files.upload`,
+                {
+                  method: "POST",
+                  body: formData,
+                },
+                60000,
+              );
 
               if (!response.ok) {
                 const errorText = await response.text();

@@ -36,6 +36,8 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
             // Post result to parent channel
             try {
               const truncated = result.length > 2000 ? result.slice(0, 2000) + "..." : result;
+              const ctrl = new AbortController();
+              const timer = setTimeout(() => ctrl.abort(), 10000);
               await fetch(`${config.apiUrl}/api/chat.postMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -45,7 +47,8 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
                   user: "UWORKER-SUBAGENT",
                   agent_id: config.agentId,
                 }),
-              });
+                signal: ctrl.signal,
+              }).finally(() => clearTimeout(timer));
             } catch {}
 
             // Update card status

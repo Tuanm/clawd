@@ -81,6 +81,14 @@ export class SpaceWorkerManager {
         yolo: this.config.yolo,
         contextMode: true,
         isSpaceAgent: true,
+        onLoopExit: () => {
+          // If the loop exits without the promise being settled, reject it
+          if (!entry.settled) {
+            entry.settled = true;
+            this.workers.delete(space.id);
+            reject(new Error("Space worker loop exited without completing"));
+          }
+        },
         additionalPlugins: [{ plugin: { name: "space-tools", version: "1.0.0", hooks: {} }, toolPlugin: spacePlugin }],
       });
 
