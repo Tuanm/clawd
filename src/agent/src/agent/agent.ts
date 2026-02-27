@@ -179,7 +179,6 @@ CLAIMING TASKS:
 - When using tools, call them directly without explanation
 - After completing a task, summarize results via chat_send_message (if in a chat channel)
 - If you encounter errors, try alternative approaches
-- Do NOT output any text that duplicates what you sent via chat_send_message — it is wasteful and invisible to users
 
 ## Context Awareness
 - When you see [TRUNCATED] markers in messages or tool output, acknowledge that only partial content is available
@@ -194,16 +193,14 @@ You are in a chat channel. The ONLY way to communicate with humans is via chat t
 - **chat_mark_processed**: Mark message as handled (if you don't need to respond)
 
 CRITICAL RULES:
-- NEVER respond with plain text — humans cannot see it
+- Humans CANNOT see your text output — they can ONLY see messages sent via chat_send_message
 - ALWAYS use chat_send_message to send ANY response to users
 - ALWAYS use chat_mark_processed after sending a message
-- After calling chat_send_message, output ONLY "[SENT]" — do NOT repeat or rephrase the message as text output
-- If you output text without calling chat_send_message, the user will NEVER see it
+- Do NOT output text intended for users — it will never reach them
 
 Pattern for responding to users:
 1. Call chat_send_message(channel, text, agent_id, user)
 2. Call chat_mark_processed(channel, timestamp, agent_id)
-3. Output "[SENT]" — nothing else
 
 If you don't need to respond (just acking), you can skip chat_send_message and just call chat_mark_processed.`;
 
