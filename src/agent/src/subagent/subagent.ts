@@ -115,7 +115,7 @@ class SubAgentToolExecutor implements ToolExecutor {
           function: {
             name: "spawn_agent",
             description:
-              "Spawn a sub-agent to work on a task. The sub-agent has the same capabilities. Always runs async - use get_agent_result to check completion.",
+              "Spawn a sub-agent to work on a task. The sub-agent has the same capabilities and will respond directly to the chat channel when done.",
             parameters: {
               type: "object",
               properties: {
@@ -152,22 +152,8 @@ class SubAgentToolExecutor implements ToolExecutor {
           type: "function",
           function: {
             name: "list_agents",
-            description: "List all spawned sub-agents and their status",
+            description: "List all spawned sub-agents and their status. Useful before using kill_agent.",
             parameters: { type: "object", properties: {} },
-          },
-        },
-        {
-          type: "function",
-          function: {
-            name: "get_agent_result",
-            description: "Get the result of a completed sub-agent",
-            parameters: {
-              type: "object",
-              properties: {
-                agent_id: { type: "string", description: "Sub-agent ID" },
-              },
-              required: ["agent_id"],
-            },
           },
         },
       );
@@ -219,8 +205,6 @@ class SubAgentToolExecutor implements ToolExecutor {
       content = await this.subAgent.handleSpawnAgent(args as any);
     } else if (name === "list_agents") {
       content = this.subAgent.handleListAgents();
-    } else if (name === "get_agent_result") {
-      content = this.subAgent.handleGetAgentResult(args as any);
     } else {
       // Execute regular tools
       const result = await executeTool(toolCall);
@@ -426,7 +410,7 @@ If chat tools (chat_send_message) are available, you MUST use them for ALL user-
       name: subAgent.name,
       status: "spawned",
       toolCategory: args.toolCategory || "full",
-      message: "Sub-agent started. Use get_agent_result to check completion.",
+      message: "Sub-agent started. It will respond directly to the chat channel when done.",
     });
   }
 
@@ -441,20 +425,6 @@ If chat tools (chat_send_message) are available, you MUST use them for ALL user-
       null,
       2,
     );
-  }
-
-  handleGetAgentResult(args: { agent_id: string }): string {
-    const child = this.children.find((c) => c.id === args.agent_id);
-    if (!child) {
-      return JSON.stringify({ error: `Agent ${args.agent_id} not found` });
-    }
-    return JSON.stringify({
-      id: child.id,
-      name: child.name,
-      status: child.status,
-      iterations: child.loop?.getIterations() || 0,
-      toolCalls: child.loop?.getToolCallCount() || 0,
-    });
   }
 
   // ============================================================================

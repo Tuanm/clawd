@@ -1,9 +1,8 @@
 /**
- * Spawn Agent Plugin — overrides spawn_agent/wait_for_agents/get_agent_report
- * to route through the sub-space system instead of tmux sessions.
+ * Spawn Agent Plugin — overrides spawn_agent to route through the sub-space system.
  *
- * Registers tools with same names as local tools. Plugin tools take execution
- * priority over local tools (agent checks hasPluginTool before local).
+ * Sub-agents respond directly to the parent chat channel via respond_to_parent,
+ * so no wait/poll/report tools are needed — the parent sees results in chat.
  */
 
 import type { ToolPlugin, ToolRegistration } from "../agent/src/tools/plugin";
@@ -50,13 +49,11 @@ export function createSpawnAgentPlugin(
     name: "spawn-agent-spaces",
 
     getTools(): ToolRegistration[] {
-      // Register tools with same names as local tools — execution routes here
-      // via hasPluginTool check (plugin > local in execution priority).
-      // Tool definitions are deduped by getTools() so LLM sees local descriptions.
       return [
         {
           name: "spawn_agent",
-          description: "Spawn a sub-agent in a sub-space",
+          description:
+            "Spawn a sub-agent in a sub-space to handle a task. The sub-agent will respond directly to this chat channel when done — no need to wait or poll for results.",
           parameters: {
             task: { type: "string", description: "The task for the sub-agent" },
             name: { type: "string", description: "Optional friendly name" },
@@ -66,7 +63,8 @@ export function createSpawnAgentPlugin(
         },
         {
           name: "list_agents",
-          description: "List all spawned sub-agents and their status",
+          description:
+            "List all spawned sub-agents and their current status. Useful to check which agents are running before using kill_agent.",
           parameters: {},
           required: [],
           handler: async () => {
@@ -78,53 +76,6 @@ export function createSpawnAgentPlugin(
               duration_ms: Date.now() - t.startedAt,
             }));
             return { success: true, output: JSON.stringify({ count: agents.length, agents }, null, 2) };
-          },
-        },
-        {
-          name: "get_agent_result",
-          description: "Get status/result of a sub-agent by ID",
-          parameters: {
-            agent_id: { type: "string", description: "Sub-agent ID" },
-          },
-          required: ["agent_id"],
-          handler: async (args) => {
-            const res = await handleGetAgentReport(args);
-            if (!res) {
-              return { success: false, output: "", error: "Unknown agent ID — not space-tracked" };
-            }
-            return res;
-          },
-        },
-        {
-          name: "get_agent_report",
-          description: "Get the result report of a sub-agent",
-          parameters: {
-            agent_id: { type: "string", description: "Sub-agent ID" },
-          },
-          required: ["agent_id"],
-          handler: async (args) => {
-            const res = await handleGetAgentReport(args);
-            if (!res) {
-              return { success: false, output: "", error: "Unknown agent ID — not space-tracked" };
-            }
-            return res;
-          },
-        },
-        {
-          name: "wait_for_agents",
-          description: "Wait for sub-agents to complete",
-          parameters: {
-            agent_ids: { type: "array", items: { type: "string" }, description: "Agent IDs to wait for" },
-            mode: { type: "string", description: '"all" or "any"' },
-            timeout_ms: { type: "number", description: "Timeout in milliseconds" },
-          },
-          required: ["agent_ids"],
-          handler: async (args) => {
-            const res = await handleWaitForAgents(args);
-            if (!res) {
-              return { success: false, output: "", error: "Unknown agent IDs — not space-tracked" };
-            }
-            return res;
           },
         },
       ];
@@ -295,134 +246,11 @@ export function createSpawnAgentPlugin(
           name: sanitizedTitle,
           status: "spawned",
           space_channel: space.space_channel,
-          message: "Sub-agent started in a sub-space. Use wait_for_agents to wait for completion.",
+          message: "Sub-agent started. It will respond directly to this channel when done.",
         }),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
     }
-  }
-
-  async function handleWaitForAgents(args: Record<string, any>): Promise<ToolResult | null> {
-    const agentIds = args.agent_ids as string[];
-    const mode = (args.mode as string) || "all";
-    const timeoutMs = (args.timeout_ms as number) || 600000;
-
-    if (!agentIds || !Array.isArray(agentIds) || agentIds.length === 0) {
-      return { success: false, output: "", error: "Missing required parameter: agent_ids (array)" };
-    }
-
-    // Check if IDs are tracked in-memory or exist as spaces in DB
-    const allKnown = agentIds.every((id) => trackedSpaces.has(id) || spaceManager.getSpace(id));
-    if (!allKnown) return null;
-
-    const deadline = Date.now() + timeoutMs;
-
-    while (Date.now() < deadline) {
-      const statuses = agentIds.map((id) => getAgentStatus(id));
-      const completed = statuses.filter((s) => s.status !== "running" && s.status !== "active");
-
-      if (mode === "any" && completed.length > 0) {
-        return {
-          success: true,
-          output: JSON.stringify(
-            { mode, completed: completed.length, total: agentIds.length, agents: statuses },
-            null,
-            2,
-          ),
-        };
-      }
-
-      if (mode === "all" && completed.length === agentIds.length) {
-        return {
-          success: true,
-          output: JSON.stringify(
-            { mode, completed: completed.length, total: agentIds.length, agents: statuses },
-            null,
-            2,
-          ),
-        };
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-
-    const finalStatuses = agentIds.map((id) => getAgentStatus(id));
-
-    return {
-      success: false,
-      output: JSON.stringify({ mode, error: "timeout", agents: finalStatuses }, null, 2),
-      error: "Timed out waiting for agents",
-    };
-  }
-
-  function getAgentStatus(id: string) {
-    const tracked = trackedSpaces.get(id);
-    if (tracked) {
-      return {
-        id,
-        name: tracked.name,
-        status: tracked.status,
-        result: tracked.result,
-        error: tracked.error,
-        duration_ms: Date.now() - tracked.startedAt,
-      };
-    }
-    // Fallback to DB for spaces from previous sessions
-    const space = spaceManager.getSpace(id);
-    if (space) {
-      return {
-        id,
-        name: space.title,
-        status: space.status,
-        result: space.result_summary,
-        duration_ms: 0,
-      };
-    }
-    return { id, status: "not_found" };
-  }
-
-  async function handleGetAgentReport(args: Record<string, any>): Promise<ToolResult | null> {
-    const agentId = args.agent_id as string;
-
-    if (!agentId) {
-      return { success: false, output: "", error: "Missing required parameter: agent_id" };
-    }
-
-    const tracked = trackedSpaces.get(agentId);
-    if (tracked) {
-      const space = spaceManager.getSpace(tracked.spaceId);
-      return {
-        success: true,
-        output: JSON.stringify({
-          agent_id: tracked.spaceId,
-          name: tracked.name,
-          status: tracked.status,
-          result: tracked.result || space?.result_summary,
-          error: tracked.error,
-          duration_ms: Date.now() - tracked.startedAt,
-          space_status: space?.status,
-        }),
-      };
-    }
-
-    // Fallback to DB for spaces from previous sessions
-    const space = spaceManager.getSpace(agentId);
-    if (space) {
-      const isFailed = space.status === "failed" || space.status === "timed_out";
-      return {
-        success: true,
-        output: JSON.stringify({
-          agent_id: space.id,
-          name: space.title,
-          status: space.status,
-          result: isFailed ? undefined : space.result_summary,
-          error: isFailed ? space.result_summary : undefined,
-          space_status: space.status,
-        }),
-      };
-    }
-
-    return null;
   }
 }

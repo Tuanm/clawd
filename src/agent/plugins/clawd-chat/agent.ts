@@ -734,6 +734,8 @@ RICH CONTENT FEATURES (use with chat_send_message):
       },
 
       async onToolCall(name: string, args: any, _ctx: PluginContext) {
+        // Refresh streaming heartbeat so stale-streaming cleanup doesn't clear us during long tool executions
+        setAgentStreaming(true).catch(() => {});
         // Stream tool call to chat UI
         await streamToolCall(name, args, "started");
       },

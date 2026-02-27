@@ -547,7 +547,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               });
             }
 
-            // Register spawn-agent space plugin (intercepts spawn_agent/wait_for_agents/get_agent_report)
+            // Register spawn-agent space plugin (intercepts spawn_agent)
             if (this.config.spaceManager && this.config.spaceWorkerManager && !this.config.isSpaceAgent) {
               const { createSpawnAgentPlugin } = await import("./spaces/spawn-plugin");
               const spawnPlugin = createSpawnAgentPlugin(

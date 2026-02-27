@@ -2164,7 +2164,7 @@ echo "Exit code: $?" >> "${logFile}"
           log_file: logFile,
           result_file: resultFile,
           project_hash: currentProjectHash,
-          message: `Sub-agent spawned in tmux session "${sessionName}". Use wait_for_agents to wait for completion, then get_agent_report to read results.`,
+          message: `Sub-agent spawned in tmux session "${sessionName}". It will respond directly to the chat channel when done.`,
           view_output: `tmux -S "${socketPath}" attach -t ${sessionName}`,
           view_logs: `tail -f ${logFile}`,
           kill_command: `tmux -S "${socketPath}" kill-session -t ${sessionName}`,
@@ -2191,11 +2191,9 @@ Use this for:
 - Delegating complex subtasks
 - Running long operations
 
-The sub-agent runs in a detached tmux session and returns immediately with the agent ID. This tool is always async - there is NO 'wait' parameter.
+The sub-agent runs asynchronously and will respond directly to the chat channel when done — no need to wait or poll for results.
 
-Sub-agents can spawn their own sub-agents (up to 3 levels deep). The sub-agent will run until it completes the task or hits max iterations.
-
-**Getting results:** Use wait_for_agents(agent_ids=[...]) to efficiently wait for completion, then get_agent_report(agent_id) to read the result. Do NOT poll with get_agent_result in a loop.`,
+Sub-agents can spawn their own sub-agents (up to 3 levels deep). The sub-agent will run until it completes the task or hits max iterations.`,
   {
     task: {
       type: "string",
@@ -2223,361 +2221,25 @@ function getSubAgentSocketPath(): string {
   return join(getProjectAgentsDir(), "tmux.sock");
 }
 
-// Helper: Check if a tmux sub-agent session is still alive and update its status
-function checkTmuxAgentStatus(agent: typeof subAgents extends Map<string, infer V> ? V : never): void {
-  if (!agent.tmuxSession || agent.status !== "running") return;
-
-  const { execSync } = require("node:child_process");
-  const { existsSync, readFileSync } = require("node:fs");
-  const socketPath = getSubAgentSocketPath();
-
-  // Check if tmux session still exists
-  let sessionAlive = false;
-  try {
-    execSync(`tmux -S "${socketPath}" has-session -t "${agent.tmuxSession}" 2>/dev/null`, { stdio: "ignore" });
-    sessionAlive = true;
-  } catch {
-    sessionAlive = false;
-  }
-
-  if (!sessionAlive) {
-    // Session gone - check for result file
-    if (agent.resultFile && existsSync(agent.resultFile)) {
-      try {
-        const resultData = JSON.parse(readFileSync(agent.resultFile, "utf8"));
-        agent.status = resultData.success ? "completed" : "failed";
-        agent.result = resultData;
-        agent.error = resultData.error;
-      } catch {
-        agent.status = "failed";
-        agent.error = "Failed to parse result file";
-      }
-    } else {
-      agent.status = "failed";
-      agent.error = "Tmux session exited without writing result file";
-    }
-    agent.completedAt = Date.now();
-  } else if (agent.resultFile) {
-    // Session still alive but check if result file appeared (agent might be finishing up)
-    const { existsSync } = require("node:fs");
-    if (existsSync(agent.resultFile)) {
-      try {
-        const { readFileSync } = require("node:fs");
-        const resultData = JSON.parse(readFileSync(agent.resultFile, "utf8"));
-        agent.status = resultData.success ? "completed" : "failed";
-        agent.result = resultData;
-        agent.error = resultData.error;
-        agent.completedAt = Date.now();
-      } catch {
-        // Result file might be partially written, ignore
-      }
-    }
-  }
-}
-
-registerTool("list_agents", "List all spawned sub-agents and their current status.", {}, [], async () => {
-  // Update status for all tmux agents before returning
-  for (const agent of subAgents.values()) {
-    checkTmuxAgentStatus(agent);
-  }
-
-  const agents = Array.from(subAgents.values()).map((a) => ({
-    id: a.id,
-    name: a.name,
-    status: a.status,
-    task: a.task.slice(0, 100) + (a.task.length > 100 ? "..." : ""),
-    started_at: new Date(a.startedAt).toISOString(),
-    completed_at: a.completedAt ? new Date(a.completedAt).toISOString() : null,
-    duration_ms: a.completedAt ? a.completedAt - a.startedAt : Date.now() - a.startedAt,
-  }));
-
-  return {
-    success: true,
-    output: JSON.stringify(
-      {
-        count: agents.length,
-        agents,
-      },
-      null,
-      2,
-    ),
-  };
-});
-
 registerTool(
-  "get_agent_result",
-  "Get the result of a sub-agent by ID. Shows current status, or waits for completion if wait=true.",
-  {
-    agent_id: {
-      type: "string",
-      description: "The ID of the sub-agent",
-    },
-    wait: {
-      type: "boolean",
-      description:
-        "If true, wait for the agent to complete before returning (polls every 2s, max 5min). If false (default), return current status.",
-    },
-  },
-  ["agent_id"],
-  async ({ agent_id, wait = false }) => {
-    const agent = subAgents.get(agent_id);
-    if (!agent) {
-      return {
-        success: false,
-        output: "",
-        error: `Agent ${agent_id} not found`,
-      };
-    }
-
-    // For tmux agents, poll until completion
-    if (wait && agent.status === "running" && agent.tmuxSession) {
-      const deadline = Date.now() + 300000; // 5 min timeout
-      while (agent.status === "running" && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 2000)); // 2s local sleep
-        checkTmuxAgentStatus(agent);
-      }
-    }
+  "list_agents",
+  "List all spawned sub-agents and their current status. Useful to check which agents are running before using kill_agent.",
+  {},
+  [],
+  async () => {
+    const agents = Array.from(subAgents.values()).map((a) => ({
+      id: a.id,
+      name: a.name,
+      status: a.status,
+      task: a.task.slice(0, 100) + (a.task.length > 100 ? "..." : ""),
+      started_at: new Date(a.startedAt).toISOString(),
+      completed_at: a.completedAt ? new Date(a.completedAt).toISOString() : null,
+      duration_ms: a.completedAt ? a.completedAt - a.startedAt : Date.now() - a.startedAt,
+    }));
 
     return {
       success: true,
-      output: JSON.stringify(
-        {
-          id: agent.id,
-          name: agent.name,
-          status: agent.status,
-          task: agent.task,
-          result: agent.result?.result,
-          error: agent.error,
-          iterations: agent.result?.iterations,
-          tool_calls: agent.result?.toolCalls,
-          started_at: new Date(agent.startedAt).toISOString(),
-          completed_at: agent.completedAt ? new Date(agent.completedAt).toISOString() : null,
-          duration_ms: agent.completedAt ? agent.completedAt - agent.startedAt : Date.now() - agent.startedAt,
-        },
-        null,
-        2,
-      ),
-    };
-  },
-);
-
-registerTool(
-  "get_agent_report",
-  `Read the result report from a sub-agent. This reads the .result.json file written by the sub-agent's report_agent_result tool.
-
-This is the recommended way to get sub-agent results after wait_for_agents returns.
-Only reads .result.json files - no access to logs or other files.
-
-Returns the report content, status, and metadata.`,
-  {
-    agent_id: {
-      type: "string",
-      description: "The ID of the sub-agent (from spawn_agent)",
-    },
-  },
-  ["agent_id"],
-  async ({ agent_id }: { agent_id: string }) => {
-    const { existsSync, readFileSync } = require("node:fs");
-
-    const agent = subAgents.get(agent_id);
-    if (!agent) {
-      return {
-        success: false,
-        output: "",
-        error: `Agent ${agent_id} not found. Use list_agents to see available agents.`,
-      };
-    }
-
-    // Check tmux status first (might have completed since last check)
-    checkTmuxAgentStatus(agent);
-
-    // Read the result file directly
-    if (!agent.resultFile) {
-      return {
-        success: false,
-        output: "",
-        error: `Agent ${agent_id} has no result file path (may be an in-process agent). Use get_agent_result instead.`,
-      };
-    }
-
-    if (!existsSync(agent.resultFile)) {
-      return {
-        success: true,
-        output: JSON.stringify(
-          {
-            agent_id: agent.id,
-            name: agent.name,
-            status: agent.status,
-            report_available: false,
-            message:
-              agent.status === "running"
-                ? "Agent is still running. No report yet."
-                : "Agent completed but no report file was written. The agent may not have called report_agent_result.",
-          },
-          null,
-          2,
-        ),
-      };
-    }
-
-    try {
-      const resultData = JSON.parse(readFileSync(agent.resultFile, "utf8"));
-      return {
-        success: true,
-        output: JSON.stringify(
-          {
-            agent_id: agent.id,
-            name: agent.name,
-            status: agent.status,
-            report_available: true,
-            report: {
-              success: resultData.success,
-              content: resultData.result,
-              completed_at: resultData.completedAt ? new Date(resultData.completedAt).toISOString() : null,
-              error: resultData.error,
-            },
-            duration_ms: agent.completedAt ? agent.completedAt - agent.startedAt : Date.now() - agent.startedAt,
-          },
-          null,
-          2,
-        ),
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        output: "",
-        error: `Failed to read result file: ${err.message}`,
-      };
-    }
-  },
-);
-
-registerTool(
-  "wait_for_agents",
-  `Wait for one or more sub-agents to complete. Polls locally (no API calls wasted).
-
-Modes:
-- "all" (default): Wait until ALL specified agents complete
-- "any": Wait until ANY one agent completes
-
-Returns the status of all specified agents. This is the recommended way to wait for async sub-agents.`,
-  {
-    agent_ids: {
-      type: "array",
-      items: { type: "string" },
-      description: "Array of agent IDs to wait for",
-    },
-    mode: {
-      type: "string",
-      description: 'Wait mode: "all" (default) or "any"',
-    },
-    timeout_ms: {
-      type: "number",
-      description: "Maximum time to wait in milliseconds (default: 600000 = 10 min)",
-    },
-  },
-  ["agent_ids"],
-  async ({
-    agent_ids,
-    mode = "all",
-    timeout_ms = 600000,
-  }: {
-    agent_ids: string[];
-    mode?: string;
-    timeout_ms?: number;
-  }) => {
-    const deadline = Date.now() + timeout_ms;
-
-    while (Date.now() < deadline) {
-      // Check status of all requested agents
-      for (const id of agent_ids) {
-        const agent = subAgents.get(id);
-        if (agent) {
-          // Check tmux agent status
-          checkTmuxAgentStatus(agent);
-        }
-      }
-
-      const statuses = agent_ids.map((id) => {
-        const agent = subAgents.get(id);
-        return {
-          id,
-          status: agent?.status || "not_found",
-          name: agent?.name,
-        };
-      });
-
-      const completed = statuses.filter((s) => s.status !== "running");
-
-      if (mode === "any" && completed.length > 0) {
-        // At least one done
-        const results = agent_ids.map((id) => {
-          const agent = subAgents.get(id);
-          return {
-            id,
-            name: agent?.name,
-            status: agent?.status || "not_found",
-            result: agent?.result?.result,
-            error: agent?.error,
-            duration_ms: agent?.completedAt
-              ? agent.completedAt - agent.startedAt
-              : Date.now() - (agent?.startedAt || Date.now()),
-          };
-        });
-        return {
-          success: true,
-          output: JSON.stringify(
-            { mode, completed: completed.length, total: agent_ids.length, agents: results },
-            null,
-            2,
-          ),
-        };
-      }
-
-      if (mode === "all" && completed.length === agent_ids.length) {
-        // All done
-        const results = agent_ids.map((id) => {
-          const agent = subAgents.get(id);
-          return {
-            id,
-            name: agent?.name,
-            status: agent?.status || "not_found",
-            result: agent?.result?.result,
-            error: agent?.error,
-            duration_ms: agent?.completedAt
-              ? agent.completedAt - agent.startedAt
-              : Date.now() - (agent?.startedAt || Date.now()),
-          };
-        });
-        return {
-          success: true,
-          output: JSON.stringify(
-            { mode, completed: completed.length, total: agent_ids.length, agents: results },
-            null,
-            2,
-          ),
-        };
-      }
-
-      // Sleep 2s locally - no API calls wasted
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-
-    // Timeout
-    const results = agent_ids.map((id) => {
-      const agent = subAgents.get(id);
-      return {
-        id,
-        name: agent?.name,
-        status: agent?.status || "not_found",
-        result: agent?.result?.result,
-        error: agent?.error,
-      };
-    });
-    return {
-      success: false,
-      output: JSON.stringify({ mode, timeout: true, agents: results }, null, 2),
-      error: `Timed out after ${timeout_ms}ms waiting for agents`,
+      output: JSON.stringify({ count: agents.length, agents }, null, 2),
     };
   },
 );

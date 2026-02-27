@@ -25,7 +25,6 @@ const TOOL_CAPS: Record<string, number> = {
   git_log: 8192,
   memory_search: 6144,
   web_fetch: 10240,
-  get_agent_result: 10240,
   tmux_capture: 8192,
   article_get: 10240,
 };

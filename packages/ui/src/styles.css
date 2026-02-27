@@ -1828,6 +1828,11 @@ body {
   border-color: rgba(239, 68, 68, 0.3);
 }
 
+.subspace-card-completed {
+  background-color: rgba(34, 197, 94, 0.08);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
 .subspace-status-active {
   color: #3b82f6;
 }

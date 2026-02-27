@@ -1680,7 +1680,7 @@ export default function MessageList({
                 )}
                 {msg.subspace && (
                   <div
-                    className={`message-subspace-card ${msg.subspace.status === "failed" || msg.subspace.status === "timed_out" ? "subspace-card-failed" : ""}`}
+                    className={`message-subspace-card ${msg.subspace.status === "failed" || msg.subspace.status === "timed_out" ? "subspace-card-failed" : msg.subspace.status === "completed" ? "subspace-card-completed" : ""}`}
                     onClick={() => (window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`)}
                     role="button"
                     tabIndex={0}

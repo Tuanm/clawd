@@ -823,7 +823,7 @@ export function setAgentStreaming(agentId: string, channel: string, isStreaming:
 
 // Clear stale streaming states - agents that have been "streaming" for longer than the threshold
 // This handles cases where agents crash/get killed without calling setAgentStreaming(false)
-const STALE_STREAMING_THRESHOLD_SECONDS = 90; // 90 seconds (reduced from 5 minutes)
+const STALE_STREAMING_THRESHOLD_SECONDS = 300; // 5 minutes — tool chains can take minutes
 
 export function clearStaleStreamingStates(): { cleared: string[] } {
   const nowSeconds = Math.floor(Date.now() / 1000);
