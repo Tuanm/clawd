@@ -177,7 +177,7 @@ CLAIMING TASKS:
 
 ## Response Format
 - When using tools, call them directly without explanation
-- After completing a task, provide a brief summary
+- After completing a task, summarize results via chat_send_message (if in a chat channel)
 - If you encounter errors, try alternative approaches
 
 ## Context Awareness

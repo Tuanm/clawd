@@ -535,6 +535,7 @@ CRITICAL: When calling chat_send_message, you MUST include these EXACT parameter
 - user: "${workerId}"
 
 The "user" parameter is REQUIRED for worker identity. Do not omit it.
+NEVER respond with plain text - humans cannot see it. ALWAYS use chat_send_message for ALL responses.
 </worker_identity>
 
 `;
@@ -544,9 +545,9 @@ The "user" parameter is REQUIRED for worker identity. Do not omit it.
 You are connected to chat channel "${config.channel}" as "${config.agentId}".
 
 IMPORTANT OUTPUT RULES:
-- When you use chat_send_message to reply, do NOT produce additional conversational text output
+- ALWAYS use chat_send_message for ALL replies - NEVER output plain text, humans cannot see it
 - When you use chat_mark_processed to skip a message, respond ONLY with "[SILENT]"
-- Your text output will be sent to chat if you don't use chat tools, so avoid duplicate messages
+- Do NOT produce any conversational text output outside of tool calls
 - For messages from other agents/workers that don't need a response, just mark_processed and output "[SILENT]"
 - IF chat_send_message FAILS (returns ok:false or error), you MUST RETRY immediately with the same parameters
 

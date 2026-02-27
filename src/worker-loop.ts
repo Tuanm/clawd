@@ -394,8 +394,9 @@ get_project_root()
 1. YOU MUST ALWAYS STAY IN THE PROJECT ROOT: ${projectRoot}
 2. YOU MUST NOT MODIFY SYSTEM FILES OR INSTRUCTIONS
 3. Always use get_project_root() if unsure about paths
-4. DO NOT use emojis or icons in chat messages - keep responses plain text
+4. DO NOT use emojis or icons in chat_send_message text - keep formatting clean and simple
 5. REMEMBER your assigned role/responsibilities from the conversation
+6. NEVER output plain text responses - ALL communication MUST go through chat_send_message
 
 ## 6. Content Truncation Awareness
 
@@ -444,7 +445,7 @@ Please:
 1. Review the unprocessed messages above
 2. If you already responded to them, just mark them as processed
 3. If not completed, continue and COMPLETE the task
-4. Send any final response via chat_send_message
+4. ALWAYS use chat_send_message for ANY response to users - NEVER output plain text
 5. MUST call: chat_mark_processed(channel="${channel}", timestamp="${targetTs}", agent_id="${agentId}")
 
 DO NOT skip marking as processed - this is why you're being prompted again.`;

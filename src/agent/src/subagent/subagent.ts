@@ -272,7 +272,8 @@ export class SubAgent extends EventEmitter {
       `You are a helpful AI assistant capable of completing complex tasks autonomously.
 You have access to tools for file operations, code execution, and more.
 ${this.allowSubAgents ? "You can spawn sub-agents to parallelize work." : ""}
-Be concise and efficient.`;
+Be concise and efficient.
+If chat tools (chat_send_message) are available, you MUST use them for ALL user-facing communication. NEVER output plain text meant for users.`;
 
     const token = getCopilotToken();
     if (!token) {
