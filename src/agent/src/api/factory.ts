@@ -16,6 +16,40 @@ import {
 } from "./provider-config";
 import { CopilotClient } from "./client";
 
+// Stream idle timeout (abort if no data for this duration)
+const STREAM_IDLE_TIMEOUT_MS = 60_000;
+
+/** Race reader.read() against an idle timeout; resets on every chunk. */
+function readWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal?: AbortSignal,
+  idleMs = STREAM_IDLE_TIMEOUT_MS,
+): () => Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const clear = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+  return async () => {
+    clear();
+    return new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`Stream idle timeout after ${idleMs}ms`));
+      }, idleMs);
+      reader.read().then(
+        (result) => {
+          clear();
+          resolve(result);
+        },
+        (err) => {
+          clear();
+          reject(err);
+        },
+      );
+    });
+  };
+}
+
 // ============================================================================
 // Provider Factory
 // ============================================================================
@@ -172,6 +206,7 @@ class OpenAIProvider implements LLMProvider {
     const decoder = new TextDecoder();
     let buffer = "";
     const toolCallBuffer: Map<number, any> = new Map();
+    const readNext = readWithIdleTimeout(reader, signal);
 
     try {
       while (true) {
@@ -180,7 +215,7 @@ class OpenAIProvider implements LLMProvider {
           break;
         }
 
-        const { done, value } = await reader.read();
+        const { done, value } = await readNext();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -364,6 +399,7 @@ class AnthropicProvider implements LLMProvider {
     let buffer = "";
     let currentContent = "";
     const toolCallBuffer: Map<number, { id: string; name: string; arguments: string }> = new Map();
+    const readNext = readWithIdleTimeout(reader, signal);
 
     try {
       while (true) {
@@ -372,7 +408,7 @@ class AnthropicProvider implements LLMProvider {
           break;
         }
 
-        const { done, value } = await reader.read();
+        const { done, value } = await readNext();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -820,6 +856,7 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
     const decoder = new TextDecoder();
     let buffer = "";
     const toolCallBuffer: Map<number, { name: string; arguments: string }> = new Map();
+    const readNext = readWithIdleTimeout(reader, signal);
 
     try {
       while (true) {
@@ -828,7 +865,7 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
           break;
         }
 
-        const { done, value } = await reader.read();
+        const { done, value } = await readNext();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });

@@ -241,8 +241,14 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
       // Wrap original resolve/reject to clear timer
       const original = this.pendingRequests.get(id)!;
       this.pendingRequests.set(id, {
-        resolve: (val: any) => { clearTimeout(timer); original.resolve(val); },
-        reject: (err: any) => { clearTimeout(timer); original.reject(err); },
+        resolve: (val: any) => {
+          clearTimeout(timer);
+          original.resolve(val);
+        },
+        reject: (err: any) => {
+          clearTimeout(timer);
+          original.reject(err);
+        },
       });
     });
   }
