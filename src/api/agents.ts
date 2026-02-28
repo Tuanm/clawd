@@ -490,7 +490,7 @@ export function registerAgentRoutes(
     if (path === "/api/app.agents.update" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
-        const { channel, agent_id, model, active, project, sleeping } = body;
+        const { channel, agent_id, model, active, project, sleeping, provider } = body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
@@ -500,6 +500,18 @@ export function registerAgentRoutes(
         const updates: string[] = [];
         const params: any[] = [];
 
+        if (provider !== undefined) {
+          const validProviders = ["copilot", "openai", "anthropic", "ollama"];
+          const agentProvider = String(provider).toLowerCase();
+          if (!validProviders.includes(agentProvider)) {
+            return json(
+              { ok: false, error: `Invalid provider: ${provider}. Must be one of: copilot, openai, anthropic, ollama` },
+              400,
+            );
+          }
+          updates.push("provider = ?");
+          params.push(agentProvider);
+        }
         if (model !== undefined) {
           updates.push("model = ?");
           params.push(model);
@@ -535,12 +547,13 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "agent_not_found" }, 404);
         }
 
-        // Restart worker if model changed, project changed, or active state changed
-        if (model !== undefined || active !== undefined || project !== undefined) {
+        // Restart worker if model, provider, project changed, or active state changed
+        if (model !== undefined || provider !== undefined || active !== undefined || project !== undefined) {
           if (agent.active === 1) {
             await workerManager.restartAgent({
               channel,
               agentId: agent_id,
+              provider: agent.provider || "copilot",
               model: agent.model,
               active: true,
               project: agent.project || "",

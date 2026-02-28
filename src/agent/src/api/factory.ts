@@ -63,7 +63,8 @@ export function createProvider(providerType?: ProviderType, modelOverride?: stri
   // Resolve model override: "default" or empty means no override (use config.json)
   // If an override is provided, resolve it through mapModelName to support aliases
   // (e.g., "sonnet" -> "claude-sonnet-4-6" from ~/.clawd/config.json)
-  const effectiveModelOverride = modelOverride && modelOverride !== "default" ? mapModelName(modelOverride) : undefined;
+  const effectiveModelOverride =
+    modelOverride && modelOverride !== "default" ? mapModelName(modelOverride, selectedType) : undefined;
 
   const provider = (() => {
     switch (selectedType) {

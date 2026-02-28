@@ -131,20 +131,35 @@ export function getProviderConfig(
 /**
  * Map short model names to full model names using config
  * Reads aliases from ~/.clawd/config.json under each provider's models config
+ *
+ * When providerType is specified, only that provider's aliases are checked.
+ * This prevents cross-provider alias collisions (e.g., "opus" mapping to
+ * different models under anthropic vs copilot).
+ *
+ * When providerType is omitted, all providers are searched (legacy behavior).
  */
-export function mapModelName(model: string): string {
+export function mapModelName(model: string, providerType?: ProviderType): string {
   const lower = model.toLowerCase().trim();
-
-  // Try to find mapping from any provider's models config
-  // Aliases can be in any format (with or without hyphens), so always check
   const config = loadConfig();
 
-  for (const [providerType, provider] of Object.entries(config.providers || {})) {
+  if (providerType) {
+    // Check only the specified provider's aliases
+    const provider = (config.providers as any)?.[providerType];
     if (provider?.models) {
-      // Check each model alias in the config
       for (const [alias, modelName] of Object.entries(provider.models)) {
         if (alias.toLowerCase() === lower && modelName) {
-          return modelName;
+          return modelName as string;
+        }
+      }
+    }
+  } else {
+    // Fallback: search all providers (legacy behavior)
+    for (const [, provider] of Object.entries(config.providers || {})) {
+      if (provider?.models) {
+        for (const [alias, modelName] of Object.entries(provider.models)) {
+          if (alias.toLowerCase() === lower && modelName) {
+            return modelName as string;
+          }
         }
       }
     }
@@ -162,7 +177,7 @@ export function getModelForProvider(providerType: ProviderType): string {
   const providerConfig = getProviderConfig(providerType);
   if (providerConfig && providerConfig.models?.default) {
     const configModel = providerConfig.models.default;
-    const resolved = mapModelName(configModel);
+    const resolved = mapModelName(configModel, providerType);
     if (configModel !== resolved) {
       console.log(`[Provider] Model mapping: "${configModel}" → "${resolved}" (${providerType})`);
     }
