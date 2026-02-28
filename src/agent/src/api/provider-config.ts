@@ -135,12 +135,8 @@ export function getProviderConfig(
 export function mapModelName(model: string): string {
   const lower = model.toLowerCase().trim();
 
-  // If the input already looks like a full model name (contains hyphen), return as-is
-  if (lower.includes("-")) {
-    return model;
-  }
-
   // Try to find mapping from any provider's models config
+  // Aliases can be in any format (with or without hyphens), so always check
   const config = loadConfig();
 
   for (const [providerType, provider] of Object.entries(config.providers || {})) {
