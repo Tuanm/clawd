@@ -206,22 +206,67 @@ export function getBaseUrlForProvider(providerType: ProviderType): string | unde
   return providerConfig?.base_url;
 }
 
+// ============================================================================
+// API Key Rotation
+// ============================================================================
+
+/** Round-robin counter per provider (in-memory, resets on restart) */
+const keyRotationCounters: Partial<Record<ProviderType, number>> = {};
+
 /**
- * Get the API key for a provider
+ * Get the effective API key for a provider, supporting key rotation.
+ *
+ * Rules:
+ * - If `api_key` is set (and non-empty), use it exclusively (ignores `api_keys`).
+ * - If only `api_keys` is set, rotate through them round-robin.
+ * - If neither is set, returns undefined.
  */
 export function getApiKeyForProvider(providerType: ProviderType): string | undefined {
   const providerConfig = getProviderConfig(providerType);
-  return providerConfig?.api_key;
+  if (!providerConfig) return undefined;
+
+  // api_key takes precedence over api_keys
+  if (providerConfig.api_key) {
+    return providerConfig.api_key;
+  }
+
+  const keys = (providerConfig as any).api_keys as string[] | undefined;
+  if (keys && keys.length > 0) {
+    const counter = keyRotationCounters[providerType] ?? 0;
+    const key = keys[counter % keys.length];
+    keyRotationCounters[providerType] = (counter + 1) % keys.length;
+    return key;
+  }
+
+  return undefined;
 }
 
 /**
  * Get the API key for Copilot provider
  * Prefers `api_key` (consistent with other providers), falls back to `token` (deprecated)
+ * Also supports `api_keys` rotation when only `api_keys` is set.
  */
 export function getCopilotToken(): string | null {
   const config = loadConfig();
   const copilot = config.providers?.copilot;
-  return copilot?.api_key || copilot?.token || null;
+  if (!copilot) return null;
+
+  // api_key takes precedence
+  if (copilot.api_key) {
+    return copilot.api_key;
+  }
+
+  // api_keys rotation (copilot inherits ProviderConfig which has api_keys)
+  const keys = (copilot as any).api_keys as string[] | undefined;
+  if (keys && keys.length > 0) {
+    const counter = keyRotationCounters["copilot"] ?? 0;
+    const key = keys[counter % keys.length];
+    keyRotationCounters["copilot"] = (counter + 1) % keys.length;
+    return key;
+  }
+
+  // Legacy token field
+  return copilot.token || null;
 }
 
 // ============================================================================

@@ -112,6 +112,8 @@ export type ProviderType = "openai" | "anthropic" | "copilot" | "ollama";
 export interface ProviderConfig {
   // Common
   api_key?: string;
+  /** List of API keys for rotation. Ignored if `api_key` is also set. */
+  api_keys?: string[];
   base_url?: string;
   models?: {
     default?: string;
@@ -132,6 +134,8 @@ export interface CopilotProviderConfig extends ProviderConfig {
 
 export interface OllamaProviderConfig {
   api_key?: string;
+  /** List of API keys for rotation. Ignored if `api_key` is also set. */
+  api_keys?: string[];
   base_url?: string;
   models?: {
     default?: string;
