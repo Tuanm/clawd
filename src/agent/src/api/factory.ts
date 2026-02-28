@@ -13,6 +13,7 @@ import {
   getApiKeyForProvider,
   getBaseUrlForProvider,
   getCopilotToken,
+  mapModelName,
 } from "./provider-config";
 import { CopilotClient } from "./client";
 
@@ -60,7 +61,10 @@ function readWithIdleTimeout(
 export function createProvider(providerType?: ProviderType, modelOverride?: string): LLMProvider {
   const selectedType = providerType || getSelectedProvider();
   // Resolve model override: "default" or empty means no override (use config.json)
-  const effectiveModelOverride = modelOverride && modelOverride !== "default" ? modelOverride : undefined;
+  // If an override is provided, resolve it through mapModelName to support aliases
+  // (e.g., "sonnet" -> "claude-sonnet-4-6" from ~/.clawd/config.json)
+  const effectiveModelOverride =
+    modelOverride && modelOverride !== "default" ? mapModelName(modelOverride) : undefined;
 
   const provider = (() => {
     switch (selectedType) {
@@ -965,3 +969,4 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
     // No connection to close for HTTP/1.1 fetch
   }
 }
+
