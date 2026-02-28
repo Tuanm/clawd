@@ -123,8 +123,11 @@ export interface ProviderConfig {
   headers?: Record<string, string>;
 }
 
-export interface CopilotProviderConfig {
+export interface CopilotProviderConfig extends ProviderConfig {
+  /** @deprecated Use `api_key` instead. Kept for backward compatibility. */
   token?: string;
+  /** Set to false to disable this provider */
+  enabled?: boolean;
 }
 
 export interface OllamaProviderConfig {

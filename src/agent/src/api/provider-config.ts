@@ -97,7 +97,10 @@ export function getSelectedProvider(): ProviderType {
   if (config.providers?.ollama?.base_url) {
     return "ollama";
   }
-  if (config.providers?.copilot?.enabled !== false && config.providers?.copilot?.token) {
+  if (
+    config.providers?.copilot?.enabled !== false &&
+    (config.providers?.copilot?.api_key || config.providers?.copilot?.token)
+  ) {
     return "copilot";
   }
   if (config.providers?.openai?.api_key) {
@@ -212,11 +215,13 @@ export function getApiKeyForProvider(providerType: ProviderType): string | undef
 }
 
 /**
- * Get the GitHub token for Copilot provider
+ * Get the API key for Copilot provider
+ * Prefers `api_key` (consistent with other providers), falls back to `token` (deprecated)
  */
 export function getCopilotToken(): string | null {
   const config = loadConfig();
-  return config.providers?.copilot?.token || null;
+  const copilot = config.providers?.copilot;
+  return copilot?.api_key || copilot?.token || null;
 }
 
 // ============================================================================
