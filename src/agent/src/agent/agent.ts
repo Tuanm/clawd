@@ -247,7 +247,7 @@ export class Agent {
     if (typeof tokenOrProvider === "string") {
       // Legacy mode: create provider from token with optional provider type
       const providerType = config.provider as "openai" | "anthropic" | "copilot" | undefined;
-      this.client = createProvider(providerType);
+      this.client = createProvider(providerType, config.model);
       this.token = tokenOrProvider;
     } else {
       // New mode: use provided provider

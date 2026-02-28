@@ -515,7 +515,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
           // Create agent
           let agent: Agent | null = null;
           try {
-            const llmProvider = createProvider(provider);
+            const llmProvider = createProvider(provider, model);
             agent = new Agent(llmProvider, agentConfig);
             this.activeAgent = agent;
 

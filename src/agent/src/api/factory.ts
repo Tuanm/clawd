@@ -57,35 +57,39 @@ function readWithIdleTimeout(
 /**
  * Create a provider instance based on the selected provider type
  */
-export function createProvider(providerType?: ProviderType): LLMProvider {
+export function createProvider(providerType?: ProviderType, modelOverride?: string): LLMProvider {
   const selectedType = providerType || getSelectedProvider();
+  // Resolve model override: "default" or empty means no override (use config.json)
+  const effectiveModelOverride = modelOverride && modelOverride !== "default" ? modelOverride : undefined;
 
   const provider = (() => {
     switch (selectedType) {
       case "openai":
-        return createOpenAIProvider();
+        return createOpenAIProvider(effectiveModelOverride);
       case "anthropic":
-        return createAnthropicProvider();
+        return createAnthropicProvider(effectiveModelOverride);
       case "copilot":
-        return createCopilotProvider();
+        return createCopilotProvider(effectiveModelOverride);
       case "ollama":
-        return createOllamaProvider();
+        return createOllamaProvider(effectiveModelOverride);
       default:
-        return createCopilotProvider();
+        return createCopilotProvider(effectiveModelOverride);
     }
   })();
 
-  console.log(`[Provider] type=${selectedType}, model=${(provider as any).model}`);
+  console.log(
+    `[Provider] type=${selectedType}, model=${(provider as any).model}${effectiveModelOverride ? ` (override from agent config)` : ""}`,
+  );
   return provider;
 }
 
 /**
  * Create OpenAI-compatible provider
  */
-function createOpenAIProvider(): LLMProvider {
+function createOpenAIProvider(modelOverride?: string): LLMProvider {
   const baseUrl = getBaseUrlForProvider("openai") || "https://api.openai.com/v1";
   const apiKey = getApiKeyForProvider("openai");
-  const model = getModelForProvider("openai");
+  const model = modelOverride || getModelForProvider("openai");
 
   return new OpenAIProvider({
     baseUrl,
@@ -97,10 +101,10 @@ function createOpenAIProvider(): LLMProvider {
 /**
  * Create Anthropic-compatible provider
  */
-function createAnthropicProvider(): LLMProvider {
+function createAnthropicProvider(modelOverride?: string): LLMProvider {
   const baseUrl = getBaseUrlForProvider("anthropic") || "https://api.anthropic.com";
   const apiKey = getApiKeyForProvider("anthropic");
-  const model = getModelForProvider("anthropic");
+  const model = modelOverride || getModelForProvider("anthropic");
 
   return new AnthropicProvider({
     baseUrl,
@@ -112,9 +116,9 @@ function createAnthropicProvider(): LLMProvider {
 /**
  * Create Copilot provider
  */
-function createCopilotProvider(): LLMProvider {
+function createCopilotProvider(modelOverride?: string): LLMProvider {
   const token = getCopilotToken();
-  const model = getModelForProvider("copilot");
+  const model = modelOverride || getModelForProvider("copilot");
   const baseUrl = getBaseUrlForProvider("copilot") || "https://api.githubcopilot.com";
 
   return new CopilotClient(token || "", { model, baseUrl });
@@ -123,10 +127,10 @@ function createCopilotProvider(): LLMProvider {
 /**
  * Create Ollama provider (uses Anthropic-compatible API)
  */
-function createOllamaProvider(): LLMProvider {
+function createOllamaProvider(modelOverride?: string): LLMProvider {
   const baseUrl = getBaseUrlForProvider("ollama") || "https://ollama.com";
   const apiKey = getApiKeyForProvider("ollama");
-  const model = getModelForProvider("ollama");
+  const model = modelOverride || getModelForProvider("ollama");
 
   return new OllamaProvider({ baseUrl, apiKey: apiKey || "", model });
 }
