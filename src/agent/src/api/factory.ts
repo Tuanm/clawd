@@ -20,6 +20,12 @@ import { CopilotClient } from "./client";
 // Stream idle timeout (abort if no data for this duration)
 const STREAM_IDLE_TIMEOUT_MS = 60_000;
 
+/** Show first 4 + last 4 characters of an API key for debugging failed requests. */
+function truncateKey(key: string): string {
+  if (!key || key.length <= 8) return "****";
+  return `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
 /** Race reader.read() against an idle timeout; resets on every chunk. */
 function readWithIdleTimeout(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -99,6 +105,7 @@ function createOpenAIProvider(modelOverride?: string): LLMProvider {
     baseUrl,
     apiKey: apiKey || "",
     model,
+    providerType: "openai",
   });
 }
 
@@ -114,6 +121,7 @@ function createAnthropicProvider(modelOverride?: string): LLMProvider {
     baseUrl,
     apiKey: apiKey || "",
     model,
+    providerType: "anthropic",
   });
 }
 
@@ -136,7 +144,7 @@ function createOllamaProvider(modelOverride?: string): LLMProvider {
   const apiKey = getApiKeyForProvider("ollama");
   const model = modelOverride || getModelForProvider("ollama");
 
-  return new OllamaProvider({ baseUrl, apiKey: apiKey || "", model });
+  return new OllamaProvider({ baseUrl, apiKey: apiKey || "", model, providerType: "ollama" });
 }
 
 // ============================================================================
@@ -147,20 +155,32 @@ interface OpenAIProviderOptions {
   baseUrl: string;
   apiKey: string;
   model: string;
+  providerType?: ProviderType;
 }
 
 class OpenAIProvider implements LLMProvider {
   readonly model: string;
   private baseUrl: string;
   private apiKey: string;
+  private providerType?: ProviderType;
 
   constructor(options: OpenAIProviderOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.apiKey = options.apiKey;
     this.model = options.model;
+    this.providerType = options.providerType;
+  }
+
+  /** Get the current API key, rotating if multiple keys are configured. */
+  private getActiveApiKey(): string {
+    if (this.providerType) {
+      return getApiKeyForProvider(this.providerType) || this.apiKey;
+    }
+    return this.apiKey;
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    const activeKey = this.getActiveApiKey();
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 120000);
     let response: Response;
@@ -169,7 +189,7 @@ class OpenAIProvider implements LLMProvider {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
+          Authorization: `Bearer ${activeKey}`,
         },
         body: JSON.stringify({
           ...request,
@@ -183,18 +203,19 @@ class OpenAIProvider implements LLMProvider {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`OpenAI API error: ${response.status} - ${error}`);
+      throw new Error(`OpenAI API error: ${response.status} [key=${truncateKey(activeKey)}] - ${error}`);
     }
 
     return response.json();
   }
 
   async *stream(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+    const activeKey = this.getActiveApiKey();
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${activeKey}`,
       },
       body: JSON.stringify({
         ...request,
@@ -205,7 +226,10 @@ class OpenAIProvider implements LLMProvider {
 
     if (!response.ok) {
       const error = await response.text();
-      yield { type: "error", error: `OpenAI API error: ${response.status} - ${error}` };
+      yield {
+        type: "error",
+        error: `OpenAI API error: ${response.status} [key=${truncateKey(activeKey)}] - ${error}`,
+      };
       return;
     }
 
@@ -305,17 +329,27 @@ class AnthropicProvider implements LLMProvider {
   readonly model: string;
   protected baseUrl: string;
   protected apiKey: string;
+  protected providerType?: ProviderType;
 
   constructor(options: OpenAIProviderOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.apiKey = options.apiKey;
     this.model = options.model;
+    this.providerType = options.providerType;
   }
 
-  protected getHeaders(): Record<string, string> {
+  /** Get the current API key, rotating if multiple keys are configured. */
+  protected getActiveApiKey(): string {
+    if (this.providerType) {
+      return getApiKeyForProvider(this.providerType) || this.apiKey;
+    }
+    return this.apiKey;
+  }
+
+  protected getHeaders(activeKey?: string): Record<string, string> {
     return {
       "Content-Type": "application/json",
-      "x-api-key": this.apiKey,
+      "x-api-key": activeKey || this.getActiveApiKey(),
       "anthropic-version": "2023-06-01",
     };
   }
@@ -325,6 +359,7 @@ class AnthropicProvider implements LLMProvider {
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    const activeKey = this.getActiveApiKey();
     const anthropicRequest = this.toAnthropicRequest(request);
 
     // Debug logging
@@ -345,7 +380,7 @@ class AnthropicProvider implements LLMProvider {
     try {
       response = await fetch(this.getEndpoint(), {
         method: "POST",
-        headers: this.getHeaders(),
+        headers: this.getHeaders(activeKey),
         body: JSON.stringify(anthropicRequest),
         signal: ctrl.signal,
       });
@@ -355,7 +390,7 @@ class AnthropicProvider implements LLMProvider {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Anthropic API error: ${response.status} - ${error}`);
+      throw new Error(`Anthropic API error: ${response.status} [key=${truncateKey(activeKey)}] - ${error}`);
     }
 
     const responseJson = await response.json();
@@ -376,6 +411,7 @@ class AnthropicProvider implements LLMProvider {
   }
 
   async *stream(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+    const activeKey = this.getActiveApiKey();
     const anthropicRequest = this.toAnthropicRequest(request, true);
 
     // Log the request
@@ -386,7 +422,7 @@ class AnthropicProvider implements LLMProvider {
 
     const response = await fetch(this.getEndpoint(), {
       method: "POST",
-      headers: this.getHeaders(),
+      headers: this.getHeaders(activeKey),
       body: JSON.stringify(anthropicRequest),
       signal,
     });
@@ -394,7 +430,10 @@ class AnthropicProvider implements LLMProvider {
     if (!response.ok) {
       const error = await response.text();
       // Log error
-      yield { type: "error", error: `Anthropic API error: ${response.status} - ${error}` };
+      yield {
+        type: "error",
+        error: `Anthropic API error: ${response.status} [key=${truncateKey(activeKey)}] - ${error}`,
+      };
       return;
     }
 
@@ -624,6 +663,7 @@ class OllamaProvider implements LLMProvider {
   readonly model: string;
   private baseUrl: string;
   private apiKey: string;
+  private providerType?: ProviderType;
 
   constructor(options: OpenAIProviderOptions) {
     // Use /api/chat endpoint, not /v1/messages
@@ -633,15 +673,25 @@ class OllamaProvider implements LLMProvider {
     }
     this.apiKey = options.apiKey;
     this.model = options.model;
+    this.providerType = options.providerType;
   }
 
-  protected getHeaders(): Record<string, string> {
+  /** Get the current API key, rotating if multiple keys are configured. */
+  private getActiveApiKey(): string {
+    if (this.providerType) {
+      return getApiKeyForProvider(this.providerType) || this.apiKey;
+    }
+    return this.apiKey;
+  }
+
+  protected getHeaders(activeKey?: string): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
     // Ollama cloud uses Bearer token
-    if (this.apiKey) {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
+    const key = activeKey || this.getActiveApiKey();
+    if (key) {
+      headers["Authorization"] = `Bearer ${key}`;
     }
     return headers;
   }
@@ -818,6 +868,7 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    const activeKey = this.getActiveApiKey();
     const ollamaRequest = this.toOllamaRequest(request, false);
 
     const ctrl = new AbortController();
@@ -826,7 +877,7 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
     try {
       response = await fetch(this.getEndpoint(), {
         method: "POST",
-        headers: this.getHeaders(),
+        headers: this.getHeaders(activeKey),
         body: JSON.stringify(ollamaRequest),
         signal: ctrl.signal,
       });
@@ -836,7 +887,7 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Ollama API error: ${response.status} - ${error}`);
+      throw new Error(`Ollama API error: ${response.status} [key=${truncateKey(activeKey)}] - ${error}`);
     }
 
     const responseJson = await response.json();
@@ -844,18 +895,22 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
   }
 
   async *stream(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+    const activeKey = this.getActiveApiKey();
     const ollamaRequest = this.toOllamaRequest(request, true);
 
     const response = await fetch(this.getEndpoint(), {
       method: "POST",
-      headers: this.getHeaders(),
+      headers: this.getHeaders(activeKey),
       body: JSON.stringify(ollamaRequest),
       signal,
     });
 
     if (!response.ok) {
       const error = await response.text();
-      yield { type: "error", error: `Ollama API error: ${response.status} - ${error}` };
+      yield {
+        type: "error",
+        error: `Ollama API error: ${response.status} [key=${truncateKey(activeKey)}] - ${error}`,
+      };
       return;
     }
 

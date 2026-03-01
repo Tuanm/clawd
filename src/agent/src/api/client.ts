@@ -162,6 +162,12 @@ const CONNECT_TIMEOUT_MS = 10_000; // 10s to establish HTTP/2 connection
 const REQUEST_TIMEOUT_MS = 120_000; // 120s for non-streaming requests (LLM can be slow)
 const STREAM_IDLE_TIMEOUT_MS = 60_000; // 60s idle timeout for streaming (no data received)
 
+/** Show first 4 + last 4 characters of an API key for debugging failed requests. */
+function truncateKey(key: string): string {
+  if (!key || key.length <= 8) return "****";
+  return `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -186,6 +192,11 @@ export class CopilotClient extends EventEmitter {
     this.token = token;
     this.model = options?.model || "claude-opus-4.6";
     this.baseUrl = options?.baseUrl || COPILOT_API_URL;
+  }
+
+  /** Get the current token, rotating if multiple keys are configured. */
+  private getActiveToken(): string {
+    return getCopilotToken() || this.token;
   }
 
   private getClient(): Promise<http2.ClientHttp2Session> {
@@ -241,6 +252,7 @@ export class CopilotClient extends EventEmitter {
   }
 
   private async _completeOnce(request: CompletionRequest): Promise<CompletionResponse> {
+    const activeToken = this.getActiveToken();
     const client = await this.getClient();
     logRequest(request);
 
@@ -248,7 +260,7 @@ export class CopilotClient extends EventEmitter {
       const headers = {
         ":method": "POST",
         ":path": this.apiPath,
-        Authorization: `Bearer ${this.token}`,
+        Authorization: `Bearer ${activeToken}`,
         "X-Interaction-Id": crypto.randomUUID(),
         ...BASE_HEADERS,
       };
@@ -271,7 +283,7 @@ export class CopilotClient extends EventEmitter {
           req.on("end", () => {
             clearTimeout(timer);
             logResponse(status, data);
-            reject(new Error(`API error ${status}: ${data}`));
+            reject(new Error(`API error ${status} [key=${truncateKey(activeToken)}]: ${data}`));
           });
           return;
         }
@@ -325,13 +337,14 @@ export class CopilotClient extends EventEmitter {
   }
 
   private async *_streamOnce(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+    const activeToken = this.getActiveToken();
     const client = await this.getClient();
     logRequest(request);
 
     const headers = {
       ":method": "POST",
       ":path": this.apiPath,
-      Authorization: `Bearer ${this.token}`,
+      Authorization: `Bearer ${activeToken}`,
       "X-Interaction-Id": crypto.randomUUID(),
       ...BASE_HEADERS,
     };
@@ -395,7 +408,7 @@ export class CopilotClient extends EventEmitter {
         });
         req.on("end", () => {
           logResponse(status, errorBody);
-          error = new Error(`API error ${status}: ${errorBody}`);
+          error = new Error(`API error ${status} [key=${truncateKey(activeToken)}]: ${errorBody}`);
           if (idleTimer) clearTimeout(idleTimer);
           resolver?.();
         });
