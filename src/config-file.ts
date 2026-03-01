@@ -18,6 +18,13 @@ export interface ConfigFile {
   dataDir?: string;
   uiDir?: string;
   providers?: Record<string, unknown>;
+  /** Environment variables for native tool integrations (e.g., GEMINI_API_KEY) */
+  env?: Record<string, string>;
+  /** Quota tracking settings */
+  quotas?: {
+    /** Daily image generation limit (0 = unlimited). Default: 50 */
+    daily_image_limit?: number;
+  };
 }
 
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");
@@ -47,4 +54,26 @@ export function loadConfigFile(): ConfigFile {
 export function getDataDir(): string {
   const config = loadConfigFile();
   return config.dataDir || join(homedir(), ".clawd", "data");
+}
+
+/** Get environment variables from config file's env section */
+export function getConfigEnv(): Record<string, string> {
+  const config = loadConfigFile();
+  const env = config.env;
+  if (!env || typeof env !== "object" || Array.isArray(env)) return {};
+  // Filter to string values only (defense against malformed config)
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string") {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/** Get a specific environment variable: config env → process.env fallback */
+export function getEnvVar(key: string): string | undefined {
+  const configEnv = getConfigEnv();
+  if (key in configEnv) return configEnv[key];
+  return process.env[key];
 }

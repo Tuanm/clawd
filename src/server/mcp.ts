@@ -7,11 +7,15 @@
  */
 
 import { db, generateTs, getAgent, getMessageSeenBy, type Message, markMessagesSeen, toSlackMessage } from "./database";
+import { ATTACHMENTS_DIR, generateId } from "./database";
 import { getOptimizedFile } from "./routes/files";
 import { getConversationHistory, getPendingMessages, postMessage } from "./routes/messages";
 import { broadcastMessageSeen, broadcastUpdate } from "./websocket";
 import { homedir } from "node:os";
+import { join } from "node:path";
+import { statSync } from "node:fs";
 import type { SchedulerManager } from "../scheduler/manager";
+import { analyzeImage, generateImage, editImage, analyzeVideo, getImageQuotaStatus } from "./multimodal";
 
 // Scheduler reference (set by index.ts after creation)
 let _scheduler: SchedulerManager | null = null;
@@ -1188,6 +1192,139 @@ Best practices:
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
+
+  // ============================================================================
+  // Multimodal Tools — Image/Video Analysis & Generation
+  // ============================================================================
+
+  {
+    name: "read_image",
+    description: `Analyze an image using a multimodal AI vision model. Returns a text description/analysis of the image content.
+
+Use this tool to:
+- Describe what's in an image
+- Extract text from screenshots (OCR)
+- Analyze diagrams, charts, or UI screenshots
+- Identify objects, people, or scenes
+
+Requires CPA provider (providers.cpa) or GEMINI_API_KEY in ~/.clawd/config.json. CPA is tried first; Gemini is used as fallback.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_id: {
+          type: "string",
+          description: "File ID from the chat system (e.g., F-xxxxx). The file must be an image.",
+        },
+        prompt: {
+          type: "string",
+          description:
+            'What to analyze or describe about the image. Default: "Describe this image in detail, including any text, diagrams, or notable visual elements."',
+        },
+      },
+      required: ["file_id"],
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+
+  {
+    name: "create_image",
+    description: `Generate an image from a text description. The generated image is automatically saved and registered in the chat system.
+
+Use this tool to:
+- Create illustrations, diagrams, or concept art
+- Generate visual mockups or design ideas
+- Create icons, logos, or simple graphics
+
+Requires CPA provider (providers.cpa) or GEMINI_API_KEY in ~/.clawd/config.json. CPA is tried first; Gemini is used as fallback.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description:
+            "Detailed description of the image to generate. Describe the scene narratively rather than listing keywords.",
+        },
+        aspect_ratio: {
+          type: "string",
+          description:
+            'Aspect ratio (default: "1:1"). Options: "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "1:4", "4:1", "1:8", "8:1"',
+        },
+        image_size: {
+          type: "string",
+          description: 'Output resolution (default: "1K"). Options: "512px", "1K", "2K", "4K"',
+        },
+      },
+      required: ["prompt"],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+
+  {
+    name: "edit_image",
+    description: `Edit an existing image using AI. Provide a source image (by file_id) and a text prompt describing the desired changes. The tool reads the source image internally — the agent does not need to know the image content, only its file_id and a description from read_image. The edited image is saved as a new file and registered in the chat system.
+
+Use this tool to:
+- Remove objects, watermarks, or trademarks from images
+- Change backgrounds or colors
+- Add or modify elements in an image
+- Apply style changes or adjustments
+- Combine elements from the description with the source image
+
+Tip: Use read_image first to understand the source image content, then describe the specific changes needed.
+
+Requires CPA provider (providers.cpa) or GEMINI_API_KEY in ~/.clawd/config.json. CPA is tried first; Gemini is used as fallback.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_id: {
+          type: "string",
+          description: "ID of the source image file to edit (from chat_download_file or create_image).",
+        },
+        prompt: {
+          type: "string",
+          description:
+            "Detailed description of the changes to apply. Be specific about what to add, remove, or modify.",
+        },
+      },
+      required: ["file_id", "prompt"],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+
+  {
+    name: "read_video",
+    description: `Analyze a video using a multimodal AI model (Gemini). Returns a text description/analysis of the video content.
+
+The tool first attempts direct video analysis via Gemini's native video support. If that fails (e.g., unsupported codec, file too large), it falls back to extracting frames with ffmpeg and analyzing those.
+
+Use this tool to:
+- Describe what happens in a video
+- Transcribe spoken content
+- Analyze screen recordings or demos
+- Identify key moments or scenes
+
+Requires: GEMINI_API_KEY in ~/.clawd/config.json, ffmpeg/ffprobe for fallback frame extraction.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_id: {
+          type: "string",
+          description: "File ID from the chat system (e.g., F-xxxxx). The file must be a video.",
+        },
+        prompt: {
+          type: "string",
+          description:
+            'What to analyze about the video. Default: "Describe what happens in this video, including any spoken content, on-screen text, and key visual elements."',
+        },
+        max_frames: {
+          type: "number",
+          description: "Maximum number of frames to extract for fallback analysis (default: 30).",
+        },
+      },
+      required: ["file_id"],
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
 ];
 
 // MCP JSON-RPC handler
@@ -1722,12 +1859,11 @@ async function executeToolCall(
             download_url: `/api/files/${file.id}`,
           };
 
-          // For images without explicit include_content, return a hint instead of base64
-          if (!includeContent && file.mimetype.startsWith("image/")) {
+          // Images NEVER return base64 — always provide hint to use read_image tool
+          if (file.mimetype.toLowerCase().startsWith("image/")) {
             fileInfo.image_hint =
-              `This is an image file (${file.name}). ` +
-              `To analyze or describe this image, use a vision-capable model ` +
-              `(e.g., Claude with vision, Gemini, GPT-4V) or the ai_multimodal tool. ` +
+              `This is an image file (${file.name}, ${file.mimetype}, ${file.size} bytes). ` +
+              `To analyze or describe this image, use the read_image tool with file_id="${file.id}". ` +
               `Do NOT attempt to read the image as base64 as it may exceed context limits. ` +
               `The image can be viewed at: /api/files/${file.id}`;
           } else if (includeContent && file.size < 1024 * 1024) {
@@ -1783,33 +1919,15 @@ async function executeToolCall(
             },
           };
 
-          // For images without explicit include_content, return a hint instead of base64
-          if (!includeContent && file.mimetype.startsWith("image/")) {
+          // Images NEVER return base64 — always provide hint to use read_image tool
+          if (file.mimetype.toLowerCase().startsWith("image/")) {
             (response.file as Record<string, unknown>).image_hint =
-              `This is an image file (${file.name}). ` +
-              `To analyze or describe this image, use a vision-capable model ` +
-              `(e.g., Claude with vision, Gemini, GPT-4V) or the ai_multimodal tool. ` +
+              `This is an image file (${file.name}, ${file.mimetype}, ${file.size} bytes). ` +
+              `To analyze or describe this image, use the read_image tool with file_id="${file.id}". ` +
               `Do NOT attempt to read the image as base64 as it may exceed context limits. ` +
               `The image can be viewed at: /api/files/${file.id}`;
-          } else if (optimize && file.mimetype.startsWith("image/") && includeContent) {
-            // If optimize=true and it's an image, use optimized version
-            try {
-              const optimized = await getOptimizedFile(fileId, { maxWidth, maxHeight, quality, maxBytes });
-              if (optimized) {
-                (response.file as Record<string, unknown>).content_base64 = optimized.data.toString("base64");
-                (response.file as Record<string, unknown>).mimetype = optimized.mimetype;
-                (response.file as Record<string, unknown>).name = optimized.name;
-                (response.file as Record<string, unknown>).original_size = optimized.originalSize;
-                (response.file as Record<string, unknown>).optimized_size = optimized.optimizedSize;
-                (response.file as Record<string, unknown>).size = optimized.optimizedSize;
-              } else {
-                (response.file as Record<string, unknown>).content_error = "Could not optimize file";
-              }
-            } catch (err) {
-              (response.file as Record<string, unknown>).content_error = `Optimization failed: ${err}`;
-            }
           }
-          // Include base64 content if requested and file is small enough (<1MB)
+          // Include base64 content if requested and file is small enough (<1MB) — non-images only
           else if (includeContent && file.size < 1024 * 1024) {
             try {
               const fileData = await Bun.file(file.path).arrayBuffer();
@@ -1846,6 +1964,15 @@ async function executeToolCall(
 
         if (!file) {
           resultText = JSON.stringify({ ok: false, error: "File not found" });
+          break;
+        }
+
+        // Block ALL image file content — use read_image tool instead
+        if (file.mimetype.toLowerCase().startsWith("image/")) {
+          resultText = JSON.stringify({
+            ok: false,
+            error: `Cannot read image file content. Use the read_image tool with file_id="${file.id}" to analyze this image instead.`,
+          });
           break;
         }
 
@@ -2439,6 +2566,218 @@ async function executeToolCall(
         const { getTasksForPlan } = await import("./routes/tasks");
         const phases = getTasksForPlan(args.plan_id as string);
         resultText = JSON.stringify({ ok: true, phases }, null, 2);
+        break;
+      }
+
+      // ============================================================================
+      // Multimodal Tool Handlers
+      // ============================================================================
+
+      case "read_image": {
+        const fileId = args.file_id as string;
+        const prompt =
+          (args.prompt as string) ||
+          "Describe this image in detail, including any text, diagrams, or notable visual elements.";
+
+        const file = db
+          .query<{ id: string; name: string; mimetype: string; size: number; path: string }, [string]>(
+            `SELECT id, name, mimetype, size, path FROM files WHERE id = ?`,
+          )
+          .get(fileId);
+
+        if (!file) {
+          resultText = JSON.stringify({ ok: false, error: "File not found" });
+        } else if (!file.mimetype.toLowerCase().startsWith("image/")) {
+          resultText = JSON.stringify({ ok: false, error: `File is not an image (${file.mimetype})` });
+        } else {
+          const result = await analyzeImage(file.path, prompt, [ATTACHMENTS_DIR, "/tmp"]);
+          resultText = JSON.stringify({
+            ok: result.ok,
+            file: { id: file.id, name: file.name, mimetype: file.mimetype },
+            ...(result.ok ? { analysis: result.result } : { error: result.error }),
+          });
+        }
+        break;
+      }
+
+      case "create_image": {
+        const prompt = args.prompt as string;
+        const aspectRatio = (args.aspect_ratio as string) || "1:1";
+        const imageSize = (args.image_size as string) || "1K";
+
+        const validAspectRatios = [
+          "1:1",
+          "2:3",
+          "3:2",
+          "3:4",
+          "4:3",
+          "4:5",
+          "5:4",
+          "9:16",
+          "16:9",
+          "21:9",
+          "1:4",
+          "4:1",
+          "1:8",
+          "8:1",
+        ];
+        if (!validAspectRatios.includes(aspectRatio)) {
+          resultText = JSON.stringify({
+            ok: false,
+            error: `Invalid aspect_ratio: "${aspectRatio}". Valid: ${validAspectRatios.join(", ")}`,
+          });
+          break;
+        }
+        const validImageSizes = ["512px", "1K", "2K", "4K"];
+        if (!validImageSizes.includes(imageSize)) {
+          resultText = JSON.stringify({
+            ok: false,
+            error: `Invalid image_size: "${imageSize}". Valid: ${validImageSizes.join(", ")}`,
+          });
+          break;
+        }
+
+        const fileId = generateId("F");
+        const baseName = `generated-${fileId}-${Date.now()}`;
+        const outputPath = join(ATTACHMENTS_DIR, `${baseName}.png`);
+
+        const result = await generateImage(prompt, outputPath, aspectRatio, [ATTACHMENTS_DIR, "/tmp"], imageSize);
+
+        if (result.ok && result.path) {
+          try {
+            const actualPath = result.path;
+            const ext = actualPath.split(".").pop()?.toLowerCase() || "png";
+            const fileName = `${baseName}.${ext}`;
+            const mimetype = result.mimeType || "image/png";
+            const stat = statSync(actualPath);
+
+            db.run("INSERT INTO files (id, name, mimetype, size, path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [
+              fileId,
+              fileName,
+              mimetype,
+              stat.size,
+              actualPath,
+              "system",
+            ]);
+
+            const quota = getImageQuotaStatus();
+            resultText = JSON.stringify({
+              ok: true,
+              image: {
+                id: fileId,
+                name: fileName,
+                path: actualPath,
+                mimetype,
+                size: stat.size,
+                prompt,
+                aspect_ratio: aspectRatio,
+              },
+              quota: { used: quota.used, limit: quota.limit, remaining: quota.remaining },
+            });
+          } catch (err) {
+            resultText = JSON.stringify({
+              ok: false,
+              error: `Image generated but failed to register: ${(err as Error).message}`,
+              quota: getImageQuotaStatus(),
+            });
+          }
+        } else {
+          resultText = JSON.stringify({ ok: false, error: result.error, quota: getImageQuotaStatus() });
+        }
+        break;
+      }
+
+      case "edit_image": {
+        const sourceFileId = args.file_id as string;
+        const prompt = args.prompt as string;
+
+        const sourceFile = db
+          .query<{ id: string; name: string; mimetype: string; size: number; path: string }, [string]>(
+            `SELECT id, name, mimetype, size, path FROM files WHERE id = ?`,
+          )
+          .get(sourceFileId);
+
+        if (!sourceFile) {
+          resultText = JSON.stringify({ ok: false, error: "Source file not found" });
+        } else if (!sourceFile.mimetype.toLowerCase().startsWith("image/")) {
+          resultText = JSON.stringify({ ok: false, error: `Source file is not an image (${sourceFile.mimetype})` });
+        } else {
+          const newFileId = generateId("F");
+          const baseName = `edited-${newFileId}-${Date.now()}`;
+          const outputPath = join(ATTACHMENTS_DIR, `${baseName}.png`);
+
+          const result = await editImage(sourceFile.path, prompt, outputPath, [ATTACHMENTS_DIR, "/tmp"]);
+
+          if (result.ok && result.path) {
+            try {
+              const actualPath = result.path;
+              const ext = actualPath.split(".").pop()?.toLowerCase() || "png";
+              const fileName = `${baseName}.${ext}`;
+              const mimetype = result.mimeType || "image/png";
+              const stat = statSync(actualPath);
+
+              db.run("INSERT INTO files (id, name, mimetype, size, path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [
+                newFileId,
+                fileName,
+                mimetype,
+                stat.size,
+                actualPath,
+                "system",
+              ]);
+
+              const quota = getImageQuotaStatus();
+              resultText = JSON.stringify({
+                ok: true,
+                image: {
+                  id: newFileId,
+                  name: fileName,
+                  path: actualPath,
+                  mimetype,
+                  size: stat.size,
+                  source_file_id: sourceFileId,
+                  prompt,
+                },
+                quota: { used: quota.used, limit: quota.limit, remaining: quota.remaining },
+              });
+            } catch (err) {
+              resultText = JSON.stringify({
+                ok: false,
+                error: `Image edited but failed to register: ${(err as Error).message}`,
+                quota: getImageQuotaStatus(),
+              });
+            }
+          } else {
+            resultText = JSON.stringify({ ok: false, error: result.error, quota: getImageQuotaStatus() });
+          }
+        }
+        break;
+      }
+
+      case "read_video": {
+        const fileId = args.file_id as string;
+        const prompt =
+          (args.prompt as string) ||
+          "Describe what happens in this video, including any spoken content, on-screen text, and key visual elements.";
+        const maxFrames = (args.max_frames as number) || 30;
+
+        const file = db
+          .query<{ id: string; name: string; mimetype: string; size: number; path: string }, [string]>(
+            `SELECT id, name, mimetype, size, path FROM files WHERE id = ?`,
+          )
+          .get(fileId);
+
+        if (!file) {
+          resultText = JSON.stringify({ ok: false, error: "File not found" });
+        } else if (!file.mimetype.toLowerCase().startsWith("video/")) {
+          resultText = JSON.stringify({ ok: false, error: `File is not a video (${file.mimetype})` });
+        } else {
+          const result = await analyzeVideo(file.path, prompt, [ATTACHMENTS_DIR, "/tmp"], maxFrames);
+          resultText = JSON.stringify({
+            ok: result.ok,
+            file: { id: file.id, name: file.name, mimetype: file.mimetype },
+            ...(result.ok ? { analysis: result.result } : { error: result.error }),
+          });
+        }
         break;
       }
 
