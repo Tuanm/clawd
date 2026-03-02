@@ -183,6 +183,11 @@ Use this to respond to user messages or send notifications.`,
           description:
             "Optional HTML content to render as a preview (use for rich visual content like charts, diagrams, or formatted output)",
         },
+        workspace_json: {
+          type: "string",
+          description:
+            "Optional JSON string for an agent workspace preview card. Format: {\"workspace_id\":\"<id>\",\"title\":\"<title>\",\"description\":\"<optional>\",\"status\":\"running|waiting|completed\"}. Clicking the card opens the agent's noVNC desktop in a new tab.",
+        },
         code_preview: {
           type: "object",
           description: "Optional code preview with syntax highlighting",
@@ -1747,6 +1752,7 @@ async function executeToolCall(
         // Use user override if provided, otherwise default to UBOT
         const userId = userOverride || "UBOT";
         const htmlPreview = args.html_preview as string | undefined;
+        const workspaceJson = args.workspace_json as string | undefined;
         const codePreview = args.code_preview as
           | {
               filename: string;
@@ -1764,6 +1770,7 @@ async function executeToolCall(
           agent_id: agentId,
           html_preview: htmlPreview,
           code_preview: codePreview,
+          workspace_json: workspaceJson,
         });
 
         resultText = JSON.stringify(result, null, 2);

@@ -58,6 +58,12 @@ interface Message {
     status: "active" | "completed" | "failed" | "timed_out";
     channel: string;
   };
+  workspace?: {
+    workspace_id: string;
+    title: string;
+    description?: string;
+    status: "running" | "waiting" | "completed";
+  };
 }
 
 // Pending message type
@@ -1697,6 +1703,27 @@ export default function MessageList({
                       {msg.subspace.description && (
                         <div className="subspace-card-description">{msg.subspace.description}</div>
                       )}
+                    </div>
+                  </div>
+                )}
+                {msg.workspace && (
+                  <div
+                    className={`message-workspace-card ${msg.workspace.status === "completed" ? "workspace-card-completed" : msg.workspace.status === "waiting" ? "workspace-card-waiting" : "workspace-card-running"}`}
+                    onClick={() => window.open(`/workspace/${encodeURIComponent(msg.workspace!.workspace_id)}/novnc/vnc.html?autoconnect=1&resize=scale`, "_blank")}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) =>
+                      (e.key === "Enter" || e.key === " ") &&
+                      window.open(`/workspace/${encodeURIComponent(msg.workspace!.workspace_id)}/novnc/vnc.html?autoconnect=1&resize=scale`, "_blank")
+                    }
+                  >
+                    <div className="workspace-card-icon">🖥️</div>
+                    <div className="workspace-card-content">
+                      <div className="workspace-card-title">{msg.workspace.title}</div>
+                      {msg.workspace.description && (
+                        <div className="workspace-card-description">{msg.workspace.description}</div>
+                      )}
+                      <div className="workspace-card-action">Open Desktop →</div>
                     </div>
                   </div>
                 )}

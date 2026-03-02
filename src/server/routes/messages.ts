@@ -42,6 +42,7 @@ export interface PostMessageRequest {
   code_preview?: CodePreview;
   article_json?: string;
   subspace_json?: string;
+  workspace_json?: string;
 }
 
 export interface UpdateMessageRequest {
@@ -119,6 +120,7 @@ export function postMessage(req: PostMessageRequest) {
     agentId,
     mentionsJson,
     req.subspace_json || null,
+    req.workspace_json || null,
   );
 
   const msg = preparedStatements.getMessageByTs.get(ts);

@@ -1,15 +1,25 @@
 import type { ServerWebSocket } from "bun";
 import { getAgent, getMessageSeenBy, type Message, type SlackMessage, toSlackMessage } from "./database";
 import { isDebugEnabled } from "../agent/src/utils/debug";
+import {
+  handleWorkspaceWsOpen,
+  handleWorkspaceWsMessage,
+  handleWorkspaceWsClose,
+  type WorkspaceWsData,
+} from "./routes/workspace-proxy";
 
-interface WebSocketData {
+/** Chat WebSocket data (regular connections) */
+interface ChatWebSocketData {
+  type?: "chat";
   userId: string;
-  channel?: string; // Legacy single-channel field (kept for backward compatibility)
+  channel?: string;
 }
 
-const clients = new Set<ServerWebSocket<WebSocketData>>();
+export type WebSocketData = ChatWebSocketData | WorkspaceWsData;
+
+const clients = new Set<ServerWebSocket<ChatWebSocketData>>();
 // Track multi-channel subscriptions per client (ws.data can only hold simple types)
-const clientChannels = new WeakMap<ServerWebSocket<WebSocketData>, Set<string>>();
+const clientChannels = new WeakMap<ServerWebSocket<ChatWebSocketData>, Set<string>>();
 
 function wsDebug(...args: unknown[]) {
   // Disabled - WS logs are too verbose
@@ -17,19 +27,29 @@ function wsDebug(...args: unknown[]) {
 }
 
 export function handleWebSocketOpen(ws: ServerWebSocket<WebSocketData>) {
-  clients.add(ws);
-  clientChannels.set(ws, new Set());
+  if (ws.data.type === "workspace-novnc") {
+    handleWorkspaceWsOpen(ws as ServerWebSocket<WorkspaceWsData>);
+    return;
+  }
+  const chatWs = ws as ServerWebSocket<ChatWebSocketData>;
+  clients.add(chatWs);
+  clientChannels.set(chatWs, new Set());
   wsDebug(`Client connected (${clients.size} total)`);
 }
 
 export function handleWebSocketClose(ws: ServerWebSocket<WebSocketData>) {
-  clients.delete(ws);
-  clientChannels.delete(ws);
+  if (ws.data.type === "workspace-novnc") {
+    handleWorkspaceWsClose(ws as ServerWebSocket<WorkspaceWsData>);
+    return;
+  }
+  const chatWs = ws as ServerWebSocket<ChatWebSocketData>;
+  clients.delete(chatWs);
+  clientChannels.delete(chatWs);
   wsDebug(`Client disconnected (${clients.size} total)`);
 }
 
 /** Check if a client is subscribed to a channel */
-function isSubscribed(ws: ServerWebSocket<WebSocketData>, channel: string): boolean {
+function isSubscribed(ws: ServerWebSocket<ChatWebSocketData>, channel: string): boolean {
   const channels = clientChannels.get(ws);
   if (channels && channels.size > 0) {
     return channels.has(channel);
@@ -39,33 +59,38 @@ function isSubscribed(ws: ServerWebSocket<WebSocketData>, channel: string): bool
 }
 
 export function handleWebSocketMessage(ws: ServerWebSocket<WebSocketData>, message: string | Buffer) {
+  if (ws.data.type === "workspace-novnc") {
+    handleWorkspaceWsMessage(ws as ServerWebSocket<WorkspaceWsData>, message);
+    return;
+  }
+  const chatWs = ws as ServerWebSocket<ChatWebSocketData>;
   try {
     const data = JSON.parse(message.toString());
 
     // Handle subscription to channel (supports multiple channels per client)
     if (data.type === "subscribe" && data.channel) {
-      let channels = clientChannels.get(ws);
+      let channels = clientChannels.get(chatWs);
       if (!channels) {
         channels = new Set();
-        clientChannels.set(ws, channels);
+        clientChannels.set(chatWs, channels);
       }
       channels.add(data.channel);
-      ws.data.channel = data.channel; // Keep legacy field updated
-      ws.send(JSON.stringify({ type: "subscribed", channel: data.channel }));
+      chatWs.data.channel = data.channel; // Keep legacy field updated
+      chatWs.send(JSON.stringify({ type: "subscribed", channel: data.channel }));
     }
 
     // Handle unsubscribe from channel
     if (data.type === "unsubscribe" && data.channel) {
-      const channels = clientChannels.get(ws);
+      const channels = clientChannels.get(chatWs);
       if (channels) {
         channels.delete(data.channel);
       }
-      ws.send(JSON.stringify({ type: "unsubscribed", channel: data.channel }));
+      chatWs.send(JSON.stringify({ type: "unsubscribed", channel: data.channel }));
     }
 
     // Handle ping
     if (data.type === "ping") {
-      ws.send(JSON.stringify({ type: "pong" }));
+      chatWs.send(JSON.stringify({ type: "pong" }));
     }
   } catch {
     // Ignore parse errors

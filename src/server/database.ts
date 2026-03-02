@@ -41,8 +41,8 @@ initDatabase();
 export const preparedStatements = {
   // Insert message
   insertMessage: db.prepare(
-    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json, subspace_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json, subspace_json, workspace_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ),
 
   // Get message by ts
@@ -304,6 +304,13 @@ export function initDatabase() {
     /* Column already exists */
   }
 
+  // Add workspace_json column to messages for agent workspace preview cards
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN workspace_json TEXT`);
+  } catch {
+    /* Column already exists */
+  }
+
   // Create spaces table for sub-agent chat sessions
   db.exec(`
     CREATE TABLE IF NOT EXISTS spaces (
@@ -510,6 +517,7 @@ export interface Message {
   reactions_json: string;
   article_json: string | null;
   subspace_json: string | null;
+  workspace_json: string | null;
   created_at: number;
 }
 
@@ -547,6 +555,14 @@ export interface SlackMessage {
     thumbnail_url: string;
   };
   subspace?: SubspacePreview;
+  workspace?: WorkspacePreview;
+}
+
+export interface WorkspacePreview {
+  workspace_id: string;
+  title: string;
+  description?: string;
+  status: "running" | "waiting" | "completed";
 }
 
 export interface SubspacePreview {
@@ -645,6 +661,19 @@ export function toSlackMessage(msg: Message): SlackMessage {
       const subspace = JSON.parse(msg.subspace_json);
       if (subspace && subspace.id) {
         result.subspace = subspace;
+      }
+    } catch {
+      /* Invalid JSON */
+    }
+  }
+
+  // Parse and include workspace preview
+  if (msg.workspace_json) {
+    try {
+      const workspace = JSON.parse(msg.workspace_json);
+      // Validate workspace_id is a safe hex string before trusting it in client URLs
+      if (workspace && typeof workspace.workspace_id === "string" && /^[a-f0-9]{16}$/.test(workspace.workspace_id)) {
+        result.workspace = workspace;
       }
     } catch {
       /* Invalid JSON */

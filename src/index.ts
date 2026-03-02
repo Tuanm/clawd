@@ -171,6 +171,7 @@ import {
   handleWebSocketMessage,
   handleWebSocketOpen,
 } from "./server/websocket";
+import { handleWorkspaceProxy, upgradeWorkspaceWs } from "./server/routes/workspace-proxy";
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
 
@@ -413,11 +414,23 @@ const server = Bun.serve({
     const url = new URL(req.url);
     const path = url.pathname;
 
-    // WebSocket upgrade
+    // WebSocket upgrade — chat (/ws) or workspace noVNC proxy (/workspace/:id/novnc/websockify)
     if (path === "/ws") {
       const userId = url.searchParams.get("user") || "UHUMAN";
       if (server.upgrade(req, { data: { userId } })) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
+    }
+
+    // Workspace noVNC WebSocket proxy
+    const wsProxyMatch = path.match(/^\/workspace\/([a-f0-9]{16})\/novnc\/websockify$/);
+    if (wsProxyMatch) {
+      return upgradeWorkspaceWs(req, wsProxyMatch[1], server);
+    }
+
+    // Workspace noVNC HTTP proxy
+    const proxyMatch = path.match(/^\/workspace\/([a-f0-9]{16})\/novnc(\/.*)?$/);
+    if (proxyMatch) {
+      return handleWorkspaceProxy(req, url, proxyMatch[1]);
     }
 
     // API routes
@@ -589,6 +602,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         code_preview: body.code_preview,
         article_json: body.article_json,
         subspace_json: body.subspace_json,
+        workspace_json: body.workspace_json,
       });
       if (result.ok && body.files && Array.isArray(body.files) && body.files.length > 0) {
         attachFilesToMessage(
