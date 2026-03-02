@@ -317,7 +317,96 @@ File IDs follow the lifecycle: **tool input** (`file_id`) → **DB lookup** (`fi
 
 ---
 
-## 9. Further Reading
+## 10. Agent Workspace System (Phase 2 & 3)
+
+The Workspace System gives each Claw'd agent a fully isolated, controllable desktop environment — a Docker container running a headless Ubuntu OS with Chromium, a virtual framebuffer (Xvfb), and a Unified Workspace MCP Server that exposes 19 tools for browser/desktop control.
+
+### Architecture
+
+```
+Claw'd Host Process
+├── WorkspaceToolPlugin (ToolPlugin)
+│   ├── spawn_workspace → Docker API → container lifecycle
+│   ├── destroy_workspace → cleanup container, volume, network
+│   └── list_workspaces → active workspace inventory
+├── WorkspacePool (pool.ts)
+│   ├── Pre-warmed containers for fast acquisition (~200ms vs 5-10s cold)
+│   ├── Recycling disabled (session contamination risk, pending state reset impl)
+│   └── TCP probe health checks on acquire (prevents stale pool entries)
+└── MCPManager
+    └── MCPHttpConnection per workspace
+        ├── Authorization: Bearer <authToken> on every request
+        └── tools/list re-throws errors (no silent 0-tool registrations)
+
+Docker Container (clawd-workspace:base or :web3)
+├── Xvfb :99 (1280x1024 virtual display)
+├── Fluxbox window manager
+├── Chromium browser (persistent profile in /data volume)
+├── noVNC (port 6080) — optional VNC access for debugging
+└── Workspace MCP Server (Express, port 3000)
+    ├── Auth middleware: fail-closed (503 if WORKSPACE_AUTH_TOKEN unset)
+    ├── /health endpoint (unauthenticated, for readiness detection)
+    └── 19 tools: launch_browser, navigate, screenshot, click, type_text,
+        scroll, keyboard_key, find_element, wait_for, get_page_content,
+        execute_script, launch_app, clipboard, totp_code, pause_for_human,
+        file_dialog, window_manage, vision_analyze, xdotool_action
+```
+
+### Isolation & Security
+
+| Feature | Implementation |
+|---------|----------------|
+| Container isolation | `--cap-drop ALL`, `--security-opt no-new-privileges`, `--pids-limit 200`, `--tmpfs /tmp` |
+| Network isolation | Per-workspace bridge network `clawd-ws-net-{id}` (containers cannot reach each other; internet OK for Playwright) |
+| Auth token | `randomBytes(32)` — 256-bit entropy, injected as `WORKSPACE_AUTH_TOKEN` env var |
+| Image allowlist | `Set{clawd-workspace:base, :web3, :devtools, :office}` — LLM cannot pull arbitrary images |
+| Path validation | `realpathSync()` + prefix check against `ALLOWED_PROJECT_ROOTS` — symlink traversal blocked |
+| Credentials | CPA API key passed as `CLAWD_CPA_BASE_URL`/`CLAWD_CPA_API_KEY` env vars only — full config.json never mounted |
+| Port binding | All ports bound to `127.0.0.1` — no external exposure |
+| MCP server binding | `127.0.0.1:3000` inside container (not `0.0.0.0`) |
+| Shell injection prevention | All `docker` and `xdotool` calls use `execFile`/`execFileSync` with array args |
+
+### Container Lifecycle
+
+```
+spawnWorkspace()
+  1. Allocate ports from pools: MCP(6000-6099), noVNC(7000-7099), VNC(5900-5999)
+  2. Create per-workspace volume: clawd-ws-data-{id}
+  3. Create per-workspace network: clawd-ws-net-{id}
+  4. docker run with all hardening flags
+  5. waitForHealthy(): Docker HEALTHCHECK → TCP probe → HTTP 401 check
+     (401 = auth enforced = MCP server is live)
+  6. Register in MCPManager with auth token
+
+destroyWorkspace()
+  1. docker stop {container}
+  2. docker rm {container}
+  3. docker volume rm clawd-ws-data-{id}
+  4. docker network rm clawd-ws-net-{id}
+  5. Release ports back to pool
+  6. MCPManager.removeServer(workspace-{id})
+```
+
+### Single-Workspace Constraint
+
+Each agent session is limited to one active workspace at a time. This is enforced by `WorkspaceToolPlugin` to prevent tool name collisions — all workspace MCP servers expose the same 19 tool names (e.g., `launch_browser`, `screenshot`). The MCP router matches by first server, so a second workspace's tools would be silently ignored by the LLM.
+
+To switch workspaces: call `destroy_workspace` first, then `spawn_workspace`.
+
+### Docker Images
+
+| Image | Contents | Use Case |
+|-------|----------|----------|
+| `clawd-workspace:base` | Ubuntu 24.04, Chromium, Playwright, Xvfb, Fluxbox, workspace MCP server | General browsing/automation |
+| `clawd-workspace:web3` | base + MetaMask v12.0.0 (SHA256 verified) + Freighter v5.37.3 (SHA256 verified) | DeFi/blockchain tasks |
+
+### Tool Index (Workspace MCP Server — 19 tools)
+
+`launch_browser`, `navigate`, `screenshot`, `click`, `type_text`, `scroll`, `keyboard_key`, `find_element`, `wait_for`, `get_page_content`, `execute_script`, `launch_app`, `clipboard`, `totp_code`, `pause_for_human`, `file_dialog`, `window_manage`, `vision_analyze`, `xdotool_action`
+
+---
+
+## 11. Further Reading
 - Consult `README.md` for high-level guide and links
 - See `/docs/` for deep dives into specific subsystems and plugin tooling
 - In-code docs for plugin/agent extension APIs
