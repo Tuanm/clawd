@@ -14,9 +14,11 @@
 6. [Feasibility Analysis for Claw'd](#6-feasibility-analysis-for-clawd)
 7. [Recommended Architecture](#7-recommended-architecture)
 8. [Security Considerations](#8-security-considerations)
-9. [Implementation Roadmap](#9-implementation-roadmap)
+9. [Implementation Roadmap (Initial)](#9-implementation-roadmap-initial)
 10. [Solution Evaluation & Final Decision](#10-solution-evaluation--final-decision)
 11. [Detailed Implementation Plan](#11-detailed-implementation-plan)
+12. [Gap Analysis: "Human at a PC" Capability](#12-gap-analysis-human-at-a-pc-capability)
+13. [Revised Architecture: Unified Workspace MCP Server](#13-revised-architecture-unified-workspace-mcp-server)
 
 ---
 
@@ -755,6 +757,8 @@ Priority 4: Vision + xdotool (screenshot-based)   → $0.002-0.015/action**, 60-
 
 ---
 
+> **Note:** The phase plan in this section has been **superseded** by the revised architecture in [Section 13](#13-revised-architecture-unified-workspace-mcp-server). Read Section 13 for the current plan. This section is preserved for historical context and detailed implementation notes that Section 13 references.
+
 ## 11. Detailed Implementation Plan
 
 ### Phase 1: Browser Control via Playwright MCP (Immediate)
@@ -1136,3 +1140,356 @@ For teams and CI/CD where local Docker is impractical:
 | **Phase 2 (main work)** | clawd-workspace Docker image + MCP server | ~3-4 weeks, delivers full workspace |
 | **Phase 3 (deferred)** | Vision loop for native apps | Only when 95% CLI+browser isn't enough |
 | **Phase 4 (future)** | Multi-agent orchestration + cloud | Workspace pool, git worktrees, team deployment |
+
+---
+
+## 12. Gap Analysis: "Human at a PC" Capability
+
+> **Test case:** "Install MetaMask, import wallet with private key, connect to DApp, verify feature A."
+>
+> This section evaluates whether our architecture can handle this and similar real-world tasks where agents must act like humans with full PC control.
+
+### 12.1 MetaMask Test Case — Step-by-Step Evaluation
+
+| Step | Action | Playwright MCP (Phase 1) | Vision+xdotool (Phase 2b) | Verdict |
+|------|--------|--------------------------|---------------------------|---------|
+| 1 | Open Chrome | ❌ Playwright uses its own browser | ✅ xdotool can click | **Pre-configured in container** |
+| 2 | Install MetaMask | ❌ No Chrome Web Store in Playwright Chromium | ⚠️ Could click through store UI | **Pre-bake in Docker image** |
+| 3 | Extension loaded | ❌ Playwright uses non-persistent context | N/A | **`--load-extension` at launch** |
+| 4-7 | MetaMask onboarding (import wallet, set password) | ❌ Extension popup UI invisible to a11y tree | ✅ Screenshot + click buttons | **Vision required** |
+| 8 | MetaMask configured | N/A | N/A | State checkpoint |
+| 9-10 | Navigate DApp, click "Connect Wallet" | ✅ Standard web page | ✅ Also works | **Playwright preferred** |
+| 11-12 | MetaMask approval popup → click Connect | ❌ Popup is separate window, invisible | ✅ Screenshot detects popup | **Vision required** |
+| 13 | Verify feature on DApp | ✅ Read DOM elements | ✅ Also works | **Playwright preferred** |
+
+**Result: Phase 1 (Playwright MCP alone) can handle 3 of 13 steps. Phase 2b (vision engine) is NOT optional — it's required for any workflow involving browser extensions.**
+
+### 12.2 Critical Capability Gaps
+
+| # | Gap | Severity | Current Status | Solution | Effort |
+|---|-----|----------|---------------|----------|--------|
+| 1 | **Browser extension support** | 🔴 CRITICAL | Not supported | Pre-bake in Docker image + shared browser via CDP | Built into Phase 2 |
+| 2 | **Extension popup interaction** | 🔴 CRITICAL | Not supported | Vision + xdotool for extension UIs; Playwright `waitForEvent('page')` for `notification.html` windows | Built into Phase 2 |
+| 3 | **Shared browser instance** | 🔴 CRITICAL | Playwright launches own browser | Container launches Chrome with `--remote-debugging-port=9222`; Playwright connects via CDP | Built into Phase 2 |
+| 4 | **Cross-app clipboard** | 🔴 CRITICAL | Not supported | `xclip` MCP tools (multi-MIME: text, HTML, images, file URIs) | 1-2 days |
+| 5 | **TOTP 2FA codes** | 🔴 CRITICAL | Not supported | `oathtool --totp` from stored secrets (secret storage, provisioning, multi-account) | 2-3 days |
+| 6 | **Native file dialogs** | 🟡 IMPORTANT | Not supported | Path typing in GTK/Qt dialogs (`Ctrl+L`) + AT-SPI2 | 1-2 days |
+| 7 | **Multi-window management** | 🟡 IMPORTANT | Not supported | `wmctrl`/`xdotool` window management MCP tools | 1 day |
+| 8 | **Desktop notifications** | 🟡 IMPORTANT | Not supported | `dunst` notification daemon + log capture | 0.5 day |
+| 9 | **VPN/proxy for corporate tools** | 🟡 IMPORTANT | Not supported | WireGuard/OpenVPN client in container | 0.5-1 day |
+| 10 | **Audio subsystem** | 🟢 NICE-TO-HAVE | Not supported | PulseAudio in container (for media testing) | 1 day |
+| 11 | **Agent-human handoff** | 🔴 CRITICAL | Not supported | Pause/notify/wait mechanism for human input (CAPTCHAs, manual auth, confirmations) | 2-3 days |
+| 12 | **Workflow error recovery** | 🔴 CRITICAL | Not supported | Action history, undo tool for reversible ops, checkpoints, warning for irreversible actions | 3-5 days |
+| 13 | **Rich clipboard formats** | 🟡 IMPORTANT | Not supported | Multi-MIME xclip (text, HTML, images, file URIs) | 1-2 days |
+| 14 | **QR code scanning (TOTP provisioning)** | 🟡 IMPORTANT | Not supported | Vision + QR decoder for extracting TOTP secrets from setup screens | 1-2 days |
+
+### 12.3 Industry Landscape (Extension Support)
+
+Research across all major AI agent platforms reveals a universal pattern:
+
+| Platform | Extension Support | Method |
+|----------|------------------|--------|
+| **Anthropic Computer Use** | ❌ No extension support | Full desktop Docker, vision-only |
+| **OpenAI Operator/CUA** | ❌ Explicitly confirmed unsupported | Isolated virtual browser |
+| **Google Project Mariner** | ❌ IS an extension, can't interact with others | Chrome extension, page content only |
+| **Browserbase** | ✅ L1 only (pre-loaded at session creation) | Extension upload API + CDP |
+| **Synpress (testing framework)** | ✅ L1+L2 (pre-load + automate UI) | Playwright `launchPersistentContext` + `--load-extension` |
+| **ScreenEnv (HuggingFace)** | ⚠️ Possible via Dockerfile customization | Docker + Chromium |
+| **E2B** | ⚠️ Custom Docker images can pre-load | DIY |
+
+**Three levels of extension interaction:**
+- **L1 (Pre-bake):** Install extensions at Docker image build time → ✅ SOLVED by everyone
+- **L2 (Interact):** Agent clicks extension popup UI via screenshots/vision → ⚠️ Reliable for well-designed extensions (e.g., MetaMask), fragile for others
+- **L3 (Discover & install):** Agent autonomously finds and installs extensions → ❌ UNSOLVED by entire industry (browser security model intentionally prevents this)
+
+**Claw'd target: L1 + L2** — pre-bake common extensions in workspace Docker images; interact with their UIs via the vision layer.
+
+**Note on L2 reliability:** Reliability depends on extension architecture. Extensions that serve full HTML pages (like MetaMask's `notification.html`) can be reliably controlled — Synpress has demonstrated stable L2 MetaMask automation in CI for years. Extensions using only small popups or non-standard rendering are less reliable. Evaluate per-extension during Docker image creation.
+
+### 12.4 Key Architectural Insight
+
+> **Don't make the agent mimic human GUI gestures when programmatic interfaces exist.**
+
+| Task | Human Does | Agent Should Do |
+|------|-----------|-----------------|
+| Send Slack message | Open Slack app, click channel, type | Slack API via MCP tool |
+| Open file | Navigate Finder, double-click | `xdg-open /path/to/file` via CLI |
+| Drag-and-drop files | Mouse gesture | `cp`/`mv` command |
+| Check notifications | Glance at system tray | Query D-Bus / notification daemon log |
+| Install npm package | Open terminal, type command | `bash` tool (already available) |
+| Interact with MetaMask popup | Click buttons | **Vision — no programmatic alternative** |
+| Test UI hover effects | Hover mouse, verify tooltip | **Vision + xdotool — testing GUI behavior requires actual GUI interaction** |
+
+The vision layer is the **last resort** for things that have no programmatic interface. Most desktop tasks have faster, cheaper, more reliable programmatic alternatives.
+
+This guideline applies to operational tasks. When the task IS to test GUI behavior (visual regression, hover effects, animation), GUI interaction via vision is the correct approach.
+
+---
+
+> **Note:** This section supersedes the implementation plan from [Section 11](#11-detailed-implementation-plan). The unified MCP server architecture described here replaces the separate server design from Section 11.
+
+## 13. Revised Architecture: Unified Workspace MCP Server
+
+### 13.1 The Core Change: One Server, Two Engines
+
+The original plan proposed separate MCP servers (Playwright + Desktop). The revised architecture uses a **single unified workspace MCP server** with two internal control engines:
+
+```
+┌──────────────────────────────────────────────────┐
+│              Unified Workspace MCP Server          │
+│                                                    │
+│  ┌──────────────┐       ┌──────────────────────┐  │
+│  │  Engine 1:    │       │  Engine 2:            │  │
+│  │  Playwright   │       │  Vision + xdotool     │  │
+│  │  (persistent) │       │  (scrot + LLM)        │  │
+│  │  ─ a11y tree  │       │  ─ screenshots         │  │
+│  │  ─ DOM access │       │  ─ coordinate clicks   │  │
+│  │  ─ navigation │       │  ─ keyboard input      │  │
+│  │  ─ form fill  │       │  ─ window management   │  │
+│  └──────┬───────┘       └──────────┬───────────┘  │
+│         │      ┌─────────┐         │               │
+│         └──────┤ Router  ├─────────┘               │
+│                └────┬────┘                          │
+│                     │ context_changed flag          │
+│  ┌──────────────────▼──────────────────────────┐   │
+│  │           Shared Chrome Instance             │   │
+│  │  Launched by: Playwright launchPersistentContext() │   │
+│  │  Control via: Playwright API + xdotool on DISPLAY  │   │
+│  └─────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────┘
+```
+
+**Why ONE server, not TWO:**
+1. **Agent shouldn't route** — LLMs frequently pick the wrong server; routing is the server's job
+2. **Shared state** — server knows "Playwright action triggered extension popup" and can notify agent
+3. **`context_changed` flag** — every tool response tells agent whether foreground changed and which control mode applies
+
+### 13.2 The Shared Browser Pattern
+
+The container's entrypoint starts Xvfb, the window manager, and VNC. Chrome is launched by the MCP server via Playwright's `launchPersistentContext()` to ensure full extension support:
+
+```bash
+#!/bin/bash
+# entrypoint.sh
+
+# Start Xvfb
+Xvfb :99 -screen 0 1280x1024x24 &
+export DISPLAY=:99
+while ! xdpyinfo -display :99 >/dev/null 2>&1; do sleep 0.1; done
+
+# Start window manager
+fluxbox &
+
+# Start VNC with auth (password from mounted config or generated)
+VNC_PASSWORD=$(cat /run/secrets/vnc_password 2>/dev/null || openssl rand -base64 16)
+echo "VNC password: $VNC_PASSWORD" >&2  # Retrievable via docker logs
+x11vnc -storepasswd "$VNC_PASSWORD" /tmp/vncpass
+chmod 600 /tmp/vncpass
+x11vnc -display :99 -forever -rfbauth /tmp/vncpass -rfbport 5900 &
+websockify --web /usr/share/novnc 6080 localhost:5900 &
+
+# NOTE: Chrome is launched by the MCP server via Playwright launchPersistentContext()
+# This ensures Playwright has full extension support (connectOverCDP does NOT support extensions)
+
+# Start the unified workspace MCP server
+node /opt/workspace-mcp/server.js --port 3000
+```
+
+The MCP server launches Chrome via Playwright's `launchPersistentContext()` with extensions:
+
+```typescript
+const context = await chromium.launchPersistentContext('/data/.chrome-profile', {
+  headless: false,
+  args: [
+    '--no-first-run', '--no-default-browser-check',
+    '--disable-features=TranslateUI',
+    '--remote-debugging-port=9222',
+    '--load-extension=/opt/extensions/metamask,/opt/extensions/...',
+  ],
+});
+```
+
+Note: We use Playwright's bundled Chromium (not system `chromium-browser`) via `launchPersistentContext()` because `connectOverCDP()` does NOT support extension loading. This is the same pattern used by Synpress for MetaMask automation. The Chrome profile is stored in a Docker named volume (`/data/.chrome-profile`) rather than a host bind mount, preventing accidental exposure of wallet data on the host filesystem.
+
+### 13.3 Tool API Design (17 Tools)
+
+| Category | Tool | Description | Engine |
+|----------|------|-------------|--------|
+| **Setup** | `launch_browser` | Open URL in shared Chrome (or new tab) | Playwright |
+| | `launch_app` | Start native app (e.g., `code`, `libreoffice`) | subprocess + xdotool |
+| **Interaction** | `click` | Click element (by ref, coordinates, or description) | **Auto-routed** |
+| | `type_text` | Type text at current focus | Playwright or xdotool |
+| | `press_key` | Press key/combo (Enter, Ctrl+C, etc.) | Playwright or xdotool |
+| | `select_option` | Select from dropdown | Playwright |
+| | `drag` | Drag from point A to B | xdotool |
+| | `handle_dialog` | Accept/dismiss browser dialog | Playwright |
+| **Observation** | `snapshot` | Get accessibility tree of current page | Playwright |
+| | `screenshot` | Capture display screenshot | scrot → return path |
+| | `observe` | Screenshot → vision model → structured description | Vision LLM |
+| | `get_context` | Current state: active window, URL, control mode | Both |
+| **Management** | `window_manage` | List/focus/resize/close windows | wmctrl + xdotool |
+| | `clipboard` | Get/set clipboard content | xclip |
+| | `file_dialog` | Handle native open/save dialog | xdotool + path typing |
+| | `wait` | Wait for condition (element, text, timeout) | Playwright or polling |
+| | `totp_code` | Generate TOTP 2FA code from stored secret | oathtool |
+
+### 13.4 Auto-Routing: The `click` Tool
+
+The `click` tool accepts three input modes and auto-routes to the correct engine:
+
+```typescript
+// Input mode 1: Structured reference (Playwright)
+click({ ref: "button#submit" })  // → Playwright locator, $0.001
+
+// Input mode 2: Coordinates (xdotool)
+click({ x: 1020, y: 680 })      // → xdotool mousemove + click, $0.000
+
+// Input mode 3: Description (Vision)
+click({ description: "the blue Connect button in MetaMask popup" })
+// → screenshot → vision LLM identifies coordinates → xdotool click, $0.02-0.06
+```
+
+**Routing precedence:** `ref` > `coordinates` > `description`. If multiple modes provided, highest-precedence wins. Invalid inputs (empty params, out-of-bounds coordinates, both `ref` and `description`) return validation errors. If `ref` is provided but the element is not found in the DOM/a11y tree, the tool returns an error (no automatic fallback to description mode) — the agent must explicitly retry with a different input mode.
+
+**Mutual exclusion:** Only one engine operates at a time. The router queues requests to prevent Playwright and xdotool from conflicting on the same window. This eliminates race conditions when switching between structured and vision modes.
+
+### 13.5 The `context_changed` Pattern
+
+Every tool response includes a `context_changed` field that tells the agent what happened:
+
+```json
+{
+  "result": "Clicked 'Connect Wallet' button",
+  "context_changed": true,
+  "active_context": "extension_popup",
+  "control_mode": "vision",
+  "hint": "MetaMask popup detected. Use 'observe' to see current state, then 'click' with coordinates or description."
+}
+```
+
+This eliminates the agent guessing. When `control_mode` switches from `"structured"` to `"vision"`, the agent knows to use `observe` + coordinate-based `click` instead of `snapshot` + ref-based `click`.
+
+**Implementation detail:** Context detection uses CDP's `Target.setDiscoverTargets({ discover: true })` to monitor for new windows/tabs. When `Target.targetCreated` fires with a URL matching `chrome-extension://*/notification.html` or similar patterns, the server sets `context_changed: true` and `control_mode: "vision"`. Event listeners are registered BEFORE any tool actions to avoid the race condition where a popup appears before the listener is active.
+
+### 13.6 MetaMask Test Case — Complete Flow
+
+```
+Agent receives: "Install MetaMask, import wallet with key XXX, connect to DApp, verify feature A"
+
+1. Container starts with MetaMask pre-loaded (Docker image: clawd-workspace:web3)
+
+2. Agent: launch_browser({ url: "chrome-extension://<metamask-id>/home.html" })
+   → Playwright opens MetaMask home page
+   → Response: { control_mode: "structured" }
+
+3. Agent: observe()
+   → Screenshot of MetaMask onboarding page → vision model → structured description
+   → Agent sees "Import wallet" button and page layout
+
+4. Agent: click({ description: "Import wallet button" })
+   → Vision identifies coordinates → xdotool clicks
+   → MetaMask shows import form (still same page, not popup)
+   → Response: { control_mode: "vision" }
+
+5. Agent: observe() → sees private key input field
+   Agent: click({ description: "private key input field" })
+   Agent: type_text({ text: "XXX" })
+   → xdotool types private key into form
+   → ⚠️ WARNING: Private key is passed via MCP tool call parameter. While the container
+     isolates network access, the key exists in the MCP HTTP request body, server memory,
+     and the agent's conversation history. For production use, inject secrets via Docker
+     secrets API (see Section 11.5) rather than passing as tool call parameters.
+     This example uses inline text for demonstration only.
+
+6. Agent: click({ description: "Import button" })
+   → Wallet imported
+   → Agent continues through password setup via vision-based observe + click
+
+7. Agent: launch_browser({ url: "https://dapp.example.com" })
+   → Navigates to DApp
+
+8. Agent: snapshot()
+   → DApp page a11y tree → "Connect Wallet" button visible
+
+9. Agent: click({ ref: "button:Connect Wallet" })
+   → DApp triggers MetaMask popup window
+   → Server detects new window via CDP event
+   → Response: { context_changed: true, active_context: "extension_popup",
+                  control_mode: "vision",
+                  hint: "MetaMask connection popup detected" }
+
+10. Agent: observe()
+    → Screenshot of MetaMask popup → vision model → "MetaMask is requesting
+       permission to connect. 'Connect' button at bottom-right."
+
+11. Agent: click({ description: "Connect button in MetaMask popup" })
+    → Vision identifies coordinates → xdotool clicks → popup closes
+    → Server detects popup closed, DApp page active again
+    → Response: { context_changed: true, control_mode: "structured" }
+
+12. Agent: snapshot()
+    → DApp shows "Connected: 0xf39f..." → Feature A content visible
+    → Agent verifies feature A
+    → Task complete ✅
+```
+
+**Total cost:** ~$0.12-0.40 (vision calls at $0.02-0.06 each for MetaMask interactions + ~$0.001 each for structured Playwright calls)
+
+### 13.7 Docker Image Variants
+
+```
+clawd-workspace:base      → Ubuntu + fluxbox + Xvfb + Chrome + dev tools (~1.2 GB)
+clawd-workspace:web3      → base + MetaMask + WalletConnect + Hardhat (~1.4 GB)
+clawd-workspace:devtools  → base + React DevTools + Redux DevTools + Lighthouse (~1.3 GB)
+clawd-workspace:office    → base + LibreOffice + GIMP + Inkscape (~2.0 GB)
+clawd-workspace:full      → all of the above (~2.5 GB)
+```
+
+Users can also create custom images by extending the base:
+```dockerfile
+FROM ghcr.io/clawd-pilot/workspace:base
+COPY my-extension/ /opt/extensions/my-extension/
+```
+
+### 13.8 Revised Phase Plan
+
+| Phase | Content | Effort | Delivers |
+|-------|---------|--------|----------|
+| **Phase 1** | Playwright MCP config on host (unchanged) | 1-2 hours | Browser control for web pages (80% of dev tasks) |
+| **Phase 2** | Unified workspace MCP server + Docker image | 6-8 weeks (single dev) | Full "human at PC" capability with shared browser, vision layer, extension support |
+| **Phase 2a** | Base Docker image + entrypoint + Chrome+CDP | Week 1-2 | Container with shared browser + Playwright via CDP |
+| **Phase 2b** | Vision engine (screenshot → LLM → xdotool) | Week 3-4 | Extension popup interaction, native app control |
+| **Phase 2c** | Utility tools (clipboard, TOTP, file_dialog, window) | Week 4-5 | Cross-app workflows, 2FA, file management |
+| **Phase 2d** | Image variants + testing + docs + CI | Week 6-8 | web3, devtools, office images; CI smoke tests |
+| **Phase 3** | Multi-agent orchestration | 4-6 weeks | Workspace pools, git worktrees, coordination |
+| **Phase 4** | Cloud deployment + advanced features | Future | E2B/Fly.io, AT-SPI2 for native apps, audio |
+
+### 13.9 What We Explicitly Cannot Do (Industry-Wide Limitations)
+
+| Capability | Status | Reason |
+|-----------|--------|--------|
+| **L3: Agent discovers & installs unknown extensions** | ❌ Impossible | Chrome security model requires user consent; intentional design |
+| **Hardware keys (YubiKey, FIDO2)** | ❌ Impossible in Docker | USB passthrough to containers is complex and unreliable |
+| **Biometric auth** | ❌ Impossible | No fingerprint/face sensors in Docker |
+| **Real webcam/microphone** | ❌ No real hardware | Can use virtual devices for testing only |
+| **DRM-protected content** | ❌ Missing Widevine | Chromium in Docker lacks DRM modules |
+
+These are inherent limitations of containerized environments. For hardware-dependent tasks, the agent must escalate to a human or use alternative approaches (e.g., TOTP instead of hardware 2FA).
+
+### 13.10 Security Considerations (Revised)
+
+1. **MCP transport security**: Tool calls (including `type_text` with secrets) traverse HTTP in plaintext over localhost. For production, consider stdio MCP transport or TLS. For credential injection, use Docker secrets API (`/run/secrets/*`) in production, or mount `~/.clawd/config.json` as read-only (`/etc/clawd/config.json:ro`) for simpler setups (see Section 11.5 for implementation details).
+
+2. **MCP server sandbox isolation**: MCP servers inherit full `process.env` including API keys, SSH keys, and filesystem access (see Section 8 for threat model). For production, wrap MCP server spawn in bwrap/gVisor sandbox with filtered environment (only pass necessary vars, not full `process.env`) and restricted filesystem access. This is the highest-priority security gap to address.
+
+3. **Vision screenshot privacy**: Screenshots sent to external vision APIs (Gemini/CPA) may contain PII, passwords, wallet data. Mitigations: auto-delete screenshots after analysis, encrypt screenshots at rest in `/tmp` (use tmpfs with encryption), opt-in external APIs (local models preferred for sensitive workflows), field masking for passwords/credit cards/health data before LLM analysis, audit logging of all vision API calls.
+
+4. **CDP port protection**: Port 9222 is accessible inside the container only. NEVER expose to host via `-p 9222:9222`. Add iptables rule in container startup to drop non-localhost traffic to port 9222.
+
+5. **Chrome profile isolation**: Stored in Docker named volume (`/data/.chrome-profile`), NEVER use host bind mounts (`-v host_path:/data/.chrome-profile`) which would expose wallet data/cookies/passwords on host filesystem. If you create a local `.chrome-profile` directory for testing, add it to `.gitignore`.
+
+6. **Extension updates**: Extensions are frozen at image build time. Establish a rebuild schedule for security patches. Pin specific extension versions in the Dockerfile to ensure reproducible builds.
+
+7. **VNC access**: Password-protected (see entrypoint script in Section 13.2), localhost-only. VNC exposes all visible content including sensitive data — use only in trusted environments. Make VNC opt-in via environment variable (`CLAWD_VNC_ENABLED=true`).
+
+8. **TOTP secret storage**: TOTP secrets for the `totp_code` tool are stored in an encrypted file within the Docker named volume (`/data/.totp-secrets.enc`), decrypted at runtime via a key from Docker secrets API. Secrets are never stored in plaintext on disk. Multi-account support via key-value format (`account_name → TOTP_secret`).
