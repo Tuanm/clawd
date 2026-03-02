@@ -10,13 +10,13 @@
  *   VNC:   5900-5999 (container port 5900)
  */
 
-import { execFile, exec } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { createConnection } from 'node:net';
 
 const execFileAsync = promisify(execFile);
-const execAsync = promisify(exec);
 
 export interface WorkspaceOptions {
   /** Docker image to use. Default: 'clawd-workspace:base' */
@@ -100,7 +100,7 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
     '--cpus', opts.cpus || '1',
     '--pids-limit', '200',
     '--tmpfs', '/tmp:size=500m',
-    '--network', 'bridge', // Use bridge for now; production: per-workspace network
+    '--network', `clawd-ws-net-${id}`, // Per-workspace isolated network
     '-p', `127.0.0.1:${mcpPort}:3000`,
     '-p', `127.0.0.1:${novncPort}:6080`,
     '-p', `127.0.0.1:${vncPort}:5900`,
@@ -114,21 +114,34 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
     dockerArgs.push('-v', `${opts.projectPath}:/workspace:rw`);
   }
 
-  // Mount clawd config read-only for vision provider access
-  const configPath = `${process.env.HOME}/.clawd/config.json`;
-  if (existsSync(configPath)) {
-    dockerArgs.push('-v', `${configPath}:/etc/clawd/config.json:ro`);
+  // Pass only the vision/CPA provider config as env vars — never mount the full credentials file.
+  // This prevents containerized code from reading other secrets (auth tokens, keys, etc.).
+  const claWdConfigPath = `${process.env.HOME}/.clawd/config.json`;
+  if (existsSync(claWdConfigPath)) {
+    try {
+      const claWdConfig = JSON.parse(readFileSync(claWdConfigPath, 'utf-8'));
+      const cpa = claWdConfig?.providers?.cpa;
+      if (cpa?.base_url) dockerArgs.push('-e', `CLAWD_CPA_BASE_URL=${cpa.base_url}`);
+      if (cpa?.api_key) dockerArgs.push('-e', `CLAWD_CPA_API_KEY=${cpa.api_key}`);
+      if (cpa?.models) dockerArgs.push('-e', `CLAWD_CPA_MODELS=${JSON.stringify(cpa.models)}`);
+    } catch { /* ignore parse errors */ }
   }
 
   dockerArgs.push(image);
+
+  const networkName = `clawd-ws-net-${id}`;
+  let containerId: string | undefined;
 
   try {
     // Create per-workspace data volume first
     await execFileAsync('docker', ['volume', 'create', volumeName]);
 
+    // Create per-workspace isolated network (prevents inter-container communication)
+    await execFileAsync('docker', ['network', 'create', '--driver', 'bridge', networkName]);
+
     // Use execFile (not exec+join) to avoid shell injection
     const { stdout } = await execFileAsync('docker', dockerArgs);
-    const containerId = stdout.trim();
+    containerId = stdout.trim();
 
     const handle: WorkspaceHandle = {
       id,
@@ -145,23 +158,32 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
 
     activeWorkspaces.set(id, handle);
 
-    // Wait for container to be healthy
-    await waitForHealthy(containerId, 120000);
+    // Wait for MCP server to be accepting connections
+    await waitForHealthy(containerId, mcpPort, 120000);
     handle.status = 'running';
 
     return handle;
   } catch (err: any) {
+    // Stop and remove the container if it was started (prevents zombie container holding ports)
+    if (containerId) {
+      await execFileAsync('docker', ['stop', containerId]).catch(() => {});
+      await execFileAsync('docker', ['rm', containerId]).catch(() => {});
+    }
+    activeWorkspaces.delete(id);
     releasePort(mcpPort);
     releasePort(novncPort);
     releasePort(vncPort);
-    // Clean up the data volume if container failed to start
+    // Clean up data volume and network AFTER container is stopped
     execFileAsync('docker', ['volume', 'rm', volumeName]).catch(() => {});
+    execFileAsync('docker', ['network', 'rm', networkName]).catch(() => {});
     throw new Error(`Failed to spawn workspace: ${err.message}`);
   }
 }
 
-async function waitForHealthy(containerId: string, timeoutMs: number): Promise<void> {
+async function waitForHealthy(containerId: string, mcpPort: number, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+
+  // First, wait for Docker health check if the image has one
   while (Date.now() < deadline) {
     try {
       const { stdout } = await execFileAsync('docker', [
@@ -169,30 +191,57 @@ async function waitForHealthy(containerId: string, timeoutMs: number): Promise<v
       ]);
       const health = stdout.trim();
       if (health === 'healthy') return;
-      // Image has no HEALTHCHECK — fall back to brief startup delay
-      if (health === '' || health === '<no value>') {
-        await new Promise(r => setTimeout(r, 3000));
-        return;
-      }
-    } catch {}
-    await new Promise(r => setTimeout(r, 2000));
+      if (health === 'unhealthy') throw new Error('Container reported unhealthy');
+      // 'starting' or unknown — fall through to poll
+      if (health === '' || health === '<no value>') break; // No HEALTHCHECK — skip to TCP poll
+    } catch (e: any) {
+      if (e.message.includes('unhealthy')) throw e;
+    }
+    await new Promise(r => setTimeout(r, 1000));
   }
-  throw new Error(`Container ${containerId} did not become healthy within ${timeoutMs}ms`);
+
+  // TCP probe: poll until the MCP server responds (with or without auth)
+  while (Date.now() < deadline) {
+    const isOpen = await probeTcp('127.0.0.1', mcpPort, 1000);
+    if (isOpen) {
+      // Verify the MCP HTTP server is responding (401 = listening, auth enforced)
+      try {
+        const resp = await fetch(`http://127.0.0.1:${mcpPort}/`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{"jsonrpc":"2.0","id":0,"method":"ping"}',
+          signal: AbortSignal.timeout(2000),
+        });
+        if (resp.status === 401 || resp.ok) return; // Server is up
+      } catch {
+        // Not ready yet
+      }
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  throw new Error(`MCP server on port ${mcpPort} did not respond within ${timeoutMs}ms`);
+}
+
+export function probeTcp(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host, port });
+    const timer = setTimeout(() => { socket.destroy(); resolve(false); }, timeoutMs);
+    socket.on('connect', () => { clearTimeout(timer); socket.destroy(); resolve(true); });
+    socket.on('error', () => { clearTimeout(timer); resolve(false); });
+  });
 }
 
 export async function destroyWorkspace(id: string): Promise<void> {
   const handle = activeWorkspaces.get(id);
   if (!handle) throw new Error(`Workspace not found: ${id}`);
 
-  try {
-    await execFileAsync('docker', ['stop', handle.containerId]);
-    await execFileAsync('docker', ['rm', handle.containerId]);
-  } catch (e: any) {
-    console.warn(`[workspace] Failed to cleanly stop container: ${e.message}`);
-  }
+  // Stop and remove — throw on failure so ports/tracking aren't freed prematurely
+  await execFileAsync('docker', ['stop', handle.containerId]);
+  await execFileAsync('docker', ['rm', handle.containerId]);
 
-  // Remove per-workspace data volume
+  // Remove per-workspace data volume and network AFTER container is confirmed gone
   execFileAsync('docker', ['volume', 'rm', `clawd-ws-data-${id}`]).catch(() => {});
+  execFileAsync('docker', ['network', 'rm', `clawd-ws-net-${id}`]).catch(() => {});
 
   releasePort(handle.mcpPort);
   releasePort(handle.novncPort);
@@ -212,15 +261,45 @@ export function listActiveWorkspaces(): WorkspaceHandle[] {
 export async function cleanupOrphanedWorkspaces(): Promise<number> {
   let cleaned = 0;
   try {
-    const { stdout } = await execAsync('docker ps -a --filter "name=clawd-ws-" --format "{{.Names}}\t{{.Status}}"');
+    const { stdout } = await execFileAsync('docker', [
+      'ps', '-a', '--filter', 'name=clawd-ws-',
+      '--format', '{{.Names}}\t{{.Status}}',
+    ]);
     const lines = stdout.trim().split('\n').filter(Boolean);
     for (const line of lines) {
       const [name, status] = line.split('\t');
       if (status?.includes('Exited') || status?.includes('Dead')) {
+        // Extract id from container name (clawd-ws-<id>)
+        const id = name?.replace(/^clawd-ws-/, '');
         await execFileAsync('docker', ['rm', name]).catch(() => {});
+        // Also clean up associated volume and network
+        if (id) {
+          execFileAsync('docker', ['volume', 'rm', `clawd-ws-data-${id}`]).catch(() => {});
+          execFileAsync('docker', ['network', 'rm', `clawd-ws-net-${id}`]).catch(() => {});
+        }
         cleaned++;
       }
     }
   } catch {}
   return cleaned;
+}
+
+/**
+ * Reconcile allocated port set with actually-running clawd containers.
+ * Call once at startup to prevent port collisions after process restart.
+ */
+export async function reconcilePortsFromDocker(): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync('docker', [
+      'ps', '--filter', 'name=clawd-ws-',
+      '--format', '{{.Ports}}',
+    ]);
+    for (const portLine of stdout.trim().split('\n').filter(Boolean)) {
+      for (const match of portLine.matchAll(/127\.0\.0\.1:(\d+)->/g)) {
+        allocatedPorts.add(Number(match[1]));
+      }
+    }
+  } catch {
+    // Docker not available or no containers — not an error
+  }
 }

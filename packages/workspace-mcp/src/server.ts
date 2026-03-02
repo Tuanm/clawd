@@ -14,11 +14,16 @@ import { pauseForHuman, signalResume } from './tools/handoff';
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-// Auth middleware (skip if no token configured — dev mode)
+// Auth middleware — fail-closed if token not configured
 app.use((req: Request, res: Response, next: NextFunction) => {
-  const token = getAuthToken();
-  if (!token) { next(); return; }
   if (req.path === '/health') { next(); return; }
+  const token = getAuthToken();
+  if (!token) {
+    // Fail-closed: missing token is a misconfiguration, not a feature
+    console.error('[workspace-mcp] WORKSPACE_AUTH_TOKEN not set — refusing all requests');
+    res.status(503).json({ error: 'Server misconfigured: auth token not set' });
+    return;
+  }
   const auth = req.headers['authorization'];
   if (!auth || auth !== `Bearer ${token}`) {
     res.status(401).json({ error: 'Unauthorized' });
@@ -366,7 +371,7 @@ app.post('/', async (req: Request, res: Response) => {
 });
 
 const PORT = parseInt(process.env.MCP_PORT || '3000', 10);
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '127.0.0.1', () => {
   console.log(`[workspace-mcp] Server running on port ${PORT}`);
   console.log(`[workspace-mcp] Auth: ${getAuthToken() ? 'enabled' : 'disabled (dev mode)'}`);
 });

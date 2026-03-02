@@ -1,5 +1,5 @@
 import { clickByRef, getBrowserContext, getCurrentControlMode } from './playwright';
-import { execSync, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 // Mutex: only one engine operates at a time
 let engineBusy = false;
@@ -23,16 +23,17 @@ async function withMutex<T>(fn: () => Promise<T>): Promise<T> {
 
 interface ScreenResolution { width: number; height: number; }
 
+const DISPLAY_ENV = { ...process.env, DISPLAY: process.env.DISPLAY || ':99' };
+
 function getScreenResolution(): ScreenResolution {
   try {
-    const out = execSync('xdpyinfo 2>/dev/null | grep dimensions', { encoding: 'utf-8' });
-    const match = out.match(/(\d+)x(\d+) pixels/);
+    // Use execFileSync to avoid shell — parse xdpyinfo output directly
+    const out = execFileSync('xdpyinfo', [], { encoding: 'utf-8', env: DISPLAY_ENV, stdio: ['ignore', 'pipe', 'ignore'] });
+    const match = out.match(/dimensions:\s+(\d+)x(\d+) pixels/);
     if (match) return { width: parseInt(match[1]), height: parseInt(match[2]) };
   } catch {}
   return { width: 1280, height: 1024 }; // Fallback to configured Xvfb resolution
 }
-
-const DISPLAY_ENV = { ...process.env, DISPLAY: process.env.DISPLAY || ':99' };
 
 export interface ClickOptions {
   ref?: string;
@@ -96,9 +97,8 @@ export async function routedClick(opts: ClickOptions, visionClickFn?: (descripti
 
 export async function xdotoolType(text: string): Promise<void> {
   return withMutex(async () => {
-    execSync(`xdotool type --clearmodifiers -- '${text.replace(/'/g, "'\\''")}'`, {
-      env: DISPLAY_ENV
-    });
+    // Use execFileSync array args to avoid shell injection
+    execFileSync('xdotool', ['type', '--clearmodifiers', '--', text], { env: DISPLAY_ENV });
   });
 }
 

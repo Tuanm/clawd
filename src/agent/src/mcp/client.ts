@@ -18,6 +18,7 @@ export interface MCPServerConfig {
   env?: Record<string, string>;
   url?: string; // For HTTP transport
   transport?: "stdio" | "http";
+  token?: string; // Bearer auth token for HTTP transport
 }
 
 export interface MCPTool {
@@ -275,12 +276,9 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
   // ============================================================================
 
   async refreshCapabilities(): Promise<void> {
-    try {
-      const toolsResult = await this.request("tools/list", {});
-      this.tools = toolsResult.tools || [];
-    } catch {
-      this.tools = [];
-    }
+    // tools/list is mandatory — let errors propagate to connect() caller
+    const toolsResult = await this.request("tools/list", {});
+    this.tools = toolsResult.tools || [];
 
     try {
       const resourcesResult = await this.request("resources/list", {});
@@ -352,6 +350,7 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
 class MCPHttpConnection extends EventEmitter implements IMCPConnection {
   readonly name: string;
   private url: string;
+  private token?: string;
   private requestId = 0;
 
   tools: MCPTool[] = [];
@@ -364,6 +363,7 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     super();
     this.name = config.name;
     this.url = config.url || "";
+    this.token = config.token;
   }
 
   async connect(): Promise<void> {
@@ -386,16 +386,11 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
   }
 
   private async refreshCapabilities(): Promise<void> {
-    // Fetch tools
-    try {
-      const result = await this.request("tools/list", {});
-      this.tools = result.tools || [];
-      if (isDebugEnabled()) {
-        console.log(`[MCP] ${this.name}: Loaded ${this.tools.length} tools`);
-      }
-    } catch (err: any) {
-      console.error(`[MCP] ${this.name}: Failed to fetch tools: ${err.message}`);
-      this.tools = [];
+    // Fetch tools — mandatory; re-throws on failure so connect() surfaces the error
+    const toolsResult = await this.request("tools/list", {});
+    this.tools = toolsResult.tools || [];
+    if (isDebugEnabled()) {
+      console.log(`[MCP] ${this.name}: Loaded ${this.tools.length} tools`);
     }
 
     // Fetch resources (optional - may not be implemented)
@@ -436,9 +431,11 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     const timer = setTimeout(() => ctrl.abort(), 30000);
     let response: Response;
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
       response = await fetch(this.url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(request),
         signal: ctrl.signal,
       });

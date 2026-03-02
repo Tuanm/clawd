@@ -27,6 +27,7 @@ import { isDebugEnabled } from "../utils/debug";
 import { getThresholds, MODEL_TOKEN_LIMITS as CENTRALIZED_MODEL_LIMITS } from "../constants/context-limits";
 import { createStatePersistencePlugin } from "../plugins/state-persistence-plugin";
 import { createContextModePlugin, type ContextModePluginResult } from "../plugins/context-mode-plugin";
+import { WorkspaceToolPlugin } from "../plugins/workspace-plugin";
 import { ContextTracker } from "../utils/context-tracker";
 import { homedir } from "node:os";
 
@@ -241,6 +242,7 @@ export class Agent {
   private contextModePlugin: ContextModePluginResult | null = null;
   private contextTracker: ContextTracker | null = null;
   private compacting = false;
+  private _workspacePluginRegistered = false;
 
   constructor(tokenOrProvider: string | LLMProvider, config: AgentConfig) {
     // Accept either token (legacy) or provider instance
@@ -1168,6 +1170,20 @@ SUMMARY:`;
         console.log(`[Agent] Hook initialization failed:`, err?.message || err);
       }
     });
+
+    // Register workspace tool plugin (spawn_workspace, destroy_workspace, list_workspaces)
+    // Gracefully skips if Docker is unavailable. Guard against duplicate registration.
+    if (!this._workspacePluginRegistered) {
+      try {
+        const wsPlugin = new WorkspaceToolPlugin(this.mcpManager);
+        this.toolPluginManager.register(wsPlugin);
+        this._workspacePluginRegistered = true;
+      } catch (err: any) {
+        if (this.config.verbose) {
+          console.log(`[Agent] Workspace plugin registration failed:`, err?.message || err);
+        }
+      }
+    }
 
     return this.session;
   }

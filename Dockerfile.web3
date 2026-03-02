@@ -2,18 +2,20 @@ FROM clawd-workspace:base
 
 USER root
 
-# MetaMask v12.0.0 — pinned version
+# MetaMask v12.0.0 — pinned version with SHA256 verification
 # Note: Sideloaded extension ID differs from CWS ID (nkbihfbeogaeaoehlefnkodbefgpgknn).
 # The actual ID is derived from the extension path at runtime by Chromium.
 RUN wget -q -O /tmp/metamask.zip \
     "https://github.com/MetaMask/metamask-extension/releases/download/v12.0.0/metamask-chrome-12.0.0.zip" \
+    && echo "7bbe74c5cd81ead60368cb4503d99ec78379cfeda240d954d1a58e58c816af06  /tmp/metamask.zip" | sha256sum -c - \
     && unzip -q /tmp/metamask.zip -d /opt/extensions/metamask \
     && rm /tmp/metamask.zip \
     && chown -R agent:agent /opt/extensions/metamask
 
-# Freighter wallet (Stellar) — latest stable
+# Freighter wallet (Stellar) v5.37.3 — pinned with SHA256 verification
 RUN wget -q -O /tmp/freighter.zip \
     "https://github.com/stellar/freighter/releases/download/5.37.3/build-5.37.3.zip" \
+    && echo "f4bdf9411e52faa94b5a55064d94e8f5be617fec1fb3af611a963c6dbbaeb40d  /tmp/freighter.zip" | sha256sum -c - \
     && unzip -q /tmp/freighter.zip -d /opt/extensions/freighter \
     && rm /tmp/freighter.zip \
     && chown -R agent:agent /opt/extensions/freighter

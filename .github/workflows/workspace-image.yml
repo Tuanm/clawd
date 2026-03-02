@@ -47,8 +47,12 @@ jobs:
 
       - name: Test base image
         run: |
+          # Generate a test auth token
+          TEST_TOKEN=$(openssl rand -hex 32)
+
           docker run -d --name ws-test \
             -p 127.0.0.1:13000:3000 \
+            -e WORKSPACE_AUTH_TOKEN="$TEST_TOKEN" \
             clawd-workspace:base
 
           # Poll healthcheck instead of fixed sleep (up to 90s)
@@ -62,9 +66,10 @@ jobs:
           curl -sf http://localhost:13000/health
           echo "Health check passed"
 
-          # Verify tools/list returns 19 tools
+          # Verify tools/list returns 19 tools (with auth)
           TOOL_COUNT=$(curl -sf -X POST http://localhost:13000/ \
             -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TEST_TOKEN" \
             -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | \
             python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['result']['tools']))")
           echo "Tools registered: $TOOL_COUNT"

@@ -31,7 +31,17 @@ export function getAuthToken(): string {
 }
 
 export function getCpaConfig() {
-  return loadConfig().providers?.cpa;
+  const fromConfig = loadConfig().providers?.cpa;
+  if (fromConfig) return fromConfig;
+  // Fallback to env vars injected by the host (no config file mount needed)
+  const base_url = process.env.CLAWD_CPA_BASE_URL;
+  const api_key = process.env.CLAWD_CPA_API_KEY;
+  if (base_url && api_key) {
+    let models: Record<string, string> | undefined;
+    try { if (process.env.CLAWD_CPA_MODELS) models = JSON.parse(process.env.CLAWD_CPA_MODELS); } catch {}
+    return { base_url, api_key, models };
+  }
+  return null;
 }
 
 export function getEnv(key: string): string | undefined {
