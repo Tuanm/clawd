@@ -5,9 +5,11 @@
  * Each container has: Xvfb + fluxbox + Chrome + workspace MCP server.
  *
  * Port pools:
- *   MCP:   6000-6099 (container port 3000)
- *   noVNC: 7000-7099 (container port 6080)
- *   VNC:   5900-5999 (container port 5900)
+ *   MCP: 6000-6099 (container port 3000) — still host-bound for direct Clawd→MCP communication
+ *
+ * noVNC (container port 6080) is now proxied exclusively through the Caddy gateway container
+ * (clawd-gateway) which joins each workspace's isolated Docker network dynamically.
+ * Workspace containers no longer publish noVNC or VNC ports to the host.
  */
 
 import { execFile } from 'node:child_process';
@@ -15,6 +17,12 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createConnection } from 'node:net';
+import {
+  ensureGatewayRunning,
+  connectWorkspaceToGateway,
+  disconnectWorkspaceFromGateway,
+  reconcileGatewayRoutes,
+} from './gateway.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -39,14 +47,12 @@ export interface WorkspaceHandle {
   mcpUrl: string;
   authToken: string;
   mcpPort: number;
-  novncPort: number;
-  vncPort: number;
   image: string;
   status: 'starting' | 'running' | 'stopped' | 'error';
   createdAt: Date;
 }
 
-// Port allocation tracking
+// Port allocation tracking (MCP only; noVNC/VNC ports no longer published to host)
 const allocatedPorts = new Set<number>();
 
 function allocatePort(start: number, end: number): number {
@@ -69,18 +75,12 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
   const image = opts.image || 'clawd-workspace:base';
   const authToken = opts.authToken || randomBytes(32).toString('hex');
 
-  // Allocate all three ports; release them all if any fails
+  // Allocate only MCP port (noVNC/VNC handled by gateway via Docker network DNS)
   let mcpPort: number | undefined;
-  let novncPort: number | undefined;
-  let vncPort: number | undefined;
   try {
     mcpPort = allocatePort(6000, 6099);
-    novncPort = allocatePort(7000, 7099);
-    vncPort = allocatePort(5900, 5999);
   } catch (err: any) {
-    if (mcpPort !== undefined) releasePort(mcpPort);
-    if (novncPort !== undefined) releasePort(novncPort);
-    throw new Error(`Failed to allocate workspace ports: ${err.message}`);
+    throw new Error(`Failed to allocate workspace port: ${err.message}`);
   }
 
   const id = randomBytes(8).toString('hex');
@@ -101,9 +101,8 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
     '--pids-limit', '200',
     '--tmpfs', '/tmp:size=500m',
     '--network', `clawd-ws-net-${id}`, // Per-workspace isolated network
-    '-p', `127.0.0.1:${mcpPort}:3000`,
-    '-p', `127.0.0.1:${novncPort}:6080`,
-    '-p', `127.0.0.1:${vncPort}:5900`,
+    '-p', `127.0.0.1:${mcpPort}:3000`, // MCP: host-bound for direct Clawd→MCP communication
+    // noVNC (6080) and VNC (5900) ports are NOT published — accessed via Caddy gateway
     '-e', `WORKSPACE_AUTH_TOKEN=${authToken}`,
     '-e', `CLAWD_VNC_ENABLED=${opts.vncEnabled ? 'true' : 'false'}`,
     '-v', `${volumeName}:/data`, // Per-workspace volume: Chrome profile + TOTP secrets
@@ -133,6 +132,9 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
   let containerId: string | undefined;
 
   try {
+    // Ensure gateway is running before spawning the workspace
+    await ensureGatewayRunning();
+
     // Create per-workspace data volume first
     await execFileAsync('docker', ['volume', 'create', volumeName]);
 
@@ -149,8 +151,6 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
       mcpUrl: `http://127.0.0.1:${mcpPort}`,
       authToken,
       mcpPort,
-      novncPort,
-      vncPort,
       image,
       status: 'starting',
       createdAt: new Date(),
@@ -162,6 +162,12 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
     await waitForHealthy(containerId, mcpPort, 120000);
     handle.status = 'running';
 
+    // Connect gateway to this workspace's Docker network and register Caddy route
+    // (non-fatal: workspace is functional for MCP even if gateway connect fails)
+    await connectWorkspaceToGateway(id).catch(err =>
+      console.warn(`[workspace] Gateway connect failed for ${id}:`, err.message),
+    );
+
     return handle;
   } catch (err: any) {
     // Stop and remove the container if it was started (prevents zombie container holding ports)
@@ -171,8 +177,6 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
     }
     activeWorkspaces.delete(id);
     releasePort(mcpPort);
-    releasePort(novncPort);
-    releasePort(vncPort);
     // Clean up data volume and network AFTER container is stopped
     execFileAsync('docker', ['volume', 'rm', volumeName]).catch(() => {});
     execFileAsync('docker', ['network', 'rm', networkName]).catch(() => {});
@@ -235,6 +239,9 @@ export async function destroyWorkspace(id: string): Promise<void> {
   const handle = activeWorkspaces.get(id);
   if (!handle) throw new Error(`Workspace not found: ${id}`);
 
+  // Deregister route and disconnect gateway from workspace network
+  await disconnectWorkspaceFromGateway(id).catch(() => {});
+
   // Stop and remove — throw on failure so ports/tracking aren't freed prematurely
   await execFileAsync('docker', ['stop', handle.containerId]);
   await execFileAsync('docker', ['rm', handle.containerId]);
@@ -244,8 +251,6 @@ export async function destroyWorkspace(id: string): Promise<void> {
   execFileAsync('docker', ['network', 'rm', `clawd-ws-net-${id}`]).catch(() => {});
 
   releasePort(handle.mcpPort);
-  releasePort(handle.novncPort);
-  releasePort(handle.vncPort);
   handle.status = 'stopped';
   activeWorkspaces.delete(id);
 }
@@ -287,19 +292,36 @@ export async function cleanupOrphanedWorkspaces(): Promise<number> {
 /**
  * Reconcile allocated port set with actually-running clawd containers.
  * Call once at startup to prevent port collisions after process restart.
+ * Also re-registers workspace routes in the Caddy gateway (in case it restarted).
  */
 export async function reconcilePortsFromDocker(): Promise<void> {
+  const discoveredIds: string[] = [];
   try {
     const { stdout } = await execFileAsync('docker', [
       'ps', '--filter', 'name=clawd-ws-',
-      '--format', '{{.Ports}}',
+      '--format', '{{.Names}}\t{{.Ports}}',
     ]);
-    for (const portLine of stdout.trim().split('\n').filter(Boolean)) {
-      for (const match of portLine.matchAll(/127\.0\.0\.1:(\d+)->/g)) {
-        allocatedPorts.add(Number(match[1]));
+    for (const line of stdout.trim().split('\n').filter(Boolean)) {
+      const [name, ports] = line.split('\t');
+      // Re-register MCP ports
+      if (ports) {
+        for (const match of ports.matchAll(/127\.0\.0\.1:(\d+)->/g)) {
+          allocatedPorts.add(Number(match[1]));
+        }
+      }
+      // Collect workspace IDs for gateway route reconciliation
+      const id = name?.replace(/^clawd-ws-/, '');
+      if (id && /^[a-f0-9]{16}$/.test(id)) {
+        discoveredIds.push(id);
       }
     }
   } catch {
     // Docker not available or no containers — not an error
+  }
+
+  // Re-register routes for discovered workspaces (handles Caddy restart)
+  if (discoveredIds.length > 0) {
+    await ensureGatewayRunning().catch(() => {});
+    await reconcileGatewayRoutes(discoveredIds);
   }
 }

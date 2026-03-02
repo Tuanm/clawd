@@ -1725,6 +1725,7 @@ export default function MessageList({
                       )}
                       <div className="workspace-card-action">Open Desktop →</div>
                     </div>
+                    <div className={`workspace-status-dot workspace-status-${msg.workspace.status}`} />
                   </div>
                 )}
                 {msg.files && msg.files.length > 0 && (

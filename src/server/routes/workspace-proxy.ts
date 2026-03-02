@@ -2,20 +2,18 @@
  * Workspace noVNC Proxy
  *
  * Routes:
- *   HTTP  GET  /workspace/:id/novnc/*     → proxy to container's noVNC HTTP server
- *   WS         /workspace/:id/novnc/websockify → proxy WS to container's websockify
+ *   HTTP  GET  /workspace/:id/novnc/*             → Caddy gateway → container noVNC
+ *   WS         /workspace/:id/novnc/websockify     → Caddy gateway → container websockify
  *
- * The workspace ID maps to a running Docker container clawd-ws-{id}.
- * Port is looked up from the in-memory registry (same process) or via docker CLI.
+ * The gateway (clawd-gateway container, Caddy) handles routing to the correct
+ * workspace container via Docker network DNS (clawd-ws-{id}:6080).
+ * Workspace containers no longer publish noVNC/VNC ports to the host.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { ServerWebSocket } from "bun";
+import { GATEWAY_PROXY_PORT } from "../../agent/src/workspace/gateway.js";
 
-const execFileAsync = promisify(execFile);
-
-/** Per-connection map: connId → backend WebSocket (noVNC websockify) */
+/** Per-connection map: connId → backend WebSocket (Caddy gateway → noVNC websockify) */
 const wsProxyBackends = new Map<string, WebSocket>();
 
 /** Messages buffered while the backend WS is still in CONNECTING state */
@@ -23,28 +21,6 @@ const wsProxyPendingQueues = new Map<string, Array<string | ArrayBuffer>>();
 
 // Workspace ID is always exactly 16 lowercase hex chars (randomBytes(8).toString('hex'))
 const WORKSPACE_ID_RE = /^[a-f0-9]{16}$/;
-
-// ─── Port lookup ──────────────────────────────────────────────────────────────
-
-async function getNovncPort(workspaceId: string): Promise<number | null> {
-  // Fast path: in-memory registry (same process as worker loop)
-  try {
-    const { getWorkspace } = await import("../../agent/src/workspace/container.js");
-    const ws = getWorkspace(workspaceId);
-    if (ws) return ws.novncPort;
-  } catch { /* module not available in this context */ }
-
-  // Fallback: query docker daemon directly (6080 = container-internal noVNC port)
-  try {
-    const { stdout } = await execFileAsync("docker", [
-      "port", `clawd-ws-${workspaceId}`, "6080",
-    ]);
-    const match = stdout.match(/:(\d+)/);
-    if (match) return parseInt(match[1], 10);
-  } catch { /* container not found */ }
-
-  return null;
-}
 
 /** Validate workspace ID format before use */
 function isValidWorkspaceId(id: string): boolean {
@@ -54,7 +30,7 @@ function isValidWorkspaceId(id: string): boolean {
 // ─── HTTP proxy ───────────────────────────────────────────────────────────────
 
 /**
- * Proxy a normal HTTP request to the workspace's noVNC server.
+ * Proxy a normal HTTP request to the workspace's noVNC server via the gateway.
  * Called for all /workspace/:id/novnc/* paths.
  */
 export async function handleWorkspaceProxy(
@@ -68,26 +44,18 @@ export async function handleWorkspaceProxy(
     });
   }
 
-  const port = await getNovncPort(workspaceId);
-  if (!port) {
-    return new Response(
-      JSON.stringify({ error: "workspace_not_found", workspace_id: workspaceId }),
-      { status: 404, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
   // Strip the /workspace/:id/novnc prefix to get the noVNC-relative path
   const prefix = `/workspace/${workspaceId}/novnc`;
   const novncPath = url.pathname.startsWith(prefix)
     ? url.pathname.slice(prefix.length) || "/"
     : "/";
 
-  const targetUrl = `http://127.0.0.1:${port}${novncPath}${url.search}`;
+  // Forward to gateway: /{workspaceId}/{novncPath}
+  const targetUrl = `http://127.0.0.1:${GATEWAY_PROXY_PORT}/${workspaceId}${novncPath}${url.search}`;
 
   try {
     const filteredHeaders = filterProxyHeaders(req.headers);
-    // Set Host to the upstream target to avoid mismatched-Host rejections
-    filteredHeaders["host"] = `127.0.0.1:${port}`;
+    filteredHeaders["host"] = `127.0.0.1:${GATEWAY_PROXY_PORT}`;
 
     const upstream = await fetch(targetUrl, {
       method: req.method,
@@ -118,7 +86,6 @@ export async function handleWorkspaceProxy(
 export interface WorkspaceWsData {
   type: "workspace-novnc";
   workspaceId: string;
-  novncPort: number;
   connId: string;
 }
 
@@ -137,19 +104,21 @@ export async function upgradeWorkspaceWs(
     });
   }
 
-  const port = await getNovncPort(workspaceId);
-  if (!port) {
-    return new Response(
-      JSON.stringify({ error: "workspace_not_found" }),
-      { status: 404, headers: { "Content-Type": "application/json" } },
-    );
-  }
+  // Quick existence check via in-memory registry
+  try {
+    const { getWorkspace } = await import("../../agent/src/workspace/container.js");
+    const ws = getWorkspace(workspaceId);
+    if (!ws) {
+      return new Response(JSON.stringify({ error: "workspace_not_found" }), {
+        status: 404, headers: { "Content-Type": "application/json" },
+      });
+    }
+  } catch { /* module not available — allow through */ }
 
   const connId = crypto.randomUUID();
   const data: WorkspaceWsData = {
     type: "workspace-novnc",
     workspaceId,
-    novncPort: port,
     connId,
   };
 
@@ -158,17 +127,20 @@ export async function upgradeWorkspaceWs(
 }
 
 export function handleWorkspaceWsOpen(ws: ServerWebSocket<WorkspaceWsData>): void {
-  const { novncPort, connId } = ws.data;
+  const { workspaceId, connId } = ws.data;
 
   // Init pending queue to buffer messages while backend is still CONNECTING
   wsProxyPendingQueues.set(connId, []);
 
-  // Connect to the noVNC websockify endpoint in the container
-  // noVNC's protocol negotiation happens over binary WebSocket frames
-  const backend = new WebSocket(`ws://127.0.0.1:${novncPort}/websockify`, ["binary", "base64"]);
+  // Connect to the gateway which relays to the workspace's noVNC websockify
+  // Gateway resolves clawd-ws-{workspaceId}:6080 via Docker network DNS
+  const backend = new WebSocket(
+    `ws://127.0.0.1:${GATEWAY_PROXY_PORT}/${workspaceId}/websockify`,
+    ["binary", "base64"],
+  );
   backend.binaryType = "arraybuffer";
 
-  // Timeout if backend never connects (e.g., container crashed or wrong port)
+  // Timeout if gateway/container never connects (e.g., container crashed)
   const connectTimeout = setTimeout(() => {
     if (backend.readyState === WebSocket.CONNECTING) {
       wsProxyPendingQueues.delete(connId);
