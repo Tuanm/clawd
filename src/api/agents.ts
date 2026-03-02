@@ -407,12 +407,15 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "channel and agent_id required" }, 400);
         }
 
-        // Validate provider (must be copilot, openai, anthropic, or ollama)
-        const validProviders = ["copilot", "openai", "anthropic", "ollama"];
+        // Validate provider (must be copilot, openai, anthropic, ollama, or cpa)
+        const validProviders = ["copilot", "openai", "anthropic", "ollama", "cpa"];
         const agentProvider = (provider || "copilot").toLowerCase();
         if (!validProviders.includes(agentProvider)) {
           return json(
-            { ok: false, error: `Invalid provider: ${provider}. Must be one of: copilot, openai, anthropic, ollama` },
+            {
+              ok: false,
+              error: `Invalid provider: ${provider}. Must be one of: copilot, openai, anthropic, ollama, cpa`,
+            },
             400,
           );
         }
@@ -501,11 +504,14 @@ export function registerAgentRoutes(
         const params: any[] = [];
 
         if (provider !== undefined) {
-          const validProviders = ["copilot", "openai", "anthropic", "ollama"];
+          const validProviders = ["copilot", "openai", "anthropic", "ollama", "cpa"];
           const agentProvider = String(provider).toLowerCase();
           if (!validProviders.includes(agentProvider)) {
             return json(
-              { ok: false, error: `Invalid provider: ${provider}. Must be one of: copilot, openai, anthropic, ollama` },
+              {
+                ok: false,
+                error: `Invalid provider: ${provider}. Must be one of: copilot, openai, anthropic, ollama, cpa`,
+              },
               400,
             );
           }

@@ -82,6 +82,8 @@ export function createProvider(providerType?: ProviderType, modelOverride?: stri
         return createCopilotProvider(effectiveModelOverride);
       case "ollama":
         return createOllamaProvider(effectiveModelOverride);
+      case "cpa":
+        return createCpaProvider(effectiveModelOverride);
       default:
         return createCopilotProvider(effectiveModelOverride);
     }
@@ -145,6 +147,22 @@ function createOllamaProvider(modelOverride?: string): LLMProvider {
   const model = modelOverride || getModelForProvider("ollama");
 
   return new OllamaProvider({ baseUrl, apiKey: apiKey || "", model, providerType: "ollama" });
+}
+
+/**
+ * Create CPA provider (uses OpenAI-compatible API)
+ */
+function createCpaProvider(modelOverride?: string): LLMProvider {
+  const baseUrl = getBaseUrlForProvider("cpa") || "https://api.openai.com/v1";
+  const apiKey = getApiKeyForProvider("cpa");
+  const model = modelOverride || getModelForProvider("cpa");
+
+  return new OpenAIProvider({
+    baseUrl,
+    apiKey: apiKey || "",
+    model,
+    providerType: "cpa",
+  });
 }
 
 // ============================================================================

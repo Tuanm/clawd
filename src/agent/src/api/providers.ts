@@ -107,7 +107,7 @@ export interface LLMProvider {
 // Provider Types
 // ============================================================================
 
-export type ProviderType = "openai" | "anthropic" | "copilot" | "ollama";
+export type ProviderType = "openai" | "anthropic" | "copilot" | "ollama" | "cpa";
 
 export interface ProviderConfig {
   // Common
@@ -158,6 +158,7 @@ export interface Config {
     openai?: ProviderConfig;
     copilot?: CopilotProviderConfig;
     ollama?: OllamaProviderConfig;
+    cpa?: ProviderConfig;
   };
   mcp_servers?: Record<string, MCPServerConfig>;
 }

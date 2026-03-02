@@ -109,6 +109,9 @@ export function getSelectedProvider(): ProviderType {
   if (config.providers?.anthropic?.api_key) {
     return "anthropic";
   }
+  if (config.providers?.cpa?.api_key || config.providers?.cpa?.base_url) {
+    return "cpa";
+  }
 
   // Default to copilot if no config found
   return "copilot";
@@ -193,6 +196,7 @@ export function getModelForProvider(providerType: ProviderType): string {
     openai: "gpt-4o",
     copilot: "claude-sonnet-4.6",
     ollama: "glm-5:cloud",
+    cpa: "claude-sonnet-4-6",
   };
 
   return defaultModels[providerType];
