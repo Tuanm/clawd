@@ -656,26 +656,38 @@ SUMMARY:`;
       this.toolPluginManager.register(toolPluginInstance);
     }
 
-    // Add MCP servers provided by this plugin
+    // Add MCP servers provided by this plugin.
+    // HTTP servers are awaited (they connect near-instantly to localhost).
+    // stdio servers are fire-and-forget — they may take seconds/minutes to start
+    // (e.g. bunx downloading a package) and must not block the agent stream.
     if (mainPlugin.getMcpServers) {
       const servers = mainPlugin.getMcpServers();
       console.log(`[Plugin] Registering ${servers.length} MCP server(s) from ${mainPlugin.name}`);
       for (const server of servers) {
-        try {
-          await this.mcpManager.addServer({
+        const transport = server.transport || "http";
+        const addPromise = this.mcpManager
+          .addServer({
             name: server.name,
             url: server.url,
-            transport: server.transport || "http",
+            transport,
             command: server.command,
             args: server.args,
             env: server.env,
+          })
+          .then(() => {
+            console.log(
+              `[MCP] Connected to server "${server.name}"${transport === "stdio" ? ` (command: ${server.command})` : ` at ${server.url}`}`,
+            );
+          })
+          .catch((err: any) => {
+            console.error(`[Plugin] Failed to add MCP server ${server.name}: ${err.message}`);
           });
-          console.log(
-            `[MCP] Connected to server "${server.name}"${server.transport === "stdio" ? ` (command: ${server.command})` : ` at ${server.url}`}`,
-          );
-        } catch (err: any) {
-          console.error(`[Plugin] Failed to add MCP server ${server.name}: ${err.message}`);
+
+        if (transport !== "stdio") {
+          // HTTP/SSE servers: wait up to 10s so their tools are available on the first LLM call
+          await Promise.race([addPromise, new Promise((r) => setTimeout(r, 10_000))]);
         }
+        // stdio servers run in background — agent starts immediately without waiting
       }
     }
   }
