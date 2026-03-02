@@ -1,0 +1,22 @@
+{
+  "name": "@clawd/workspace-mcp",
+  "version": "0.1.0",
+  "description": "Unified Workspace MCP Server for Claw'd agents — browser, vision, native app control",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "playwright": "1.58.2",
+    "express": "^4.19.2",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^9.0.0"
+  }
+}
