@@ -1,7 +1,7 @@
 import { typeText, pressKey, selectOption } from "../engines/playwright";
 import { routedClick, xdotoolType, xdotoolKey, type ClickOptions } from "../engines/router";
 import { getCurrentControlMode, isExtensionPopupDetected, clearExtensionPopupFlag } from "../engines/playwright";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 
 interface ContextChangedResult {
   context_changed: boolean;
@@ -74,6 +74,21 @@ export async function dragTool(
   toY: number,
 ): Promise<{ result: string } & ContextChangedResult> {
   const displayEnv = { ...process.env, DISPLAY: process.env.DISPLAY || ":99" };
-  execSync(`xdotool mousemove ${fromX} ${fromY} mousedown 1 mousemove ${toX} ${toY} mouseup 1`, { env: displayEnv });
+  execFileSync(
+    "xdotool",
+    [
+      "mousemove",
+      String(fromX),
+      String(fromY),
+      "mousedown",
+      "1",
+      "mousemove",
+      String(toX),
+      String(toY),
+      "mouseup",
+      "1",
+    ],
+    { env: displayEnv, timeout: 10000 },
+  );
   return { result: `Dragged from (${fromX},${fromY}) to (${toX},${toY})`, ...buildContextResult() };
 }

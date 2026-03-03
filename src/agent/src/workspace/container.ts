@@ -132,6 +132,29 @@ async function tryReuseExistingContainer(id: string, image: string): Promise<Wor
     const containerId = cidOut.trim();
 
     allocatedPorts.add(mcpPort);
+
+    // Verify MCP server is actually responding before trusting this handle
+    const mcpAlive = await probeTcp("127.0.0.1", mcpPort, 3000).then(async (open) => {
+      if (!open) return false;
+      try {
+        const resp = await fetch(`http://127.0.0.1:${mcpPort}/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: '{"jsonrpc":"2.0","id":0,"method":"ping"}',
+          signal: AbortSignal.timeout(3000),
+        });
+        return resp.status === 401 || resp.ok;
+      } catch {
+        return false;
+      }
+    });
+
+    if (!mcpAlive) {
+      allocatedPorts.delete(mcpPort);
+      console.warn(`[workspace] Container ${containerName} exists but MCP is unresponsive — will respawn`);
+      return null;
+    }
+
     const handle: WorkspaceHandle = {
       id,
       containerId,
@@ -166,6 +189,15 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
 
     const reused = await tryReuseExistingContainer(opts.id, image);
     if (reused) return reused;
+
+    // Stale container exists but MCP is dead — try to remove it before spawning fresh
+    const staleContainer = `clawd-ws-${opts.id}`;
+    const removeResult = await execFileAsync("docker", ["rm", "-f", staleContainer]).catch((e) => e);
+    if (removeResult instanceof Error) {
+      console.warn(`[workspace] Could not remove stale container ${staleContainer}: ${removeResult.message}`);
+      // Cannot reuse name — fall back to a random ID so the agent can still work
+      delete opts.id;
+    }
   }
 
   const authToken = opts.authToken || randomBytes(32).toString("hex");

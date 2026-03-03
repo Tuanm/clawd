@@ -85,11 +85,11 @@ export async function routedClick(
           error: `Coordinates (${opts.x}, ${opts.y}) out of bounds (${width}x${height})`,
         };
       }
-      // Use execFileSync to avoid shell injection
+      // Use execFileSync to avoid shell injection; timeout prevents X11 hangs from stalling server
       execFileSync(
         "xdotool",
         ["mousemove", String(opts.x), String(opts.y), "click", "--repeat", String(clickRepeat), String(buttonNum)],
-        { env: DISPLAY_ENV },
+        { env: DISPLAY_ENV, timeout: 10000 },
       );
       return { method: "coordinates", success: true };
     }
@@ -105,7 +105,7 @@ export async function routedClick(
         execFileSync(
           "xdotool",
           ["mousemove", String(x), String(y), "click", "--repeat", String(clickRepeat), String(buttonNum)],
-          { env: DISPLAY_ENV },
+          { env: DISPLAY_ENV, timeout: 10000 },
         );
         return { method: "vision", success: true };
       } catch (e: any) {
@@ -120,13 +120,13 @@ export async function routedClick(
 export async function xdotoolType(text: string): Promise<void> {
   return withMutex(async () => {
     // Use execFileSync array args to avoid shell injection
-    execFileSync("xdotool", ["type", "--clearmodifiers", "--", text], { env: DISPLAY_ENV });
+    execFileSync("xdotool", ["type", "--clearmodifiers", "--", text], { env: DISPLAY_ENV, timeout: 15000 });
   });
 }
 
 export async function xdotoolKey(key: string): Promise<void> {
   return withMutex(async () => {
     // Use execFileSync to avoid shell injection — key is passed as a direct argument
-    execFileSync("xdotool", ["key", key], { env: DISPLAY_ENV });
+    execFileSync("xdotool", ["key", key], { env: DISPLAY_ENV, timeout: 10000 });
   });
 }
