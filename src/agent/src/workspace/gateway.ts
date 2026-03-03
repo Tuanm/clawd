@@ -28,6 +28,9 @@ const GATEWAY_IMAGE = "caddy:alpine";
 let gatewayConfigurePromise: Promise<void> | null = null;
 let gatewayConfigured = false;
 
+// Mutex to prevent concurrent ensureGatewayRunning() calls from racing
+let ensureGatewayPromise: Promise<void> | null = null;
+
 const WORKSPACE_ID_RE = /^[a-f0-9]{16}$/;
 function assertValidWorkspaceId(id: string): void {
   if (!WORKSPACE_ID_RE.test(id)) throw new Error(`Invalid workspace ID: "${id}"`);
@@ -37,33 +40,64 @@ function assertValidWorkspaceId(id: string): void {
 
 /**
  * Ensure the Caddy gateway container is running and the HTTP server is configured.
- * Safe to call multiple times — idempotent.
+ * Safe to call multiple times — idempotent. Serialized via promise mutex.
  */
 export async function ensureGatewayRunning(): Promise<void> {
+  if (!ensureGatewayPromise) {
+    ensureGatewayPromise = doEnsureGatewayRunning().finally(() => {
+      ensureGatewayPromise = null;
+    });
+  }
+  return ensureGatewayPromise;
+}
+
+async function doEnsureGatewayRunning(): Promise<void> {
   // Check if container already exists and handle all possible states
+  let needsCreate = false;
   try {
     const { stdout } = await execFileAsync("docker", ["inspect", "--format={{.State.Status}}", GATEWAY_CONTAINER_NAME]);
     const status = stdout.trim();
+
     if (status === "running") {
-      // Container is running; ensure HTTP server is configured
-      await ensureGatewayHttpServer();
-      return;
-    }
-    if (status === "exited" || status === "stopped") {
+      // Container is running — try to configure admin API.
+      // If it fails (e.g. container started with old Caddy config that binds admin to
+      // 127.0.0.1 inside the container, making it unreachable via Docker port mapping),
+      // force-recreate so the next attempt starts Caddy with the correct config.
+      try {
+        await ensureGatewayHttpServer();
+        return;
+      } catch {
+        console.log("[Gateway] Running container has unreachable admin API — recreating with correct config...");
+        await execFileAsync("docker", ["rm", "-f", GATEWAY_CONTAINER_NAME]);
+        // Reset config flags so ensureGatewayHttpServer() re-runs after recreation
+        gatewayConfigured = false;
+        gatewayConfigurePromise = null;
+        needsCreate = true;
+      }
+    } else if (status === "exited" || status === "stopped") {
       // Restart existing container
       await execFileAsync("docker", ["start", GATEWAY_CONTAINER_NAME]);
       await waitForAdminApi();
       await ensureGatewayHttpServer();
       return;
+    } else {
+      // Any other state (created, paused, restarting, dead) — remove and recreate
+      console.log(`[Gateway] Container in unexpected state "${status}", removing and recreating...`);
+      await execFileAsync("docker", ["rm", "-f", GATEWAY_CONTAINER_NAME]);
+      needsCreate = true;
     }
-    // Any other state (created, paused, restarting, dead) — remove and recreate
-    console.log(`[Gateway] Container in unexpected state "${status}", removing and recreating...`);
-    await execFileAsync("docker", ["rm", "-f", GATEWAY_CONTAINER_NAME]);
   } catch {
     // Container doesn't exist — create it
+    needsCreate = true;
   }
 
-  // Create and start the gateway container
+  if (!needsCreate) return; // shouldn't happen, but guard
+
+  // Create and start the gateway container.
+  // IMPORTANT: Caddy's admin API defaults to localhost:2019 (container-internal loopback only),
+  // which Docker port mapping cannot reach. We must configure it to listen on 0.0.0.0:2019
+  // so the host can reach it via the published port.
+  const initConfig = JSON.stringify({ admin: { listen: `0.0.0.0:${GATEWAY_ADMIN_PORT}` } });
   try {
     await execFileAsync("docker", [
       "run",
@@ -77,8 +111,10 @@ export async function ensureGatewayRunning(): Promise<void> {
       "-p",
       `127.0.0.1:${GATEWAY_ADMIN_PORT}:${GATEWAY_ADMIN_PORT}`,
       GATEWAY_IMAGE,
-      "caddy",
-      "run", // Start with no config; admin API enabled by default on :2019
+      "sh",
+      "-c",
+      // Write init config to tmp file and exec caddy (replaces sh → caddy becomes PID 1)
+      `printf '%s' '${initConfig}' > /tmp/caddy-init.json && exec caddy run --config /tmp/caddy-init.json`,
     ]);
   } catch (runErr: any) {
     // Race condition: concurrent call already created the container — start it instead
@@ -139,8 +175,11 @@ async function doEnsureGatewayHttpServer(): Promise<void> {
     /* not configured */
   }
 
-  // Configure HTTP server on proxy port with empty routes array
+  // Configure HTTP server on proxy port with empty routes array.
+  // IMPORTANT: Also keep admin.listen = 0.0.0.0:2019 to avoid Caddy reverting to
+  // its default (localhost:2019, unreachable via Docker port mapping).
   const config = {
+    admin: { listen: `0.0.0.0:${GATEWAY_ADMIN_PORT}` },
     apps: {
       http: {
         servers: {
@@ -183,8 +222,16 @@ export async function connectWorkspaceToGateway(workspaceId: string): Promise<vo
     if (!err.message?.includes("already exists")) throw err;
   }
 
-  // Register route in Caddy: /{workspaceId}/* → clawd-ws-{workspaceId}:6080
-  await registerWorkspaceRoute(workspaceId, containerName);
+  // Register route in Caddy with retry — the admin API may take a moment after gateway recreation
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await registerWorkspaceRoute(workspaceId, containerName);
+      return;
+    } catch (err: any) {
+      if (attempt === 4) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
 }
 
 /**
@@ -218,8 +265,8 @@ async function registerWorkspaceRoute(workspaceId: string, containerName: string
           {
             handle: [
               {
-                handler: "strip_path_prefix",
-                prefix: `/${workspaceId}`,
+                handler: "rewrite",
+                strip_path_prefix: `/${workspaceId}`,
               },
               {
                 handler: "reverse_proxy",
