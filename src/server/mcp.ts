@@ -513,10 +513,11 @@ Returns JSON:
     "id": "F...",
     "name": "filename.txt",
     "mimetype": "text/plain",
-    "size": 1234,
-    "url_private": "/api/files/F..."
+    "size": 1234
   }
 }
+
+Use file.id (the file_id) with chat_send_message_with_files to attach the file to a message.
 
 **COMPLETE EXAMPLE:**
 \`\`\`
@@ -592,10 +593,11 @@ Returns JSON:
     "id": "F...",
     "name": "icon.png",
     "mimetype": "image/png",
-    "size": 18432,
-    "url_private": "/api/files/F..."
+    "size": 18432
   }
 }
+
+Use file.id (the file_id) with chat_send_message_with_files to attach the file to a message.
 
 **COMPLETE EXAMPLE:**
 \`\`\`
@@ -1863,7 +1865,6 @@ async function executeToolCall(
             name: file.name,
             mimetype: file.mimetype,
             size: file.size,
-            download_url: `/api/files/${file.id}`,
           };
 
           // Images NEVER return base64 — always provide hint to use read_image tool
@@ -1871,8 +1872,7 @@ async function executeToolCall(
             fileInfo.image_hint =
               `This is an image file (${file.name}, ${file.mimetype}, ${file.size} bytes). ` +
               `To analyze or describe this image, use the read_image tool with file_id="${file.id}". ` +
-              `Do NOT attempt to read the image as base64 as it may exceed context limits. ` +
-              `The image can be viewed at: /api/files/${file.id}`;
+              `Do NOT attempt to read the image as base64 as it may exceed context limits.`;
           } else if (includeContent && file.size < 1024 * 1024) {
             // Include base64 content if requested and file is small enough (<1MB)
             try {
@@ -1922,7 +1922,6 @@ async function executeToolCall(
               name: file.name,
               mimetype: file.mimetype,
               size: file.size,
-              download_url: `/api/files/${file.id}`,
             },
           };
 
@@ -1931,8 +1930,7 @@ async function executeToolCall(
             (response.file as Record<string, unknown>).image_hint =
               `This is an image file (${file.name}, ${file.mimetype}, ${file.size} bytes). ` +
               `To analyze or describe this image, use the read_image tool with file_id="${file.id}". ` +
-              `Do NOT attempt to read the image as base64 as it may exceed context limits. ` +
-              `The image can be viewed at: /api/files/${file.id}`;
+              `Do NOT attempt to read the image as base64 as it may exceed context limits.`;
           }
           // Include base64 content if requested and file is small enough (<1MB) — non-images only
           else if (includeContent && file.size < 1024 * 1024) {
@@ -2082,7 +2080,6 @@ async function executeToolCall(
               name: filename,
               mimetype,
               size: buffer.length,
-              url_private: `/api/files/${id}`,
             },
           },
           null,
@@ -2185,7 +2182,6 @@ async function executeToolCall(
               name: displayName,
               mimetype,
               size: buffer.length,
-              url_private: `/api/files/${id}`,
             },
           },
           null,
