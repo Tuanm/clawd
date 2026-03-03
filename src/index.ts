@@ -710,7 +710,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         workspace_json: body.workspace_json,
       });
       if ((result as any).cleared) {
-        broadcastChannelCleared(body.channel || "general");
+        const clearedChannel = body.channel || "general";
+        broadcastChannelCleared(clearedChannel);
+        // Reset all agent sessions for this channel (fire-and-forget)
+        workerManager.resetChannel(clearedChannel).catch(() => {});
         return json(result);
       }
       if (result.ok && body.files && Array.isArray(body.files) && body.files.length > 0) {

@@ -110,6 +110,37 @@ export class WorkerLoop {
     this.log(sleeping ? "Agent sleeping" : "Agent awake");
   }
 
+  /**
+   * Cancel the currently running agent and delete its persisted session so the
+   * next run starts with a clean slate (used by the /clear command).
+   */
+  async resetSession(): Promise<void> {
+    if (this.activeAgent) {
+      try {
+        this.activeAgent.cancel();
+      } catch {}
+    }
+    // Delete the session from memory.db so history is gone
+    try {
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+      const { Database } = await import("bun:sqlite");
+      const memoryDb = new Database(join(homedir(), ".clawd", "memory.db"));
+      const sessionName = `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
+      const session = memoryDb
+        .query<{ id: string }, [string]>("SELECT id FROM sessions WHERE name = ? ORDER BY updated_at DESC LIMIT 1")
+        .get(sessionName);
+      if (session) {
+        memoryDb.run("DELETE FROM messages WHERE session_id = ?", [session.id]);
+        memoryDb.run("DELETE FROM sessions WHERE id = ?", [session.id]);
+        this.log(`Session reset: deleted session ${session.id} (${sessionName})`);
+      }
+      memoryDb.close();
+    } catch (err) {
+      this.log(`Session reset error: ${err}`);
+    }
+  }
+
   /** Start the polling loop */
   start(): void {
     if (this.running) return;

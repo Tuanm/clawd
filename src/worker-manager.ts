@@ -151,6 +151,21 @@ export class WorkerManager {
     return this.startAgent(agent);
   }
 
+  /**
+   * Reset all agents in a channel: cancel active runs and wipe their sessions.
+   * Called after a /clear command so agents start with a clean slate.
+   */
+  async resetChannel(channel: string): Promise<void> {
+    const resets: Promise<void>[] = [];
+    for (const [key, loop] of this.loops) {
+      if (key.startsWith(`${channel}:`)) {
+        resets.push(loop.resetSession());
+      }
+    }
+    await Promise.allSettled(resets);
+    console.log(`[WorkerManager] Reset ${resets.length} agent(s) for channel: ${channel}`);
+  }
+
   /** Get status of all running loops */
   getStatus(): { key: string; running: boolean }[] {
     return Array.from(this.loops.entries()).map(([key, loop]) => ({

@@ -503,7 +503,9 @@ export function clearChannelHistory(channel: string): { ok: boolean; error?: str
   }
   // Delete all messages (including threads) for this channel
   db.run(`DELETE FROM messages WHERE channel = ?`, [channel]);
-  // Reset agent seen/processed pointers so agents start fresh
+  // Delete conversation summaries so agents start fresh (no compressed history)
+  db.run(`DELETE FROM summaries WHERE channel = ?`, [channel]);
+  // Reset agent seen/processed pointers so agents re-read from scratch
   db.run(`DELETE FROM agent_seen WHERE channel = ?`, [channel]);
   return { ok: true };
 }
