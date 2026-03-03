@@ -92,8 +92,8 @@ export function createProvider(providerType?: string, modelOverride?: string): L
         return createCopilotProvider(effectiveModelOverride);
       case "ollama":
         return createOllamaProvider(effectiveModelOverride, providerName);
-      case "cpa":
-        return createCpaProvider(effectiveModelOverride, providerName);
+      case "minimax":
+        return createMiniMaxProvider(effectiveModelOverride, providerName);
       default:
         return createCopilotProvider(effectiveModelOverride);
     }
@@ -166,20 +166,21 @@ function createOllamaProvider(modelOverride?: string, customProviderName?: strin
 }
 
 /**
- * Create CPA provider (uses OpenAI-compatible API)
+ * Create MiniMax provider (uses Anthropic-compatible API for chat completions)
+ * Image generation uses a separate endpoint handled in multimodal.ts
  * @param customProviderName if set, config is read from this custom provider entry
  */
-function createCpaProvider(modelOverride?: string, customProviderName?: string): LLMProvider {
-  const name = customProviderName ?? "cpa";
-  const baseUrl = getBaseUrlForProvider(name) || "https://api.openai.com/v1";
+function createMiniMaxProvider(modelOverride?: string, customProviderName?: string): LLMProvider {
+  const name = customProviderName ?? "minimax";
+  const baseUrl = getBaseUrlForProvider(name) || "https://api.minimax.io/anthropic";
   const apiKey = getApiKeyForProvider(name);
   const model = modelOverride || getModelForProvider(name);
 
-  return new OpenAIProvider({
+  return new AnthropicProvider({
     baseUrl,
     apiKey: apiKey || "",
     model,
-    providerType: name, // use actual provider name for per-request key rotation
+    providerType: name,
   });
 }
 

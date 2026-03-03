@@ -32,12 +32,12 @@ export interface ConfigFile {
    * Example:
    *   "vision": {
    *     "read_image":     { "provider": "copilot", "model": "gpt-4.1" },
-   *     "generate_image": { "provider": "cpa",     "model": "gemini-3.1-flash-image" },
-   *     "edit_image":     { "provider": "cpa",     "model": "gemini-3.1-flash-image" }
+   *     "generate_image": { "provider": "minimax", "model": "image-01" },
+   *     "edit_image":     { "provider": "minimax", "model": "image-01" }
    *   }
    *
-   * Providers: "copilot" | "gemini" | "cpa"
-   * If omitted, falls back to the built-in Gemini → CPA chain.
+   * Providers: "copilot" | "gemini" | "minimax"
+   * If omitted, falls back to the built-in Gemini → MiniMax chain.
    */
   vision?: {
     provider?: string;

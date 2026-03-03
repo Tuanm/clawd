@@ -107,17 +107,17 @@ export interface LLMProvider {
 // Provider Types
 // ============================================================================
 
-export type ProviderType = "openai" | "anthropic" | "copilot" | "ollama" | "cpa";
+export type ProviderType = "openai" | "anthropic" | "copilot" | "ollama" | "minimax";
 
 /** Built-in provider names (recognized without a `type` field) */
-export const BUILTIN_PROVIDERS: readonly ProviderType[] = ["openai", "anthropic", "copilot", "ollama", "cpa"];
+export const BUILTIN_PROVIDERS: readonly ProviderType[] = ["openai", "anthropic", "copilot", "ollama", "minimax"];
 
 export interface ProviderConfig {
   /**
    * Base provider type. When set, this entry is a *custom* provider that
    * inherits the API logic of `type` (e.g., "openai", "anthropic") but
    * overrides base_url, api_key(s), and models.
-   * Built-in providers (openai, anthropic, copilot, ollama, cpa) do not need
+   * Built-in providers (openai, anthropic, copilot, ollama, minimax) do not need
    * this field.
    */
   type?: string;
@@ -166,7 +166,7 @@ export interface MCPServerConfig {
 export interface Config {
   /**
    * Provider configurations.
-   * Built-in keys: "openai", "anthropic", "copilot", "ollama", "cpa".
+   * Built-in keys: "openai", "anthropic", "copilot", "ollama", "minimax".
    * Any additional key is a *custom* provider — it must include a `type` field
    * pointing to the built-in provider whose API logic to inherit.
    *
@@ -177,6 +177,8 @@ export interface Config {
    *     "api_key": "gsk_...",
    *     "models": { "default": "llama-3.3-70b-versatile" }
    *   }
+   *
+   * CPA (legacy) can be used as: "cpa": { "type": "openai", ... }
    */
   providers: Record<string, ProviderConfig | CopilotProviderConfig | OllamaProviderConfig>;
   mcp_servers?: Record<string, MCPServerConfig>;

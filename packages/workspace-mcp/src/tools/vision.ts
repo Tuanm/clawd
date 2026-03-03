@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { screenshotTool, cleanupScreenshot } from "./observe";
-import { getCpaConfig, getEnv } from "../config";
+import { getMiniMaxConfig, getEnv } from "../config";
 import { getCurrentControlMode, isExtensionPopupDetected } from "../engines/playwright";
 
 interface VisionResult {
@@ -12,18 +12,33 @@ interface VisionResult {
   hint?: string;
 }
 
-async function analyzeImageWithCpa(imagePath: string, prompt: string): Promise<string> {
-  const cpa = getCpaConfig();
-  if (!cpa) throw new Error("CPA provider not configured in /etc/clawd/config.json");
+/**
+ * Analyze an image using the configured vision provider.
+ * Uses OpenAI-compatible /chat/completions for vision when available.
+ *
+ * NOTE: MiniMax M2/M2.5 models are text-only — they do NOT support image input.
+ * The config's "vision" model must point to a vision-capable model (e.g., via a
+ * custom proxy that routes to Gemini, GPT-4, or Claude vision models).
+ */
+async function analyzeImageWithVision(imagePath: string, prompt: string): Promise<string> {
+  const config = getMiniMaxConfig();
+  if (!config) throw new Error("Vision provider not configured — set CLAWD_MINIMAX_BASE_URL + CLAWD_MINIMAX_API_KEY with a vision-capable model in models.vision");
+
+  const visionModel = config.models?.["vision"] || config.models?.["flash"];
+  if (!visionModel) {
+    throw new Error("No vision model configured. Set models.vision in the minimax provider config to a vision-capable model.");
+  }
 
   const imageData = readFileSync(imagePath);
   const base64 = imageData.toString("base64");
 
-  const model = cpa.models?.["flash"] || cpa.models?.["default"] || "gemini-3-flash";
-  const response = await fetch(`${cpa.base_url}/chat/completions`, {
+  // Strip /anthropic suffix — vision needs OpenAI-compatible endpoint
+  const baseUrl = config.base_url.replace(/\/anthropic\/?$/, "");
+  const model = visionModel;
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${cpa.api_key}`,
+      Authorization: `Bearer ${config.api_key}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -52,7 +67,7 @@ async function analyzeImageWithCpa(imagePath: string, prompt: string): Promise<s
 export async function observeTool(): Promise<VisionResult> {
   const { path } = await screenshotTool();
   try {
-    const description = await analyzeImageWithCpa(
+    const description = await analyzeImageWithVision(
       path,
       "Describe exactly what you see on screen. List all visible UI elements, buttons, text, dialogs, and their positions. Be specific and structured.",
     );
@@ -71,7 +86,7 @@ export async function visionClickCoords(description: string, retries = 3): Promi
   for (let attempt = 1; attempt <= retries; attempt++) {
     const { path } = await screenshotTool();
     try {
-      const response = await analyzeImageWithCpa(
+      const response = await analyzeImageWithVision(
         path,
         `Find the element matching this description: "${description}". Return ONLY a JSON object with x and y pixel coordinates of the center of that element. Example: {"x": 640, "y": 512}. Nothing else.`,
       );

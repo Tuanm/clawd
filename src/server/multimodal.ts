@@ -175,37 +175,36 @@ function getGeminiApiKey(): string | undefined {
   return getEnvVar("GEMINI_API_KEY");
 }
 
-/** CPA (CLIProxyAPI) provider configuration for fallback image processing. */
-interface CpaConfig {
-  baseUrl: string;
+/** MiniMax provider configuration for image generation. */
+interface MiniMaxConfig {
+  baseUrl: string; // e.g. "https://api.minimax.io"
   apiKey: string;
-  imageModel: string;
-  visionModel: string;
+  imageModel: string; // "image-01"
 }
 
-/** Get CPA provider config from ~/.clawd/config.json if configured. */
-function getCpaConfig(): CpaConfig | null {
+/** Get MiniMax provider config from ~/.clawd/config.json if configured. */
+function getMiniMaxConfig(): MiniMaxConfig | null {
   const config = loadConfigFile();
-  const cpa = config.providers?.cpa as Record<string, unknown> | undefined;
+  const mm = config.providers?.minimax as Record<string, unknown> | undefined;
   if (
-    !cpa ||
-    typeof cpa.base_url !== "string" ||
-    typeof cpa.api_key !== "string" ||
-    (cpa.base_url as string).trim() === "" ||
-    (cpa.api_key as string).trim() === ""
+    !mm ||
+    typeof mm.api_key !== "string" ||
+    (mm.api_key as string).trim() === ""
   )
     return null;
-  const models = cpa.models as Record<string, string> | undefined;
+  const models = mm.models as Record<string, string> | undefined;
+  // Base URL: strip /anthropic suffix if present (image gen uses /v1/image_generation)
+  const rawUrl = typeof mm.base_url === "string" ? (mm.base_url as string).trim().replace(/\/+$/, "") : "https://api.minimax.io";
+  const baseUrl = rawUrl.replace(/\/anthropic\/?$/, "");
   return {
-    baseUrl: (cpa.base_url as string).trim().replace(/\/+$/, ""),
-    apiKey: (cpa.api_key as string).trim(),
-    imageModel: models?.["flash-image"] || models?.default || "gemini-3.1-flash-image",
-    visionModel: models?.flash || models?.default || "gemini-3-flash",
+    baseUrl,
+    apiKey: (mm.api_key as string).trim(),
+    imageModel: models?.["image"] || models?.["image-gen"] || "image-01",
   };
 }
 
-/** Sanitize CPA error messages to prevent API key leakage. */
-function sanitizeCpaError(message: string, apiKey: string): string {
+/** Sanitize error messages to prevent API key leakage. */
+function sanitizeApiError(message: string, apiKey: string): string {
   const escaped = apiKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return message.replace(new RegExp(escaped, "g"), "[REDACTED]");
 }
@@ -501,7 +500,7 @@ function getCopilotVisionToken(): string | null {
  * Resolution order:
  *   1. vision.<op>.provider + vision.<op>.model  (per-operation)
  *   2. vision.provider + vision.model             (top-level default)
- *   3. null → caller falls back to legacy Gemini→CPA chain
+ *   3. null → caller falls back to legacy Gemini→MiniMax chain
  */
 function getVisionOpConfig(
   op: "read_image" | "generate_image" | "edit_image",
@@ -586,51 +585,50 @@ async function callCopilotVisionAnalysis(
 }
 
 // ============================================================================
-// CPA (CLIProxyAPI) Fallback — OpenAI-compatible image processing
+// MiniMax Fallback — Image generation via dedicated API
 // ============================================================================
 
 /**
- * Call CPA provider for image generation/editing via OpenAI-compatible API.
- * Used as fallback when direct Gemini API fails.
- * CPA response format: message.images[].image_url.url = "data:{mime};base64,..."
+ * Call MiniMax image generation API (POST /v1/image_generation).
+ * Uses model "image-01" with prompt-based generation. Does NOT use chat completions.
+ * API docs: https://platform.minimax.io/docs/api-reference/image-generation
+ *
+ * For image editing: includes source image as subject_reference.
  */
-async function callCpaImageGeneration(
+async function callMiniMaxImageGeneration(
   prompt: string,
   sourceImagePath?: string,
   timeoutMs: number = 180_000,
   modelOverride?: string,
 ): Promise<{ ok: boolean; imageData?: { mimeType: string; data: string }; error?: string }> {
-  const cpa = getCpaConfig();
-  if (!cpa) return { ok: false, error: "CPA provider not configured" };
+  const mm = getMiniMaxConfig();
+  if (!mm) return { ok: false, error: "MiniMax provider not configured" };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    // Build message content
-    const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
+    const body: Record<string, unknown> = {
+      model: modelOverride || mm.imageModel,
+      prompt: prompt.slice(0, 1500), // MiniMax prompt limit
+      response_format: "base64",
+      n: 1,
+    };
 
-    // For image editing: include source image as inline data
+    // For image editing: include source image as subject_reference (uses image_file with data URI)
     if (sourceImagePath) {
       const mimeType = detectMimeType(sourceImagePath);
       const base64 = fileToBase64(sourceImagePath);
-      content.push({
-        type: "image_url",
-        image_url: { url: `data:${mimeType};base64,${base64}` },
-      });
+      body.subject_reference = [{ type: "character", image_file: `data:${mimeType};base64,${base64}` }];
     }
 
-    const response = await fetch(`${cpa.baseUrl}/chat/completions`, {
+    const response = await fetch(`${mm.baseUrl}/v1/image_generation`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${cpa.apiKey}`,
+        Authorization: `Bearer ${mm.apiKey}`,
       },
-      body: JSON.stringify({
-        model: modelOverride || cpa.imageModel,
-        messages: [{ role: "user", content }],
-        modalities: ["text", "image"],
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
 
@@ -640,132 +638,50 @@ async function callCpaImageGeneration(
       const errorText = await response.text();
       return {
         ok: false,
-        error: `CPA API error (${response.status}): ${sanitizeCpaError(errorText, cpa.apiKey).slice(0, 500)}`,
+        error: `MiniMax API error (${response.status}): ${sanitizeApiError(errorText, mm.apiKey).slice(0, 500)}`,
       };
     }
 
     const data = (await response.json()) as {
-      choices?: Array<{
-        message?: {
-          content?: string | null;
-          images?: Array<{ image_url?: { url?: string } }>;
-        };
-      }>;
-      error?: { message: string };
+      data?: { image_base64?: string[] };
+      base_resp?: { status_code: number; status_msg?: string };
     };
 
-    if (data.error) {
-      return { ok: false, error: sanitizeCpaError(`CPA API error: ${data.error.message}`, cpa.apiKey) };
+    if (data.base_resp && data.base_resp.status_code !== 0) {
+      return { ok: false, error: sanitizeApiError(`MiniMax API error: ${data.base_resp.status_msg || "unknown"}`, mm.apiKey) };
     }
 
-    const images = data.choices?.[0]?.message?.images;
+    const images = data.data?.image_base64;
     if (!images?.length) {
-      return { ok: false, error: "CPA returned no image data" };
+      return { ok: false, error: "MiniMax returned no image data" };
     }
 
-    const imageUrl = images[0].image_url?.url;
-    if (!imageUrl?.startsWith("data:")) {
-      return { ok: false, error: "CPA returned unsupported image format" };
-    }
-
-    // Parse data URI: "data:image/png;base64,iVBOR..."
-    const commaIdx = imageUrl.indexOf(",");
-    if (commaIdx === -1) return { ok: false, error: "CPA returned malformed data URI" };
-    const header = imageUrl.slice(0, commaIdx); // "data:image/png;base64"
-    const base64Data = imageUrl.slice(commaIdx + 1);
-    const mimeMatch = header.match(/^data:([^;]+)/);
-    const mimeType = mimeMatch?.[1] || "image/png";
-
-    return { ok: true, imageData: { mimeType, data: base64Data } };
+    return { ok: true, imageData: { mimeType: "image/jpeg", data: images[0] } };
   } catch (err: unknown) {
     clearTimeout(timer);
     if (err instanceof Error && err.name === "AbortError") {
-      return { ok: false, error: "CPA request timed out" };
+      return { ok: false, error: "MiniMax request timed out" };
     }
     return {
       ok: false,
-      error: sanitizeCpaError(`CPA request failed: ${err instanceof Error ? err.message : String(err)}`, cpa.apiKey),
+      error: sanitizeApiError(`MiniMax request failed: ${err instanceof Error ? err.message : String(err)}`, mm.apiKey),
     };
   }
 }
 
 /**
- * Call CPA provider for image analysis (vision) via OpenAI-compatible API.
- * Used as fallback when direct Gemini vision API fails.
+ * MiniMax does NOT support vision/image analysis via their hosted API.
+ * M2/M2.5 are text-only. MiniMax-VL-01 requires self-hosting.
+ * Vision analysis falls back to Gemini or Copilot providers instead.
+ * This function is kept for API compatibility but always returns an error.
  */
-async function callCpaVisionAnalysis(
-  filePath: string,
-  prompt: string,
-  timeoutMs: number = 120_000,
-  modelOverride?: string,
+async function callMiniMaxVisionAnalysis(
+  _filePath: string,
+  _prompt: string,
+  _timeoutMs: number = 120_000,
+  _modelOverride?: string,
 ): Promise<{ ok: boolean; text?: string; error?: string }> {
-  const cpa = getCpaConfig();
-  if (!cpa) return { ok: false, error: "CPA provider not configured" };
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const mimeType = detectMimeType(filePath);
-    const base64 = fileToBase64(filePath);
-
-    const response = await fetch(`${cpa.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${cpa.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: modelOverride || cpa.visionModel,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
-            ],
-          },
-        ],
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timer);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      return {
-        ok: false,
-        error: `CPA vision error (${response.status}): ${sanitizeCpaError(errorText, cpa.apiKey).slice(0, 500)}`,
-      };
-    }
-
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | null } }>;
-      error?: { message: string };
-    };
-
-    if (data.error) {
-      return { ok: false, error: sanitizeCpaError(`CPA vision error: ${data.error.message}`, cpa.apiKey) };
-    }
-
-    const text = data.choices?.[0]?.message?.content;
-    if (!text) return { ok: false, error: "CPA returned empty vision response" };
-
-    return { ok: true, text: truncateResult(text) };
-  } catch (err: unknown) {
-    clearTimeout(timer);
-    if (err instanceof Error && err.name === "AbortError") {
-      return { ok: false, error: "CPA vision request timed out" };
-    }
-    return {
-      ok: false,
-      error: sanitizeCpaError(
-        `CPA vision request failed: ${err instanceof Error ? err.message : String(err)}`,
-        cpa.apiKey,
-      ),
-    };
-  }
+  return { ok: false, error: "MiniMax does not support vision/image analysis. Use Copilot (GPT-4.1) or Gemini instead." };
 }
 
 /**
@@ -919,33 +835,33 @@ export async function analyzeImage(
     if (opCfg.provider === "gemini") {
       return analyzeImageViaGemini(filePath, mimeType, prompt);
     }
-    if (opCfg.provider === "cpa") {
-      const r = await callCpaVisionAnalysis(filePath, prompt, 120_000, opCfg.model || undefined);
+    if (opCfg.provider === "minimax") {
+      const r = await callMiniMaxVisionAnalysis(filePath, prompt, 120_000, opCfg.model || undefined);
       return r.ok ? { ok: true, result: r.text } : { ok: false, error: r.error };
     }
     return { ok: false, error: `Unknown vision provider configured: ${opCfg.provider}` };
   }
 
-  // Legacy fallback: Gemini → CPA
+  // Legacy fallback: Gemini → MiniMax
   const geminiKey = getGeminiApiKey();
   if (geminiKey) {
     const geminiResult = await analyzeImageViaGemini(filePath, mimeType, prompt);
     if (geminiResult.ok) return geminiResult;
-    // Gemini failed — try CPA fallback
-    const cpa = getCpaConfig();
-    if (cpa) {
-      const cpaResult = await callCpaVisionAnalysis(filePath, prompt);
-      if (cpaResult.ok) return { ok: true, result: cpaResult.text };
+    // Gemini failed — try MiniMax fallback
+    const mm = getMiniMaxConfig();
+    if (mm) {
+      const mmResult = await callMiniMaxVisionAnalysis(filePath, prompt);
+      if (mmResult.ok) return { ok: true, result: mmResult.text };
     }
     return geminiResult; // return Gemini error
   }
 
-  // No Gemini — try CPA directly
-  const cpa = getCpaConfig();
-  if (cpa) {
-    const cpaResult = await callCpaVisionAnalysis(filePath, prompt);
-    if (cpaResult.ok) return { ok: true, result: cpaResult.text };
-    return { ok: false, error: cpaResult.error };
+  // No Gemini — try MiniMax directly
+  const mm = getMiniMaxConfig();
+  if (mm) {
+    const mmResult = await callMiniMaxVisionAnalysis(filePath, prompt);
+    if (mmResult.ok) return { ok: true, result: mmResult.text };
+    return { ok: false, error: mmResult.error };
   }
 
   return {
@@ -994,11 +910,11 @@ export async function generateImage(
   // Use vision config if present
   const opCfg = getVisionOpConfig("generate_image");
   if (opCfg) {
-    if (opCfg.provider === "cpa") {
-      const cpaResult = await callCpaImageGeneration(prompt, undefined, 180_000, opCfg.model || undefined);
-      if (!cpaResult.ok) return { ok: false, error: cpaResult.error || "CPA image generation failed" };
+    if (opCfg.provider === "minimax") {
+      const mmResult = await callMiniMaxImageGeneration(prompt, undefined, 180_000, opCfg.model || undefined);
+      if (!mmResult.ok) return { ok: false, error: mmResult.error || "MiniMax image generation failed" };
       try {
-        return saveImageResult(cpaResult, outputPath);
+        return saveImageResult(mmResult, outputPath);
       } catch (err) {
         return { ok: false, error: `Failed to save image: ${err instanceof Error ? err.message : String(err)}` };
       }
@@ -1014,7 +930,7 @@ export async function generateImage(
     return { ok: false, error: `Unknown image generation provider configured: ${opCfg.provider}` };
   }
 
-  // Legacy fallback: Gemini (quota-checked) → CPA
+  // Legacy fallback: Gemini (quota-checked) → MiniMax
   const geminiKey = getGeminiApiKey();
   if (geminiKey) {
     const quotaError = checkImageQuota();
@@ -1026,16 +942,16 @@ export async function generateImage(
       }
       releaseInFlight();
     }
-    // Gemini failed or quota exceeded — try CPA fallback (no quota limit for CPA)
-    const cpa = getCpaConfig();
-    if (cpa) {
-      const cpaResult = await callCpaImageGeneration(prompt);
-      if (cpaResult.ok) {
+    // Gemini failed or quota exceeded — try MiniMax fallback (no quota limit for MiniMax)
+    const mm = getMiniMaxConfig();
+    if (mm) {
+      const mmResult = await callMiniMaxImageGeneration(prompt);
+      if (mmResult.ok) {
         let saved: { ok: boolean; path?: string; mimeType?: string; error?: string };
         try {
-          saved = saveImageResult(cpaResult, outputPath);
+          saved = saveImageResult(mmResult, outputPath);
         } catch (err) {
-          return { ok: false, error: `Failed to save CPA image: ${err instanceof Error ? err.message : String(err)}` };
+          return { ok: false, error: `Failed to save MiniMax image: ${err instanceof Error ? err.message : String(err)}` };
         }
         return saved;
       }
@@ -1044,26 +960,26 @@ export async function generateImage(
     return { ok: false, error: "Image generation failed on all available providers" };
   }
 
-  // No Gemini — try CPA directly (no quota limit for CPA)
-  const cpa = getCpaConfig();
-  if (cpa) {
-    const cpaResult = await callCpaImageGeneration(prompt);
-    if (cpaResult.ok) {
+  // No Gemini — try MiniMax directly (no quota limit for MiniMax)
+  const mm = getMiniMaxConfig();
+  if (mm) {
+    const mmResult = await callMiniMaxImageGeneration(prompt);
+    if (mmResult.ok) {
       let saved: { ok: boolean; path?: string; mimeType?: string; error?: string };
       try {
-        saved = saveImageResult(cpaResult, outputPath);
+        saved = saveImageResult(mmResult, outputPath);
       } catch (err) {
-        return { ok: false, error: `Failed to save CPA image: ${err instanceof Error ? err.message : String(err)}` };
+        return { ok: false, error: `Failed to save MiniMax image: ${err instanceof Error ? err.message : String(err)}` };
       }
       return saved;
     }
-    return { ok: false, error: cpaResult.error || "CPA image generation failed" };
+    return { ok: false, error: mmResult.error || "MiniMax image generation failed" };
   }
 
   return {
     ok: false,
     error:
-      'No image generation provider configured. Set "vision": { "generate_image": { "provider": "cpa" } } in ~/.clawd/config.json',
+      'No image generation provider configured. Set "vision": { "generate_image": { "provider": "minimax" } } in ~/.clawd/config.json',
   };
 }
 
@@ -1121,11 +1037,11 @@ export async function editImage(
   // Use vision config if present
   const opCfg = getVisionOpConfig("edit_image");
   if (opCfg) {
-    if (opCfg.provider === "cpa") {
-      const cpaResult = await callCpaImageGeneration(prompt, sourceFilePath, 180_000, opCfg.model || undefined);
-      if (!cpaResult.ok) return { ok: false, error: cpaResult.error || "CPA image editing failed" };
+    if (opCfg.provider === "minimax") {
+      const mmResult = await callMiniMaxImageGeneration(prompt, sourceFilePath, 180_000, opCfg.model || undefined);
+      if (!mmResult.ok) return { ok: false, error: mmResult.error || "MiniMax image editing failed" };
       try {
-        return saveImageResult(cpaResult, outputPath);
+        return saveImageResult(mmResult, outputPath);
       } catch (err) {
         return { ok: false, error: `Failed to save image: ${err instanceof Error ? err.message : String(err)}` };
       }
@@ -1141,7 +1057,7 @@ export async function editImage(
     return { ok: false, error: `Unknown image editing provider configured: ${opCfg.provider}` };
   }
 
-  // Legacy fallback: Gemini (quota-checked) → CPA
+  // Legacy fallback: Gemini (quota-checked) → MiniMax
   const geminiKey = getGeminiApiKey();
   if (geminiKey) {
     const quotaError = checkImageQuota();
@@ -1153,18 +1069,18 @@ export async function editImage(
       }
       releaseInFlight();
     }
-    // Gemini failed or quota exceeded — try CPA fallback (no quota limit for CPA)
-    const cpa = getCpaConfig();
-    if (cpa) {
-      const cpaResult = await callCpaImageGeneration(prompt, sourceFilePath);
-      if (cpaResult.ok) {
+    // Gemini failed or quota exceeded — try MiniMax fallback (no quota limit for MiniMax)
+    const mm = getMiniMaxConfig();
+    if (mm) {
+      const mmResult = await callMiniMaxImageGeneration(prompt, sourceFilePath);
+      if (mmResult.ok) {
         let saved: { ok: boolean; path?: string; mimeType?: string; error?: string };
         try {
-          saved = saveImageResult(cpaResult, outputPath);
+          saved = saveImageResult(mmResult, outputPath);
         } catch (err) {
           return {
             ok: false,
-            error: `Failed to save CPA edited image: ${err instanceof Error ? err.message : String(err)}`,
+            error: `Failed to save MiniMax edited image: ${err instanceof Error ? err.message : String(err)}`,
           };
         }
         return saved;
@@ -1174,29 +1090,29 @@ export async function editImage(
     return { ok: false, error: "Image editing failed on all available providers" };
   }
 
-  // No Gemini — try CPA directly (no quota limit for CPA)
-  const cpa = getCpaConfig();
-  if (cpa) {
-    const cpaResult = await callCpaImageGeneration(prompt, sourceFilePath);
-    if (cpaResult.ok) {
+  // No Gemini — try MiniMax directly (no quota limit for MiniMax)
+  const mm = getMiniMaxConfig();
+  if (mm) {
+    const mmResult = await callMiniMaxImageGeneration(prompt, sourceFilePath);
+    if (mmResult.ok) {
       let saved: { ok: boolean; path?: string; mimeType?: string; error?: string };
       try {
-        saved = saveImageResult(cpaResult, outputPath);
+        saved = saveImageResult(mmResult, outputPath);
       } catch (err) {
         return {
           ok: false,
-          error: `Failed to save CPA edited image: ${err instanceof Error ? err.message : String(err)}`,
+          error: `Failed to save MiniMax edited image: ${err instanceof Error ? err.message : String(err)}`,
         };
       }
       return saved;
     }
-    return { ok: false, error: cpaResult.error || "CPA image editing failed" };
+    return { ok: false, error: mmResult.error || "MiniMax image editing failed" };
   }
 
   return {
     ok: false,
     error:
-      'No image editing provider configured. Set "vision": { "edit_image": { "provider": "cpa" } } in ~/.clawd/config.json',
+      'No image editing provider configured. Set "vision": { "edit_image": { "provider": "minimax" } } in ~/.clawd/config.json',
   };
 }
 

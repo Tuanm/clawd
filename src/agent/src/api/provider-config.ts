@@ -114,9 +114,9 @@ export function getSelectedProvider(): ProviderType {
   if (anthropic?.api_key) {
     return "anthropic";
   }
-  const cpa = providers.cpa as ProviderConfig | undefined;
-  if (cpa?.api_key || cpa?.base_url) {
-    return "cpa";
+  const minimax = providers.minimax as ProviderConfig | undefined;
+  if (minimax?.api_key || minimax?.base_url) {
+    return "minimax";
   }
 
   // Default to copilot if no config found
@@ -253,7 +253,7 @@ export function getModelForProvider(providerName: string): string {
     openai: "gpt-4o",
     copilot: "claude-sonnet-4.6",
     ollama: "glm-5:cloud",
-    cpa: "claude-sonnet-4-6",
+    minimax: "MiniMax-M2.5",
   };
 
   return defaultModels[providerName as ProviderType] ?? "default";

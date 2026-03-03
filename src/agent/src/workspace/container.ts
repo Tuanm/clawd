@@ -255,16 +255,16 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
     dockerArgs.push("-v", `${opts.projectPath}:/workspace:rw`);
   }
 
-  // Pass only the vision/CPA provider config as env vars — never mount the full credentials file.
+  // Pass only the vision/MiniMax provider config as env vars — never mount the full credentials file.
   // This prevents containerized code from reading other secrets (auth tokens, keys, etc.).
   const claWdConfigPath = `${process.env.HOME}/.clawd/config.json`;
   if (existsSync(claWdConfigPath)) {
     try {
       const claWdConfig = JSON.parse(readFileSync(claWdConfigPath, "utf-8"));
-      const cpa = claWdConfig?.providers?.cpa;
-      if (cpa?.base_url) dockerArgs.push("-e", `CLAWD_CPA_BASE_URL=${cpa.base_url}`);
-      if (cpa?.api_key) dockerArgs.push("-e", `CLAWD_CPA_API_KEY=${cpa.api_key}`);
-      if (cpa?.models) dockerArgs.push("-e", `CLAWD_CPA_MODELS=${JSON.stringify(cpa.models)}`);
+      const minimax = claWdConfig?.providers?.minimax;
+      if (minimax?.base_url) dockerArgs.push("-e", `CLAWD_MINIMAX_BASE_URL=${minimax.base_url}`);
+      if (minimax?.api_key) dockerArgs.push("-e", `CLAWD_MINIMAX_API_KEY=${minimax.api_key}`);
+      if (minimax?.models) dockerArgs.push("-e", `CLAWD_MINIMAX_MODELS=${JSON.stringify(minimax.models)}`);
     } catch {
       /* ignore parse errors */
     }

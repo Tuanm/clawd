@@ -142,7 +142,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           { name: "openai", type: "openai", is_custom: false },
           { name: "anthropic", type: "anthropic", is_custom: false },
           { name: "ollama", type: "ollama", is_custom: false },
-          { name: "cpa", type: "cpa", is_custom: false },
+          { name: "minimax", type: "minimax", is_custom: false },
         ]);
       });
     return () => controller.abort();

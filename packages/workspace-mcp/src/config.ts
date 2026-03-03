@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 interface ClaWdConfig {
   providers?: {
-    cpa?: { base_url: string; api_key: string; models?: Record<string, string> };
+    minimax?: { base_url: string; api_key: string; models?: Record<string, string> };
   };
   env?: Record<string, string>;
   workspace?: {
@@ -33,16 +33,16 @@ export function getAuthToken(): string {
   return config.workspace?.auth_token || process.env.WORKSPACE_AUTH_TOKEN || "";
 }
 
-export function getCpaConfig() {
-  const fromConfig = loadConfig().providers?.cpa;
+export function getMiniMaxConfig() {
+  const fromConfig = loadConfig().providers?.minimax;
   if (fromConfig) return fromConfig;
   // Fallback to env vars injected by the host (no config file mount needed)
-  const base_url = process.env.CLAWD_CPA_BASE_URL;
-  const api_key = process.env.CLAWD_CPA_API_KEY;
+  const base_url = process.env.CLAWD_MINIMAX_BASE_URL;
+  const api_key = process.env.CLAWD_MINIMAX_API_KEY;
   if (base_url && api_key) {
     let models: Record<string, string> | undefined;
     try {
-      if (process.env.CLAWD_CPA_MODELS) models = JSON.parse(process.env.CLAWD_CPA_MODELS);
+      if (process.env.CLAWD_MINIMAX_MODELS) models = JSON.parse(process.env.CLAWD_MINIMAX_MODELS);
     } catch {}
     return { base_url, api_key, models };
   }
