@@ -186,15 +186,11 @@ interface MiniMaxConfig {
 function getMiniMaxConfig(): MiniMaxConfig | null {
   const config = loadConfigFile();
   const mm = config.providers?.minimax as Record<string, unknown> | undefined;
-  if (
-    !mm ||
-    typeof mm.api_key !== "string" ||
-    (mm.api_key as string).trim() === ""
-  )
-    return null;
+  if (!mm || typeof mm.api_key !== "string" || (mm.api_key as string).trim() === "") return null;
   const models = mm.models as Record<string, string> | undefined;
   // Base URL: strip /anthropic suffix if present (image gen uses /v1/image_generation)
-  const rawUrl = typeof mm.base_url === "string" ? (mm.base_url as string).trim().replace(/\/+$/, "") : "https://api.minimax.io";
+  const rawUrl =
+    typeof mm.base_url === "string" ? (mm.base_url as string).trim().replace(/\/+$/, "") : "https://api.minimax.io";
   const baseUrl = rawUrl.replace(/\/anthropic\/?$/, "");
   return {
     baseUrl,
@@ -648,7 +644,10 @@ async function callMiniMaxImageGeneration(
     };
 
     if (data.base_resp && data.base_resp.status_code !== 0) {
-      return { ok: false, error: sanitizeApiError(`MiniMax API error: ${data.base_resp.status_msg || "unknown"}`, mm.apiKey) };
+      return {
+        ok: false,
+        error: sanitizeApiError(`MiniMax API error: ${data.base_resp.status_msg || "unknown"}`, mm.apiKey),
+      };
     }
 
     const images = data.data?.image_base64;
@@ -670,18 +669,81 @@ async function callMiniMaxImageGeneration(
 }
 
 /**
- * MiniMax does NOT support vision/image analysis via their hosted API.
- * M2/M2.5 are text-only. MiniMax-VL-01 requires self-hosting.
- * Vision analysis falls back to Gemini or Copilot providers instead.
- * This function is kept for API compatibility but always returns an error.
+ * MiniMax Coding Plan VLM — vision/image analysis via /v1/coding_plan/vlm.
+ * Accepts a base64 data URL and a text prompt, returns text analysis.
+ * Supported formats: JPEG, PNG, WebP.
  */
 async function callMiniMaxVisionAnalysis(
-  _filePath: string,
-  _prompt: string,
-  _timeoutMs: number = 120_000,
+  filePath: string,
+  prompt: string,
+  timeoutMs: number = 120_000,
   _modelOverride?: string,
 ): Promise<{ ok: boolean; text?: string; error?: string }> {
-  return { ok: false, error: "MiniMax does not support vision/image analysis. Use Copilot (GPT-4.1) or Gemini instead." };
+  const mm = getMiniMaxConfig();
+  if (!mm) return { ok: false, error: "MiniMax provider not configured" };
+
+  const mimeType = detectMimeType(filePath);
+  if (!["image/jpeg", "image/png", "image/webp"].includes(mimeType)) {
+    return { ok: false, error: `MiniMax VLM only supports JPEG/PNG/WebP (got ${mimeType})` };
+  }
+
+  const base64Data = fileToBase64(filePath);
+  const imageUrl = `data:${mimeType};base64,${base64Data}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(`${mm.baseUrl}/v1/coding_plan/vlm`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${mm.apiKey}`,
+      },
+      body: JSON.stringify({ prompt, image_url: imageUrl }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return {
+        ok: false,
+        error: `MiniMax VLM error (${response.status}): ${sanitizeApiError(errorText, mm.apiKey).slice(0, 500)}`,
+      };
+    }
+
+    const data = (await response.json()) as {
+      content?: string;
+      base_resp?: { status_code: number; status_msg?: string };
+    };
+
+    if (data.base_resp && data.base_resp.status_code !== 0) {
+      return {
+        ok: false,
+        error: sanitizeApiError(`MiniMax VLM error: ${data.base_resp.status_msg || "unknown"}`, mm.apiKey),
+      };
+    }
+
+    if (!data.content) {
+      return { ok: false, error: "MiniMax VLM returned no content" };
+    }
+
+    return { ok: true, text: data.content };
+  } catch (err: unknown) {
+    clearTimeout(timer);
+    if (err instanceof Error && err.name === "AbortError") {
+      return { ok: false, error: "MiniMax VLM request timed out" };
+    }
+    return {
+      ok: false,
+      error: sanitizeApiError(
+        `MiniMax VLM request failed: ${err instanceof Error ? err.message : String(err)}`,
+        mm.apiKey,
+      ),
+    };
+  }
 }
 
 /**
@@ -951,7 +1013,10 @@ export async function generateImage(
         try {
           saved = saveImageResult(mmResult, outputPath);
         } catch (err) {
-          return { ok: false, error: `Failed to save MiniMax image: ${err instanceof Error ? err.message : String(err)}` };
+          return {
+            ok: false,
+            error: `Failed to save MiniMax image: ${err instanceof Error ? err.message : String(err)}`,
+          };
         }
         return saved;
       }
@@ -969,7 +1034,10 @@ export async function generateImage(
       try {
         saved = saveImageResult(mmResult, outputPath);
       } catch (err) {
-        return { ok: false, error: `Failed to save MiniMax image: ${err instanceof Error ? err.message : String(err)}` };
+        return {
+          ok: false,
+          error: `Failed to save MiniMax image: ${err instanceof Error ? err.message : String(err)}`,
+        };
       }
       return saved;
     }

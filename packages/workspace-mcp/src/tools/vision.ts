@@ -21,7 +21,7 @@ async function analyzeImageWithVision(imagePath: string, prompt: string): Promis
   if (!config) {
     throw new Error(
       'Vision provider not configured. Set "vision.read_image" in ~/.clawd/config.json ' +
-      "(e.g., copilot with gpt-4.1 or gemini with a vision model).",
+        "(e.g., copilot with gpt-4.1 or gemini with a vision model).",
     );
   }
 
@@ -46,9 +46,7 @@ async function analyzeImageWithVision(imagePath: string, prompt: string): Promis
 
   // Copilot uses /chat/completions, others use /v1/chat/completions
   const baseUrl = config.base_url.replace(/\/+$/, "");
-  const endpoint = config.provider === "copilot"
-    ? `${baseUrl}/chat/completions`
-    : `${baseUrl}/v1/chat/completions`;
+  const endpoint = config.provider === "copilot" ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
 
   const response = await fetch(endpoint, {
     method: "POST",

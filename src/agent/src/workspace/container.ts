@@ -269,12 +269,11 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
       if (provider && typeof provider === "string") {
         const providerConfig = claWdConfig?.providers?.[provider];
         if (providerConfig) {
-          const baseUrl = provider === "copilot"
-            ? "https://api.githubcopilot.com"
-            : providerConfig.base_url;
-          const apiKey = providerConfig.api_key
-            || (Array.isArray(providerConfig.api_keys) ? providerConfig.api_keys[0] : undefined)
-            || providerConfig.token; // copilot legacy
+          const baseUrl = provider === "copilot" ? "https://api.githubcopilot.com" : providerConfig.base_url;
+          const apiKey =
+            providerConfig.api_key ||
+            (Array.isArray(providerConfig.api_keys) ? providerConfig.api_keys[0] : undefined) ||
+            providerConfig.token; // copilot legacy
 
           if (baseUrl) dockerArgs.push("-e", `CLAWD_VISION_BASE_URL=${baseUrl}`);
           if (apiKey) dockerArgs.push("-e", `CLAWD_VISION_API_KEY=${apiKey}`);
