@@ -1,5 +1,5 @@
 import mermaid from "mermaid";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -249,18 +249,30 @@ export function PreBlock({ children }: { children: React.ReactNode }) {
   );
 }
 
-// Mermaid diagram component
-export function MermaidDiagram({ chart }: { chart: string }) {
+// Mermaid diagram component — memoized to avoid re-rendering when chart content unchanged.
+// Keeps the previous SVG visible while a new render is in progress (prevents flash).
+// Uses per-instance render ID (useId) so two identical diagrams never stomp each other's DOM.
+export const MermaidDiagram = React.memo(function MermaidDiagram({ chart }: { chart: string }) {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  // Per-instance stable ID — prevents two equal charts from clobbering each other's SVG node
+  const instanceId = useId();
+  // Debounced chart to avoid queuing hundreds of render calls during streaming
+  const [debouncedChart, setDebouncedChart] = useState(chart);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedChart(chart), 300);
+    return () => clearTimeout(t);
+  }, [chart]);
 
   useEffect(() => {
     let cancelled = false;
     const renderChart = async () => {
-      if (!chart.trim()) return;
-      const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      if (!debouncedChart.trim()) return;
+      // Instance-scoped ID: each component mount gets a unique slot — no cross-instance DOM conflicts
+      const id = `m${instanceId.replace(/:/g, "")}`;
       try {
-        const result = await mermaid.render(id, chart.trim());
+        const result = await mermaid.render(id, debouncedChart.trim());
         if (!cancelled) {
           setSvg(result.svg);
           setError(null);
@@ -269,10 +281,12 @@ export function MermaidDiagram({ chart }: { chart: string }) {
         if (!cancelled) {
           const msg = e instanceof Error ? e.message : "";
           const firstLine = msg.split("\n").find((l) => l.trim()) ?? "Failed to render diagram";
-          setError(firstLine);
+          // Only show error if we have no prior good render (don't flash error during streaming)
+          if (!svg) setError(firstLine);
         }
       } finally {
-        // Clean up any orphan elements mermaid may have left in document.body
+        // mermaid does NOT call removeTempElements() before throwing parseEncounteredException,
+        // so we must clean up the orphan #d{id} div ourselves.
         document.getElementById(`d${id}`)?.remove();
       }
     };
@@ -280,7 +294,7 @@ export function MermaidDiagram({ chart }: { chart: string }) {
     return () => {
       cancelled = true;
     };
-  }, [chart]);
+  }, [debouncedChart, instanceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error) {
     return (
@@ -296,118 +310,194 @@ export function MermaidDiagram({ chart }: { chart: string }) {
   if (!svg) return null;
 
   return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
-}
+});
 
-// Validates that a URL is safe (http/https only) to prevent javascript:/data: injection
+// ── Message block types ───────────────────────────────────────────────────────
+type MessageBlock =
+  | { type: "text"; content: string }
+  | { type: "code"; lang: string; content: string }
+  | { type: "mermaid"; content: string }
+  | { type: "image"; src: string; alt: string }
+  | { type: "iframe"; src: string; rawHtml: string; height?: string; width?: string };
+
+// Validates that a URL is safe (http/https or relative /api/ path) to prevent XSS
 function isSafeUrl(url: string): boolean {
+  if (url.startsWith("/api/")) {
+    // Normalise the path to catch path-traversal attempts like /api/../../admin
+    try {
+      const normalised = new URL(url, "https://x").pathname;
+      return normalised.startsWith("/api/");
+    } catch {
+      return false;
+    }
+  }
   try {
-    const parsed = new URL(url);
-    return parsed.protocol === "https:" || parsed.protocol === "http:";
+    const p = new URL(url);
+    return p.protocol === "https:" || p.protocol === "http:";
   } catch {
     return false;
   }
 }
 
-// Preview card components for mermaid diagrams, images, and iframes
-function MermaidPreviewCard({ chart }: { chart: string }) {
-  return (
-    <div className="message-mermaid-card">
-      <MermaidDiagram chart={chart} />
-    </div>
-  );
-}
+// Allowed origins for postMessage resize events (extend if supporting more embed providers)
+const IFRAME_RESIZE_ORIGINS = /^https:\/\/([a-z0-9-]+\.)?datawrapper\.(de|dwcdn\.net)$/i;
+const MAX_IFRAME_HEIGHT = 8000; // px — sane ceiling against malicious/buggy embeds
 
-function ImagePreviewCard({ src, alt }: { src: string; alt: string }) {
-  return (
-    <div className="message-image-card">
-      <img src={src} alt={alt} />
-      {alt && <p className="image-card-alt">{alt}</p>}
-    </div>
-  );
-}
+// Iframe card — no header, just a bordered container sized to the iframe's native dimensions.
+// Listens for DataWrapper-style postMessage resize events so the card height tracks the embed.
+function IframePreviewCard({
+  src,
+  rawHtml,
+  height: initHeight,
+}: {
+  src: string;
+  rawHtml: string;
+  height?: string;
+  width?: string;
+}) {
+  const parsed = parseInt(initHeight ?? "", 10);
+  const defaultH = Number.isFinite(parsed) && parsed > 0 ? Math.max(100, parsed) : 400;
+  const [height, setHeight] = useState(defaultH);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
-function IframePreviewCard({ src, title }: { src: string; title: string }) {
+  // Extract iframe id attribute (needed for DataWrapper chart matching)
+  const iframeId = useMemo(() => /\bid=["']([^"']*)["']/.exec(rawHtml)?.[1] ?? "", [rawHtml]);
+
+  useEffect(() => {
+    const handleMessage = (ev: MessageEvent) => {
+      if (!iframeRef.current) return;
+      // Validate origin: only accept messages from our iframe's window or known resize providers
+      const fromThisFrame = ev.source === iframeRef.current.contentWindow;
+      const fromTrustedOrigin = IFRAME_RESIZE_ORIGINS.test(ev.origin ?? "");
+      if (!fromThisFrame && !fromTrustedOrigin) return;
+      // DataWrapper sends { 'datawrapper-height': { [chartId]: heightPx } }
+      const dw = (ev.data as any)?.["datawrapper-height"];
+      if (dw && typeof dw === "object") {
+        for (const [chartId, h] of Object.entries(dw)) {
+          // Match by chart ID (most specific); break after first match to avoid batched-message confusion
+          if (iframeId === `datawrapper-chart-${chartId}`) {
+            const next = parseInt(String(h), 10);
+            if (!Number.isNaN(next) && next > 0) setHeight(Math.min(next, MAX_IFRAME_HEIGHT));
+            break;
+          }
+        }
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [iframeId]);
+
   return (
-    <div className="message-iframe-card">
-      <div className="iframe-card-header">
-        <span className="iframe-card-title">{title || src}</span>
-        <a href={src} target="_blank" rel="noopener noreferrer" className="iframe-card-link">
-          Open ↗
-        </a>
-      </div>
+    <div className="message-iframe-card" style={{ height: `${height}px` }}>
       <iframe
+        ref={iframeRef}
         src={src}
-        title={title || "Preview"}
-        className="iframe-card-frame"
+        id={iframeId || undefined}
+        title="Embedded content"
+        style={{ width: "100%", height: "100%", border: "none", display: "block" }}
         sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
       />
     </div>
   );
 }
 
-interface ParsedBlocks {
-  cleanedText: string;
-  mermaidBlocks: string[];
-  imageBlocks: Array<{ src: string; alt: string }>;
-  iframeBlocks: Array<{ src: string; title: string }>;
-}
+// ── Scanner-based block splitter ──────────────────────────────────────────────
+// Returns blocks in source order so the rendered output mirrors original document flow.
+function parseMessageBlocks(text: string): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
+  let pos = 0;
 
-function parseMessageBlocks(text: string): ParsedBlocks {
-  const mermaidBlocks: string[] = [];
-  const imageBlocks: Array<{ src: string; alt: string }> = [];
-  const iframeBlocks: Array<{ src: string; title: string }> = [];
+  // Only trim for emptiness check — preserve content (leading/trailing blank lines matter in Markdown)
+  const pushText = (str: string) => {
+    if (str.trim()) blocks.push({ type: "text", content: str });
+  };
 
-  // Extract mermaid code blocks (```mermaid ... ```) — handle both LF and CRLF
-  let cleaned = text.replace(/```mermaid\r?\n([\s\S]*?)```/g, (_, code) => {
-    mermaidBlocks.push(code.trim());
-    return "";
-  });
+  while (pos < text.length) {
+    const slice = text.slice(pos);
+    const candidates: Array<{ index: number; end: number; block: MessageBlock }> = [];
 
-  // Protect non-mermaid fenced code blocks from image extraction (e.g., markdown docs with ![...])
-  const fenceMap = new Map<string, string>();
-  let fenceIdx = 0;
-  cleaned = cleaned.replace(/```[\s\S]*?```/g, (match) => {
-    const key = `\x00FENCE${fenceIdx++}\x00`;
-    fenceMap.set(key, match);
-    return key;
-  });
-
-  // Extract <iframe> tags (only http/https src)
-  cleaned = cleaned.replace(/<iframe\b([^>]*)(?:\s*\/>|\s*>(?:[\s\S]*?)<\/iframe>)/gi, (_, attrs) => {
-    const srcMatch = /\bsrc=["']([^"']*)["']/.exec(attrs);
-    const titleMatch = /\btitle=["']([^"']*)["']/.exec(attrs);
-    if (srcMatch && isSafeUrl(srcMatch[1])) {
-      iframeBlocks.push({ src: srcMatch[1], title: titleMatch?.[1] ?? "" });
-      return "";
+    // ── Fenced code block (mermaid or regular) ────────────────────────────────
+    // Closing ``` must be on its own line (CommonMark: closing fence at line start)
+    const fenceRe = /```(\w*)\r?\n([\s\S]*?)\n```(?:\r?\n|$)/;
+    const fm = fenceRe.exec(slice);
+    if (fm !== null) {
+      const lang = fm[1].toLowerCase();
+      const content = fm[2].trim();
+      const block: MessageBlock = lang === "mermaid" ? { type: "mermaid", content } : { type: "code", lang, content };
+      candidates.push({ index: fm.index, end: fm.index + fm[0].length, block });
     }
-    return _;
-  });
 
-  // Extract HTML <img> tags (only http/https or data:image/ src)
-  cleaned = cleaned.replace(/<img\b([^>]*)\/?>/gi, (match, attrs) => {
-    const srcMatch = /\bsrc=["']([^"']*)["']/.exec(attrs);
-    const altMatch = /\balt=["']([^"']*)["']/.exec(attrs);
-    if (srcMatch && (isSafeUrl(srcMatch[1]) || srcMatch[1].startsWith("data:image/"))) {
-      imageBlocks.push({ src: srcMatch[1], alt: altMatch?.[1] ?? "" });
-      return "";
+    // ── <iframe> ──────────────────────────────────────────────────────────────
+    const iframeRe = /<iframe\b([^>]*)(?:\s*\/>|\s*>(?:[\s\S]*?)<\/iframe>)/i;
+    const im = iframeRe.exec(slice);
+    if (im !== null) {
+      const attrs = im[1];
+      const srcM = /\bsrc=["']([^"']*)["']/.exec(attrs);
+      if (srcM && isSafeUrl(srcM[1])) {
+        const hM = /\bheight=["']?(\d+)["']?/.exec(attrs);
+        const wM = /\bwidth=["']?(\d+%?)["']?/.exec(attrs);
+        candidates.push({
+          index: im.index,
+          end: im.index + im[0].length,
+          block: { type: "iframe", src: srcM[1], rawHtml: im[0], height: hM?.[1], width: wM?.[1] },
+        });
+      }
     }
-    return match;
-  });
 
-  // Extract standalone markdown images ![alt](src) — only when on their own line
-  // (avoids breaking inline images in tables and paragraphs)
-  cleaned = cleaned.replace(/^[ \t]*!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)[ \t]*$/gm, (_, alt, src) => {
-    if (isSafeUrl(src) || src.startsWith("data:image/")) {
-      imageBlocks.push({ src, alt });
-      return "";
+    // ── <img> ─────────────────────────────────────────────────────────────────
+    const imgRe = /<img\b([^>]*)\/?>/i;
+    const imgm = imgRe.exec(slice);
+    if (imgm !== null) {
+      const attrs = imgm[1];
+      const srcM = /\bsrc=["']([^"']*)["']/.exec(attrs);
+      const altM = /\balt=["']([^"']*)["']/.exec(attrs);
+      if (srcM && (isSafeUrl(srcM[1]) || srcM[1].startsWith("data:image/"))) {
+        candidates.push({
+          index: imgm.index,
+          end: imgm.index + imgm[0].length,
+          block: { type: "image", src: srcM[1], alt: altM?.[1] ?? "" },
+        });
+      }
     }
-    return _;
-  });
 
-  // Restore protected fenced code blocks
-  cleaned = cleaned.replace(/\x00FENCE\d+\x00/g, (key) => fenceMap.get(key) ?? key);
+    // ── Standalone markdown image on its own line ─────────────────────────────
+    const mdImgRe = /^[ \t]*!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)[ \t]*$/m;
+    const mim = mdImgRe.exec(slice);
+    if (mim !== null) {
+      const src = mim[2];
+      if (isSafeUrl(src) || src.startsWith("data:image/")) {
+        candidates.push({
+          index: mim.index,
+          end: mim.index + mim[0].length,
+          block: { type: "image", src, alt: mim[1] },
+        });
+      }
+    }
 
-  return { cleanedText: cleaned.trim(), mermaidBlocks, imageBlocks, iframeBlocks };
+    if (candidates.length === 0) {
+      pushText(slice);
+      break;
+    }
+
+    // Take the earliest candidate; at a tie prefer mermaid over plain code
+    candidates.sort((a, b) => {
+      if (a.index !== b.index) return a.index - b.index;
+      if (a.block.type === "mermaid") return -1;
+      if (b.block.type === "mermaid") return 1;
+      return 0;
+    });
+    const earliest = candidates[0];
+    // Strip unsafe iframe/script tags from text segments before passing to rehypeRaw
+    const textBefore = slice
+      .slice(0, earliest.index)
+      .replace(/<iframe\b[\s\S]*?(?:<\/iframe>|\/>)/gi, "")
+      .replace(/<script\b[\s\S]*?<\/script>/gi, "");
+    pushText(textBefore);
+    blocks.push(earliest.block);
+    pos += earliest.end;
+  }
+
+  return blocks;
 }
 
 // Callout/Admonition component (GitHub-style)
@@ -441,6 +531,49 @@ function ExternalLinkIcon() {
     </svg>
   );
 }
+
+// Shared Markdown component config — module-level constant to avoid recreating on every render.
+// react-markdown uses referential equality for `components`; a new object each render
+// causes full re-parse and VDOM rebuild for every message on every streaming tick.
+const MARKDOWN_COMPONENTS = {
+  pre: ({ children }: { children?: React.ReactNode }) => <PreBlock>{children}</PreBlock>,
+  code: ({ className, children }: { className?: string; children?: React.ReactNode }) => {
+    const match = /language-(\w+)/.exec(className || "");
+    const lang = match ? match[1] : "";
+    const code = String(children).replace(/\n$/, "");
+    if (lang === "mermaid") return <MermaidDiagram chart={code} />;
+    return <code className={className}>{children}</code>;
+  },
+  blockquote: ({ children }: { children?: React.ReactNode }) => {
+    const firstChild = (children as any)?.[0];
+    if (firstChild?.props?.children) {
+      const text = String(firstChild.props.children);
+      const calloutMatch = text.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i);
+      if (calloutMatch) {
+        const type = calloutMatch[1].toLowerCase();
+        const content = text.replace(calloutMatch[0], "");
+        return <Callout type={type}>{content}</Callout>;
+      }
+    }
+    return <blockquote>{children}</blockquote>;
+  },
+  table: ({ children }: { children?: React.ReactNode }) => (
+    <div className="table-wrapper">
+      <table>{children}</table>
+    </div>
+  ),
+  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  ),
+  input: ({ type, checked, ...props }: React.InputHTMLAttributes<HTMLInputElement>) => {
+    if (type === "checkbox") {
+      return <input type="checkbox" checked={checked} disabled className="task-checkbox" />;
+    }
+    return <input type={type} {...props} />;
+  },
+};
 
 // HTML Preview component - sandboxed to prevent JS from affecting main UI
 function HtmlPreview({ html }: { html: string }) {
@@ -1713,80 +1846,63 @@ export default function MessageList({
                   const isSubspaceMessage = !!msg.subspace;
                   // Decode HTML entities BEFORE block extraction so encoded tags (<iframe>) get extracted
                   const decodedText = processMessageText(rawText);
-                  const { cleanedText, mermaidBlocks, imageBlocks, iframeBlocks } = parseMessageBlocks(decodedText);
+                  const blocks = parseMessageBlocks(decodedText);
+
                   return (
                     <>
                       {isArticleMessage || isSubspaceMessage ? null : (
                         <div className={`message-content ${isLong && !isExpanded ? "collapsed" : ""}`}>
-                          {cleanedText && (
-                            <Markdown
-                              remarkPlugins={[remarkGfm, remarkMath]}
-                              rehypePlugins={[rehypeKatex, rehypeRaw]}
-                              components={{
-                                // Handle pre element - wrap with copy button outside scroll area
-                                pre: ({ children }) => <PreBlock>{children}</PreBlock>,
-                                code: ({ className, children }) => {
-                                  const match = /language-(\w+)/.exec(className || "");
-                                  const lang = match ? match[1] : "";
-                                  const code = String(children).replace(/\n$/, "");
-
-                                  // Mermaid diagrams (fallback if not pre-extracted)
-                                  if (lang === "mermaid") {
-                                    return <MermaidDiagram chart={code} />;
-                                  }
-
-                                  // Regular code - just return code element (pre handles the copy button)
-                                  return <code className={className}>{children}</code>;
-                                },
-                                // Handle GitHub-style callouts in blockquotes
-                                blockquote: ({ children }) => {
-                                  // Check if first child is a paragraph starting with [!TYPE]
-                                  const firstChild = (children as any)?.[0];
-                                  if (firstChild?.props?.children) {
-                                    const text = String(firstChild.props.children);
-                                    const calloutMatch = text.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i);
-                                    if (calloutMatch) {
-                                      const type = calloutMatch[1].toLowerCase();
-                                      const content = text.replace(calloutMatch[0], "");
-                                      return <Callout type={type}>{content}</Callout>;
-                                    }
-                                  }
-                                  return <blockquote>{children}</blockquote>;
-                                },
-                                // Tables with proper styling
-                                table: ({ children }) => (
-                                  <div className="table-wrapper">
-                                    <table>{children}</table>
+                          {blocks.map((block, i) => {
+                            switch (block.type) {
+                              case "text":
+                                return (
+                                  <div key={`block-${i}`} className="message-block">
+                                    <Markdown
+                                      remarkPlugins={[remarkGfm, remarkMath]}
+                                      rehypePlugins={[rehypeKatex, rehypeRaw]}
+                                      components={MARKDOWN_COMPONENTS}
+                                    >
+                                      {block.content}
+                                    </Markdown>
                                   </div>
-                                ),
-                                a: ({ href, children }) => (
-                                  <a href={href} target="_blank" rel="noopener noreferrer">
-                                    {children}
-                                  </a>
-                                ),
-                                // Task lists
-                                input: ({ type, checked, ...props }) => {
-                                  if (type === "checkbox") {
-                                    return (
-                                      <input type="checkbox" checked={checked} disabled className="task-checkbox" />
-                                    );
-                                  }
-                                  return <input type={type} {...props} />;
-                                },
-                              }}
-                            >
-                              {cleanedText}
-                            </Markdown>
-                          )}
-                          {mermaidBlocks.map((chart, i) => (
-                            <MermaidPreviewCard key={`mermaid-${i}`} chart={chart} />
-                          ))}
-                          {imageBlocks.map((img, i) => (
-                            <ImagePreviewCard key={`img-${i}`} src={img.src} alt={img.alt} />
-                          ))}
-                          {iframeBlocks.map((iframe, i) => (
-                            <IframePreviewCard key={`iframe-${i}`} src={iframe.src} title={iframe.title} />
-                          ))}
+                                );
+                              case "code":
+                                return (
+                                  <div key={`block-${i}`} className="message-block">
+                                    <PreBlock>
+                                      {/* Use language-text fallback so unlabelled fences still get a copy button */}
+                                      <code className={block.lang ? `language-${block.lang}` : "language-text"}>
+                                        {block.content}
+                                      </code>
+                                    </PreBlock>
+                                  </div>
+                                );
+                              case "mermaid":
+                                return (
+                                  <div key={`block-${i}`} className="message-block message-mermaid-card">
+                                    <MermaidDiagram chart={block.content} />
+                                  </div>
+                                );
+                              case "image":
+                                return (
+                                  <div key={`block-${i}`} className="message-block message-image-card">
+                                    <img src={block.src} alt={block.alt} />
+                                    {block.alt && <p className="image-card-alt">{block.alt}</p>}
+                                  </div>
+                                );
+                              case "iframe":
+                                return (
+                                  <div key={`block-${i}`} className="message-block">
+                                    <IframePreviewCard
+                                      src={block.src}
+                                      rawHtml={block.rawHtml}
+                                      height={block.height}
+                                      width={block.width}
+                                    />
+                                  </div>
+                                );
+                            }
+                          })}
                         </div>
                       )}
                       {isLong && !isArticleMessage && (
