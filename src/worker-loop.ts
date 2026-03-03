@@ -630,7 +630,11 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
             }
 
             // Run the agent with the prompt (wrapped in call context for analytics)
-            const { channel, agentId } = this.config;
+            // NOTE: channel and agentId are already destructured from this.config at line 496;
+            // do NOT re-declare them here — a redundant const { channel, agentId } inside
+            // this try-block would create a TDZ that shadows the outer bindings, causing
+            // "ReferenceError: Cannot access 'channel' before initialization" in Bun's
+            // compiled (--compile --minify) binary every time executePrompt() is called.
             const result = await callContext.run({ agentId, channel }, () => agent!.run(prompt, sessionName));
 
             this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
