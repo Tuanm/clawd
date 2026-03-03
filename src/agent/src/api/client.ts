@@ -6,6 +6,8 @@ import http2 from "node:http2";
 import { EventEmitter } from "node:events";
 import { getBaseUrlForProvider, getCopilotToken, ensureKeyPoolInitialized } from "./provider-config";
 import { keyPool, AllKeysSuspendedError } from "./key-pool";
+import { callContext } from "./call-context";
+import { trackSuccess, trackFailure } from "../../../analytics";
 
 const COPILOT_API_URL = "https://api.githubcopilot.com";
 
@@ -269,14 +271,36 @@ export class CopilotClient extends EventEmitter {
     let lastError: Error | null = null;
 
     for (let switches = 0; switches <= maxSwitches; switches++) {
+      const t0 = Date.now();
+      const ctx = callContext.getStore();
       try {
         await keyPool.waitForSpacing(key);
         const result = await this._completeOnce(request, key.token, initiator);
         keyPool.recordRequest(key.token, request.model, initiator);
+        trackSuccess({
+          keyFingerprint: key.fingerprint,
+          model: request.model,
+          initiator,
+          latencyMs: Date.now() - t0,
+          promptTokens: result.usage?.prompt_tokens,
+          completionTokens: result.usage?.completion_tokens,
+          agentId: ctx?.agentId,
+          channel: ctx?.channel,
+        });
         return result;
       } catch (err) {
         if (err instanceof ApiResponseError && (err.status === 429 || err.status === 403)) {
           keyPool.reportError(key.token, err.status, err.retryAfterMs, err.message);
+          trackFailure({
+            keyFingerprint: key.fingerprint,
+            model: request.model,
+            initiator,
+            status: err.status as 429 | 403,
+            latencyMs: Date.now() - t0,
+            errorMsg: err.message,
+            agentId: ctx?.agentId,
+            channel: ctx?.channel,
+          });
           if (err.status === 403) {
             keyPool.destroySession(key.token);
           }
@@ -290,6 +314,16 @@ export class CopilotClient extends EventEmitter {
         }
         // Non-rate-limit error — release the inFlight slot before re-throwing
         keyPool.releaseKey(key.token);
+        trackFailure({
+          keyFingerprint: key.fingerprint,
+          model: request.model,
+          initiator,
+          status: "error",
+          latencyMs: Date.now() - t0,
+          errorMsg: err instanceof Error ? err.message : String(err),
+          agentId: ctx?.agentId,
+          channel: ctx?.channel,
+        });
         throw err;
       }
     }
@@ -392,16 +426,30 @@ export class CopilotClient extends EventEmitter {
 
     for (let switches = 0; switches <= maxSwitches; switches++) {
       let streamError: ApiResponseError | null = null;
+      const t0 = Date.now();
+      const ctx = callContext.getStore();
       try {
         await keyPool.waitForSpacing(key);
         // Guard against early consumer exit (break/return) — must release inFlight slot
         let accounted = false;
+        let lastEvent: StreamEvent | null = null;
         try {
           for await (const event of this._streamOnce(request, key.token, initiator, signal)) {
+            lastEvent = event;
             yield event;
           }
           keyPool.recordRequest(key.token, request.model, initiator);
           accounted = true;
+          trackSuccess({
+            keyFingerprint: key.fingerprint,
+            model: request.model,
+            initiator,
+            latencyMs: Date.now() - t0,
+            promptTokens: (lastEvent as { usage?: { prompt_tokens?: number } })?.usage?.prompt_tokens,
+            completionTokens: (lastEvent as { usage?: { completion_tokens?: number } })?.usage?.completion_tokens,
+            agentId: ctx?.agentId,
+            channel: ctx?.channel,
+          });
           return;
         } finally {
           if (!accounted) keyPool.releaseKey(key.token);
@@ -411,12 +459,32 @@ export class CopilotClient extends EventEmitter {
           streamError = err;
         } else {
           // Non-rate-limit error — releaseKey already called by finally above
+          trackFailure({
+            keyFingerprint: key.fingerprint,
+            model: request.model,
+            initiator,
+            status: "error",
+            latencyMs: Date.now() - t0,
+            errorMsg: err instanceof Error ? err.message : String(err),
+            agentId: ctx?.agentId,
+            channel: ctx?.channel,
+          });
           throw err;
         }
       }
 
       if (streamError) {
         keyPool.reportError(key.token, streamError.status as 403 | 429, streamError.retryAfterMs, streamError.message);
+        trackFailure({
+          keyFingerprint: key.fingerprint,
+          model: request.model,
+          initiator,
+          status: streamError.status as 429 | 403,
+          latencyMs: Date.now() - t0,
+          errorMsg: streamError.message,
+          agentId: ctx?.agentId,
+          channel: ctx?.channel,
+        });
         if (streamError.status === 403) {
           keyPool.destroySession(key.token);
         }

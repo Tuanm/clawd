@@ -13,6 +13,7 @@ import { Agent, type AgentConfig } from "./agent/src/agent/agent";
 import { createProvider } from "./agent/src/api/factory";
 import { setProjectHash, runWithAgentContext } from "./agent/src/tools/tools";
 import { initializeSandbox } from "./agent/src/utils/sandbox";
+import { callContext } from "./agent/src/api/call-context";
 import { setDebug } from "./agent/src/utils/debug";
 import { smartTruncate } from "./agent/src/utils/smart-truncation";
 import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
@@ -597,8 +598,9 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               });
             }
 
-            // Run the agent with the prompt
-            const result = await agent.run(prompt, sessionName);
+            // Run the agent with the prompt (wrapped in call context for analytics)
+            const { channel, agentId } = this.config;
+            const result = await callContext.run({ agentId, channel }, () => agent!.run(prompt, sessionName));
 
             this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
 

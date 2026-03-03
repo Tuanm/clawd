@@ -243,6 +243,28 @@ export function initDatabase() {
 
     -- Create default channel (no C prefix needed)
     INSERT OR IGNORE INTO channels (id, name, created_by) VALUES ('general', 'general', 'UHUMAN');
+
+    -- Copilot API call analytics
+    CREATE TABLE IF NOT EXISTS copilot_calls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      key_fingerprint TEXT NOT NULL,
+      model TEXT NOT NULL,
+      initiator TEXT NOT NULL,
+      status TEXT NOT NULL,
+      latency_ms INTEGER,
+      prompt_tokens INTEGER,
+      completion_tokens INTEGER,
+      premium_cost REAL NOT NULL DEFAULT 0,
+      agent_id TEXT,
+      channel TEXT,
+      error_msg TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_copilot_calls_ts ON copilot_calls(ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_copilot_calls_channel ON copilot_calls(channel);
+    CREATE INDEX IF NOT EXISTS idx_copilot_calls_model ON copilot_calls(model);
+    CREATE INDEX IF NOT EXISTS idx_copilot_calls_status ON copilot_calls(status);
+    CREATE INDEX IF NOT EXISTS idx_copilot_calls_key ON copilot_calls(key_fingerprint);
   `);
 
   // Migration: Add columns to existing tables if they don't exist
