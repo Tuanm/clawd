@@ -445,6 +445,139 @@ async function callGeminiGenerateContent(
 }
 
 // ============================================================================
+// Copilot Vision Provider — OpenAI-compatible, 0x-cost models (gpt-4.1, gpt-5-mini)
+// ============================================================================
+
+const COPILOT_API_BASE = "https://api.githubcopilot.com";
+const DEFAULT_COPILOT_VISION_MODEL = "gpt-4.1";
+
+/** Headers required by the Copilot API (mirrors BASE_HEADERS in agent/src/api/client.ts) */
+const COPILOT_VISION_HEADERS: Record<string, string> = {
+  "Content-Type": "application/json",
+  Accept: "application/json",
+  "X-Interaction-Type": "conversation-agent",
+  "Openai-Intent": "conversation-agent",
+  "X-Initiator": "agent",
+  "X-GitHub-Api-Version": "2025-05-01",
+  "Copilot-Integration-Id": "copilot-developer-cli",
+  "User-Agent": "Claw'd/1.0.0",
+};
+
+/** Round-robin index for Copilot key rotation within image operations */
+let _copilotImgKeyIdx = 0;
+
+/** Read a Copilot token from providers.copilot in config, with api_keys rotation. */
+function getCopilotVisionToken(): string | null {
+  const config = loadConfigFile();
+  const copilot = config.providers?.copilot as Record<string, unknown> | undefined;
+  if (!copilot) return null;
+
+  if (typeof copilot.api_key === "string" && copilot.api_key.trim()) {
+    return copilot.api_key.trim();
+  }
+  const keys = copilot.api_keys;
+  if (Array.isArray(keys) && keys.length > 0) {
+    const key = keys[_copilotImgKeyIdx % keys.length];
+    _copilotImgKeyIdx = (_copilotImgKeyIdx + 1) % keys.length;
+    return typeof key === "string" && key.trim() ? key.trim() : null;
+  }
+  if (typeof copilot.token === "string" && copilot.token.trim()) {
+    return copilot.token.trim();
+  }
+  return null;
+}
+
+/**
+ * Resolve the provider/model config for a specific image operation.
+ *
+ * Resolution order:
+ *   1. vision.<op>.provider + vision.<op>.model  (per-operation)
+ *   2. vision.provider + vision.model             (top-level default)
+ *   3. null → caller falls back to legacy Gemini→CPA chain
+ */
+function getVisionOpConfig(
+  op: "read_image" | "generate_image" | "edit_image",
+): { provider: string; model: string } | null {
+  const config = loadConfigFile();
+  const vision = config.vision;
+  if (!vision) return null;
+
+  const opCfg = vision[op];
+  if (opCfg && typeof opCfg.provider === "string" && opCfg.provider.trim()) {
+    return { provider: opCfg.provider.trim().toLowerCase(), model: (opCfg.model || "").trim() };
+  }
+  if (typeof vision.provider === "string" && vision.provider.trim()) {
+    return { provider: vision.provider.trim().toLowerCase(), model: (vision.model || "").trim() };
+  }
+  return null;
+}
+
+/**
+ * Analyze an image using the Copilot API (vision via chat completions).
+ * Uses 0x-cost models like gpt-4.1 or gpt-5-mini which natively support image_url inputs.
+ */
+async function callCopilotVisionAnalysis(
+  filePath: string,
+  mimeType: string,
+  prompt: string,
+  model: string = DEFAULT_COPILOT_VISION_MODEL,
+  timeoutMs: number = 120_000,
+): Promise<{ ok: boolean; result?: string; error?: string }> {
+  const token = getCopilotVisionToken();
+  if (!token) return { ok: false, error: "Copilot token not configured" };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const base64 = fileToBase64(filePath);
+    const response = await fetch(`${COPILOT_API_BASE}/chat/completions`, {
+      method: "POST",
+      headers: { ...COPILOT_VISION_HEADERS, Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
+            ],
+          },
+        ],
+        max_tokens: 4096,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { ok: false, error: `Copilot vision error (${response.status}): ${errorText.slice(0, 500)}` };
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string | null } }>;
+      error?: { message: string };
+    };
+
+    if (data.error) return { ok: false, error: `Copilot vision error: ${data.error.message}` };
+
+    const text = data.choices?.[0]?.message?.content;
+    if (!text) return { ok: false, error: "Copilot returned empty vision response" };
+
+    return { ok: true, result: truncateResult(text) };
+  } catch (err: unknown) {
+    clearTimeout(timer);
+    if (err instanceof Error && err.name === "AbortError") {
+      return { ok: false, error: "Copilot vision request timed out" };
+    }
+    return { ok: false, error: `Copilot vision request failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+// ============================================================================
 // CPA (CLIProxyAPI) Fallback — OpenAI-compatible image processing
 // ============================================================================
 
@@ -457,6 +590,7 @@ async function callCpaImageGeneration(
   prompt: string,
   sourceImagePath?: string,
   timeoutMs: number = 180_000,
+  modelOverride?: string,
 ): Promise<{ ok: boolean; imageData?: { mimeType: string; data: string }; error?: string }> {
   const cpa = getCpaConfig();
   if (!cpa) return { ok: false, error: "CPA provider not configured" };
@@ -485,7 +619,7 @@ async function callCpaImageGeneration(
         Authorization: `Bearer ${cpa.apiKey}`,
       },
       body: JSON.stringify({
-        model: cpa.imageModel,
+        model: modelOverride || cpa.imageModel,
         messages: [{ role: "user", content }],
         modalities: ["text", "image"],
       }),
@@ -555,6 +689,7 @@ async function callCpaVisionAnalysis(
   filePath: string,
   prompt: string,
   timeoutMs: number = 120_000,
+  modelOverride?: string,
 ): Promise<{ ok: boolean; text?: string; error?: string }> {
   const cpa = getCpaConfig();
   if (!cpa) return { ok: false, error: "CPA provider not configured" };
@@ -573,7 +708,7 @@ async function callCpaVisionAnalysis(
         Authorization: `Bearer ${cpa.apiKey}`,
       },
       body: JSON.stringify({
-        model: cpa.visionModel,
+        model: modelOverride || cpa.visionModel,
         messages: [
           {
             role: "user",
@@ -766,7 +901,24 @@ export async function analyzeImage(
     return { ok: false, error: `File is not an image (${mimeType})` };
   }
 
-  // Try Gemini first (if API key configured)
+  // Use vision config if present — explicit provider wins over legacy fallback
+  const opCfg = getVisionOpConfig("read_image");
+  if (opCfg) {
+    if (opCfg.provider === "copilot") {
+      const model = opCfg.model || DEFAULT_COPILOT_VISION_MODEL;
+      return callCopilotVisionAnalysis(filePath, mimeType, prompt, model);
+    }
+    if (opCfg.provider === "gemini") {
+      return analyzeImageViaGemini(filePath, mimeType, prompt);
+    }
+    if (opCfg.provider === "cpa") {
+      const r = await callCpaVisionAnalysis(filePath, prompt, 120_000, opCfg.model || undefined);
+      return r.ok ? { ok: true, result: r.text } : { ok: false, error: r.error };
+    }
+    return { ok: false, error: `Unknown vision provider configured: ${opCfg.provider}` };
+  }
+
+  // Legacy fallback: Gemini → CPA
   const geminiKey = getGeminiApiKey();
   if (geminiKey) {
     const geminiResult = await analyzeImageViaGemini(filePath, mimeType, prompt);
@@ -791,7 +943,7 @@ export async function analyzeImage(
   return {
     ok: false,
     error:
-      "No image analysis provider configured. Add GEMINI_API_KEY in ~/.clawd/config.json or configure a CPA provider",
+      'No image analysis provider configured. Set "vision": { "read_image": { "provider": "copilot", "model": "gpt-4.1" } } in ~/.clawd/config.json',
   };
 }
 
@@ -819,8 +971,7 @@ async function analyzeImageViaGemini(
 // Public API — Image Generation & Editing
 // ============================================================================
 
-/** Generate a new image from a text prompt.
- *  Primary: CPA provider (if configured). Fallback: direct Gemini API (if GEMINI_API_KEY set). */
+/** Generate a new image from a text prompt. Provider is driven by vision.generate_image config. */
 export async function generateImage(
   prompt: string,
   outputPath: string,
@@ -832,7 +983,30 @@ export async function generateImage(
     return { ok: false, error: "Output path not within allowed directories" };
   }
 
-  // Try Gemini first (with quota check)
+  // Use vision config if present
+  const opCfg = getVisionOpConfig("generate_image");
+  if (opCfg) {
+    if (opCfg.provider === "cpa") {
+      const cpaResult = await callCpaImageGeneration(prompt, undefined, 180_000, opCfg.model || undefined);
+      if (!cpaResult.ok) return { ok: false, error: cpaResult.error || "CPA image generation failed" };
+      try {
+        return saveImageResult(cpaResult, outputPath);
+      } catch (err) {
+        return { ok: false, error: `Failed to save image: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+    if (opCfg.provider === "gemini") {
+      const quotaError = checkImageQuota();
+      if (quotaError) return { ok: false, error: quotaError };
+      const result = await generateImageViaGemini(prompt, outputPath, aspectRatio, imageSize);
+      if (result.ok) recordImageGeneration();
+      else releaseInFlight();
+      return result;
+    }
+    return { ok: false, error: `Unknown image generation provider configured: ${opCfg.provider}` };
+  }
+
+  // Legacy fallback: Gemini (quota-checked) → CPA
   const geminiKey = getGeminiApiKey();
   if (geminiKey) {
     const quotaError = checkImageQuota();
@@ -881,7 +1055,7 @@ export async function generateImage(
   return {
     ok: false,
     error:
-      "No image generation provider configured. Add GEMINI_API_KEY in ~/.clawd/config.json or configure a CPA provider",
+      'No image generation provider configured. Set "vision": { "generate_image": { "provider": "cpa" } } in ~/.clawd/config.json',
   };
 }
 
@@ -905,8 +1079,7 @@ async function generateImageViaGemini(
   }
 }
 
-/** Edit an existing image based on a text prompt.
- *  Primary: CPA provider (if configured). Fallback: direct Gemini API (if GEMINI_API_KEY set).
+/** Edit an existing image based on a text prompt. Provider is driven by vision.edit_image config.
  *  The source image is read internally by file path — the caller (agent) never sees image content. */
 export async function editImage(
   sourceFilePath: string,
@@ -937,7 +1110,30 @@ export async function editImage(
     };
   }
 
-  // Try Gemini first (with quota check)
+  // Use vision config if present
+  const opCfg = getVisionOpConfig("edit_image");
+  if (opCfg) {
+    if (opCfg.provider === "cpa") {
+      const cpaResult = await callCpaImageGeneration(prompt, sourceFilePath, 180_000, opCfg.model || undefined);
+      if (!cpaResult.ok) return { ok: false, error: cpaResult.error || "CPA image editing failed" };
+      try {
+        return saveImageResult(cpaResult, outputPath);
+      } catch (err) {
+        return { ok: false, error: `Failed to save image: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+    if (opCfg.provider === "gemini") {
+      const quotaError = checkImageQuota();
+      if (quotaError) return { ok: false, error: quotaError };
+      const result = await editImageViaGemini(sourceFilePath, mimeType, prompt, outputPath);
+      if (result.ok) recordImageGeneration();
+      else releaseInFlight();
+      return result;
+    }
+    return { ok: false, error: `Unknown image editing provider configured: ${opCfg.provider}` };
+  }
+
+  // Legacy fallback: Gemini (quota-checked) → CPA
   const geminiKey = getGeminiApiKey();
   if (geminiKey) {
     const quotaError = checkImageQuota();
@@ -991,7 +1187,8 @@ export async function editImage(
 
   return {
     ok: false,
-    error: "No image editing provider configured. Add GEMINI_API_KEY in ~/.clawd/config.json or configure a CPA provider",
+    error:
+      'No image editing provider configured. Set "vision": { "edit_image": { "provider": "cpa" } } in ~/.clawd/config.json',
   };
 }
 

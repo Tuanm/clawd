@@ -99,35 +99,46 @@ async function tryReuseExistingContainer(id: string, image: string): Promise<Wor
   const containerName = `clawd-ws-${id}`;
   try {
     const { stdout: statusOut } = await execFileAsync("docker", [
-      "inspect", containerName, "--format", "{{.State.Status}}",
+      "inspect",
+      containerName,
+      "--format",
+      "{{.State.Status}}",
     ]).catch(() => ({ stdout: "" }));
     if (statusOut.trim() !== "running") return null;
 
     // Recover auth token from container env vars
     const { stdout: envOut } = await execFileAsync("docker", [
-      "inspect", containerName, "--format", "{{range .Config.Env}}{{println .}}{{end}}",
+      "inspect",
+      containerName,
+      "--format",
+      "{{range .Config.Env}}{{println .}}{{end}}",
     ]);
-    const authToken = envOut.split("\n")
-      .find((l) => l.startsWith("WORKSPACE_AUTH_TOKEN="))
-      ?.slice("WORKSPACE_AUTH_TOKEN=".length) || "";
+    const authToken =
+      envOut
+        .split("\n")
+        .find((l) => l.startsWith("WORKSPACE_AUTH_TOKEN="))
+        ?.slice("WORKSPACE_AUTH_TOKEN=".length) || "";
     if (!authToken) return null;
 
     // Recover host-bound MCP port
-    const { stdout: portOut } = await execFileAsync("docker", ["port", containerName, "3000"]).catch(() => ({ stdout: "" }));
+    const { stdout: portOut } = await execFileAsync("docker", ["port", containerName, "3000"]).catch(() => ({
+      stdout: "",
+    }));
     const portMatch = portOut.trim().match(/:(\d+)$/);
     if (!portMatch) return null;
     const mcpPort = parseInt(portMatch[1], 10);
 
-    const { stdout: cidOut } = await execFileAsync("docker", [
-      "inspect", containerName, "--format", "{{.Id}}",
-    ]);
+    const { stdout: cidOut } = await execFileAsync("docker", ["inspect", containerName, "--format", "{{.Id}}"]);
     const containerId = cidOut.trim();
 
     allocatedPorts.add(mcpPort);
     const handle: WorkspaceHandle = {
-      id, containerId,
+      id,
+      containerId,
       mcpUrl: `http://127.0.0.1:${mcpPort}`,
-      authToken, mcpPort, image,
+      authToken,
+      mcpPort,
+      image,
       status: "running",
       createdAt: new Date(),
     };

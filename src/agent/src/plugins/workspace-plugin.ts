@@ -30,7 +30,10 @@ const execFileAsync = promisify(execFile);
  */
 function makeWorkspaceId(channel: string, agentId: string): string {
   const raw = `${channel}-${agentId}`.toLowerCase();
-  const slug = raw.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+  const slug = raw
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
   return slug || "default";
 }
 

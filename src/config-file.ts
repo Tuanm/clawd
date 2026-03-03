@@ -25,6 +25,27 @@ export interface ConfigFile {
     /** Daily image generation limit (0 = unlimited). Default: 50 */
     daily_image_limit?: number;
   };
+  /**
+   * Vision / image processing configuration.
+   * Per-operation keys take precedence over top-level defaults.
+   *
+   * Example:
+   *   "vision": {
+   *     "read_image":     { "provider": "copilot", "model": "gpt-4.1" },
+   *     "generate_image": { "provider": "cpa",     "model": "gemini-3.1-flash-image" },
+   *     "edit_image":     { "provider": "cpa",     "model": "gemini-3.1-flash-image" }
+   *   }
+   *
+   * Providers: "copilot" | "gemini" | "cpa"
+   * If omitted, falls back to the built-in Gemini → CPA chain.
+   */
+  vision?: {
+    provider?: string;
+    model?: string;
+    read_image?: { provider: string; model?: string };
+    generate_image?: { provider: string; model?: string };
+    edit_image?: { provider: string; model?: string };
+  };
 }
 
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");
