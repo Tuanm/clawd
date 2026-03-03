@@ -1588,7 +1588,7 @@ SUMMARY:`;
 
         // Stream response with abort signal
         try {
-          for await (const event of this.client.stream(request, signal, "user")) {
+          for await (const event of this.client.stream(request, signal, "agent")) {
             // Check for interrupt every few tokens
             if (content.length % 100 === 0) {
               await checkInterrupt();
