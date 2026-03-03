@@ -581,6 +581,90 @@ async function callCopilotVisionAnalysis(
 }
 
 // ============================================================================
+// Ollama — Vision via native /api/chat
+// ============================================================================
+
+/** Get Ollama provider config from ~/.clawd/config.json. */
+function getOllamaConfig(): { baseUrl: string; apiKey?: string } | null {
+  const config = loadConfigFile();
+  const ollama = config.providers?.ollama as Record<string, unknown> | undefined;
+  if (!ollama) return null;
+  const rawUrl =
+    typeof ollama.base_url === "string"
+      ? (ollama.base_url as string).trim().replace(/\/+$/, "")
+      : "http://localhost:11434";
+  const apiKey = typeof ollama.api_key === "string" ? (ollama.api_key as string).trim() : undefined;
+  return { baseUrl: rawUrl, apiKey: apiKey || undefined };
+}
+
+/**
+ * Analyze an image using Ollama's native /api/chat endpoint with vision models.
+ * Images are sent as raw base64 strings in the `images` array (no data URI prefix).
+ */
+async function callOllamaVisionAnalysis(
+  filePath: string,
+  prompt: string,
+  model: string,
+  timeoutMs: number = 120_000,
+): Promise<{ ok: boolean; result?: string; error?: string }> {
+  const ollama = getOllamaConfig();
+  if (!ollama) return { ok: false, error: "Ollama provider not configured" };
+  if (!model) return { ok: false, error: "No Ollama vision model specified in vision.read_image.model" };
+
+  const base64Data = fileToBase64(filePath);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (ollama.apiKey) headers["Authorization"] = `Bearer ${ollama.apiKey}`;
+
+    const response = await fetch(`${ollama.baseUrl}/api/chat`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+            images: [base64Data],
+          },
+        ],
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { ok: false, error: `Ollama vision error (${response.status}): ${errorText.slice(0, 500)}` };
+    }
+
+    const data = (await response.json()) as {
+      message?: { content?: string };
+      error?: string;
+    };
+
+    if (data.error) return { ok: false, error: `Ollama vision error: ${data.error}` };
+
+    const text = data.message?.content;
+    if (!text) return { ok: false, error: "Ollama returned empty vision response" };
+
+    return { ok: true, result: truncateResult(text) };
+  } catch (err: unknown) {
+    clearTimeout(timer);
+    if (err instanceof Error && err.name === "AbortError") {
+      return { ok: false, error: "Ollama vision request timed out" };
+    }
+    return { ok: false, error: `Ollama vision request failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+// ============================================================================
 // MiniMax Fallback — Image generation via dedicated API
 // ============================================================================
 
@@ -900,6 +984,9 @@ export async function analyzeImage(
     if (opCfg.provider === "minimax") {
       const r = await callMiniMaxVisionAnalysis(filePath, prompt, 120_000, opCfg.model || undefined);
       return r.ok ? { ok: true, result: r.text } : { ok: false, error: r.error };
+    }
+    if (opCfg.provider === "ollama") {
+      return callOllamaVisionAnalysis(filePath, prompt, opCfg.model);
     }
     return { ok: false, error: `Unknown vision provider configured: ${opCfg.provider}` };
   }
