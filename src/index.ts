@@ -625,7 +625,19 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         from: numParam(url, "from"),
         to: numParam(url, "to"),
       };
-      return json({ ok: true, keys: queryKeyStats(opts) });
+      const stats = queryKeyStats(opts);
+      // Enrich with live KeyPool data (premium remaining from GitHub API)
+      const liveStatus = keyPool.getStatus();
+      const enriched = stats.map((s) => {
+        const live = liveStatus.find((l) => s.key_fingerprint === l.fingerprint);
+        return {
+          ...s,
+          premium_remaining: live?.premiumRemainingFromApi ?? null,
+          premium_used_cycle: live?.premiumUsedCycle ?? null,
+          user_initiator_sent_today: live?.userInitiatorSentToday ?? null,
+        };
+      });
+      return json({ ok: true, keys: enriched });
     }
 
     // GET /api/analytics/copilot/models?from=<ms>&to=<ms>&channel=X

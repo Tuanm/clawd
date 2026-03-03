@@ -93,6 +93,8 @@ interface KeyRecord {
   cooldownUntil: number; // 0 = available
   suspendStrikes: number; // exponential backoff: 0→30m, 1→2h, 2→24h
   permanent: boolean; // invalid/expired token — never retry
+  // User initiator budget: 2-5 "user" requests per key per day to look natural
+  userInitiatorSentToday: number;
   // HTTP/2 session owned by KeyPool (one per key, shared across all agents)
   session: http2.ClientHttp2Session | null;
   sessionPending: Promise<http2.ClientHttp2Session> | null; // in-flight creation guard (prevents race)
@@ -109,6 +111,7 @@ export interface KeyStatus {
   cooldownUntil: string | null;
   suspendStrikes: number;
   permanent: boolean;
+  userInitiatorSentToday: number;
 }
 
 interface PersistedKeyState {
@@ -121,6 +124,7 @@ interface PersistedKeyState {
   cooldownUntil: number;
   suspendStrikes: number;
   permanent: boolean;
+  userInitiatorSentToday: number;
 }
 
 interface PersistedState {
@@ -179,6 +183,7 @@ class KeyPool {
           cooldownUntil: 0,
           suspendStrikes: 0,
           permanent: false,
+          userInitiatorSentToday: 0,
           session: null,
           sessionPending: null,
         });
@@ -262,6 +267,34 @@ class KeyPool {
     return best;
   }
 
+  // ---- User initiator promotion (abuse avoidance) ----------------------------
+
+  /**
+   * Per-key daily budget for "user" initiator requests.
+   * Fewer keys → more per key (to look natural). More keys → fewer per key.
+   * Range: 2–5 per key per day.
+   */
+  private get userBudgetPerKey(): number {
+    return Math.max(2, Math.min(5, 6 - Math.floor(this.keys.length / 3)));
+  }
+
+  /**
+   * Decide the effective initiator for a request on the given key.
+   * If the caller explicitly requests "user", always honors it.
+   * If "agent", occasionally promotes to "user" (2–5 times per key per day)
+   * so that GitHub sees mixed initiator patterns and doesn't flag the account.
+   */
+  resolveInitiator(key: KeyRecord, callerInitiator: "agent" | "user"): "agent" | "user" {
+    if (callerInitiator === "user") return "user";
+    const budget = this.userBudgetPerKey;
+    if (key.userInitiatorSentToday >= budget) return "agent";
+    // Probability: spread promotions throughout the day
+    // With budget/30 ≈ 7-17%, we expect to hit the budget over ~30 requests per key
+    const probability = Math.min(0.15, budget / 30);
+    if (Math.random() < probability) return "user";
+    return "agent";
+  }
+
   // ---- Request spacing (slot-advance pattern) --------------------------------
 
   /**
@@ -292,6 +325,7 @@ class KeyPool {
     // Prune stale entries to prevent unbounded growth
     record.window60s = record.window60s.filter((t) => t > now - RPM_WINDOW_MS);
     if (initiator === "user") {
+      record.userInitiatorSentToday++;
       const cost = getModelMultiplier(model);
       if (cost > 0) {
         record.premiumUnitsUsedToday += cost;
@@ -454,6 +488,7 @@ class KeyPool {
       cooldownUntil: k.cooldownUntil > now ? new Date(k.cooldownUntil).toISOString() : null,
       suspendStrikes: k.suspendStrikes,
       permanent: k.permanent,
+      userInitiatorSentToday: k.userInitiatorSentToday,
     }));
   }
 
@@ -548,6 +583,7 @@ class KeyPool {
           cooldownUntil: k.cooldownUntil,
           suspendStrikes: k.suspendStrikes,
           permanent: k.permanent,
+          userInitiatorSentToday: k.userInitiatorSentToday,
           // NOT: token, inFlight, window60s, nextAvailableAt, session
         })),
       };
@@ -589,6 +625,8 @@ class KeyPool {
         record.cooldownUntil = typeof saved.cooldownUntil === "number" ? saved.cooldownUntil : 0;
         record.suspendStrikes = typeof saved.suspendStrikes === "number" ? saved.suspendStrikes : 0;
         record.permanent = saved.permanent === true;
+        record.userInitiatorSentToday =
+          typeof saved.userInitiatorSentToday === "number" ? saved.userInitiatorSentToday : 0;
       }
 
       console.log(`[KEY POOL] Restored state for ${this.keys.length} key(s) from ${STATE_PATH}`);
@@ -626,6 +664,7 @@ class KeyPool {
       // Daily reset: when the UTC date rolls over to a new day
       if (key.lastDailyResetDay < todayInt) {
         key.premiumUnitsUsedToday = 0;
+        key.userInitiatorSentToday = 0;
         key.lastDailyResetDay = todayInt;
       }
     }

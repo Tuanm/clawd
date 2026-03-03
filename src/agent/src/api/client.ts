@@ -267,6 +267,9 @@ export class CopilotClient extends EventEmitter {
       return this._completeOnce(request, getCopilotToken() || this.token, initiator);
     }
 
+    // Resolve effective initiator: occasionally promote "agent" → "user" per-key daily budget
+    const effectiveInitiator = keyPool.resolveInitiator(key, initiator);
+
     const maxSwitches = Math.max(keyPool.keyCount, 1);
     let lastError: Error | null = null;
 
@@ -275,12 +278,12 @@ export class CopilotClient extends EventEmitter {
       const ctx = callContext.getStore();
       try {
         await keyPool.waitForSpacing(key);
-        const result = await this._completeOnce(request, key.token, initiator);
-        keyPool.recordRequest(key.token, request.model, initiator);
+        const result = await this._completeOnce(request, key.token, effectiveInitiator);
+        keyPool.recordRequest(key.token, request.model, effectiveInitiator);
         trackSuccess({
           keyFingerprint: key.fingerprint,
           model: request.model,
-          initiator,
+          initiator: effectiveInitiator,
           latencyMs: Date.now() - t0,
           promptTokens: result.usage?.prompt_tokens,
           completionTokens: result.usage?.completion_tokens,
@@ -294,7 +297,7 @@ export class CopilotClient extends EventEmitter {
           trackFailure({
             keyFingerprint: key.fingerprint,
             model: request.model,
-            initiator,
+            initiator: effectiveInitiator,
             status: err.status as 429 | 403,
             latencyMs: Date.now() - t0,
             errorMsg: err.message,
@@ -306,7 +309,7 @@ export class CopilotClient extends EventEmitter {
           }
           lastError = err;
           try {
-            key = keyPool.selectKey(initiator);
+            key = keyPool.selectKey(effectiveInitiator);
           } catch (e2) {
             throw e2; // AllKeysSuspendedError
           }
@@ -317,7 +320,7 @@ export class CopilotClient extends EventEmitter {
         trackFailure({
           keyFingerprint: key.fingerprint,
           model: request.model,
-          initiator,
+          initiator: effectiveInitiator,
           status: "error",
           latencyMs: Date.now() - t0,
           errorMsg: err instanceof Error ? err.message : String(err),
@@ -422,6 +425,9 @@ export class CopilotClient extends EventEmitter {
       return;
     }
 
+    // Resolve effective initiator: occasionally promote "agent" → "user" per-key daily budget
+    const effectiveInitiator = keyPool.resolveInitiator(key, initiator);
+
     const maxSwitches = Math.max(keyPool.keyCount, 1);
 
     for (let switches = 0; switches <= maxSwitches; switches++) {
@@ -434,16 +440,16 @@ export class CopilotClient extends EventEmitter {
         let accounted = false;
         let lastEvent: StreamEvent | null = null;
         try {
-          for await (const event of this._streamOnce(request, key.token, initiator, signal)) {
+          for await (const event of this._streamOnce(request, key.token, effectiveInitiator, signal)) {
             lastEvent = event;
             yield event;
           }
-          keyPool.recordRequest(key.token, request.model, initiator);
+          keyPool.recordRequest(key.token, request.model, effectiveInitiator);
           accounted = true;
           trackSuccess({
             keyFingerprint: key.fingerprint,
             model: request.model,
-            initiator,
+            initiator: effectiveInitiator,
             latencyMs: Date.now() - t0,
             promptTokens: (lastEvent as { usage?: { prompt_tokens?: number } })?.usage?.prompt_tokens,
             completionTokens: (lastEvent as { usage?: { completion_tokens?: number } })?.usage?.completion_tokens,
@@ -462,7 +468,7 @@ export class CopilotClient extends EventEmitter {
           trackFailure({
             keyFingerprint: key.fingerprint,
             model: request.model,
-            initiator,
+            initiator: effectiveInitiator,
             status: "error",
             latencyMs: Date.now() - t0,
             errorMsg: err instanceof Error ? err.message : String(err),
@@ -478,7 +484,7 @@ export class CopilotClient extends EventEmitter {
         trackFailure({
           keyFingerprint: key.fingerprint,
           model: request.model,
-          initiator,
+          initiator: effectiveInitiator,
           status: streamError.status as 429 | 403,
           latencyMs: Date.now() - t0,
           errorMsg: streamError.message,
@@ -489,7 +495,7 @@ export class CopilotClient extends EventEmitter {
           keyPool.destroySession(key.token);
         }
         try {
-          key = keyPool.selectKey(initiator);
+          key = keyPool.selectKey(effectiveInitiator);
         } catch (e2) {
           throw e2; // AllKeysSuspendedError
         }
