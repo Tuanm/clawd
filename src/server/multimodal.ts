@@ -766,30 +766,32 @@ export async function analyzeImage(
     return { ok: false, error: `File is not an image (${mimeType})` };
   }
 
-  // Try CPA provider first (if configured)
+  // Try Gemini first (if API key configured)
+  const geminiKey = getGeminiApiKey();
+  if (geminiKey) {
+    const geminiResult = await analyzeImageViaGemini(filePath, mimeType, prompt);
+    if (geminiResult.ok) return geminiResult;
+    // Gemini failed — try CPA fallback
+    const cpa = getCpaConfig();
+    if (cpa) {
+      const cpaResult = await callCpaVisionAnalysis(filePath, prompt);
+      if (cpaResult.ok) return { ok: true, result: cpaResult.text };
+    }
+    return geminiResult; // return Gemini error
+  }
+
+  // No Gemini — try CPA directly
   const cpa = getCpaConfig();
   if (cpa) {
     const cpaResult = await callCpaVisionAnalysis(filePath, prompt);
     if (cpaResult.ok) return { ok: true, result: cpaResult.text };
-    // CPA failed — try Gemini fallback
-    const geminiKey = getGeminiApiKey();
-    if (geminiKey) {
-      const geminiResult = await analyzeImageViaGemini(filePath, mimeType, prompt);
-      if (geminiResult.ok) return geminiResult;
-    }
     return { ok: false, error: cpaResult.error };
-  }
-
-  // No CPA — try Gemini directly
-  const geminiKey = getGeminiApiKey();
-  if (geminiKey) {
-    return analyzeImageViaGemini(filePath, mimeType, prompt);
   }
 
   return {
     ok: false,
     error:
-      "No image analysis provider configured. Configure CPA provider or add GEMINI_API_KEY in ~/.clawd/config.json",
+      "No image analysis provider configured. Add GEMINI_API_KEY in ~/.clawd/config.json or configure a CPA provider",
   };
 }
 
@@ -830,7 +832,37 @@ export async function generateImage(
     return { ok: false, error: "Output path not within allowed directories" };
   }
 
-  // Try CPA provider first (if configured) — no quota limit for CPA (server handles its own limits)
+  // Try Gemini first (with quota check)
+  const geminiKey = getGeminiApiKey();
+  if (geminiKey) {
+    const quotaError = checkImageQuota();
+    if (!quotaError) {
+      const geminiResult = await generateImageViaGemini(prompt, outputPath, aspectRatio, imageSize);
+      if (geminiResult.ok) {
+        recordImageGeneration();
+        return geminiResult;
+      }
+      releaseInFlight();
+    }
+    // Gemini failed or quota exceeded — try CPA fallback (no quota limit for CPA)
+    const cpa = getCpaConfig();
+    if (cpa) {
+      const cpaResult = await callCpaImageGeneration(prompt);
+      if (cpaResult.ok) {
+        let saved: { ok: boolean; path?: string; mimeType?: string; error?: string };
+        try {
+          saved = saveImageResult(cpaResult, outputPath);
+        } catch (err) {
+          return { ok: false, error: `Failed to save CPA image: ${err instanceof Error ? err.message : String(err)}` };
+        }
+        return saved;
+      }
+    }
+    if (quotaError) return { ok: false, error: quotaError };
+    return { ok: false, error: "Image generation failed on all available providers" };
+  }
+
+  // No Gemini — try CPA directly (no quota limit for CPA)
   const cpa = getCpaConfig();
   if (cpa) {
     const cpaResult = await callCpaImageGeneration(prompt);
@@ -843,37 +875,13 @@ export async function generateImage(
       }
       return saved;
     }
-    // CPA API failed — try Gemini fallback (with quota check)
-    const geminiKey = getGeminiApiKey();
-    if (geminiKey) {
-      const quotaError = checkImageQuota();
-      if (quotaError) return { ok: false, error: quotaError };
-      const geminiResult = await generateImageViaGemini(prompt, outputPath, aspectRatio, imageSize);
-      if (geminiResult.ok) {
-        recordImageGeneration();
-        return geminiResult;
-      }
-      releaseInFlight();
-      return geminiResult;
-    }
-    return { ok: false, error: cpaResult.error || "CPA image generation failed and no Gemini fallback available" };
-  }
-
-  // No CPA — try Gemini directly (with quota check)
-  const geminiKey = getGeminiApiKey();
-  if (geminiKey) {
-    const quotaError = checkImageQuota();
-    if (quotaError) return { ok: false, error: quotaError };
-    const result = await generateImageViaGemini(prompt, outputPath, aspectRatio, imageSize);
-    if (result.ok) recordImageGeneration();
-    else releaseInFlight();
-    return result;
+    return { ok: false, error: cpaResult.error || "CPA image generation failed" };
   }
 
   return {
     ok: false,
     error:
-      "No image generation provider configured. Configure CPA provider or add GEMINI_API_KEY in ~/.clawd/config.json",
+      "No image generation provider configured. Add GEMINI_API_KEY in ~/.clawd/config.json or configure a CPA provider",
   };
 }
 
@@ -929,7 +937,40 @@ export async function editImage(
     };
   }
 
-  // Try CPA provider first (if configured) — no quota limit for CPA (server handles its own limits)
+  // Try Gemini first (with quota check)
+  const geminiKey = getGeminiApiKey();
+  if (geminiKey) {
+    const quotaError = checkImageQuota();
+    if (!quotaError) {
+      const geminiResult = await editImageViaGemini(sourceFilePath, mimeType, prompt, outputPath);
+      if (geminiResult.ok) {
+        recordImageGeneration();
+        return geminiResult;
+      }
+      releaseInFlight();
+    }
+    // Gemini failed or quota exceeded — try CPA fallback (no quota limit for CPA)
+    const cpa = getCpaConfig();
+    if (cpa) {
+      const cpaResult = await callCpaImageGeneration(prompt, sourceFilePath);
+      if (cpaResult.ok) {
+        let saved: { ok: boolean; path?: string; mimeType?: string; error?: string };
+        try {
+          saved = saveImageResult(cpaResult, outputPath);
+        } catch (err) {
+          return {
+            ok: false,
+            error: `Failed to save CPA edited image: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+        return saved;
+      }
+    }
+    if (quotaError) return { ok: false, error: quotaError };
+    return { ok: false, error: "Image editing failed on all available providers" };
+  }
+
+  // No Gemini — try CPA directly (no quota limit for CPA)
   const cpa = getCpaConfig();
   if (cpa) {
     const cpaResult = await callCpaImageGeneration(prompt, sourceFilePath);
@@ -945,36 +986,12 @@ export async function editImage(
       }
       return saved;
     }
-    // CPA API failed — try Gemini fallback (with quota check)
-    const geminiKey = getGeminiApiKey();
-    if (geminiKey) {
-      const quotaError = checkImageQuota();
-      if (quotaError) return { ok: false, error: quotaError };
-      const geminiResult = await editImageViaGemini(sourceFilePath, mimeType, prompt, outputPath);
-      if (geminiResult.ok) {
-        recordImageGeneration();
-        return geminiResult;
-      }
-      releaseInFlight();
-      return geminiResult;
-    }
-    return { ok: false, error: cpaResult.error || "CPA image editing failed and no Gemini fallback available" };
-  }
-
-  // No CPA — try Gemini directly (with quota check)
-  const geminiKey = getGeminiApiKey();
-  if (geminiKey) {
-    const quotaError = checkImageQuota();
-    if (quotaError) return { ok: false, error: quotaError };
-    const result = await editImageViaGemini(sourceFilePath, mimeType, prompt, outputPath);
-    if (result.ok) recordImageGeneration();
-    else releaseInFlight();
-    return result;
+    return { ok: false, error: cpaResult.error || "CPA image editing failed" };
   }
 
   return {
     ok: false,
-    error: "No image editing provider configured. Configure CPA provider or add GEMINI_API_KEY in ~/.clawd/config.json",
+    error: "No image editing provider configured. Add GEMINI_API_KEY in ~/.clawd/config.json or configure a CPA provider",
   };
 }
 

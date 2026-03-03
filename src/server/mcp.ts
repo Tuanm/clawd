@@ -1214,7 +1214,7 @@ Use this tool to:
 - Analyze diagrams, charts, or UI screenshots
 - Identify objects, people, or scenes
 
-Requires CPA provider (providers.cpa) or GEMINI_API_KEY in ~/.clawd/config.json. CPA is tried first; Gemini is used as fallback.`,
+Requires CPA provider (providers.cpa) or GEMINI_API_KEY in ~/.clawd/config.json. Gemini is tried first; CPA is used as fallback.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -1242,7 +1242,7 @@ Use this tool to:
 - Generate visual mockups or design ideas
 - Create icons, logos, or simple graphics
 
-Requires CPA provider (providers.cpa) or GEMINI_API_KEY in ~/.clawd/config.json. CPA is tried first; Gemini is used as fallback.`,
+Requires CPA provider (providers.cpa) or GEMINI_API_KEY in ~/.clawd/config.json. Gemini is tried first; CPA is used as fallback.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -1279,7 +1279,7 @@ Use this tool to:
 
 Tip: Use read_image first to understand the source image content, then describe the specific changes needed.
 
-Requires CPA provider (providers.cpa) or GEMINI_API_KEY in ~/.clawd/config.json. CPA is tried first; Gemini is used as fallback.`,
+Requires CPA provider (providers.cpa) or GEMINI_API_KEY in ~/.clawd/config.json. Gemini is tried first; CPA is used as fallback.`,
     inputSchema: {
       type: "object",
       properties: {
