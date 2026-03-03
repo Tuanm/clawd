@@ -1,28 +1,33 @@
-import { execSync } from 'node:child_process';
-import { existsSync, unlinkSync } from 'node:fs';
-import { getCurrentControlMode, isExtensionPopupDetected, getCurrentUrl } from '../engines/playwright';
+import { execFileSync } from "node:child_process";
+import { existsSync, unlinkSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { getCurrentControlMode, isExtensionPopupDetected, getCurrentUrl } from "../engines/playwright";
 
 export async function screenshotTool(): Promise<{ path: string; width: number; height: number }> {
-  const path = `/tmp/ws-screenshot-${Date.now()}.png`;
-  execSync(`scrot '${path}'`, { env: { ...process.env, DISPLAY: process.env.DISPLAY || ':99' } });
+  const path = `/tmp/ws-screenshot-${randomBytes(8).toString("hex")}.png`;
+  execFileSync("scrot", [path], { env: { ...process.env, DISPLAY: process.env.DISPLAY || ":99" } });
   return { path, width: 1280, height: 1024 };
 }
 
 export function cleanupScreenshot(path: string): void {
   if (existsSync(path)) {
-    try { unlinkSync(path); } catch {}
+    try {
+      unlinkSync(path);
+    } catch {}
   }
 }
 
 export async function getContextTool(): Promise<object> {
   const controlMode = getCurrentControlMode();
   const popupDetected = isExtensionPopupDetected();
-  let url = 'unknown';
-  try { url = await getCurrentUrl(); } catch {}
+  let url = "unknown";
+  try {
+    url = await getCurrentUrl();
+  } catch {}
 
   return {
     control_mode: controlMode,
-    active_context: popupDetected ? 'extension_popup' : 'browser',
+    active_context: popupDetected ? "extension_popup" : "browser",
     current_url: url,
     context_changed: false,
     hint: popupDetected

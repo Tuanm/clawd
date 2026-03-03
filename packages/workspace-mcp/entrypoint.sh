@@ -21,12 +21,23 @@ chmod 600 /tmp/vnc/vncpass
 unset VNC_PASSWORD  # Clear from env immediately
 
 if [ "${CLAWD_VNC_ENABLED:-false}" = "true" ]; then
-  x11vnc -display :99 -forever -rfbauth /tmp/vnc/vncpass -rfbport 5900 -bg -quiet
-  # Wait for x11vnc daemon to bind port 5900 before starting websockify
-  echo "[entrypoint] Waiting for x11vnc on :5900..."
-  while ! nc -z localhost 5900 2>/dev/null; do sleep 0.1; done
-  websockify --web /usr/share/novnc 6080 localhost:5900 &
-  echo "[entrypoint] VNC/noVNC enabled on :5900/:6080"
+  # Start VNC services in background — do NOT block MCP server startup
+  (
+    x11vnc -display :99 -forever -rfbauth /tmp/vnc/vncpass -rfbport 5900 -bg -quiet
+    # Wait for x11vnc with a timeout (max 30s) before starting websockify
+    TRIES=0
+    while [ $TRIES -lt 300 ]; do
+      if nc -z localhost 5900 2>/dev/null || \
+         (cat /dev/tcp/localhost/5900 2>/dev/null && echo "" >/dev/null) || \
+         ss -ltn 2>/dev/null | grep -q ':5900'; then
+        break
+      fi
+      sleep 0.1
+      TRIES=$((TRIES+1))
+    done
+    websockify --web /usr/share/novnc 6080 localhost:5900 &
+    echo "[entrypoint] VNC/noVNC enabled on :5900/:6080"
+  ) &
 fi
 
 echo "[entrypoint] Starting workspace MCP server..."

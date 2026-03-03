@@ -172,6 +172,7 @@ import {
   handleWebSocketOpen,
 } from "./server/websocket";
 import { handleWorkspaceProxy, upgradeWorkspaceWs } from "./server/routes/workspace-proxy";
+import { reconcilePortsFromDocker } from "./agent/src/workspace/container.js";
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
 
@@ -183,6 +184,11 @@ const HOST = config.host;
 const PORT = config.port;
 
 // Database is initialized at module load time in database.ts (before prepared statements)
+
+// Reconcile workspace gateway routes in background (re-registers Caddy routes for running workspaces)
+reconcilePortsFromDocker().catch((err: unknown) => {
+  console.warn("[startup] reconcilePortsFromDocker failed unexpectedly:", err);
+});
 
 // Run channel ID migration on startup (normalizes legacy C-prefixed IDs to names)
 const migrated = migrateChannelIds();
@@ -453,7 +459,7 @@ const server = Bun.serve({
     open: handleWebSocketOpen,
     close: handleWebSocketClose,
     message: handleWebSocketMessage,
-    perMessageDeflate: true,
+    perMessageDeflate: false,
   },
 });
 

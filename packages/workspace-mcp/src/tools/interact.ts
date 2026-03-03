@@ -1,11 +1,11 @@
-import { typeText, pressKey, selectOption } from '../engines/playwright';
-import { routedClick, xdotoolType, xdotoolKey, type ClickOptions } from '../engines/router';
-import { getCurrentControlMode, isExtensionPopupDetected, clearExtensionPopupFlag } from '../engines/playwright';
-import { execSync } from 'node:child_process';
+import { typeText, pressKey, selectOption } from "../engines/playwright";
+import { routedClick, xdotoolType, xdotoolKey, type ClickOptions } from "../engines/router";
+import { getCurrentControlMode, isExtensionPopupDetected, clearExtensionPopupFlag } from "../engines/playwright";
+import { execSync } from "node:child_process";
 
 interface ContextChangedResult {
   context_changed: boolean;
-  control_mode: 'structured' | 'vision';
+  control_mode: "structured" | "vision";
   active_context: string;
   hint?: string;
 }
@@ -16,7 +16,7 @@ function buildContextResult(): ContextChangedResult {
   return {
     context_changed: popupDetected,
     control_mode: mode,
-    active_context: popupDetected ? 'extension_popup' : 'browser',
+    active_context: popupDetected ? "extension_popup" : "browser",
     hint: popupDetected
       ? "Extension popup detected. Use 'observe' to see current state, then 'click' with coordinates or description."
       : undefined,
@@ -25,11 +25,11 @@ function buildContextResult(): ContextChangedResult {
 
 export async function clickTool(
   opts: ClickOptions,
-  visionClickFn?: (description: string) => Promise<{ x: number; y: number }>
+  visionClickFn?: (description: string) => Promise<{ x: number; y: number }>,
 ): Promise<{ result: string } & ContextChangedResult> {
   const clickResult = await routedClick(opts, visionClickFn);
   if (!clickResult.success) {
-    throw new Error(clickResult.error || 'Click failed');
+    throw new Error(clickResult.error || "Click failed");
   }
   const ctx = buildContextResult();
   return {
@@ -38,7 +38,10 @@ export async function clickTool(
   };
 }
 
-export async function typeTextTool(text: string, useXdotool = false): Promise<{ result: string } & ContextChangedResult> {
+export async function typeTextTool(
+  text: string,
+  useXdotool = false,
+): Promise<{ result: string } & ContextChangedResult> {
   if (useXdotool || isExtensionPopupDetected()) {
     await xdotoolType(text);
   } else {
@@ -47,7 +50,10 @@ export async function typeTextTool(text: string, useXdotool = false): Promise<{ 
   return { result: `Typed ${text.length} characters`, ...buildContextResult() };
 }
 
-export async function pressKeyTool(key: string, useXdotool = false): Promise<{ result: string } & ContextChangedResult> {
+export async function pressKeyTool(
+  key: string,
+  useXdotool = false,
+): Promise<{ result: string } & ContextChangedResult> {
   if (useXdotool || isExtensionPopupDetected()) {
     await xdotoolKey(key);
   } else {
@@ -61,8 +67,13 @@ export async function selectOptionTool(ref: string, value: string): Promise<{ re
   return { result: `Selected: ${value}`, ...buildContextResult() };
 }
 
-export async function dragTool(fromX: number, fromY: number, toX: number, toY: number): Promise<{ result: string } & ContextChangedResult> {
-  const displayEnv = { ...process.env, DISPLAY: process.env.DISPLAY || ':99' };
+export async function dragTool(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+): Promise<{ result: string } & ContextChangedResult> {
+  const displayEnv = { ...process.env, DISPLAY: process.env.DISPLAY || ":99" };
   execSync(`xdotool mousemove ${fromX} ${fromY} mousedown 1 mousemove ${toX} ${toY} mouseup 1`, { env: displayEnv });
   return { result: `Dragged from (${fromX},${fromY}) to (${toX},${toY})`, ...buildContextResult() };
 }

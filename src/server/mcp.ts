@@ -186,7 +186,7 @@ Use this to respond to user messages or send notifications.`,
         workspace_json: {
           type: "string",
           description:
-            "Optional JSON string for an agent workspace preview card. Format: {\"workspace_id\":\"<id>\",\"title\":\"<title>\",\"description\":\"<optional>\",\"status\":\"running|waiting|completed\"}. Clicking the card opens the agent's noVNC desktop in a new tab.",
+            'Optional JSON string for an agent workspace preview card. Format: {"workspace_id":"<id>","title":"<title>","description":"<optional>","status":"running|waiting|completed"}. Clicking the card opens the agent\'s noVNC desktop in a new tab.',
         },
         code_preview: {
           type: "object",

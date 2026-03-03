@@ -1,5 +1,5 @@
 interface HandoffResult {
-  status: 'waiting' | 'resumed' | 'timed_out';
+  status: "waiting" | "resumed" | "timed_out";
   vnc_url?: string;
   duration_seconds: number;
 }
@@ -14,9 +14,13 @@ export function signalResume(): void {
   }
 }
 
-export async function pauseForHuman(reason: string, instructions: string, timeoutSeconds = 300): Promise<HandoffResult> {
+export async function pauseForHuman(
+  reason: string,
+  instructions: string,
+  timeoutSeconds = 300,
+): Promise<HandoffResult> {
   const startTime = Date.now();
-  const vncPort = process.env.NOVNC_PORT || '6080';
+  const vncPort = process.env.NOVNC_PORT || "6080";
   const vncUrl = `http://localhost:${vncPort}/vnc.html`;
 
   console.log(`[Handoff] PAUSING - Human input required:`);
@@ -26,11 +30,11 @@ export async function pauseForHuman(reason: string, instructions: string, timeou
   console.log(`[Handoff] Timeout: ${timeoutSeconds}s`);
 
   // Wait for resume signal or timeout
-  const result = await new Promise<HandoffResult>(resolve => {
+  const result = await new Promise<HandoffResult>((resolve) => {
     const timeout = setTimeout(() => {
       resumeSignal = null;
       resolve({
-        status: 'timed_out',
+        status: "timed_out",
         vnc_url: vncUrl,
         duration_seconds: Math.round((Date.now() - startTime) / 1000),
       });
@@ -39,7 +43,7 @@ export async function pauseForHuman(reason: string, instructions: string, timeou
     resumeSignal = () => {
       clearTimeout(timeout);
       resolve({
-        status: 'resumed',
+        status: "resumed",
         vnc_url: vncUrl,
         duration_seconds: Math.round((Date.now() - startTime) / 1000),
       });

@@ -61,14 +61,17 @@ function isPortAvailable(port: number): Promise<boolean> {
     const net = require("node:net");
     const server = net.createServer();
     server.once("error", () => resolve(false));
-    server.once("listening", () => { server.close(); resolve(true); });
+    server.once("listening", () => {
+      server.close();
+      resolve(true);
+    });
     server.listen(port, "127.0.0.1");
   });
 }
 
 async function allocatePort(start: number, end: number): Promise<number> {
   for (let port = start; port <= end; port++) {
-    if (!allocatedPorts.has(port) && await isPortAvailable(port)) {
+    if (!allocatedPorts.has(port) && (await isPortAvailable(port))) {
       allocatedPorts.add(port);
       return port;
     }

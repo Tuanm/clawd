@@ -313,6 +313,14 @@ export async function reconcileGatewayRoutes(workspaceIds: string[]): Promise<vo
   const valid = workspaceIds.filter((id) => WORKSPACE_ID_RE.test(id));
   if (valid.length === 0) return;
   for (const id of valid) {
+    // Reconnect gateway to workspace network (idempotent — "already exists" is ok)
+    await execFileAsync("docker", ["network", "connect", `clawd-ws-net-${id}`, GATEWAY_CONTAINER_NAME]).catch(
+      (err: any) => {
+        if (!String(err?.stderr || err?.message || "").includes("already exists")) {
+          console.warn(`[gateway] Failed to reconnect network for ${id}:`, err?.message);
+        }
+      },
+    );
     await registerWorkspaceRoute(id, `clawd-ws-${id}`).catch((err) =>
       console.warn(`[gateway] Failed to reconcile route for ${id}:`, err.message),
     );

@@ -1706,28 +1706,36 @@ export default function MessageList({
                     </div>
                   </div>
                 )}
-                {msg.workspace && (
-                  <div
-                    className={`message-workspace-card ${msg.workspace.status === "completed" ? "workspace-card-completed" : msg.workspace.status === "waiting" ? "workspace-card-waiting" : "workspace-card-running"}`}
-                    onClick={() => window.open(`/workspace/${encodeURIComponent(msg.workspace!.workspace_id)}/novnc/vnc.html?autoconnect=1&resize=scale`, "_blank")}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) =>
-                      (e.key === "Enter" || e.key === " ") &&
-                      window.open(`/workspace/${encodeURIComponent(msg.workspace!.workspace_id)}/novnc/vnc.html?autoconnect=1&resize=scale`, "_blank")
-                    }
-                  >
-                    <div className="workspace-card-icon">🖥️</div>
-                    <div className="workspace-card-content">
-                      <div className="workspace-card-title">{msg.workspace.title}</div>
-                      {msg.workspace.description && (
-                        <div className="workspace-card-description">{msg.workspace.description}</div>
-                      )}
-                      <div className="workspace-card-action">Open Desktop →</div>
-                    </div>
-                    <div className={`workspace-status-dot workspace-status-${msg.workspace.status}`} />
-                  </div>
-                )}
+                {msg.workspace &&
+                  (() => {
+                    const openWorkspaceDesktop = () => {
+                      const rawId = msg.workspace!.workspace_id;
+                      const wsId = encodeURIComponent(rawId);
+                      window.open(
+                        `/workspace/${wsId}/novnc/vnc.html?autoconnect=1&resize=scale&path=${encodeURIComponent(`workspace/${rawId}/novnc/websockify`)}`,
+                        "_blank",
+                      );
+                    };
+                    return (
+                      <div
+                        className={`message-workspace-card ${msg.workspace.status === "completed" ? "workspace-card-completed" : msg.workspace.status === "waiting" ? "workspace-card-waiting" : "workspace-card-running"}`}
+                        onClick={openWorkspaceDesktop}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") openWorkspaceDesktop();
+                        }}
+                      >
+                        <div className="workspace-card-content">
+                          <div className="workspace-card-title">{msg.workspace.title}</div>
+                          {msg.workspace.description && (
+                            <div className="workspace-card-description">{msg.workspace.description}</div>
+                          )}
+                          <div className="workspace-card-action">Open Desktop →</div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 {msg.files && msg.files.length > 0 && (
                   <div className="message-files">
                     {msg.files.map((file) =>

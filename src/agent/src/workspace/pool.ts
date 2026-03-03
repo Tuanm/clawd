@@ -11,7 +11,14 @@
  *   await pool.release(ws.id);
  */
 
-import { spawnWorkspace, destroyWorkspace, getWorkspace, probeTcp, type WorkspaceHandle, type WorkspaceOptions } from './container.js';
+import {
+  spawnWorkspace,
+  destroyWorkspace,
+  getWorkspace,
+  probeTcp,
+  type WorkspaceHandle,
+  type WorkspaceOptions,
+} from "./container.js";
 
 export interface PoolOptions {
   /** Number of pre-warmed containers to keep ready. Default: 1 */
@@ -35,9 +42,9 @@ export class WorkspacePool {
   constructor(opts: PoolOptions = {}) {
     this.poolSize = opts.poolSize ?? 1;
     this.spawnOpts = {
-      image: opts.image ?? 'clawd-workspace:base',
-      memory: opts.memory ?? '1g',
-      cpus: opts.cpus ?? '1',
+      image: opts.image ?? "clawd-workspace:base",
+      memory: opts.memory ?? "1g",
+      cpus: opts.cpus ?? "1",
     };
   }
 
@@ -53,8 +60,12 @@ export class WorkspacePool {
       for (let i = 0; i < needed; i++) {
         tasks.push(
           spawnWorkspace(this.spawnOpts)
-            .then((handle) => { this.available.push(handle); })
-            .catch((err) => { console.warn(`[workspace-pool] Pre-warm failed: ${err.message}`); }),
+            .then((handle) => {
+              this.available.push(handle);
+            })
+            .catch((err) => {
+              console.warn(`[workspace-pool] Pre-warm failed: ${err.message}`);
+            }),
         );
       }
       await Promise.allSettled(tasks);
@@ -68,7 +79,7 @@ export class WorkspacePool {
    * Acquire a workspace. Returns a pre-warmed one if available, otherwise cold-starts.
    * After acquiring, refills pool in background.
    */
-  async acquire(opts?: Pick<WorkspaceOptions, 'projectPath' | 'image' | 'vncEnabled'>): Promise<WorkspaceHandle> {
+  async acquire(opts?: Pick<WorkspaceOptions, "projectPath" | "image" | "vncEnabled">): Promise<WorkspaceHandle> {
     // If a specific image is requested different from the pool image, always cold-start
     const wantsCustomImage = opts?.image && opts.image !== this.spawnOpts.image;
 
@@ -77,7 +88,7 @@ export class WorkspacePool {
       // Pop a healthy pre-warmed workspace — verify with live TCP probe
       while (this.available.length > 0) {
         const candidate = this.available.pop()!;
-        const isAlive = await probeTcp('127.0.0.1', candidate.mcpPort, 500).catch(() => false);
+        const isAlive = await probeTcp("127.0.0.1", candidate.mcpPort, 500).catch(() => false);
         if (isAlive) {
           handle = candidate;
           break;
@@ -124,7 +135,7 @@ export class WorkspacePool {
     // Recycling is disabled by default until workspace state reset is implemented.
     // Recycled containers would carry prior session's Chrome profile, cookies, and files.
     const shouldRecycle = opts.recycle ?? false;
-    if (shouldRecycle && this.available.length < this.poolSize && handle.status === 'running') {
+    if (shouldRecycle && this.available.length < this.poolSize && handle.status === "running") {
       this.available.push(handle);
     } else {
       try {
@@ -150,10 +161,7 @@ export class WorkspacePool {
    * Destroy all pool and active workspaces. Call on Claw'd shutdown.
    */
   async shutdown(): Promise<void> {
-    const all = [
-      ...this.available.map((h) => h.id),
-      ...Array.from(this.inUse.keys()),
-    ];
+    const all = [...this.available.map((h) => h.id), ...Array.from(this.inUse.keys())];
     await Promise.allSettled(all.map((id) => destroyWorkspace(id).catch(() => {})));
     this.available = [];
     this.inUse.clear();

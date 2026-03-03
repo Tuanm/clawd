@@ -11,23 +11,23 @@
  * being passed to the container lifecycle manager.
  */
 
-import type { ToolPlugin, ToolRegistration } from '../tools/plugin.js';
-import type { ToolResult } from '../tools/tools.js';
-import type { MCPManager } from '../mcp/client.js';
-import { spawnWorkspace, destroyWorkspace, listActiveWorkspaces } from '../workspace/container.js';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { realpathSync, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
+import type { ToolResult } from "../tools/tools.js";
+import type { MCPManager } from "../mcp/client.js";
+import { spawnWorkspace, destroyWorkspace, listActiveWorkspaces } from "../workspace/container.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { realpathSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
 
 const execFileAsync = promisify(execFile);
 
 /** Permitted Docker images — prevents LLM from pulling arbitrary images */
 const ALLOWED_IMAGES = new Set([
-  'clawd-workspace:base',
-  'clawd-workspace:web3',
-  'clawd-workspace:devtools',
-  'clawd-workspace:office',
+  "clawd-workspace:base",
+  "clawd-workspace:web3",
+  "clawd-workspace:devtools",
+  "clawd-workspace:office",
 ]);
 
 /** Allowed root directories for project_path bind mounts */
@@ -35,13 +35,13 @@ const ALLOWED_PROJECT_ROOTS: string[] = [
   `${homedir()}/projects`,
   `${homedir()}/workspace`,
   `${homedir()}/.clawd/workspaces`,
-  '/tmp/clawd-workspaces',
+  "/tmp/clawd-workspaces",
 ];
 
 /** Check if Docker is available */
 async function isDockerAvailable(): Promise<boolean> {
   try {
-    await execFileAsync('docker', ['info', '--format', '{{.ServerVersion}}']);
+    await execFileAsync("docker", ["info", "--format", "{{.ServerVersion}}"]);
     return true;
   } catch {
     return false;
@@ -52,7 +52,7 @@ async function isDockerAvailable(): Promise<boolean> {
 function validateProjectPath(p: string): string | null {
   try {
     const resolved = realpathSync(p);
-    if (ALLOWED_PROJECT_ROOTS.some(root => resolved.startsWith(root + '/') || resolved === root)) {
+    if (ALLOWED_PROJECT_ROOTS.some((root) => resolved.startsWith(root + "/") || resolved === root)) {
       return resolved;
     }
   } catch {}
@@ -60,7 +60,7 @@ function validateProjectPath(p: string): string | null {
 }
 
 export class WorkspaceToolPlugin implements ToolPlugin {
-  readonly name = 'workspace';
+  readonly name = "workspace";
 
   /** Track workspace IDs owned by this plugin instance (not global) */
   private readonly ownedWorkspaceIds = new Set<string>();
@@ -70,7 +70,7 @@ export class WorkspaceToolPlugin implements ToolPlugin {
   getTools(): ToolRegistration[] {
     return [
       {
-        name: 'spawn_workspace',
+        name: "spawn_workspace",
         description: `Spawn an isolated Docker workspace for full desktop control.
 
 The workspace is a headless Ubuntu container with Chromium, clipboard,
@@ -88,23 +88,23 @@ Args:
 Returns: workspace_id, mcp_url, novnc_url, and available tools list.`,
         parameters: {
           image: {
-            type: 'string',
-            description: 'Docker image (clawd-workspace:base or clawd-workspace:web3)',
+            type: "string",
+            description: "Docker image (clawd-workspace:base or clawd-workspace:web3)",
           },
           project_path: {
-            type: 'string',
-            description: 'Host path to mount at /workspace (must be in ~/projects or ~/.clawd/workspaces)',
+            type: "string",
+            description: "Host path to mount at /workspace (must be in ~/projects or ~/.clawd/workspaces)",
           },
           vnc_enabled: {
-            type: 'boolean',
-            description: 'Enable noVNC for visual inspection (default: false)',
+            type: "boolean",
+            description: "Enable noVNC for visual inspection (default: false)",
           },
         },
         required: [],
         handler: async (args) => this.handleSpawn(args),
       },
       {
-        name: 'destroy_workspace',
+        name: "destroy_workspace",
         description: `Destroy a workspace container and release all resources.
 
 Stops the Docker container, removes the per-workspace data volume,
@@ -116,15 +116,15 @@ Args:
   - workspace_id: The ID returned by spawn_workspace`,
         parameters: {
           workspace_id: {
-            type: 'string',
-            description: 'Workspace ID returned by spawn_workspace',
+            type: "string",
+            description: "Workspace ID returned by spawn_workspace",
           },
         },
-        required: ['workspace_id'],
+        required: ["workspace_id"],
         handler: async (args) => this.handleDestroy(args),
       },
       {
-        name: 'list_workspaces',
+        name: "list_workspaces",
         description: `List workspace containers spawned in this session and their status.
 
 Returns workspace IDs, MCP URLs, images, and status.`,
@@ -142,9 +142,10 @@ Returns workspace IDs, MCP URLs, images, and status.`,
     if (this.ownedWorkspaceIds.size > 0) {
       return {
         success: false,
-        output: '',
-        error: `Only one workspace allowed per agent session. Active workspaces: [${[...this.ownedWorkspaceIds].join(', ')}]. ` +
-               `Destroy the existing workspace first with destroy_workspace.`,
+        output: "",
+        error:
+          `Only one workspace allowed per agent session. Active workspaces: [${[...this.ownedWorkspaceIds].join(", ")}]. ` +
+          `Destroy the existing workspace first with destroy_workspace.`,
       };
     }
 
@@ -152,18 +153,18 @@ Returns workspace IDs, MCP URLs, images, and status.`,
     if (!dockerOk) {
       return {
         success: false,
-        output: '',
-        error: 'Docker is not available on this host. Install Docker and ensure the daemon is running.',
+        output: "",
+        error: "Docker is not available on this host. Install Docker and ensure the daemon is running.",
       };
     }
 
     // Validate image against allowlist
-    const image = (args.image as string) || 'clawd-workspace:base';
+    const image = (args.image as string) || "clawd-workspace:base";
     if (!ALLOWED_IMAGES.has(image)) {
       return {
         success: false,
-        output: '',
-        error: `Image not permitted: "${image}". Allowed images: ${[...ALLOWED_IMAGES].join(', ')}`,
+        output: "",
+        error: `Image not permitted: "${image}". Allowed images: ${[...ALLOWED_IMAGES].join(", ")}`,
       };
     }
 
@@ -174,9 +175,10 @@ Returns workspace IDs, MCP URLs, images, and status.`,
       if (!validated) {
         return {
           success: false,
-          output: '',
-          error: `project_path resolved outside allowed roots: ${ALLOWED_PROJECT_ROOTS.join(', ')}. ` +
-                 `Symlinks are resolved before checking. Got: ${args.project_path}`,
+          output: "",
+          error:
+            `project_path resolved outside allowed roots: ${ALLOWED_PROJECT_ROOTS.join(", ")}. ` +
+            `Symlinks are resolved before checking. Got: ${args.project_path}`,
         };
       }
       projectPath = validated;
@@ -192,7 +194,7 @@ Returns workspace IDs, MCP URLs, images, and status.`,
     } catch (spawnErr: any) {
       return {
         success: false,
-        output: '',
+        output: "",
         error: `Failed to spawn workspace: ${spawnErr.message}`,
       };
     }
@@ -203,7 +205,7 @@ Returns workspace IDs, MCP URLs, images, and status.`,
       await this.mcpManager.addServer({
         name: serverName,
         url: handle.mcpUrl,
-        transport: 'http',
+        transport: "http",
         token: handle.authToken,
       });
     } catch (mcpErr: any) {
@@ -211,7 +213,7 @@ Returns workspace IDs, MCP URLs, images, and status.`,
       await destroyWorkspace(handle.id).catch(() => {});
       return {
         success: false,
-        output: '',
+        output: "",
         error: `Workspace spawned but MCP registration failed: ${mcpErr.message}. Container destroyed. Try again.`,
       };
     }
@@ -220,7 +222,8 @@ Returns workspace IDs, MCP URLs, images, and status.`,
     this.ownedWorkspaceIds.add(handle.id);
 
     // Get the list of registered workspace tools
-    const tools = this.mcpManager.getAllTools()
+    const tools = this.mcpManager
+      .getAllTools()
       .filter((t) => t.server === serverName)
       .map((t) => t.tool.name);
 
@@ -233,7 +236,7 @@ Returns workspace IDs, MCP URLs, images, and status.`,
         novnc_url: `/workspace/${handle.id}/novnc/`,
         image: handle.image,
         workspace_tools: tools,
-        message: `Workspace ready. ${tools.length} tools available: ${tools.join(', ')}`,
+        message: `Workspace ready. ${tools.length} tools available: ${tools.join(", ")}`,
       }),
     };
   }
@@ -245,7 +248,7 @@ Returns workspace IDs, MCP URLs, images, and status.`,
     if (!this.ownedWorkspaceIds.has(workspaceId)) {
       return {
         success: false,
-        output: '',
+        output: "",
         error: `Workspace ${workspaceId} was not created by this session. Cannot destroy.`,
       };
     }
@@ -267,7 +270,7 @@ Returns workspace IDs, MCP URLs, images, and status.`,
     } catch (err: any) {
       return {
         success: false,
-        output: '',
+        output: "",
         error: `Failed to destroy workspace ${workspaceId}: ${err.message}`,
       };
     }
@@ -306,4 +309,3 @@ Returns workspace IDs, MCP URLs, images, and status.`,
     this.ownedWorkspaceIds.clear();
   }
 }
-

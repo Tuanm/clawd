@@ -33,22 +33,17 @@ function isValidWorkspaceId(id: string): boolean {
  * Proxy a normal HTTP request to the workspace's noVNC server via the gateway.
  * Called for all /workspace/:id/novnc/* paths.
  */
-export async function handleWorkspaceProxy(
-  req: Request,
-  url: URL,
-  workspaceId: string,
-): Promise<Response> {
+export async function handleWorkspaceProxy(req: Request, url: URL, workspaceId: string): Promise<Response> {
   if (!isValidWorkspaceId(workspaceId)) {
     return new Response(JSON.stringify({ error: "invalid_workspace_id" }), {
-      status: 400, headers: { "Content-Type": "application/json" },
+      status: 400,
+      headers: { "Content-Type": "application/json" },
     });
   }
 
   // Strip the /workspace/:id/novnc prefix to get the noVNC-relative path
   const prefix = `/workspace/${workspaceId}/novnc`;
-  const novncPath = url.pathname.startsWith(prefix)
-    ? url.pathname.slice(prefix.length) || "/"
-    : "/";
+  const novncPath = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) || "/" : "/";
 
   // Forward to gateway: /{workspaceId}/{novncPath}
   const targetUrl = `http://127.0.0.1:${GATEWAY_PROXY_PORT}/${workspaceId}${novncPath}${url.search}`;
@@ -74,10 +69,10 @@ export async function handleWorkspaceProxy(
       headers: responseHeaders,
     });
   } catch (err: any) {
-    return new Response(
-      JSON.stringify({ error: "proxy_error", message: err.message }),
-      { status: 502, headers: { "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ error: "proxy_error", message: err.message }), {
+      status: 502,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }
 
@@ -100,20 +95,12 @@ export async function upgradeWorkspaceWs(
 ): Promise<Response | undefined> {
   if (!isValidWorkspaceId(workspaceId)) {
     return new Response(JSON.stringify({ error: "invalid_workspace_id" }), {
-      status: 400, headers: { "Content-Type": "application/json" },
+      status: 400,
+      headers: { "Content-Type": "application/json" },
     });
   }
 
-  // Quick existence check via in-memory registry
-  try {
-    const { getWorkspace } = await import("../../agent/src/workspace/container.js");
-    const ws = getWorkspace(workspaceId);
-    if (!ws) {
-      return new Response(JSON.stringify({ error: "workspace_not_found" }), {
-        status: 404, headers: { "Content-Type": "application/json" },
-      });
-    }
-  } catch { /* module not available — allow through */ }
+  // Workspace existence is validated by the gateway (502 for dead containers)
 
   const connId = crypto.randomUUID();
   const data: WorkspaceWsData = {
@@ -134,10 +121,7 @@ export function handleWorkspaceWsOpen(ws: ServerWebSocket<WorkspaceWsData>): voi
 
   // Connect to the gateway which relays to the workspace's noVNC websockify
   // Gateway resolves clawd-ws-{workspaceId}:6080 via Docker network DNS
-  const backend = new WebSocket(
-    `ws://127.0.0.1:${GATEWAY_PROXY_PORT}/${workspaceId}/websockify`,
-    ["binary", "base64"],
-  );
+  const backend = new WebSocket(`ws://127.0.0.1:${GATEWAY_PROXY_PORT}/${workspaceId}/websockify`, ["binary", "base64"]);
   backend.binaryType = "arraybuffer";
 
   // Timeout if gateway/container never connects (e.g., container crashed)
@@ -146,7 +130,11 @@ export function handleWorkspaceWsOpen(ws: ServerWebSocket<WorkspaceWsData>): voi
       wsProxyPendingQueues.delete(connId);
       wsProxyBackends.delete(connId);
       backend.close();
-      try { ws.close(1011, "backend connection timeout"); } catch { /* already closed */ }
+      try {
+        ws.close(1011, "backend connection timeout");
+      } catch {
+        /* already closed */
+      }
     }
   }, 10_000);
 
@@ -158,6 +146,17 @@ export function handleWorkspaceWsOpen(ws: ServerWebSocket<WorkspaceWsData>): voi
     for (const msg of queued) backend.send(msg);
   };
 
+  // Keep connection alive through Cloudflare's 100s idle timeout
+  const keepalive = setInterval(() => {
+    if (ws.readyState === 1 /* OPEN */) {
+      try {
+        ws.ping();
+      } catch {}
+    } else {
+      clearInterval(keepalive);
+    }
+  }, 30_000);
+
   backend.onmessage = (evt) => {
     if (evt.data instanceof ArrayBuffer) {
       ws.send(evt.data, true); // binary
@@ -167,10 +166,15 @@ export function handleWorkspaceWsOpen(ws: ServerWebSocket<WorkspaceWsData>): voi
   };
 
   backend.onclose = () => {
+    clearInterval(keepalive);
     clearTimeout(connectTimeout);
     wsProxyPendingQueues.delete(connId);
     wsProxyBackends.delete(connId);
-    try { ws.close(); } catch { /* already closed */ }
+    try {
+      ws.close();
+    } catch {
+      /* already closed */
+    }
   };
 
   backend.onerror = (evt) => {
@@ -178,29 +182,35 @@ export function handleWorkspaceWsOpen(ws: ServerWebSocket<WorkspaceWsData>): voi
     clearTimeout(connectTimeout);
     wsProxyPendingQueues.delete(connId);
     wsProxyBackends.delete(connId);
-    try { ws.close(); } catch { /* already closed */ }
+    try {
+      ws.close();
+    } catch {
+      /* already closed */
+    }
   };
 
   wsProxyBackends.set(connId, backend);
 }
 
-export function handleWorkspaceWsMessage(
-  ws: ServerWebSocket<WorkspaceWsData>,
-  message: string | Buffer,
-): void {
+export function handleWorkspaceWsMessage(ws: ServerWebSocket<WorkspaceWsData>, message: string | Buffer): void {
   // If backend is still CONNECTING, buffer the message
   const pending = wsProxyPendingQueues.get(ws.data.connId);
   if (pending !== undefined) {
-    const payload = typeof message === "string"
-      ? message
-      : message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength) as ArrayBuffer;
+    const payload =
+      typeof message === "string"
+        ? message
+        : (message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength) as ArrayBuffer);
     pending.push(payload);
     return;
   }
 
   const backend = wsProxyBackends.get(ws.data.connId);
   if (!backend || backend.readyState !== WebSocket.OPEN) {
-    try { ws.close(); } catch { /* already closed */ }
+    try {
+      ws.close();
+    } catch {
+      /* already closed */
+    }
     return;
   }
   if (typeof message === "string") {
@@ -217,7 +227,11 @@ export function handleWorkspaceWsClose(ws: ServerWebSocket<WorkspaceWsData>): vo
   const backend = wsProxyBackends.get(connId);
   if (backend) {
     wsProxyBackends.delete(connId);
-    try { backend.close(); } catch { /* already closed */ }
+    try {
+      backend.close();
+    } catch {
+      /* already closed */
+    }
   }
 }
 
@@ -225,8 +239,14 @@ export function handleWorkspaceWsClose(ws: ServerWebSocket<WorkspaceWsData>): vo
 
 /** HTTP hop-by-hop headers that must not be forwarded */
 const HOP_BY_HOP = new Set([
-  "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-  "te", "trailers", "transfer-encoding", "upgrade",
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailers",
+  "transfer-encoding",
+  "upgrade",
 ]);
 
 function filterProxyHeaders(headers: Headers): Record<string, string> {
