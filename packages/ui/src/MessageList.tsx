@@ -407,9 +407,13 @@ function parseMessageBlocks(text: string): MessageBlock[] {
   const blocks: MessageBlock[] = [];
   let pos = 0;
 
-  // Only trim for emptiness check — preserve content (leading/trailing blank lines matter in Markdown)
+  // Strip unsafe tags from every text segment before passing to rehypeRaw.
+  // Covers both the textBefore slices and the final tail when candidates.length === 0.
   const pushText = (str: string) => {
-    if (str.trim()) blocks.push({ type: "text", content: str });
+    const cleaned = str
+      .replace(/<iframe\b[\s\S]*?(?:<\/iframe>|\/>)/gi, "")
+      .replace(/<script\b[\s\S]*?<\/script>/gi, "");
+    if (cleaned.trim()) blocks.push({ type: "text", content: cleaned });
   };
 
   while (pos < text.length) {
@@ -487,11 +491,7 @@ function parseMessageBlocks(text: string): MessageBlock[] {
       return 0;
     });
     const earliest = candidates[0];
-    // Strip unsafe iframe/script tags from text segments before passing to rehypeRaw
-    const textBefore = slice
-      .slice(0, earliest.index)
-      .replace(/<iframe\b[\s\S]*?(?:<\/iframe>|\/>)/gi, "")
-      .replace(/<script\b[\s\S]*?<\/script>/gi, "");
+    const textBefore = slice.slice(0, earliest.index);
     pushText(textBefore);
     blocks.push(earliest.block);
     pos += earliest.end;
@@ -1838,21 +1838,32 @@ export default function MessageList({
                   </details>
                 )}
                 {(() => {
-                  const isLong = msg.text.length > MESSAGE_COLLAPSE_THRESHOLD;
                   const isExpanded = expandedMessages.has(msg.ts);
-                  const rawText =
-                    isLong && !isExpanded ? `${msg.text.slice(0, MESSAGE_COLLAPSE_THRESHOLD)}...` : msg.text;
                   const isArticleMessage = msg.subtype === "article";
                   const isSubspaceMessage = !!msg.subspace;
-                  // Decode HTML entities BEFORE block extraction so encoded tags (<iframe>) get extracted
-                  const decodedText = processMessageText(rawText);
+                  // Always parse blocks from FULL text — slicing before parsing breaks fenced blocks
+                  // whose closing ``` falls outside the slice window.
+                  const decodedText = processMessageText(msg.text);
                   const blocks = parseMessageBlocks(decodedText);
+                  // For multi-block messages: no collapsing needed — each block is already compact.
+                  // For single long-text messages: truncate the text content when collapsed.
+                  const singleTextBlock = blocks.length === 1 && blocks[0].type === "text";
+                  // Use decoded content length (not raw msg.text) to match the actual truncation boundary.
+                  // blocks[0].type === "text" repeats singleTextBlock for TypeScript union narrowing.
+                  const isLong =
+                    singleTextBlock &&
+                    blocks[0].type === "text" &&
+                    blocks[0].content.length > MESSAGE_COLLAPSE_THRESHOLD;
+                  const visibleBlocks: MessageBlock[] =
+                    isLong && !isExpanded && blocks[0].type === "text"
+                      ? [{ type: "text", content: `${blocks[0].content.slice(0, MESSAGE_COLLAPSE_THRESHOLD)}...` }]
+                      : blocks;
 
                   return (
                     <>
                       {isArticleMessage || isSubspaceMessage ? null : (
-                        <div className={`message-content ${isLong && !isExpanded ? "collapsed" : ""}`}>
-                          {blocks.map((block, i) => {
+                        <div className="message-content">
+                          {visibleBlocks.map((block, i) => {
                             switch (block.type) {
                               case "text":
                                 return (
@@ -1905,7 +1916,7 @@ export default function MessageList({
                           })}
                         </div>
                       )}
-                      {isLong && !isArticleMessage && (
+                      {isLong && !isArticleMessage && !isSubspaceMessage && (
                         <span className="message-expand-toggle" onClick={() => toggleExpanded(msg.ts)}>
                           {isExpanded ? "Less" : "More"}
                         </span>
