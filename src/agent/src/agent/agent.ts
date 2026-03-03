@@ -29,6 +29,7 @@ import { getThresholds, MODEL_TOKEN_LIMITS as CENTRALIZED_MODEL_LIMITS } from ".
 import { createStatePersistencePlugin } from "../plugins/state-persistence-plugin";
 import { createContextModePlugin, type ContextModePluginResult } from "../plugins/context-mode-plugin";
 import { WorkspaceToolPlugin } from "../plugins/workspace-plugin";
+import { TunnelPlugin } from "../plugins/tunnel-plugin";
 import { ContextTracker } from "../utils/context-tracker";
 import { homedir } from "node:os";
 
@@ -250,6 +251,7 @@ export class Agent {
   private contextTracker: ContextTracker | null = null;
   private compacting = false;
   private _workspacePluginRegistered = false;
+  private _tunnelPluginRegistered = false;
 
   constructor(tokenOrProvider: string | LLMProvider, config: AgentConfig) {
     // Accept either token (legacy) or provider instance
@@ -1200,6 +1202,19 @@ SUMMARY:`;
       } catch (err: any) {
         if (this.config.verbose) {
           console.log(`[Agent] Workspace plugin registration failed:`, err?.message || err);
+        }
+      }
+    }
+
+    // Register tunnel plugin (tunnel_create, tunnel_destroy, tunnel_list)
+    // Uses cloudflared Quick Tunnels — gracefully skips if cloudflared is unavailable.
+    if (!this._tunnelPluginRegistered) {
+      try {
+        this.toolPluginManager.register(new TunnelPlugin());
+        this._tunnelPluginRegistered = true;
+      } catch (err: any) {
+        if (this.config.verbose) {
+          console.log(`[Agent] Tunnel plugin registration failed:`, err?.message || err);
         }
       }
     }
