@@ -445,16 +445,24 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 {providers.length > 0
                   ? providers.map((p) => (
                       <option key={p.name} value={p.name}>
-                        {p.name}{p.is_custom ? ` (${p.type})` : ""}
+                        {p.name}
+                        {p.is_custom ? ` (${p.type})` : ""}
                       </option>
                     ))
                   : [
-                      <option key="copilot" value="copilot">copilot</option>,
-                      <option key="openai" value="openai">openai</option>,
-                      <option key="anthropic" value="anthropic">anthropic</option>,
-                      <option key="ollama" value="ollama">ollama</option>,
-                    ]
-                }
+                      <option key="copilot" value="copilot">
+                        copilot
+                      </option>,
+                      <option key="openai" value="openai">
+                        openai
+                      </option>,
+                      <option key="anthropic" value="anthropic">
+                        anthropic
+                      </option>,
+                      <option key="ollama" value="ollama">
+                        ollama
+                      </option>,
+                    ]}
               </select>
               <input
                 type="text"

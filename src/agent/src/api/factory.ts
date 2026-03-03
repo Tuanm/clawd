@@ -119,7 +119,7 @@ function createOpenAIProvider(modelOverride?: string, customProviderName?: strin
     baseUrl,
     apiKey: apiKey || "",
     model,
-    providerType: "openai",
+    providerType: name, // use actual provider name for per-request key rotation
   });
 }
 
@@ -137,7 +137,7 @@ function createAnthropicProvider(modelOverride?: string, customProviderName?: st
     baseUrl,
     apiKey: apiKey || "",
     model,
-    providerType: "anthropic",
+    providerType: name, // use actual provider name for per-request key rotation
   });
 }
 
@@ -162,7 +162,7 @@ function createOllamaProvider(modelOverride?: string, customProviderName?: strin
   const apiKey = getApiKeyForProvider(name);
   const model = modelOverride || getModelForProvider(name);
 
-  return new OllamaProvider({ baseUrl, apiKey: apiKey || "", model, providerType: "ollama" });
+  return new OllamaProvider({ baseUrl, apiKey: apiKey || "", model, providerType: name });
 }
 
 /**
@@ -179,7 +179,7 @@ function createCpaProvider(modelOverride?: string, customProviderName?: string):
     baseUrl,
     apiKey: apiKey || "",
     model,
-    providerType: "cpa",
+    providerType: name, // use actual provider name for per-request key rotation
   });
 }
 
@@ -191,14 +191,14 @@ interface OpenAIProviderOptions {
   baseUrl: string;
   apiKey: string;
   model: string;
-  providerType?: ProviderType;
+  providerType?: string;
 }
 
 class OpenAIProvider implements LLMProvider {
   readonly model: string;
   private baseUrl: string;
   private apiKey: string;
-  private providerType?: ProviderType;
+  private providerType?: string;
 
   constructor(options: OpenAIProviderOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -369,7 +369,7 @@ class AnthropicProvider implements LLMProvider {
   readonly model: string;
   protected baseUrl: string;
   protected apiKey: string;
-  protected providerType?: ProviderType;
+  protected providerType?: string;
 
   constructor(options: OpenAIProviderOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -707,7 +707,7 @@ class OllamaProvider implements LLMProvider {
   readonly model: string;
   private baseUrl: string;
   private apiKey: string;
-  private providerType?: ProviderType;
+  private providerType?: string;
 
   constructor(options: OpenAIProviderOptions) {
     // Use /api/chat endpoint, not /v1/messages
