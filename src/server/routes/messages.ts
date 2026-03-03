@@ -70,6 +70,18 @@ export function postMessage(req: PostMessageRequest) {
     }
   }
 
+  // "clear" command: only for human messages in clearable channels
+  const trimmedText = req.text?.trim() ?? "";
+  if (
+    CLEARABLE_CHANNELS.has(req.channel) &&
+    !req.agent_id &&
+    (req.user === "UHUMAN" || !req.user) &&
+    (trimmedText === "clear" || trimmedText === "/clear")
+  ) {
+    const result = clearChannelHistory(req.channel);
+    return { ok: result.ok, cleared: true, error: result.error };
+  }
+
   // Auto-create channel if it doesn't exist (ensures FK consistency)
   if (!req.channel.includes(":space:")) {
     db.run(`INSERT OR IGNORE INTO channels (id, name, created_by) VALUES (?, ?, ?)`, [
@@ -479,6 +491,21 @@ export function getConversationNewer(channel: string, newestTs: string, limit = 
     messages: result,
     has_more_newer: hasMoreNewer,
   };
+}
+
+// Clear all messages in a channel and reset agent history pointers.
+// Only allowed for channels in CLEARABLE_CHANNELS.
+export const CLEARABLE_CHANNELS = new Set(["demo"]);
+
+export function clearChannelHistory(channel: string): { ok: boolean; error?: string } {
+  if (!CLEARABLE_CHANNELS.has(channel)) {
+    return { ok: false, error: "channel_not_clearable" };
+  }
+  // Delete all messages (including threads) for this channel
+  db.run(`DELETE FROM messages WHERE channel = ?`, [channel]);
+  // Reset agent seen/processed pointers so agents start fresh
+  db.run(`DELETE FROM agent_seen WHERE channel = ?`, [channel]);
+  return { ok: true };
 }
 
 // POST /api/chat.delete - Delete a message

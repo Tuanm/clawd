@@ -162,6 +162,7 @@ import {
   broadcastAgentStreaming,
   broadcastAgentToken,
   broadcastAgentToolCall,
+  broadcastChannelCleared,
   broadcastMessage,
   broadcastMessageSeen,
   broadcastReaction,
@@ -617,6 +618,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         subspace_json: body.subspace_json,
         workspace_json: body.workspace_json,
       });
+      if ((result as any).cleared) {
+        broadcastChannelCleared(body.channel || "general");
+        return json(result);
+      }
       if (result.ok && body.files && Array.isArray(body.files) && body.files.length > 0) {
         attachFilesToMessage(
           result.ts,

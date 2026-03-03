@@ -1424,6 +1424,14 @@ export default function App({ channel: initialChannel }: Props) {
         } else if (data.type === "agent_processed") {
           // Agent processed a message - could update last activity indicator
           console.log(`[WS] Agent processed: ${data.agent_id}, ts=${data.last_processed_ts}`);
+        } else if (data.type === "channel_cleared") {
+          setChannelStates((prev) => {
+            const current = prev.get(msgChannel);
+            if (!current) return prev;
+            const newMap = new Map(prev);
+            newMap.set(msgChannel, { ...current, messages: [], pendingMessages: [] });
+            return newMap;
+          });
         }
       } catch {
         // Ignore parse errors

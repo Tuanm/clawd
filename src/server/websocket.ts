@@ -172,6 +172,16 @@ export function getClientCount() {
   return clients.size;
 }
 
+// Broadcast that a channel's history was cleared
+export function broadcastChannelCleared(channel: string) {
+  const payload = JSON.stringify({ type: "channel_cleared", channel });
+  for (const client of clients) {
+    if (isSubscribed(client, channel)) {
+      client.send(payload);
+    }
+  }
+}
+
 // Broadcast that an agent has seen a message
 export function broadcastMessageSeen(channel: string, messageTs: string, agentId: string) {
   const agent = getAgent(agentId, channel);
