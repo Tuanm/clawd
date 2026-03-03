@@ -11,6 +11,7 @@
  *   POST /api/app.agents.update               - Update agent config (model, active)
  *   GET  /api/app.agents.status               - Get worker loop status for all agents
  *   GET  /api/app.models.list                 - List available AI models
+ *   GET  /api/app.providers.list              - List configured providers (built-in + custom)
  *   GET  /api/app.folders.list                - List directories (for folder picker)
  *
  * Project File Browser (read-only):
@@ -31,6 +32,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, join, relative, isAbsolute, basename, dirname } from "node:path";
 import { homedir } from "node:os";
+import { listConfiguredProviders, BUILTIN_PROVIDERS } from "../agent/src/api/provider-config";
 
 // ============================================================================
 // Security: Sensitive file patterns (blocked from reading)
@@ -407,14 +409,15 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "channel and agent_id required" }, 400);
         }
 
-        // Validate provider (must be copilot, openai, anthropic, ollama, or cpa)
-        const validProviders = ["copilot", "openai", "anthropic", "ollama", "cpa"];
+        // Validate provider: accept built-in names and any configured custom providers
+        const configuredNames = listConfiguredProviders().map((p) => p.name);
+        const allowedProviders = [...(BUILTIN_PROVIDERS as readonly string[]), ...configuredNames];
         const agentProvider = (provider || "copilot").toLowerCase();
-        if (!validProviders.includes(agentProvider)) {
+        if (!allowedProviders.includes(agentProvider)) {
           return json(
             {
               ok: false,
-              error: `Invalid provider: ${provider}. Must be one of: copilot, openai, anthropic, ollama, cpa`,
+              error: `Invalid provider: ${provider}. Must be one of: ${allowedProviders.join(", ")}`,
             },
             400,
           );
@@ -504,13 +507,14 @@ export function registerAgentRoutes(
         const params: any[] = [];
 
         if (provider !== undefined) {
-          const validProviders = ["copilot", "openai", "anthropic", "ollama", "cpa"];
+          const configuredNames = listConfiguredProviders().map((p) => p.name);
+          const allowedProviders = [...(BUILTIN_PROVIDERS as readonly string[]), ...configuredNames];
           const agentProvider = String(provider).toLowerCase();
-          if (!validProviders.includes(agentProvider)) {
+          if (!allowedProviders.includes(agentProvider)) {
             return json(
               {
                 ok: false,
-                error: `Invalid provider: ${provider}. Must be one of: copilot, openai, anthropic, ollama, cpa`,
+                error: `Invalid provider: ${provider}. Must be one of: ${allowedProviders.join(", ")}`,
               },
               400,
             );
@@ -595,6 +599,11 @@ export function registerAgentRoutes(
     // List available models
     if (path === "/api/app.models.list") {
       return json({ ok: true, models: AVAILABLE_MODELS });
+    }
+
+    // List configured providers (built-in + custom)
+    if (path === "/api/app.providers.list") {
+      return json({ ok: true, providers: listConfiguredProviders() });
     }
 
     // List directories (for folder picker)

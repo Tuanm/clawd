@@ -16,6 +16,12 @@ interface Agent {
   avatar_color: string | null;
 }
 
+interface ProviderOption {
+  name: string;
+  type: string;
+  is_custom: boolean;
+}
+
 interface Props {
   channel: string;
   isOpen: boolean;
@@ -94,6 +100,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const [newProject, setNewProject] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // Providers list state
+  const [providers, setProviders] = useState<ProviderOption[]>([]);
+
   // Folder browser state
   const [showFolderBrowser, setShowFolderBrowser] = useState(false);
   const [folderPath, setFolderPath] = useState("");
@@ -110,6 +119,35 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     return () => clearInterval(interval);
   }, [isOpen, channel]);
 
+  // Load providers when dialog opens
+  useEffect(() => {
+    if (!isOpen) return;
+    const controller = new AbortController();
+    fetch(`${API_URL}/api/app.providers.list`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok && Array.isArray(data.providers) && data.providers.length > 0) {
+          setProviders(data.providers);
+          setNewProvider((prev) => {
+            const names = data.providers.map((p: ProviderOption) => p.name);
+            return names.includes(prev) ? prev : (data.providers[0].name as string);
+          });
+        }
+      })
+      .catch((err) => {
+        if (err.name === "AbortError") return;
+        // fallback: all built-in providers
+        setProviders([
+          { name: "copilot", type: "copilot", is_custom: false },
+          { name: "openai", type: "openai", is_custom: false },
+          { name: "anthropic", type: "anthropic", is_custom: false },
+          { name: "ollama", type: "ollama", is_custom: false },
+          { name: "cpa", type: "cpa", is_custom: false },
+        ]);
+      });
+    return () => controller.abort();
+  }, [isOpen]);
+
   // Reset state when dialog closes
   useEffect(() => {
     if (!isOpen) {
@@ -117,7 +155,12 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setShowAddForm(false);
       setError(null);
       setNewName("");
-      setNewProvider("copilot");
+      setNewProvider(() => {
+        // Reset to "copilot" if available, else first in list
+        if (providers.length === 0) return "copilot";
+        const names = providers.map((p) => p.name);
+        return names.includes("copilot") ? "copilot" : (providers[0].name ?? "copilot");
+      });
       setNewModel("default");
       setNewProject("");
       setShowFolderBrowser(false);
@@ -169,7 +212,11 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       const data = await res.json();
       if (data.ok) {
         setNewName("");
-        setNewProvider("copilot");
+        setNewProvider(() => {
+          if (providers.length === 0) return "copilot";
+          const names = providers.map((p) => p.name);
+          return names.includes("copilot") ? "copilot" : (providers[0].name ?? "copilot");
+        });
         setNewModel("default");
         setNewProject(`/tmp/clawd/spaces/${channel}`);
         setShowAddForm(false);
@@ -334,7 +381,11 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 type="text"
                 className="agent-field-input"
                 placeholder="Provider"
-                value={selectedAgent.provider || "copilot"}
+                value={(() => {
+                  const name = selectedAgent.provider || "copilot";
+                  const found = providers.find((p) => p.name === name);
+                  return found?.is_custom ? `${name} (${found.type})` : name;
+                })()}
                 readOnly
               />
               <input
@@ -386,16 +437,25 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   }
                 }}
               />
-              <input
-                type="text"
+              <select
                 className="agent-field-input"
-                placeholder="Provider (copilot/openai/anthropic/ollama/cpa)"
                 value={newProvider}
                 onChange={(e) => setNewProvider(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAddAgent();
-                }}
-              />
+              >
+                {providers.length > 0
+                  ? providers.map((p) => (
+                      <option key={p.name} value={p.name}>
+                        {p.name}{p.is_custom ? ` (${p.type})` : ""}
+                      </option>
+                    ))
+                  : [
+                      <option key="copilot" value="copilot">copilot</option>,
+                      <option key="openai" value="openai">openai</option>,
+                      <option key="anthropic" value="anthropic">anthropic</option>,
+                      <option key="ollama" value="ollama">ollama</option>,
+                    ]
+                }
+              </select>
               <input
                 type="text"
                 className="agent-field-input"

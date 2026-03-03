@@ -18,6 +18,8 @@ import type {
   ProviderType,
   MCPServerConfig,
 } from "./providers";
+import { BUILTIN_PROVIDERS } from "./providers";
+export { BUILTIN_PROVIDERS };
 
 // ============================================================================
 // Config Caching
@@ -93,24 +95,27 @@ function getDefaultConfig(): Config {
  */
 export function getSelectedProvider(): ProviderType {
   const config = loadConfig();
+  const providers = config.providers || {};
 
-  // Check if any provider is configured (order matters - first match wins)
-  if (config.providers?.ollama?.base_url) {
+  // Check if any built-in provider is configured (order matters - first match wins)
+  const ollama = providers.ollama as OllamaProviderConfig | undefined;
+  if (ollama?.base_url) {
     return "ollama";
   }
-  if (
-    config.providers?.copilot?.enabled !== false &&
-    (config.providers?.copilot?.api_key || config.providers?.copilot?.token)
-  ) {
+  const copilot = providers.copilot as CopilotProviderConfig | undefined;
+  if (copilot?.enabled !== false && (copilot?.api_key || copilot?.token)) {
     return "copilot";
   }
-  if (config.providers?.openai?.api_key) {
+  const openai = providers.openai as ProviderConfig | undefined;
+  if (openai?.api_key) {
     return "openai";
   }
-  if (config.providers?.anthropic?.api_key) {
+  const anthropic = providers.anthropic as ProviderConfig | undefined;
+  if (anthropic?.api_key) {
     return "anthropic";
   }
-  if (config.providers?.cpa?.api_key || config.providers?.cpa?.base_url) {
+  const cpa = providers.cpa as ProviderConfig | undefined;
+  if (cpa?.api_key || cpa?.base_url) {
     return "cpa";
   }
 
@@ -122,7 +127,7 @@ export function getSelectedProvider(): ProviderType {
  * Get provider configuration for a specific provider type
  */
 export function getProviderConfig(
-  providerType: ProviderType,
+  providerType: string,
 ): ProviderConfig | CopilotProviderConfig | OllamaProviderConfig | undefined {
   const config = loadConfig();
   const provider = config.providers?.[providerType];
@@ -136,22 +141,68 @@ export function getProviderConfig(
 }
 
 /**
+ * Resolve the base built-in ProviderType for a provider name.
+ * For built-in providers (openai, anthropic, etc.) returns the name itself.
+ * For custom providers, reads the `type` field from their config entry.
+ * Returns undefined if the provider is not found or has no resolvable type.
+ */
+export function resolveProviderBaseType(providerName: string): ProviderType | undefined {
+  if ((BUILTIN_PROVIDERS as readonly string[]).includes(providerName)) {
+    return providerName as ProviderType;
+  }
+  const config = loadConfig();
+  const entry = config.providers?.[providerName] as ProviderConfig | undefined;
+  if (entry?.type && (BUILTIN_PROVIDERS as readonly string[]).includes(entry.type)) {
+    return entry.type as ProviderType;
+  }
+  return undefined;
+}
+
+/**
+ * List all available providers: all built-in provider names (always included)
+ * plus any custom providers defined in config.json with a `type` field.
+ */
+export function listConfiguredProviders(): Array<{
+  name: string;
+  type: ProviderType;
+  is_custom: boolean;
+}> {
+  const config = loadConfig();
+  const result: Array<{ name: string; type: ProviderType; is_custom: boolean }> = [];
+
+  // Always include all built-in providers as baseline
+  for (const name of BUILTIN_PROVIDERS) {
+    result.push({ name, type: name, is_custom: false });
+  }
+
+  // Add custom providers (entries with a `type` field that's a built-in)
+  for (const [name, entry] of Object.entries(config.providers || {})) {
+    if ((BUILTIN_PROVIDERS as readonly string[]).includes(name)) continue; // skip built-ins (already added)
+    const baseType = (entry as ProviderConfig)?.type as ProviderType | undefined;
+    if (!baseType || !(BUILTIN_PROVIDERS as readonly string[]).includes(baseType)) continue;
+    result.push({ name, type: baseType, is_custom: true });
+  }
+
+  return result;
+}
+
+/**
  * Map short model names to full model names using config
  * Reads aliases from ~/.clawd/config.json under each provider's models config
  *
- * When providerType is specified, only that provider's aliases are checked.
+ * When providerName is specified, only that provider's aliases are checked.
  * This prevents cross-provider alias collisions (e.g., "opus" mapping to
  * different models under anthropic vs copilot).
  *
- * When providerType is omitted, all providers are searched (legacy behavior).
+ * When providerName is omitted, all providers are searched (legacy behavior).
  */
-export function mapModelName(model: string, providerType?: ProviderType): string {
+export function mapModelName(model: string, providerName?: string): string {
   const lower = model.toLowerCase().trim();
   const config = loadConfig();
 
-  if (providerType) {
+  if (providerName) {
     // Check only the specified provider's aliases
-    const provider = (config.providers as any)?.[providerType];
+    const provider = config.providers?.[providerName];
     if (provider?.models) {
       for (const [alias, modelName] of Object.entries(provider.models)) {
         if (alias.toLowerCase() === lower && modelName) {
@@ -177,21 +228,26 @@ export function mapModelName(model: string, providerType?: ProviderType): string
 }
 
 /**
- * Get the model to use for a provider
- * Reads from ~/.clawd/config.json only
+ * Get the model to use for a provider (built-in or custom).
  */
-export function getModelForProvider(providerType: ProviderType): string {
-  const providerConfig = getProviderConfig(providerType);
+export function getModelForProvider(providerName: string): string {
+  const providerConfig = getProviderConfig(providerName);
   if (providerConfig && providerConfig.models?.default) {
     const configModel = providerConfig.models.default;
-    const resolved = mapModelName(configModel, providerType);
+    const resolved = mapModelName(configModel, providerName);
     if (configModel !== resolved) {
-      console.log(`[Provider] Model mapping: "${configModel}" → "${resolved}" (${providerType})`);
+      console.log(`[Provider] Model mapping: "${configModel}" → "${resolved}" (${providerName})`);
     }
     return resolved;
   }
 
-  // Default models
+  // For custom providers with no default model, fall back to base type's default
+  const baseType = resolveProviderBaseType(providerName);
+  if (baseType && baseType !== (providerName as ProviderType)) {
+    return getModelForProvider(baseType);
+  }
+
+  // Default models for built-in types
   const defaultModels: Record<ProviderType, string> = {
     anthropic: "claude-sonnet-4-6",
     openai: "gpt-4o",
@@ -200,14 +256,14 @@ export function getModelForProvider(providerType: ProviderType): string {
     cpa: "claude-sonnet-4-6",
   };
 
-  return defaultModels[providerType];
+  return defaultModels[providerName as ProviderType] ?? "default";
 }
 
 /**
- * Get the base URL for a provider
+ * Get the base URL for a provider (built-in or custom).
  */
-export function getBaseUrlForProvider(providerType: ProviderType): string | undefined {
-  const providerConfig = getProviderConfig(providerType);
+export function getBaseUrlForProvider(providerName: string): string | undefined {
+  const providerConfig = getProviderConfig(providerName);
   return providerConfig?.base_url;
 }
 
@@ -218,18 +274,19 @@ export function getBaseUrlForProvider(providerType: ProviderType): string | unde
 import { keyPool } from "./key-pool";
 
 /** Round-robin counter per provider (non-Copilot providers only) */
-const keyRotationCounters: Partial<Record<ProviderType, number>> = {};
+const keyRotationCounters: Record<string, number> = {};
 
 /**
  * Get the effective API key for a provider, supporting key rotation.
  * For Copilot, delegates to KeyPool. For other providers, uses round-robin.
+ * Accepts both built-in provider names and custom provider names.
  */
-export function getApiKeyForProvider(providerType: ProviderType): string | undefined {
-  if (providerType === "copilot") {
+export function getApiKeyForProvider(providerName: string): string | undefined {
+  if (providerName === "copilot") {
     return getCopilotToken() ?? undefined;
   }
 
-  const providerConfig = getProviderConfig(providerType);
+  const providerConfig = getProviderConfig(providerName);
   if (!providerConfig) return undefined;
 
   // api_key takes precedence over api_keys
@@ -239,9 +296,9 @@ export function getApiKeyForProvider(providerType: ProviderType): string | undef
 
   const keys = (providerConfig as any).api_keys as string[] | undefined;
   if (keys && keys.length > 0) {
-    const counter = keyRotationCounters[providerType] ?? 0;
+    const counter = keyRotationCounters[providerName] ?? 0;
     const key = keys[counter % keys.length];
-    keyRotationCounters[providerType] = (counter + 1) % keys.length;
+    keyRotationCounters[providerName] = (counter + 1) % keys.length;
     return key;
   }
 
@@ -254,7 +311,7 @@ export function getApiKeyForProvider(providerType: ProviderType): string | undef
  */
 function getCopilotTokensFromConfig(): string[] {
   const config = loadConfig();
-  const copilot = config.providers?.copilot;
+  const copilot = config.providers?.copilot as (CopilotProviderConfig & { token?: string }) | undefined;
   if (!copilot) return [];
 
   const tokens: string[] = [];
@@ -288,7 +345,8 @@ export function getCopilotToken(): string | null {
   if (token) return token;
   // Fallback: legacy single token from config
   const config = loadConfig();
-  return config.providers?.copilot?.token || null;
+  const copilot = config.providers?.copilot as CopilotProviderConfig | undefined;
+  return copilot?.token || null;
 }
 
 /**
