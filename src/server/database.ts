@@ -405,6 +405,28 @@ export function initDatabase() {
     /* Column already exists */
   }
 
+  // Migration: Add latency_ms and token columns to copilot_calls (added after initial table creation)
+  for (const col of [
+    "latency_ms INTEGER",
+    "prompt_tokens INTEGER",
+    "completion_tokens INTEGER",
+    "agent_id TEXT",
+    "channel TEXT",
+    "error_msg TEXT",
+  ]) {
+    try {
+      db.exec(`ALTER TABLE copilot_calls ADD COLUMN ${col}`);
+    } catch {
+      /* Column already exists */
+    }
+  }
+  // premium_cost defaults to 0 but older rows may lack it
+  try {
+    db.exec(`ALTER TABLE copilot_calls ADD COLUMN premium_cost REAL NOT NULL DEFAULT 0`);
+  } catch {
+    /* Column already exists */
+  }
+
   // Create message_seen table if not exists (for older DBs)
   try {
     db.exec(`

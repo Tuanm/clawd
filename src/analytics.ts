@@ -245,7 +245,8 @@ export function querySummary(opts: CallsQueryOptions & { granularity?: "hour" | 
   const { sql: where, params } = buildWhere(opts);
   const fmt = opts.granularity === "hour" ? "%Y-%m-%dT%H:00Z" : opts.granularity === "week" ? "%Y-W%W" : "%Y-%m-%d";
 
-  return db
+  // Fetch summary rows without P95 (correlated subquery nesting not supported in SQLite)
+  const rows = db
     .query(`
     SELECT
       strftime('${fmt}', ts / 1000, 'unixepoch') AS period,
@@ -255,20 +256,42 @@ export function querySummary(opts: CallsQueryOptions & { granularity?: "hour" | 
       COALESCE(SUM(prompt_tokens), 0)             AS total_prompt_tokens,
       COALESCE(SUM(completion_tokens), 0)         AS total_completion_tokens,
       COALESCE(SUM(premium_cost), 0)              AS total_premium_cost,
-      AVG(latency_ms)                             AS avg_latency_ms,
-      -- P95 approximation: 95th percentile via NTILE
-      (SELECT latency_ms FROM copilot_calls c2
-         WHERE c2.latency_ms IS NOT NULL
-           AND strftime('${fmt}', c2.ts / 1000, 'unixepoch') = strftime('${fmt}', copilot_calls.ts / 1000, 'unixepoch')
-         ORDER BY c2.latency_ms
-         LIMIT 1 OFFSET CAST(COUNT(copilot_calls.latency_ms) * 0.95 AS INTEGER)
-      )                                           AS p95_latency_ms
+      AVG(latency_ms)                             AS avg_latency_ms
     FROM copilot_calls
     ${where}
     GROUP BY period
     ORDER BY period DESC
   `)
-    .all(...params) as SummaryRow[];
+    .all(...params) as Omit<SummaryRow, "p95_latency_ms">[];
+
+  // Compute P95 per-period in TypeScript: fetch all latencies for the same window, group by period
+  const latencies = db
+    .query(`
+    SELECT
+      strftime('${fmt}', ts / 1000, 'unixepoch') AS period,
+      latency_ms
+    FROM copilot_calls
+    WHERE latency_ms IS NOT NULL
+    ${where ? where.replace(/^WHERE/, "AND") : ""}
+    ORDER BY period, latency_ms
+  `)
+    .all(...params) as { period: string; latency_ms: number }[];
+
+  const latByPeriod = new Map<string, number[]>();
+  for (const r of latencies) {
+    let arr = latByPeriod.get(r.period);
+    if (!arr) {
+      arr = [];
+      latByPeriod.set(r.period, arr);
+    }
+    arr.push(r.latency_ms);
+  }
+
+  return rows.map((row) => {
+    const lats = latByPeriod.get(row.period) ?? [];
+    const p95 = lats.length > 0 ? (lats[Math.floor(lats.length * 0.95)] ?? null) : null;
+    return { ...row, p95_latency_ms: p95 };
+  });
 }
 
 /** Per-key breakdown */
