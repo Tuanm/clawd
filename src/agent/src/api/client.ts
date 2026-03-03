@@ -4,7 +4,8 @@
 
 import http2 from "node:http2";
 import { EventEmitter } from "node:events";
-import { getBaseUrlForProvider, getCopilotToken } from "./provider-config";
+import { getBaseUrlForProvider, getCopilotToken, ensureKeyPoolInitialized } from "./provider-config";
+import { keyPool, AllKeysSuspendedError } from "./key-pool";
 
 const COPILOT_API_URL = "https://api.githubcopilot.com";
 
@@ -84,7 +85,7 @@ const BASE_HEADERS = {
   Accept: "application/json",
   "X-Interaction-Type": "conversation-agent",
   "Openai-Intent": "conversation-agent",
-  "X-Initiator": "agent",
+  // "X-Initiator" is NOT set here — it's set dynamically per-request based on initiator
   "X-GitHub-Api-Version": "2025-05-01",
   "Copilot-Integration-Id": "copilot-developer-cli",
   "User-Agent": "Claw'd/1.0.0",
@@ -149,13 +150,24 @@ function logStreamEvent(event: StreamEvent) {
 }
 
 // ============================================================================
-// Client
+// Errors
 // ============================================================================
 
-// Rate limit handling constants
-const RATE_LIMIT_MAX_RETRIES = 5;
-const RATE_LIMIT_BASE_DELAY_MS = 5000; // Start with 5 seconds
-const RATE_LIMIT_MAX_DELAY_MS = 60000; // Max 60 seconds
+export class ApiResponseError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly token: string,
+    public readonly retryAfterMs: number | undefined,
+    body: string,
+  ) {
+    super(`API error ${status} [key=${truncateKey(token)}]: ${body}`);
+    this.name = "ApiResponseError";
+  }
+}
+
+// ============================================================================
+// Client
+// ============================================================================
 
 // Timeout constants
 const CONNECT_TIMEOUT_MS = 10_000; // 10s to establish HTTP/2 connection
@@ -168,13 +180,11 @@ function truncateKey(key: string): string {
   return `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export class CopilotClient extends EventEmitter {
   private token: string;
-  private client: http2.ClientHttp2Session | null = null;
+  // NOTE: H2 sessions are now owned by KeyPool (shared per-token across all agents).
+  // This instance keeps a reference only as an emergency fallback for non-KeyPool paths.
+  private localSession: http2.ClientHttp2Session | null = null;
   readonly model: string;
   private baseUrl: string;
   private apiPath: string = "/chat/completions";
@@ -194,66 +204,105 @@ export class CopilotClient extends EventEmitter {
     this.baseUrl = options?.baseUrl || COPILOT_API_URL;
   }
 
-  /** Get the current token, rotating if multiple keys are configured. */
-  private getActiveToken(): string {
-    return getCopilotToken() || this.token;
+  /** Get a working H2 session: prefer KeyPool-shared session, fallback to local. */
+  private async getClient(token: string): Promise<http2.ClientHttp2Session> {
+    // Try KeyPool-shared session first
+    try {
+      return await keyPool.getOrCreateSession(token, this.baseUrl);
+    } catch {
+      // Fallback: create a local session (for when KeyPool is not initialized)
+      return this.getLocalSession();
+    }
   }
 
-  private getClient(): Promise<http2.ClientHttp2Session> {
+  private getLocalSession(): Promise<http2.ClientHttp2Session> {
     return new Promise((resolve, reject) => {
-      if (this.client && !this.client.destroyed) {
-        resolve(this.client);
+      if (this.localSession && !this.localSession.destroyed) {
+        resolve(this.localSession);
         return;
       }
 
       const timer = setTimeout(() => {
         reject(new Error(`HTTP/2 connection timeout after ${CONNECT_TIMEOUT_MS}ms`));
-        this.client?.destroy();
-        this.client = null;
+        this.localSession?.destroy();
+        this.localSession = null;
       }, CONNECT_TIMEOUT_MS);
 
-      this.client = http2.connect(this.baseUrl);
-
-      this.client.on("connect", () => {
+      this.localSession = http2.connect(this.baseUrl);
+      this.localSession.on("connect", () => {
         clearTimeout(timer);
-        resolve(this.client!);
+        resolve(this.localSession!);
       });
-      this.client.on("error", (err) => {
+      this.localSession.on("error", (err) => {
         clearTimeout(timer);
         reject(err);
       });
-      this.client.on("close", () => {
-        this.client = null;
+      this.localSession.on("close", () => {
+        this.localSession = null;
       });
     });
   }
 
-  async complete(request: CompletionRequest): Promise<CompletionResponse> {
+  /**
+   * Send a completion request with key rotation on 429/403.
+   * @param initiator "user" = counts as premium request; "agent" = 0 premium cost (default)
+   */
+  async complete(request: CompletionRequest, initiator: "agent" | "user" = "agent"): Promise<CompletionResponse> {
+    // Trigger lazy KeyPool initialization (no inFlight side-effect — uses peekToken internally)
+    ensureKeyPoolInitialized();
+
+    let key = (() => {
+      try {
+        return keyPool.selectKey(initiator);
+      } catch (err) {
+        if (err instanceof AllKeysSuspendedError) throw err; // propagate — don't silently fall back
+        return null; // pool not initialized — fall back to raw token
+      }
+    })();
+
+    // If KeyPool unavailable (not initialized), fall back to simple single-token request
+    if (!key) {
+      return this._completeOnce(request, getCopilotToken() || this.token, initiator);
+    }
+
+    const maxSwitches = Math.max(keyPool.keyCount, 1);
     let lastError: Error | null = null;
 
-    for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt++) {
+    for (let switches = 0; switches <= maxSwitches; switches++) {
       try {
-        return await this._completeOnce(request);
-      } catch (error: any) {
-        if (error.message?.includes("429")) {
-          lastError = error;
-          const delay = Math.min(RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt, RATE_LIMIT_MAX_DELAY_MS);
-          console.error(
-            `[API] Rate limited (429), sleeping ${delay / 1000}s before retry ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES}`,
-          );
-          await sleep(delay);
+        await keyPool.waitForSpacing(key);
+        const result = await this._completeOnce(request, key.token, initiator);
+        keyPool.recordRequest(key.token, request.model, initiator);
+        return result;
+      } catch (err) {
+        if (err instanceof ApiResponseError && (err.status === 429 || err.status === 403)) {
+          keyPool.reportError(key.token, err.status, err.retryAfterMs, err.message);
+          if (err.status === 403) {
+            keyPool.destroySession(key.token);
+          }
+          lastError = err;
+          try {
+            key = keyPool.selectKey(initiator);
+          } catch (e2) {
+            throw e2; // AllKeysSuspendedError
+          }
           continue;
         }
-        throw error;
+        // Non-rate-limit error — release the inFlight slot before re-throwing
+        keyPool.releaseKey(key.token);
+        throw err;
       }
     }
 
-    throw lastError || new Error("Rate limit retries exhausted");
+    throw lastError || new Error("All Copilot key rotation attempts exhausted");
   }
 
-  private async _completeOnce(request: CompletionRequest): Promise<CompletionResponse> {
-    const activeToken = this.getActiveToken();
-    const client = await this.getClient();
+  private async _completeOnce(
+    request: CompletionRequest,
+    activeToken: string,
+    initiator: "agent" | "user",
+  ): Promise<CompletionResponse> {
+    const client = await this.getClient(activeToken);
     logRequest(request);
 
     return new Promise((resolve, reject) => {
@@ -262,6 +311,7 @@ export class CopilotClient extends EventEmitter {
         ":path": this.apiPath,
         Authorization: `Bearer ${activeToken}`,
         "X-Interaction-Id": crypto.randomUUID(),
+        "X-Initiator": initiator,
         ...BASE_HEADERS,
       };
 
@@ -276,14 +326,16 @@ export class CopilotClient extends EventEmitter {
 
       let data = "";
 
-      req.on("response", (headers) => {
-        const status = headers[":status"] as number;
+      req.on("response", (respHeaders) => {
+        const status = respHeaders[":status"] as number;
         if (status !== 200) {
+          const retryAfterRaw = respHeaders["retry-after"];
+          const retryAfterMs = retryAfterRaw ? parseInt(String(retryAfterRaw), 10) * 1000 : undefined;
           req.on("data", (chunk) => (data += chunk));
           req.on("end", () => {
             clearTimeout(timer);
             logResponse(status, data);
-            reject(new Error(`API error ${status} [key=${truncateKey(activeToken)}]: ${data}`));
+            reject(new ApiResponseError(status, activeToken, retryAfterMs, data));
           });
           return;
         }
@@ -309,36 +361,83 @@ export class CopilotClient extends EventEmitter {
     });
   }
 
-  async *stream(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
-    let lastError: Error | null = null;
+  /**
+   * Stream a completion request with key rotation on 429/403.
+   * @param initiator "user" = counts as premium request; "agent" = 0 premium cost (default)
+   */
+  async *stream(
+    request: CompletionRequest,
+    signal?: AbortSignal,
+    initiator: "agent" | "user" = "agent",
+  ): AsyncGenerator<StreamEvent> {
+    // Trigger lazy KeyPool initialization (no inFlight side-effect)
+    ensureKeyPoolInitialized();
 
-    for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt++) {
+    let key = (() => {
       try {
-        // Try to stream, yield all events
-        for await (const event of this._streamOnce(request, signal)) {
-          yield event;
+        return keyPool.selectKey(initiator);
+      } catch (err) {
+        if (err instanceof AllKeysSuspendedError) throw err; // propagate — don't silently fall back
+        return null; // pool not initialized — fall back to raw token
+      }
+    })();
+
+    if (!key) {
+      // Fallback: single-token stream without KeyPool
+      yield* this._streamOnce(request, getCopilotToken() || this.token, initiator, signal);
+      return;
+    }
+
+    const maxSwitches = Math.max(keyPool.keyCount, 1);
+
+    for (let switches = 0; switches <= maxSwitches; switches++) {
+      let streamError: ApiResponseError | null = null;
+      try {
+        await keyPool.waitForSpacing(key);
+        // Guard against early consumer exit (break/return) — must release inFlight slot
+        let accounted = false;
+        try {
+          for await (const event of this._streamOnce(request, key.token, initiator, signal)) {
+            yield event;
+          }
+          keyPool.recordRequest(key.token, request.model, initiator);
+          accounted = true;
+          return;
+        } finally {
+          if (!accounted) keyPool.releaseKey(key.token);
         }
-        return; // Success, exit retry loop
-      } catch (error: any) {
-        if (error.message?.includes("429")) {
-          lastError = error;
-          const delay = Math.min(RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt, RATE_LIMIT_MAX_DELAY_MS);
-          console.error(
-            `[API] Rate limited (429), sleeping ${delay / 1000}s before retry ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES}`,
-          );
-          await sleep(delay);
-          continue;
+      } catch (err) {
+        if (err instanceof ApiResponseError && (err.status === 429 || err.status === 403)) {
+          streamError = err;
+        } else {
+          // Non-rate-limit error — releaseKey already called by finally above
+          throw err;
         }
-        throw error;
+      }
+
+      if (streamError) {
+        keyPool.reportError(key.token, streamError.status as 403 | 429, streamError.retryAfterMs, streamError.message);
+        if (streamError.status === 403) {
+          keyPool.destroySession(key.token);
+        }
+        try {
+          key = keyPool.selectKey(initiator);
+        } catch (e2) {
+          throw e2; // AllKeysSuspendedError
+        }
       }
     }
 
-    throw lastError || new Error("Rate limit retries exhausted");
+    throw new Error("All Copilot key rotation attempts exhausted");
   }
 
-  private async *_streamOnce(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
-    const activeToken = this.getActiveToken();
-    const client = await this.getClient();
+  private async *_streamOnce(
+    request: CompletionRequest,
+    activeToken: string,
+    initiator: "agent" | "user",
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamEvent> {
+    const client = await this.getClient(activeToken);
     logRequest(request);
 
     const headers = {
@@ -346,6 +445,7 @@ export class CopilotClient extends EventEmitter {
       ":path": this.apiPath,
       Authorization: `Bearer ${activeToken}`,
       "X-Interaction-Id": crypto.randomUUID(),
+      "X-Initiator": initiator,
       ...BASE_HEADERS,
     };
 
@@ -397,18 +497,21 @@ export class CopilotClient extends EventEmitter {
     let buffer = "";
     const currentToolCalls: Map<number, ToolCall> = new Map();
     let errorBody = "";
+    let responseStatus = 200;
+    let retryAfterMs: number | undefined;
 
-    req.on("response", (headers) => {
-      const status = headers[":status"] as number;
-      logResponse(status, status !== 200 ? errorBody : undefined);
-      if (status !== 200) {
-        // Collect error body before rejecting
+    req.on("response", (respHeaders) => {
+      responseStatus = respHeaders[":status"] as number;
+      logResponse(responseStatus, responseStatus !== 200 ? errorBody : undefined);
+      if (responseStatus !== 200) {
+        const retryAfterRaw = respHeaders["retry-after"];
+        retryAfterMs = retryAfterRaw ? parseInt(String(retryAfterRaw), 10) * 1000 : undefined;
         req.on("data", (chunk: Buffer) => {
           errorBody += chunk.toString();
         });
         req.on("end", () => {
-          logResponse(status, errorBody);
-          error = new Error(`API error ${status} [key=${truncateKey(activeToken)}]: ${errorBody}`);
+          logResponse(responseStatus, errorBody);
+          error = new ApiResponseError(responseStatus, activeToken, retryAfterMs, errorBody);
           if (idleTimer) clearTimeout(idleTimer);
           resolver?.();
         });
@@ -444,7 +547,6 @@ export class CopilotClient extends EventEmitter {
           }
 
           // Handle thinking/reasoning delta (Claude extended thinking)
-          // Check for thinking content in various possible locations
           const thinking =
             (choice.delta as any)?.thinking ||
             (choice.delta as any)?.reasoning ||
@@ -460,8 +562,6 @@ export class CopilotClient extends EventEmitter {
               let existing = currentToolCalls.get(idx);
 
               if (!existing) {
-                // Use provided id if available (Copilot/OpenAI), otherwise use index (Ollama)
-                // This handles both cases: Copilot sends id, Ollama doesn't
                 const toolId = tc.id || String(idx);
                 existing = {
                   id: toolId,
@@ -530,13 +630,15 @@ export class CopilotClient extends EventEmitter {
     }
 
     if (error && !aborted) {
+      // Re-throw ApiResponseError so retry loop can handle 429/403
+      if (error instanceof ApiResponseError) throw error;
       yield { type: "error", error: error.message };
     }
   }
 
   close() {
-    this.client?.close();
-    this.client = null;
+    this.localSession?.close();
+    this.localSession = null;
   }
 }
 

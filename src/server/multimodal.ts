@@ -452,22 +452,30 @@ const COPILOT_API_BASE = "https://api.githubcopilot.com";
 const DEFAULT_COPILOT_VISION_MODEL = "gpt-4.1";
 
 /** Headers required by the Copilot API (mirrors BASE_HEADERS in agent/src/api/client.ts) */
-const COPILOT_VISION_HEADERS: Record<string, string> = {
+const COPILOT_VISION_HEADERS_BASE: Record<string, string> = {
   "Content-Type": "application/json",
   Accept: "application/json",
   "X-Interaction-Type": "conversation-agent",
   "Openai-Intent": "conversation-agent",
-  "X-Initiator": "agent",
+  // "X-Initiator" is set dynamically per-request (image analysis = "agent" = 0 premium cost)
   "X-GitHub-Api-Version": "2025-05-01",
   "Copilot-Integration-Id": "copilot-developer-cli",
   "User-Agent": "Claw'd/1.0.0",
 };
 
-/** Round-robin index for Copilot key rotation within image operations */
+/** Round-robin index for Copilot key rotation within image operations (fallback only) */
 let _copilotImgKeyIdx = 0;
 
-/** Read a Copilot token from providers.copilot in config, with api_keys rotation. */
+/** Read a Copilot token from KeyPool (agent initiator = 0 premium cost), fallback to config. */
 function getCopilotVisionToken(): string | null {
+  // Try KeyPool first (handles rotation, rate limiting, suspension)
+  try {
+    const { keyPool } = require("../agent/src/api/key-pool");
+    return keyPool.selectKey("agent")?.token ?? null;
+  } catch {
+    // KeyPool unavailable (e.g. server process without agent bootstrap) — use config directly
+  }
+
   const config = loadConfigFile();
   const copilot = config.providers?.copilot as Record<string, unknown> | undefined;
   if (!copilot) return null;
@@ -533,7 +541,7 @@ async function callCopilotVisionAnalysis(
     const base64 = fileToBase64(filePath);
     const response = await fetch(`${COPILOT_API_BASE}/chat/completions`, {
       method: "POST",
-      headers: { ...COPILOT_VISION_HEADERS, Authorization: `Bearer ${token}` },
+      headers: { ...COPILOT_VISION_HEADERS_BASE, "X-Initiator": "agent", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
         model,
         messages: [

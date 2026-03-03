@@ -11,6 +11,7 @@
  */
 
 import type { Message, ToolCall, CompletionRequest } from "../api/client";
+import { AllKeysSuspendedError } from "../api/key-pool";
 import type { LLMProvider } from "../api/providers";
 import { createProvider } from "../api/factory";
 import { getSessionManager, SessionManager, type Session } from "../session/manager";
@@ -1587,7 +1588,7 @@ SUMMARY:`;
 
         // Stream response with abort signal
         try {
-          for await (const event of this.client.stream(request, signal)) {
+          for await (const event of this.client.stream(request, signal, "user")) {
             // Check for interrupt every few tokens
             if (content.length % 100 === 0) {
               await checkInterrupt();
@@ -1635,6 +1636,26 @@ SUMMARY:`;
             }
           }
         } catch (err: any) {
+          // Handle AllKeysSuspendedError — notify user and cancel
+          if (err instanceof AllKeysSuspendedError) {
+            const resumeTime = err.earliestResumeAt.toISOString();
+            console.error(`[Agent] All Copilot keys suspended. Resume at: ${resumeTime}`);
+            // Best-effort user notification (may also fail if all keys suspended — silently swallowed)
+            try {
+              await this.chat(
+                `⛔ All Copilot API keys are suspended. Earliest resume: ${resumeTime}. Please try again later.`,
+              );
+            } catch {}
+            this._cancelled = true;
+            return {
+              content: "",
+              toolCalls: toolCallHistory,
+              iterations,
+              contextTokens,
+              interrupted: false,
+              interruptCount,
+            };
+          }
           // Ignore abort errors
           if (!signal.aborted && !err.message?.includes("aborted")) {
             streamError = err;

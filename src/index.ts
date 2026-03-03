@@ -90,6 +90,8 @@ import { loadConfigFile } from "./config-file";
 import { getEmbeddedAsset, hasEmbeddedUI, embeddedUIFileCount, embeddedUITotalSize } from "./embedded-ui";
 import { WorkerManager } from "./worker-manager";
 import { setDebug } from "./agent/src/utils/debug";
+import { keyPool } from "./agent/src/api/key-pool";
+import { ensureKeyPoolInitialized } from "./agent/src/api/provider-config";
 
 // Load configuration from CLI args + config file
 const config = loadConfig();
@@ -416,6 +418,9 @@ async function parseBody(req: Request): Promise<Record<string, any>> {
 // Server
 // ============================================================================
 
+// Eagerly initialize KeyPool so /api/keys/status is ready immediately
+ensureKeyPoolInitialized();
+
 const server = Bun.serve({
   hostname: HOST,
   port: PORT,
@@ -531,6 +536,15 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     // Channels
     if (path === "/api/conversations.list") return json(listChannels());
+
+    // Copilot key pool status (fingerprint-only, no raw tokens)
+    if (path === "/api/keys/status" && req.method === "GET") {
+      return json({ ok: true, keys: keyPool.getStatus() });
+    }
+    if (path === "/api/keys/sync" && req.method === "POST") {
+      keyPool.syncAllQuotas().catch(() => {});
+      return json({ ok: true, message: "Quota sync triggered" });
+    }
 
     if (path === "/api/conversations.create" && req.method === "POST") {
       const body = await parseBody(req);

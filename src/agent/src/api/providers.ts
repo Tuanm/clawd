@@ -95,7 +95,7 @@ export interface LLMProvider {
    * Make a streaming completion request
    * @param signal Optional abort signal
    */
-  stream(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent>;
+  stream(request: CompletionRequest, signal?: AbortSignal, initiator?: "agent" | "user"): AsyncGenerator<StreamEvent>;
 
   /**
    * Close any open connections

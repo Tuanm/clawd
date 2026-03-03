@@ -227,7 +227,11 @@ class OpenAIProvider implements LLMProvider {
     return response.json();
   }
 
-  async *stream(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+  async *stream(
+    request: CompletionRequest,
+    signal?: AbortSignal,
+    _initiator?: "agent" | "user",
+  ): AsyncGenerator<StreamEvent> {
     const activeKey = this.getActiveApiKey();
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
@@ -428,7 +432,11 @@ class AnthropicProvider implements LLMProvider {
     return this.fromAnthropicResponse(responseJson, request.model);
   }
 
-  async *stream(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+  async *stream(
+    request: CompletionRequest,
+    signal?: AbortSignal,
+    _initiator?: "agent" | "user",
+  ): AsyncGenerator<StreamEvent> {
     const activeKey = this.getActiveApiKey();
     const anthropicRequest = this.toAnthropicRequest(request, true);
 
@@ -912,7 +920,11 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
     return this.fromOllamaResponse(responseJson);
   }
 
-  async *stream(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+  async *stream(
+    request: CompletionRequest,
+    signal?: AbortSignal,
+    _initiator?: "agent" | "user",
+  ): AsyncGenerator<StreamEvent> {
     const activeKey = this.getActiveApiKey();
     const ollamaRequest = this.toOllamaRequest(request, true);
 

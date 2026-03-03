@@ -70,6 +70,7 @@ export function loadConfig(configPath?: string): Config {
 export function clearConfigCache(): void {
   cachedConfig = null;
   cachedConfigPath = null;
+  reinitKeyPool();
 }
 
 /**
@@ -214,18 +215,20 @@ export function getBaseUrlForProvider(providerType: ProviderType): string | unde
 // API Key Rotation
 // ============================================================================
 
-/** Round-robin counter per provider (in-memory, resets on restart) */
+import { keyPool } from "./key-pool";
+
+/** Round-robin counter per provider (non-Copilot providers only) */
 const keyRotationCounters: Partial<Record<ProviderType, number>> = {};
 
 /**
  * Get the effective API key for a provider, supporting key rotation.
- *
- * Rules:
- * - If `api_key` is set (and non-empty), use it exclusively (ignores `api_keys`).
- * - If only `api_keys` is set, rotate through them round-robin.
- * - If neither is set, returns undefined.
+ * For Copilot, delegates to KeyPool. For other providers, uses round-robin.
  */
 export function getApiKeyForProvider(providerType: ProviderType): string | undefined {
+  if (providerType === "copilot") {
+    return getCopilotToken() ?? undefined;
+  }
+
   const providerConfig = getProviderConfig(providerType);
   if (!providerConfig) return undefined;
 
@@ -246,32 +249,58 @@ export function getApiKeyForProvider(providerType: ProviderType): string | undef
 }
 
 /**
- * Get the API key for Copilot provider
- * Prefers `api_key` (consistent with other providers), falls back to `token` (deprecated)
- * Also supports `api_keys` rotation when only `api_keys` is set.
+ * Collect all Copilot tokens from config (api_key, api_keys, legacy token).
+ * Used to initialize the KeyPool.
  */
-export function getCopilotToken(): string | null {
+function getCopilotTokensFromConfig(): string[] {
   const config = loadConfig();
   const copilot = config.providers?.copilot;
-  if (!copilot) return null;
+  if (!copilot) return [];
 
-  // api_key takes precedence
-  if (copilot.api_key) {
-    return copilot.api_key;
-  }
-
-  // api_keys rotation (copilot inherits ProviderConfig which has api_keys)
-  const keys = (copilot as any).api_keys as string[] | undefined;
-  if (keys && keys.length > 0) {
-    const counter = keyRotationCounters["copilot"] ?? 0;
-    const key = keys[counter % keys.length];
-    keyRotationCounters["copilot"] = (counter + 1) % keys.length;
-    return key;
-  }
-
-  // Legacy token field
-  return copilot.token || null;
+  const tokens: string[] = [];
+  if (copilot.api_key) tokens.push(copilot.api_key);
+  const apiKeys = (copilot as any).api_keys as string[] | undefined;
+  if (Array.isArray(apiKeys)) tokens.push(...apiKeys);
+  if (copilot.token && !tokens.includes(copilot.token)) tokens.push(copilot.token);
+  return tokens.filter(Boolean);
 }
+
+let keyPoolReady = false;
+
+function ensureKeyPoolInitialized(): void {
+  if (keyPoolReady) return;
+  keyPoolReady = true;
+  const tokens = getCopilotTokensFromConfig();
+  if (tokens.length > 0) {
+    keyPool.init(tokens);
+  }
+}
+
+/**
+ * Get the API key for Copilot provider — delegates to KeyPool.
+ * Uses peekToken() (NOT selectKey) to avoid leaking inFlight counters.
+ * For actual request accounting, callers use keyPool.selectKey() + recordRequest().
+ * Returns null if no healthy key is available.
+ */
+export function getCopilotToken(): string | null {
+  ensureKeyPoolInitialized();
+  const token = keyPool.peekToken("agent");
+  if (token) return token;
+  // Fallback: legacy single token from config
+  const config = loadConfig();
+  return config.providers?.copilot?.token || null;
+}
+
+/**
+ * Re-initialize the KeyPool after a config reload (e.g. new keys added).
+ * Called by clearConfigCache() when config is hot-reloaded.
+ */
+export function reinitKeyPool(): void {
+  keyPoolReady = false;
+  ensureKeyPoolInitialized();
+}
+
+export { ensureKeyPoolInitialized };
 
 // ============================================================================
 // MCP Server Configuration
