@@ -427,6 +427,13 @@ export function initDatabase() {
     /* Column already exists */
   }
 
+  // Add public visibility flag to files (for external access via /api/public/files/:id)
+  try {
+    db.exec(`ALTER TABLE files ADD COLUMN public INTEGER NOT NULL DEFAULT 0`);
+  } catch {
+    /* Column already exists */
+  }
+
   // Create message_seen table if not exists (for older DBs)
   try {
     db.exec(`

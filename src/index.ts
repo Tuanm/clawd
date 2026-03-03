@@ -134,7 +134,7 @@ import {
 } from "./server/database";
 import { handleMcpRequest, setMcpScheduler } from "./server/mcp";
 import { createChannel, getChannelInfo, listChannels } from "./server/routes/channels";
-import { attachFilesToMessage, getFile, getFileMetadata, getOptimizedFile, uploadFile } from "./server/routes/files";
+import { attachFilesToMessage, getFile, getFileMetadata, getOptimizedFile, getPublicFile, setFileVisibility, uploadFile } from "./server/routes/files";
 import {
   addReaction,
   deleteMessage,
@@ -511,6 +511,21 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     const articleResponse = handleArticleRoute(req, url, path, bunServer);
     if (articleResponse) return articleResponse;
 
+    // Public file access (no auth required — whitelisted in Cloudflare ZeroTrust)
+    if (path.startsWith("/api/public/files/")) {
+      const fileId = path.replace("/api/public/files/", "").split("/")[0];
+      const file = getPublicFile(fileId);
+      if (!file) return new Response("Not found", { status: 404 });
+      return new Response(file.data, {
+        headers: {
+          "Content-Type": file.mimetype,
+          "Content-Disposition": `inline; filename="${file.name}"`,
+          "Cache-Control": "public, max-age=3600",
+          ...corsHeaders,
+        },
+      });
+    }
+
     // ---- clawd-chat standard routes ----
 
     // MCP endpoint
@@ -797,6 +812,14 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         const metadata = getFileMetadata(fileId);
         if (!metadata) return json({ ok: false, error: "file_not_found" }, 404);
         return json({ ok: true, file: metadata });
+      }
+
+      if (subPath === "visibility" && req.method === "POST") {
+        const body = (await req.json()) as { visible?: boolean };
+        if (typeof body.visible !== "boolean") return json({ ok: false, error: "missing_visible_field" }, 400);
+        const result = setFileVisibility(fileId, body.visible);
+        if (!result.ok) return json(result, 404);
+        return json(result);
       }
 
       if (subPath === "optimized") {

@@ -15,6 +15,7 @@ export interface FileRecord {
   message_ts: string | null;
   uploaded_by: string;
   created_at: number;
+  public: number; // 0 = private (default), 1 = publicly accessible
 }
 
 // POST /api/files.upload
@@ -347,5 +348,33 @@ export function getFileMetadata(id: string): {
     size: file.size,
     isImage: file.mimetype.startsWith("image/"),
     canOptimize: isOptimizableImage(file.mimetype),
+  };
+}
+
+// POST /api/files/:id/visibility — toggle public access
+export function setFileVisibility(id: string, visible: boolean): { ok: boolean; error?: string; public_url?: string } {
+  const file = db.query<FileRecord, [string]>(`SELECT * FROM files WHERE id = ?`).get(id);
+  if (!file) return { ok: false, error: "file_not_found" };
+
+  db.run(`UPDATE files SET public = ? WHERE id = ?`, [visible ? 1 : 0, id]);
+
+  return {
+    ok: true,
+    ...(visible ? { public_url: `/api/public/files/${id}` } : {}),
+  };
+}
+
+// GET /api/public/files/:id — serve file without auth (only if marked public)
+export function getPublicFile(id: string) {
+  const file = db.query<FileRecord, [string]>(`SELECT * FROM files WHERE id = ? AND public = 1`).get(id);
+
+  if (!file || !existsSync(file.path)) {
+    return null;
+  }
+
+  return {
+    data: readFileSync(file.path),
+    mimetype: file.mimetype,
+    name: file.name,
   };
 }
