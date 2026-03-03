@@ -233,7 +233,7 @@ export class WorkerLoop {
 
             if (!execResult.success) {
               this.log("Prompt execution failed");
-              await this.sendMessage("[ERROR] Whoops!");
+              await this.sendMessage(`[ERROR] ${execResult.output || "Unexpected error"}`);
             }
           } finally {
             this.isProcessing = false;
