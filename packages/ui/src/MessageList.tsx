@@ -1712,7 +1712,7 @@ export default function MessageList({
                       const rawId = msg.workspace!.workspace_id;
                       const wsId = encodeURIComponent(rawId);
                       window.open(
-                        `/workspace/${wsId}/novnc/vnc.html?autoconnect=1&resize=scale&path=${encodeURIComponent(`workspace/${rawId}/novnc/websockify`)}`,
+                        `/workspace/${wsId}/novnc/vnc.html?autoconnect=1&reconnect=1&reconnect_delay=2000&resize=scale&path=${encodeURIComponent(`workspace/${rawId}/novnc/websockify`)}`,
                         "_blank",
                       );
                     };

@@ -8,36 +8,40 @@ echo "[entrypoint] Waiting for Xvfb..."
 while ! xdpyinfo -display :99 >/dev/null 2>&1; do sleep 0.1; done
 echo "[entrypoint] Xvfb ready"
 
-# Start window manager and wait for it
+# Start window manager
 fluxbox -display :99 &
 while ! pgrep -x fluxbox > /dev/null; do sleep 0.1; done
 echo "[entrypoint] fluxbox ready"
 
-# VNC with secure random password (not logged — retrieve from container secret mount)
-VNC_PASSWORD=$(cat /run/secrets/vnc_password 2>/dev/null || openssl rand -base64 16)
-mkdir -p /tmp/vnc
-x11vnc -storepasswd "$VNC_PASSWORD" /tmp/vnc/vncpass
-chmod 600 /tmp/vnc/vncpass
-unset VNC_PASSWORD  # Clear from env immediately
-
 if [ "${CLAWD_VNC_ENABLED:-false}" = "true" ]; then
-  # Start VNC services in background — do NOT block MCP server startup
+  # x11vnc with no password — access is controlled by workspace token auth at the gateway level
+  # Restart loop ensures VNC stays alive if it crashes
   (
-    x11vnc -display :99 -forever -rfbauth /tmp/vnc/vncpass -rfbport 5900 -bg -quiet
-    # Wait for x11vnc with a timeout (max 30s) before starting websockify
-    TRIES=0
-    while [ $TRIES -lt 300 ]; do
-      if nc -z localhost 5900 2>/dev/null || \
-         (cat /dev/tcp/localhost/5900 2>/dev/null && echo "" >/dev/null) || \
-         ss -ltn 2>/dev/null | grep -q ':5900'; then
-        break
-      fi
-      sleep 0.1
-      TRIES=$((TRIES+1))
+    while true; do
+      x11vnc -display :99 -forever -nopw -rfbport 5900 -quiet
+      echo "[entrypoint] x11vnc exited, restarting..."
+      sleep 1
     done
-    websockify --web /usr/share/novnc 6080 localhost:5900 &
-    echo "[entrypoint] VNC/noVNC enabled on :5900/:6080"
   ) &
+
+  # Wait for x11vnc to be ready (max 30s)
+  TRIES=0
+  while ! netstat -ltn 2>/dev/null | grep -q ':5900' && ! (echo > /dev/tcp/localhost/5900) 2>/dev/null; do
+    sleep 0.1
+    TRIES=$((TRIES+1))
+    [ $TRIES -ge 300 ] && { echo "[entrypoint] WARNING: x11vnc not ready after 30s"; break; }
+  done
+
+  # websockify with auto-restart — proxies noVNC WebSocket to VNC port 5900
+  (
+    while true; do
+      websockify --web /usr/share/novnc 6080 localhost:5900
+      echo "[entrypoint] websockify exited, restarting..."
+      sleep 1
+    done
+  ) &
+
+  echo "[entrypoint] VNC/noVNC enabled on :5900/:6080"
 fi
 
 echo "[entrypoint] Starting workspace MCP server..."

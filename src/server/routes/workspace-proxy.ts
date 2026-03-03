@@ -11,7 +11,7 @@
  */
 
 import type { ServerWebSocket } from "bun";
-import { GATEWAY_PROXY_PORT } from "../../agent/src/workspace/gateway.js";
+import { GATEWAY_ADMIN_PORT, GATEWAY_PROXY_PORT } from "../../agent/src/workspace/gateway.js";
 
 /** Per-connection map: connId → backend WebSocket (Caddy gateway → noVNC websockify) */
 const wsProxyBackends = new Map<string, WebSocket>();
@@ -25,6 +25,26 @@ const WORKSPACE_ID_RE = /^[a-f0-9]{16}$/;
 /** Validate workspace ID format before use */
 function isValidWorkspaceId(id: string): boolean {
   return WORKSPACE_ID_RE.test(id);
+}
+
+/**
+ * Ensure the Caddy gateway has a route for this workspace.
+ * Checks the Caddy admin API first (fast); registers the route only if missing.
+ * Handles the case where connectWorkspaceToGateway failed silently at spawn time.
+ */
+async function ensureGatewayRoute(workspaceId: string): Promise<void> {
+  try {
+    // Fast check: does Caddy already have this route?
+    const check = await fetch(`http://127.0.0.1:${GATEWAY_ADMIN_PORT}/id/ws-${workspaceId}`, {
+      signal: AbortSignal.timeout(1000),
+    });
+    if (check.ok) return; // Route already registered
+  } catch {
+    // Admin API unreachable — try to reconnect anyway
+  }
+  // Route missing: register it now (idempotent)
+  const { connectWorkspaceToGateway } = await import("../../agent/src/workspace/gateway.js");
+  await connectWorkspaceToGateway(workspaceId);
 }
 
 // ─── HTTP proxy ───────────────────────────────────────────────────────────────
@@ -100,7 +120,11 @@ export async function upgradeWorkspaceWs(
     });
   }
 
-  // Workspace existence is validated by the gateway (502 for dead containers)
+  // Ensure gateway route exists — registers it if missing (e.g., if connectWorkspaceToGateway
+  // failed silently at spawn time, or if the Caddy container restarted and lost routes)
+  await ensureGatewayRoute(workspaceId).catch((err) =>
+    console.warn(`[ws-proxy] gateway route ensure failed for ${workspaceId}:`, err?.message),
+  );
 
   const connId = crypto.randomUUID();
   const data: WorkspaceWsData = {
