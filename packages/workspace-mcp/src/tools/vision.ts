@@ -14,7 +14,7 @@ interface VisionResult {
 
 /**
  * Analyze an image using the configured vision provider (from vision.read_image config).
- * Supports Copilot (GPT-4.1) and OpenAI-compatible vision APIs.
+ * Supports: Copilot, Gemini/OpenAI-compatible, MiniMax VLM, and Ollama.
  */
 async function analyzeImageWithVision(imagePath: string, prompt: string): Promise<string> {
   const config = getVisionConfig();
@@ -27,8 +27,42 @@ async function analyzeImageWithVision(imagePath: string, prompt: string): Promis
 
   const imageData = readFileSync(imagePath);
   const base64 = imageData.toString("base64");
+  const baseUrl = config.base_url.replace(/\/+$/, "");
 
-  // Build headers — Copilot requires special headers
+  // MiniMax VLM — dedicated endpoint with different request/response format
+  if (config.provider === "minimax") {
+    const mmBaseUrl = baseUrl.replace(/\/anthropic\/?$/, "");
+    const response = await fetch(`${mmBaseUrl}/v1/coding_plan/vlm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.api_key}` },
+      body: JSON.stringify({ prompt, image_url: `data:image/png;base64,${base64}` }),
+    });
+    if (!response.ok) throw new Error(`MiniMax VLM error: ${response.status} ${await response.text()}`);
+    const data = (await response.json()) as any;
+    if (data.base_resp?.status_code !== 0) throw new Error(`MiniMax VLM error: ${data.base_resp?.status_msg}`);
+    return data.content || "";
+  }
+
+  // Ollama — native /api/chat with images as raw base64 strings
+  if (config.provider === "ollama") {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (config.api_key) headers["Authorization"] = `Bearer ${config.api_key}`;
+    const response = await fetch(`${baseUrl}/api/chat`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        messages: [{ role: "user", content: prompt, images: [base64] }],
+        stream: false,
+      }),
+    });
+    if (!response.ok) throw new Error(`Ollama vision error: ${response.status} ${await response.text()}`);
+    const data = (await response.json()) as any;
+    if (data.error) throw new Error(`Ollama vision error: ${data.error}`);
+    return data.message?.content || "";
+  }
+
+  // Copilot / Gemini / OpenAI-compatible — chat completions with image_url content parts
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${config.api_key}`,
@@ -44,8 +78,6 @@ async function analyzeImageWithVision(imagePath: string, prompt: string): Promis
     headers["User-Agent"] = "Claw'd/1.0.0";
   }
 
-  // Copilot uses /chat/completions, others use /v1/chat/completions
-  const baseUrl = config.base_url.replace(/\/+$/, "");
   const endpoint = config.provider === "copilot" ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
 
   const response = await fetch(endpoint, {
