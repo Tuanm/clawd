@@ -271,6 +271,7 @@ async function registerWorkspaceRoute(workspaceId: string, containerName: string
               {
                 handler: "reverse_proxy",
                 upstreams: [{ dial: `${containerName}:6080` }],
+                flush_interval: -1,
                 headers: {
                   request: { set: { Host: [`${containerName}:6080`] } },
                 },

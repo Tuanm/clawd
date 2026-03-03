@@ -65,7 +65,40 @@ export class WorkspaceToolPlugin implements ToolPlugin {
   /** Track workspace IDs owned by this plugin instance (not global) */
   private readonly ownedWorkspaceIds = new Set<string>();
 
-  constructor(private readonly mcpManager: MCPManager) {}
+  /**
+   * Promise that resolves once existing workspaces from a prior agent run have been
+   * re-registered into this MCPManager instance.  Awaited by every handler so tools
+   * are available before the first user-visible action.
+   */
+  private readonly reconnectReady: Promise<void>;
+
+  constructor(private readonly mcpManager: MCPManager) {
+    this.reconnectReady = this.reconnectExisting();
+  }
+
+  /**
+   * Re-register any workspace containers that are still running from a previous
+   * agent run in the same process.  The global activeWorkspaces map (in container.ts)
+   * persists across Agent instances, so we can restore MCP connectivity without
+   * re-spawning.
+   */
+  private async reconnectExisting(): Promise<void> {
+    const existing = listActiveWorkspaces();
+    for (const handle of existing) {
+      const serverName = `workspace-${handle.id}`;
+      try {
+        await this.mcpManager.addServer({
+          name: serverName,
+          url: handle.mcpUrl,
+          transport: "http",
+          token: handle.authToken,
+        });
+        this.ownedWorkspaceIds.add(handle.id);
+      } catch {
+        // Server may already be registered or container unreachable — skip
+      }
+    }
+  }
 
   getTools(): ToolRegistration[] {
     return [
@@ -137,6 +170,7 @@ Returns workspace IDs, images, status, and creation time.`,
   }
 
   private async handleSpawn(args: Record<string, any>): Promise<ToolResult> {
+    await this.reconnectReady;
     // Enforce single-workspace constraint per agent session.
     // Multiple workspaces cannot be independently addressed (tool names would collide).
     // Destroy the existing workspace first, then spawn a new one.
@@ -241,6 +275,7 @@ Returns workspace IDs, images, status, and creation time.`,
   }
 
   private async handleDestroy(args: Record<string, any>): Promise<ToolResult> {
+    await this.reconnectReady;
     const workspaceId = args.workspace_id as string;
 
     // Only allow destroying workspaces owned by this plugin instance
@@ -276,6 +311,7 @@ Returns workspace IDs, images, status, and creation time.`,
   }
 
   private async handleList(): Promise<ToolResult> {
+    await this.reconnectReady;
     // Only list workspaces owned by this plugin instance (not global)
     const ownedIds = this.ownedWorkspaceIds;
     const workspaces = listActiveWorkspaces().filter((h) => ownedIds.has(h.id));
@@ -295,14 +331,14 @@ Returns workspace IDs, images, status, and creation time.`,
   }
 
   async destroy(): Promise<void> {
-    // Only destroy workspaces this plugin instance created
-    await Promise.allSettled(
-      Array.from(this.ownedWorkspaceIds).map(async (id) => {
-        const serverName = `workspace-${id}`;
-        await destroyWorkspace(id).catch(() => {});
-        await this.mcpManager.removeServer(serverName).catch(() => {});
-      }),
-    );
+    // Do NOT destroy workspace containers here — they must persist across agent runs
+    // so the user can keep using the noVNC desktop between messages.
+    // Containers are only destroyed via explicit destroy_workspace tool calls
+    // or when the worker process exits.
+    // Just disconnect MCP servers so this plugin instance can be garbage-collected.
+    for (const id of this.ownedWorkspaceIds) {
+      await this.mcpManager.removeServer(`workspace-${id}`).catch(() => {});
+    }
     this.ownedWorkspaceIds.clear();
   }
 }

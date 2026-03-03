@@ -170,7 +170,9 @@ export function handleWorkspaceWsOpen(ws: ServerWebSocket<WorkspaceWsData>): voi
     for (const msg of queued) backend.send(msg);
   };
 
-  // Keep connection alive through Cloudflare's 100s idle timeout
+  // Keep both sides alive through Cloudflare's 100s idle timeout.
+  // Ping the client (browser) AND send a no-op to the backend to prevent
+  // Caddy/intermediate proxies from closing idle WebSocket connections.
   const keepalive = setInterval(() => {
     if (ws.readyState === 1 /* OPEN */) {
       try {
@@ -178,6 +180,12 @@ export function handleWorkspaceWsOpen(ws: ServerWebSocket<WorkspaceWsData>): voi
       } catch {}
     } else {
       clearInterval(keepalive);
+    }
+    if (backend.readyState === WebSocket.OPEN) {
+      try {
+        // Send a WebSocket ping to keep the backend connection alive
+        backend.send(new ArrayBuffer(0));
+      } catch {}
     }
   }, 30_000);
 

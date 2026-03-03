@@ -33,9 +33,10 @@ if [ "${CLAWD_VNC_ENABLED:-false}" = "true" ]; then
   done
 
   # websockify with auto-restart — proxies noVNC WebSocket to VNC port 5900
+  # --heartbeat=30: sends WebSocket ping every 30s to keep idle connections alive
   (
     while true; do
-      websockify --web /usr/share/novnc 6080 localhost:5900
+      websockify --web /usr/share/novnc --heartbeat=30 6080 localhost:5900
       echo "[entrypoint] websockify exited, restarting..."
       sleep 1
     done
