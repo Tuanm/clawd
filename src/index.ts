@@ -172,7 +172,7 @@ import {
   handleWebSocketOpen,
 } from "./server/websocket";
 import { handleWorkspaceProxy, upgradeWorkspaceWs } from "./server/routes/workspace-proxy";
-import { reconcilePortsFromDocker } from "./agent/src/workspace/container.js";
+import { reconcilePortsFromDocker, cleanupOrphanedWorkspaces } from "./agent/src/workspace/container.js";
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
 
@@ -185,10 +185,17 @@ const PORT = config.port;
 
 // Database is initialized at module load time in database.ts (before prepared statements)
 
-// Reconcile workspace gateway routes in background (re-registers Caddy routes for running workspaces)
-reconcilePortsFromDocker().catch((err: unknown) => {
-  console.warn("[startup] reconcilePortsFromDocker failed unexpectedly:", err);
-});
+// Clean up orphaned workspace containers first, then reconcile gateway routes
+// (sequential: cleanup must finish before reconcile tries to connect to networks)
+cleanupOrphanedWorkspaces()
+  .catch((err: unknown) => {
+    console.warn("[startup] cleanupOrphanedWorkspaces failed:", err);
+  })
+  .then(() =>
+    reconcilePortsFromDocker().catch((err: unknown) => {
+      console.warn("[startup] reconcilePortsFromDocker failed unexpectedly:", err);
+    }),
+  );
 
 // Run channel ID migration on startup (normalizes legacy C-prefixed IDs to names)
 const migrated = migrateChannelIds();
@@ -1455,14 +1462,21 @@ const gracefulShutdown = async (signal: string) => {
   shutdownInProgress = true;
   console.log(`[clawd-app] Received ${signal}, shutting down...`);
   const forceTimer = setTimeout(() => {
-    console.error("[clawd-app] Shutdown timed out after 8s, forcing exit");
+    console.error("[clawd-app] Shutdown timed out after 15s, forcing exit");
     process.exit(1);
-  }, 8000);
+  }, 15000);
   forceTimer.unref();
   try {
     await scheduler.stop();
     await spaceWorkerManager.stopAll();
     await workerManager.stop();
+    // Destroy all workspace containers so Docker networks/resources are freed
+    const { listActiveWorkspaces, destroyWorkspace } = await import("./agent/src/workspace/container.js");
+    const workspaces = listActiveWorkspaces();
+    if (workspaces.length > 0) {
+      console.log(`[clawd-app] Destroying ${workspaces.length} workspace container(s)...`);
+      await Promise.allSettled(workspaces.map((w) => destroyWorkspace(w.id)));
+    }
   } catch (err) {
     console.error("[clawd-app] Error during shutdown:", err);
   }

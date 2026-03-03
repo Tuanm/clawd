@@ -345,6 +345,73 @@ export async function cleanupOrphanedWorkspaces(): Promise<number> {
 }
 
 /**
+ * Destroy all orphaned clawd-ws-* workspace containers and networks from previous
+ * clawd-app runs. Called once at startup before any new workspaces are spawned.
+ * This prevents Docker network address pool exhaustion from leaked containers.
+ */
+export async function cleanupOrphanedWorkspaces(): Promise<void> {
+  try {
+    // Find all clawd-ws-* containers (running or stopped)
+    const { stdout: containerOutput } = await execFileAsync("docker", [
+      "ps",
+      "-a",
+      "--filter",
+      "name=clawd-ws-",
+      "--format",
+      "{{.Names}}",
+    ]).catch(() => ({ stdout: "" }));
+
+    const containers = containerOutput.trim().split("\n").filter(Boolean);
+    if (containers.length > 0) {
+      console.log(`[startup] Cleaning up ${containers.length} orphaned workspace container(s)...`);
+      const results = await Promise.allSettled(containers.map((name) => execFileAsync("docker", ["rm", "-f", name])));
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) {
+        console.warn(
+          `[startup] ${failed} container(s) could not be removed (zombie Docker containers — Docker daemon restart may be needed)`,
+        );
+      }
+    }
+
+    // Remove orphaned clawd-ws-net-* networks (may have stale endpoints)
+    const { stdout: netOutput } = await execFileAsync("docker", [
+      "network",
+      "ls",
+      "--filter",
+      "name=clawd-ws-net-",
+      "--format",
+      "{{.Name}}",
+    ]).catch(() => ({ stdout: "" }));
+
+    const networks = netOutput.trim().split("\n").filter(Boolean);
+    if (networks.length > 0) {
+      // Force-disconnect all endpoints first, then remove
+      await Promise.allSettled(
+        networks.map(async (net) => {
+          try {
+            const { stdout: inspectOut } = await execFileAsync("docker", [
+              "network",
+              "inspect",
+              net,
+              "--format",
+              "{{range $k,$v := .Containers}}{{$k}} {{end}}",
+            ]);
+            const endpoints = inspectOut.trim().split(/\s+/).filter(Boolean);
+            await Promise.allSettled(
+              endpoints.map((id) => execFileAsync("docker", ["network", "disconnect", "-f", net, id]).catch(() => {})),
+            );
+            await execFileAsync("docker", ["network", "rm", net]).catch(() => {});
+          } catch {}
+        }),
+      );
+      console.log(`[startup] Cleaned up ${networks.length} orphaned workspace network(s)`);
+    }
+  } catch {
+    // Docker unavailable — not an error
+  }
+}
+
+/**
  * Reconcile allocated port set with actually-running clawd containers.
  * Call once at startup to prevent port collisions after process restart.
  * Also re-registers workspace routes in the Caddy gateway (in case it restarted).
