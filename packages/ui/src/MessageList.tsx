@@ -10,9 +10,10 @@ import "katex/dist/katex.min.css";
 import { UnreadSeparator } from "./UnreadSeparator";
 
 // Initialize mermaid with dark-aware theme
+const prefersDark = typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
 mermaid.initialize({
   startOnLoad: false,
-  theme: "neutral",
+  theme: prefersDark ? "dark" : "neutral",
   securityLevel: "loose",
   fontFamily: "Lato, sans-serif",
 });
@@ -250,36 +251,163 @@ export function PreBlock({ children }: { children: React.ReactNode }) {
 
 // Mermaid diagram component
 export function MermaidDiagram({ chart }: { chart: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     const renderChart = async () => {
       if (!chart.trim()) return;
+      const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       try {
-        const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-        const { svg } = await mermaid.render(id, chart.trim());
-        setSvg(svg);
-        setError(null);
+        const result = await mermaid.render(id, chart.trim());
+        if (!cancelled) {
+          setSvg(result.svg);
+          setError(null);
+        }
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to render diagram");
+        if (!cancelled) {
+          const msg = e instanceof Error ? e.message : "";
+          const firstLine = msg.split("\n").find((l) => l.trim()) ?? "Failed to render diagram";
+          setError(firstLine);
+        }
+      } finally {
+        // Clean up any orphan elements mermaid may have left in document.body
+        document.getElementById(`d${id}`)?.remove();
       }
     };
     renderChart();
+    return () => {
+      cancelled = true;
+    };
   }, [chart]);
 
   if (error) {
     return (
       <div className="mermaid-error">
-        <span className="mermaid-error-label">Diagram Error</span>
-        <pre>{error}</pre>
-        <pre className="mermaid-source">{chart}</pre>
+        <span className="mermaid-error-label">⚠ Diagram Error</span>
+        <span className="mermaid-error-message" title={error}>
+          {error}
+        </span>
       </div>
     );
   }
 
-  return <div ref={containerRef} className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
+  if (!svg) return null;
+
+  return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
+// Validates that a URL is safe (http/https only) to prevent javascript:/data: injection
+function isSafeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+// Preview card components for mermaid diagrams, images, and iframes
+function MermaidPreviewCard({ chart }: { chart: string }) {
+  return (
+    <div className="message-mermaid-card">
+      <MermaidDiagram chart={chart} />
+    </div>
+  );
+}
+
+function ImagePreviewCard({ src, alt }: { src: string; alt: string }) {
+  return (
+    <div className="message-image-card">
+      <img src={src} alt={alt} />
+      {alt && <p className="image-card-alt">{alt}</p>}
+    </div>
+  );
+}
+
+function IframePreviewCard({ src, title }: { src: string; title: string }) {
+  return (
+    <div className="message-iframe-card">
+      <div className="iframe-card-header">
+        <span className="iframe-card-title">{title || src}</span>
+        <a href={src} target="_blank" rel="noopener noreferrer" className="iframe-card-link">
+          Open ↗
+        </a>
+      </div>
+      <iframe
+        src={src}
+        title={title || "Preview"}
+        className="iframe-card-frame"
+        sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+      />
+    </div>
+  );
+}
+
+interface ParsedBlocks {
+  cleanedText: string;
+  mermaidBlocks: string[];
+  imageBlocks: Array<{ src: string; alt: string }>;
+  iframeBlocks: Array<{ src: string; title: string }>;
+}
+
+function parseMessageBlocks(text: string): ParsedBlocks {
+  const mermaidBlocks: string[] = [];
+  const imageBlocks: Array<{ src: string; alt: string }> = [];
+  const iframeBlocks: Array<{ src: string; title: string }> = [];
+
+  // Extract mermaid code blocks (```mermaid ... ```) — handle both LF and CRLF
+  let cleaned = text.replace(/```mermaid\r?\n([\s\S]*?)```/g, (_, code) => {
+    mermaidBlocks.push(code.trim());
+    return "";
+  });
+
+  // Protect non-mermaid fenced code blocks from image extraction (e.g., markdown docs with ![...])
+  const fenceMap = new Map<string, string>();
+  let fenceIdx = 0;
+  cleaned = cleaned.replace(/```[\s\S]*?```/g, (match) => {
+    const key = `\x00FENCE${fenceIdx++}\x00`;
+    fenceMap.set(key, match);
+    return key;
+  });
+
+  // Extract <iframe> tags (only http/https src)
+  cleaned = cleaned.replace(/<iframe\b([^>]*)(?:\s*\/>|\s*>(?:[\s\S]*?)<\/iframe>)/gi, (_, attrs) => {
+    const srcMatch = /\bsrc=["']([^"']*)["']/.exec(attrs);
+    const titleMatch = /\btitle=["']([^"']*)["']/.exec(attrs);
+    if (srcMatch && isSafeUrl(srcMatch[1])) {
+      iframeBlocks.push({ src: srcMatch[1], title: titleMatch?.[1] ?? "" });
+      return "";
+    }
+    return _;
+  });
+
+  // Extract HTML <img> tags (only http/https or data:image/ src)
+  cleaned = cleaned.replace(/<img\b([^>]*)\/?>/gi, (match, attrs) => {
+    const srcMatch = /\bsrc=["']([^"']*)["']/.exec(attrs);
+    const altMatch = /\balt=["']([^"']*)["']/.exec(attrs);
+    if (srcMatch && (isSafeUrl(srcMatch[1]) || srcMatch[1].startsWith("data:image/"))) {
+      imageBlocks.push({ src: srcMatch[1], alt: altMatch?.[1] ?? "" });
+      return "";
+    }
+    return match;
+  });
+
+  // Extract standalone markdown images ![alt](src) — only when on their own line
+  // (avoids breaking inline images in tables and paragraphs)
+  cleaned = cleaned.replace(/^[ \t]*!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)[ \t]*$/gm, (_, alt, src) => {
+    if (isSafeUrl(src) || src.startsWith("data:image/")) {
+      imageBlocks.push({ src, alt });
+      return "";
+    }
+    return _;
+  });
+
+  // Restore protected fenced code blocks
+  cleaned = cleaned.replace(/\x00FENCE\d+\x00/g, (key) => fenceMap.get(key) ?? key);
+
+  return { cleanedText: cleaned.trim(), mermaidBlocks, imageBlocks, iframeBlocks };
 }
 
 // Callout/Admonition component (GitHub-style)
@@ -1579,70 +1707,86 @@ export default function MessageList({
                 {(() => {
                   const isLong = msg.text.length > MESSAGE_COLLAPSE_THRESHOLD;
                   const isExpanded = expandedMessages.has(msg.ts);
-                  const displayText =
+                  const rawText =
                     isLong && !isExpanded ? `${msg.text.slice(0, MESSAGE_COLLAPSE_THRESHOLD)}...` : msg.text;
                   const isArticleMessage = msg.subtype === "article";
                   const isSubspaceMessage = !!msg.subspace;
+                  // Decode HTML entities BEFORE block extraction so encoded tags (<iframe>) get extracted
+                  const decodedText = processMessageText(rawText);
+                  const { cleanedText, mermaidBlocks, imageBlocks, iframeBlocks } = parseMessageBlocks(decodedText);
                   return (
                     <>
                       {isArticleMessage || isSubspaceMessage ? null : (
                         <div className={`message-content ${isLong && !isExpanded ? "collapsed" : ""}`}>
-                          <Markdown
-                            remarkPlugins={[remarkGfm, remarkMath]}
-                            rehypePlugins={[rehypeKatex, rehypeRaw]}
-                            components={{
-                              // Handle pre element - wrap with copy button outside scroll area
-                              pre: ({ children }) => <PreBlock>{children}</PreBlock>,
-                              code: ({ className, children }) => {
-                                const match = /language-(\w+)/.exec(className || "");
-                                const lang = match ? match[1] : "";
-                                const code = String(children).replace(/\n$/, "");
+                          {cleanedText && (
+                            <Markdown
+                              remarkPlugins={[remarkGfm, remarkMath]}
+                              rehypePlugins={[rehypeKatex, rehypeRaw]}
+                              components={{
+                                // Handle pre element - wrap with copy button outside scroll area
+                                pre: ({ children }) => <PreBlock>{children}</PreBlock>,
+                                code: ({ className, children }) => {
+                                  const match = /language-(\w+)/.exec(className || "");
+                                  const lang = match ? match[1] : "";
+                                  const code = String(children).replace(/\n$/, "");
 
-                                // Mermaid diagrams
-                                if (lang === "mermaid") {
-                                  return <MermaidDiagram chart={code} />;
-                                }
-
-                                // Regular code - just return code element (pre handles the copy button)
-                                return <code className={className}>{children}</code>;
-                              },
-                              // Handle GitHub-style callouts in blockquotes
-                              blockquote: ({ children }) => {
-                                // Check if first child is a paragraph starting with [!TYPE]
-                                const firstChild = (children as any)?.[0];
-                                if (firstChild?.props?.children) {
-                                  const text = String(firstChild.props.children);
-                                  const calloutMatch = text.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i);
-                                  if (calloutMatch) {
-                                    const type = calloutMatch[1].toLowerCase();
-                                    const content = text.replace(calloutMatch[0], "");
-                                    return <Callout type={type}>{content}</Callout>;
+                                  // Mermaid diagrams (fallback if not pre-extracted)
+                                  if (lang === "mermaid") {
+                                    return <MermaidDiagram chart={code} />;
                                   }
-                                }
-                                return <blockquote>{children}</blockquote>;
-                              },
-                              // Tables with proper styling
-                              table: ({ children }) => (
-                                <div className="table-wrapper">
-                                  <table>{children}</table>
-                                </div>
-                              ),
-                              a: ({ href, children }) => (
-                                <a href={href} target="_blank" rel="noopener noreferrer">
-                                  {children}
-                                </a>
-                              ),
-                              // Task lists
-                              input: ({ type, checked, ...props }) => {
-                                if (type === "checkbox") {
-                                  return <input type="checkbox" checked={checked} disabled className="task-checkbox" />;
-                                }
-                                return <input type={type} {...props} />;
-                              },
-                            }}
-                          >
-                            {processMessageText(displayText)}
-                          </Markdown>
+
+                                  // Regular code - just return code element (pre handles the copy button)
+                                  return <code className={className}>{children}</code>;
+                                },
+                                // Handle GitHub-style callouts in blockquotes
+                                blockquote: ({ children }) => {
+                                  // Check if first child is a paragraph starting with [!TYPE]
+                                  const firstChild = (children as any)?.[0];
+                                  if (firstChild?.props?.children) {
+                                    const text = String(firstChild.props.children);
+                                    const calloutMatch = text.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i);
+                                    if (calloutMatch) {
+                                      const type = calloutMatch[1].toLowerCase();
+                                      const content = text.replace(calloutMatch[0], "");
+                                      return <Callout type={type}>{content}</Callout>;
+                                    }
+                                  }
+                                  return <blockquote>{children}</blockquote>;
+                                },
+                                // Tables with proper styling
+                                table: ({ children }) => (
+                                  <div className="table-wrapper">
+                                    <table>{children}</table>
+                                  </div>
+                                ),
+                                a: ({ href, children }) => (
+                                  <a href={href} target="_blank" rel="noopener noreferrer">
+                                    {children}
+                                  </a>
+                                ),
+                                // Task lists
+                                input: ({ type, checked, ...props }) => {
+                                  if (type === "checkbox") {
+                                    return (
+                                      <input type="checkbox" checked={checked} disabled className="task-checkbox" />
+                                    );
+                                  }
+                                  return <input type={type} {...props} />;
+                                },
+                              }}
+                            >
+                              {cleanedText}
+                            </Markdown>
+                          )}
+                          {mermaidBlocks.map((chart, i) => (
+                            <MermaidPreviewCard key={`mermaid-${i}`} chart={chart} />
+                          ))}
+                          {imageBlocks.map((img, i) => (
+                            <ImagePreviewCard key={`img-${i}`} src={img.src} alt={img.alt} />
+                          ))}
+                          {iframeBlocks.map((iframe, i) => (
+                            <IframePreviewCard key={`iframe-${i}`} src={iframe.src} title={iframe.title} />
+                          ))}
                         </div>
                       )}
                       {isLong && !isArticleMessage && (
