@@ -14,13 +14,25 @@
 import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
 import type { ToolResult } from "../tools/tools.js";
 import type { MCPManager } from "../mcp/client.js";
-import { spawnWorkspace, destroyWorkspace, listActiveWorkspaces } from "../workspace/container.js";
+import { spawnWorkspace, destroyWorkspace, listActiveWorkspaces, getWorkspace } from "../workspace/container.js";
+import { getAgentContext } from "../utils/agent-context.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { realpathSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Build a deterministic workspace ID from channel + agentId.
+ * Result: lowercase slug, max 48 chars, no leading/trailing hyphens.
+ * E.g. "demo-agent-workspace" + "Tuan" → "demo-agent-workspace-tuan"
+ */
+function makeWorkspaceId(channel: string, agentId: string): string {
+  const raw = `${channel}-${agentId}`.toLowerCase();
+  const slug = raw.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+  return slug || "default";
+}
 
 /** Permitted Docker images — prevents LLM from pulling arbitrary images */
 const ALLOWED_IMAGES = new Set([
@@ -171,17 +183,31 @@ Returns workspace IDs, images, status, and creation time.`,
 
   private async handleSpawn(args: Record<string, any>): Promise<ToolResult> {
     await this.reconnectReady;
-    // Enforce single-workspace constraint per agent session.
-    // Multiple workspaces cannot be independently addressed (tool names would collide).
-    // Destroy the existing workspace first, then spawn a new one.
-    if (this.ownedWorkspaceIds.size > 0) {
-      return {
-        success: false,
-        output: "",
-        error:
-          `Only one workspace allowed per agent session. Active workspaces: [${[...this.ownedWorkspaceIds].join(", ")}]. ` +
-          `Destroy the existing workspace first with destroy_workspace.`,
-      };
+
+    // Compute deterministic workspace ID from channel + agentId context
+    const ctx = getAgentContext();
+    const workspaceId = makeWorkspaceId(ctx?.channel || "default", ctx?.agentId || "agent");
+
+    // Idempotent: if the workspace for this agent already exists, reconnect and return it
+    if (this.ownedWorkspaceIds.has(workspaceId)) {
+      const existing = getWorkspace(workspaceId);
+      if (existing && existing.status === "running") {
+        const serverName = `workspace-${workspaceId}`;
+        const tools = this.mcpManager
+          .getAllTools()
+          .filter((t) => t.server === serverName)
+          .map((t) => t.tool.name);
+        return {
+          success: true,
+          output: JSON.stringify({
+            ok: true,
+            workspace_id: workspaceId,
+            image: existing.image,
+            workspace_tools: tools,
+            message: `Existing workspace restored. ${tools.length} tools available: ${tools.join(", ")}.`,
+          }),
+        };
+      }
     }
 
     const dockerOk = await isDockerAvailable();
@@ -225,6 +251,7 @@ Returns workspace IDs, images, status, and creation time.`,
         image,
         projectPath,
         vncEnabled: (args.vnc_enabled as boolean) ?? false,
+        id: workspaceId,
       });
     } catch (spawnErr: any) {
       return {

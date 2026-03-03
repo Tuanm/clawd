@@ -39,6 +39,12 @@ export interface WorkspaceOptions {
   cpus?: string;
   /** Enable VNC (default: false) */
   vncEnabled?: boolean;
+  /**
+   * Deterministic workspace ID (e.g. "channel-agentid" slug).
+   * If provided and a container with this ID is already running, the existing
+   * container is reused (idempotent spawn). If omitted, a random hex ID is used.
+   */
+  id?: string;
 }
 
 export interface WorkspaceHandle {
@@ -85,8 +91,72 @@ function releasePort(port: number): void {
 
 const activeWorkspaces = new Map<string, WorkspaceHandle>();
 
+/**
+ * Try to reconnect to an already-running container with the given ID.
+ * Returns the reconstructed handle if the container is healthy, or null otherwise.
+ */
+async function tryReuseExistingContainer(id: string, image: string): Promise<WorkspaceHandle | null> {
+  const containerName = `clawd-ws-${id}`;
+  try {
+    const { stdout: statusOut } = await execFileAsync("docker", [
+      "inspect", containerName, "--format", "{{.State.Status}}",
+    ]).catch(() => ({ stdout: "" }));
+    if (statusOut.trim() !== "running") return null;
+
+    // Recover auth token from container env vars
+    const { stdout: envOut } = await execFileAsync("docker", [
+      "inspect", containerName, "--format", "{{range .Config.Env}}{{println .}}{{end}}",
+    ]);
+    const authToken = envOut.split("\n")
+      .find((l) => l.startsWith("WORKSPACE_AUTH_TOKEN="))
+      ?.slice("WORKSPACE_AUTH_TOKEN=".length) || "";
+    if (!authToken) return null;
+
+    // Recover host-bound MCP port
+    const { stdout: portOut } = await execFileAsync("docker", ["port", containerName, "3000"]).catch(() => ({ stdout: "" }));
+    const portMatch = portOut.trim().match(/:(\d+)$/);
+    if (!portMatch) return null;
+    const mcpPort = parseInt(portMatch[1], 10);
+
+    const { stdout: cidOut } = await execFileAsync("docker", [
+      "inspect", containerName, "--format", "{{.Id}}",
+    ]);
+    const containerId = cidOut.trim();
+
+    allocatedPorts.add(mcpPort);
+    const handle: WorkspaceHandle = {
+      id, containerId,
+      mcpUrl: `http://127.0.0.1:${mcpPort}`,
+      authToken, mcpPort, image,
+      status: "running",
+      createdAt: new Date(),
+    };
+    activeWorkspaces.set(id, handle);
+
+    // Re-register gateway route (non-fatal)
+    await connectWorkspaceToGateway(id).catch((err) =>
+      console.warn(`[workspace] Gateway reconnect failed for ${id}:`, err.message),
+    );
+
+    console.log(`[workspace] Reused existing container ${containerName} on port ${mcpPort}`);
+    return handle;
+  } catch {
+    return null;
+  }
+}
+
 export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<WorkspaceHandle> {
   const image = opts.image || "clawd-workspace:base";
+
+  // Deterministic ID: check in-memory map first, then Docker, before spawning a new one
+  if (opts.id) {
+    const existing = activeWorkspaces.get(opts.id);
+    if (existing && existing.status === "running") return existing;
+
+    const reused = await tryReuseExistingContainer(opts.id, image);
+    if (reused) return reused;
+  }
+
   const authToken = opts.authToken || randomBytes(32).toString("hex");
 
   // Allocate only MCP port (noVNC/VNC handled by gateway via Docker network DNS)
@@ -97,7 +167,7 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
     throw new Error(`Failed to allocate workspace port: ${err.message}`);
   }
 
-  const id = randomBytes(8).toString("hex");
+  const id = opts.id || randomBytes(8).toString("hex");
   const containerName = `clawd-ws-${id}`;
   // Per-workspace data volume for Chrome profile and TOTP secrets (not shared across workspaces)
   const volumeName = `clawd-ws-data-${id}`;
@@ -436,7 +506,7 @@ export async function reconcilePortsFromDocker(): Promise<void> {
       }
       // Collect workspace IDs for gateway route reconciliation
       const id = name?.replace(/^clawd-ws-/, "");
-      if (id && /^[a-f0-9]{16}$/.test(id)) {
+      if (id && /^[a-z0-9][a-z0-9_-]{1,62}$/.test(id)) {
         discoveredIds.push(id);
       }
     }

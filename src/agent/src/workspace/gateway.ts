@@ -31,7 +31,7 @@ let gatewayConfigured = false;
 // Mutex to prevent concurrent ensureGatewayRunning() calls from racing
 let ensureGatewayPromise: Promise<void> | null = null;
 
-const WORKSPACE_ID_RE = /^[a-f0-9]{16}$/;
+const WORKSPACE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,62}$/;
 function assertValidWorkspaceId(id: string): void {
   if (!WORKSPACE_ID_RE.test(id)) throw new Error(`Invalid workspace ID: "${id}"`);
 }
