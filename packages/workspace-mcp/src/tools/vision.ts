@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { screenshotTool, cleanupScreenshot } from "./observe";
-import { getMiniMaxConfig, getEnv } from "../config";
+import { getVisionConfig, getEnv } from "../config";
 import { getCurrentControlMode, isExtensionPopupDetected } from "../engines/playwright";
 
 interface VisionResult {
@@ -13,36 +13,48 @@ interface VisionResult {
 }
 
 /**
- * Analyze an image using the configured vision provider.
- * Uses OpenAI-compatible /chat/completions for vision when available.
- *
- * NOTE: MiniMax M2/M2.5 models are text-only — they do NOT support image input.
- * The config's "vision" model must point to a vision-capable model (e.g., via a
- * custom proxy that routes to Gemini, GPT-4, or Claude vision models).
+ * Analyze an image using the configured vision provider (from vision.read_image config).
+ * Supports Copilot (GPT-4.1) and OpenAI-compatible vision APIs.
  */
 async function analyzeImageWithVision(imagePath: string, prompt: string): Promise<string> {
-  const config = getMiniMaxConfig();
-  if (!config) throw new Error("Vision provider not configured — set CLAWD_MINIMAX_BASE_URL + CLAWD_MINIMAX_API_KEY with a vision-capable model in models.vision");
-
-  const visionModel = config.models?.["vision"] || config.models?.["flash"];
-  if (!visionModel) {
-    throw new Error("No vision model configured. Set models.vision in the minimax provider config to a vision-capable model.");
+  const config = getVisionConfig();
+  if (!config) {
+    throw new Error(
+      'Vision provider not configured. Set "vision.read_image" in ~/.clawd/config.json ' +
+      "(e.g., copilot with gpt-4.1 or gemini with a vision model).",
+    );
   }
 
   const imageData = readFileSync(imagePath);
   const base64 = imageData.toString("base64");
 
-  // Strip /anthropic suffix — vision needs OpenAI-compatible endpoint
-  const baseUrl = config.base_url.replace(/\/anthropic\/?$/, "");
-  const model = visionModel;
-  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+  // Build headers — Copilot requires special headers
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${config.api_key}`,
+  };
+
+  if (config.provider === "copilot") {
+    headers["Accept"] = "application/json";
+    headers["X-Interaction-Type"] = "conversation-agent";
+    headers["Openai-Intent"] = "conversation-agent";
+    headers["X-Initiator"] = "agent";
+    headers["X-GitHub-Api-Version"] = "2025-05-01";
+    headers["Copilot-Integration-Id"] = "copilot-developer-cli";
+    headers["User-Agent"] = "Claw'd/1.0.0";
+  }
+
+  // Copilot uses /chat/completions, others use /v1/chat/completions
+  const baseUrl = config.base_url.replace(/\/+$/, "");
+  const endpoint = config.provider === "copilot"
+    ? `${baseUrl}/chat/completions`
+    : `${baseUrl}/v1/chat/completions`;
+
+  const response = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.api_key}`,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
-      model,
+      model: config.model,
       messages: [
         {
           role: "user",

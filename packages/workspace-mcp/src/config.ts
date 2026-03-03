@@ -1,8 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 
 interface ClaWdConfig {
-  providers?: {
-    minimax?: { base_url: string; api_key: string; models?: Record<string, string> };
+  vision?: {
+    base_url?: string;
+    api_key?: string;
+    model?: string;
+    provider?: string;
   };
   env?: Record<string, string>;
   workspace?: {
@@ -33,18 +36,26 @@ export function getAuthToken(): string {
   return config.workspace?.auth_token || process.env.WORKSPACE_AUTH_TOKEN || "";
 }
 
-export function getMiniMaxConfig() {
-  const fromConfig = loadConfig().providers?.minimax;
-  if (fromConfig) return fromConfig;
-  // Fallback to env vars injected by the host (no config file mount needed)
-  const base_url = process.env.CLAWD_MINIMAX_BASE_URL;
-  const api_key = process.env.CLAWD_MINIMAX_API_KEY;
+/** Get the vision provider config for image analysis inside workspace containers. */
+export function getVisionConfig(): { base_url: string; api_key: string; model: string; provider: string } | null {
+  // Prefer env vars injected by the host (standard for Docker containers)
+  const base_url = process.env.CLAWD_VISION_BASE_URL;
+  const api_key = process.env.CLAWD_VISION_API_KEY;
+  const model = process.env.CLAWD_VISION_MODEL || "gpt-4.1";
+  const provider = process.env.CLAWD_VISION_PROVIDER || "copilot";
   if (base_url && api_key) {
-    let models: Record<string, string> | undefined;
-    try {
-      if (process.env.CLAWD_MINIMAX_MODELS) models = JSON.parse(process.env.CLAWD_MINIMAX_MODELS);
-    } catch {}
-    return { base_url, api_key, models };
+    return { base_url, api_key, model, provider };
+  }
+
+  // Fallback to config file (for non-Docker environments)
+  const cfg = loadConfig().vision;
+  if (cfg?.base_url && cfg?.api_key) {
+    return {
+      base_url: cfg.base_url,
+      api_key: cfg.api_key,
+      model: cfg.model || "gpt-4.1",
+      provider: cfg.provider || "copilot",
+    };
   }
   return null;
 }

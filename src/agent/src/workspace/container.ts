@@ -255,16 +255,33 @@ export async function spawnWorkspace(opts: WorkspaceOptions = {}): Promise<Works
     dockerArgs.push("-v", `${opts.projectPath}:/workspace:rw`);
   }
 
-  // Pass only the vision/MiniMax provider config as env vars — never mount the full credentials file.
-  // This prevents containerized code from reading other secrets (auth tokens, keys, etc.).
+  // Pass the resolved vision.read_image provider config as env vars for workspace-mcp.
+  // This allows screenshot analysis inside containers without mounting the full credentials file.
   const claWdConfigPath = `${process.env.HOME}/.clawd/config.json`;
   if (existsSync(claWdConfigPath)) {
     try {
       const claWdConfig = JSON.parse(readFileSync(claWdConfigPath, "utf-8"));
-      const minimax = claWdConfig?.providers?.minimax;
-      if (minimax?.base_url) dockerArgs.push("-e", `CLAWD_MINIMAX_BASE_URL=${minimax.base_url}`);
-      if (minimax?.api_key) dockerArgs.push("-e", `CLAWD_MINIMAX_API_KEY=${minimax.api_key}`);
-      if (minimax?.models) dockerArgs.push("-e", `CLAWD_MINIMAX_MODELS=${JSON.stringify(minimax.models)}`);
+      const vision = claWdConfig?.vision;
+      const readImg = vision?.read_image || vision;
+      const provider = readImg?.provider;
+      const model = readImg?.model;
+
+      if (provider && typeof provider === "string") {
+        const providerConfig = claWdConfig?.providers?.[provider];
+        if (providerConfig) {
+          const baseUrl = provider === "copilot"
+            ? "https://api.githubcopilot.com"
+            : providerConfig.base_url;
+          const apiKey = providerConfig.api_key
+            || (Array.isArray(providerConfig.api_keys) ? providerConfig.api_keys[0] : undefined)
+            || providerConfig.token; // copilot legacy
+
+          if (baseUrl) dockerArgs.push("-e", `CLAWD_VISION_BASE_URL=${baseUrl}`);
+          if (apiKey) dockerArgs.push("-e", `CLAWD_VISION_API_KEY=${apiKey}`);
+          if (model) dockerArgs.push("-e", `CLAWD_VISION_MODEL=${model}`);
+          dockerArgs.push("-e", `CLAWD_VISION_PROVIDER=${provider}`);
+        }
+      }
     } catch {
       /* ignore parse errors */
     }
