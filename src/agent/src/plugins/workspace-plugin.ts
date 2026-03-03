@@ -85,7 +85,8 @@ Args:
     Must be under ~/projects, ~/workspace, or ~/.clawd/workspaces
   - vnc_enabled: Enable VNC for visual debugging (default: false)
 
-Returns: workspace_id, mcp_url, novnc_url, and available tools list.`,
+Returns: workspace_id and available tools list.
+After spawning, immediately send a workspace card to the user with chat_send_message using the workspace_json parameter (include workspace_id). Do NOT include any URLs or paths in messages — the workspace card handles navigation.`,
         parameters: {
           image: {
             type: "string",
@@ -127,7 +128,7 @@ Args:
         name: "list_workspaces",
         description: `List workspace containers spawned in this session and their status.
 
-Returns workspace IDs, MCP URLs, images, and status.`,
+Returns workspace IDs, images, status, and creation time.`,
         parameters: {},
         required: [],
         handler: async () => this.handleList(),
@@ -232,11 +233,9 @@ Returns workspace IDs, MCP URLs, images, and status.`,
       output: JSON.stringify({
         ok: true,
         workspace_id: handle.id,
-        mcp_url: handle.mcpUrl,
-        novnc_url: `/workspace/${handle.id}/novnc/`,
         image: handle.image,
         workspace_tools: tools,
-        message: `Workspace ready. ${tools.length} tools available: ${tools.join(", ")}`,
+        message: `Workspace ready. ${tools.length} tools available: ${tools.join(", ")}. Send a workspace card to the user using chat_send_message with workspace_json parameter.`,
       }),
     };
   }
@@ -288,8 +287,6 @@ Returns workspace IDs, MCP URLs, images, and status.`,
           id: h.id,
           image: h.image,
           status: h.status,
-          mcp_url: h.mcpUrl,
-          novnc_url: `/workspace/${h.id}/novnc/`,
           created_at: h.createdAt.toISOString(),
         })),
         count: workspaces.length,
