@@ -437,33 +437,20 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   }
                 }}
               />
-              <select
+              <input
+                type="text"
                 className="agent-field-input"
+                placeholder="Provider"
                 value={newProvider}
                 onChange={(e) => setNewProvider(e.target.value)}
-              >
-                {providers.length > 0
-                  ? providers.map((p) => (
-                      <option key={p.name} value={p.name}>
-                        {p.name}
-                        {p.is_custom ? ` (${p.type})` : ""}
-                      </option>
-                    ))
-                  : [
-                      <option key="copilot" value="copilot">
-                        copilot
-                      </option>,
-                      <option key="openai" value="openai">
-                        openai
-                      </option>,
-                      <option key="anthropic" value="anthropic">
-                        anthropic
-                      </option>,
-                      <option key="ollama" value="ollama">
-                        ollama
-                      </option>,
-                    ]}
-              </select>
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAddAgent();
+                  if (e.key === "Escape") {
+                    setShowAddForm(false);
+                    setError(null);
+                  }
+                }}
+              />
               <input
                 type="text"
                 className="agent-field-input"
