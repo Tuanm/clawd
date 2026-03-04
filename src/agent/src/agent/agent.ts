@@ -30,6 +30,8 @@ import { createStatePersistencePlugin } from "../plugins/state-persistence-plugi
 import { createContextModePlugin, type ContextModePluginResult } from "../plugins/context-mode-plugin";
 import { WorkspaceToolPlugin } from "../plugins/workspace-plugin";
 import { TunnelPlugin } from "../plugins/tunnel-plugin";
+import { isWorkspacesEnabled } from "../../../config-file";
+import { getAgentContext } from "../utils/agent-context";
 import { ContextTracker } from "../utils/context-tracker";
 import { homedir } from "node:os";
 
@@ -1193,8 +1195,10 @@ SUMMARY:`;
     });
 
     // Register workspace tool plugin (spawn_workspace, destroy_workspace, list_workspaces)
+    // Only enabled when config.json has "workspaces": true or ["channel-1", ...].
     // Gracefully skips if Docker is unavailable. Guard against duplicate registration.
-    if (!this._workspacePluginRegistered) {
+    const ctx = getAgentContext();
+    if (!this._workspacePluginRegistered && isWorkspacesEnabled(ctx?.channel)) {
       try {
         const wsPlugin = new WorkspaceToolPlugin(this.mcpManager);
         this.toolPluginManager.register(wsPlugin);

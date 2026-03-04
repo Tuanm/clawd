@@ -86,7 +86,7 @@ Examples:
 import { registerAgentRoutes } from "./api/agents";
 import { registerArticleRoutes } from "./api/articles";
 import { loadConfig, validateConfig } from "./config";
-import { loadConfigFile } from "./config-file";
+import { loadConfigFile, isWorkspacesEnabled } from "./config-file";
 import { getEmbeddedAsset, hasEmbeddedUI, embeddedUIFileCount, embeddedUITotalSize } from "./embedded-ui";
 import { WorkerManager } from "./worker-manager";
 import { setDebug } from "./agent/src/utils/debug";
@@ -189,8 +189,7 @@ import {
   handleWebSocketMessage,
   handleWebSocketOpen,
 } from "./server/websocket";
-import { handleWorkspaceProxy, upgradeWorkspaceWs } from "./server/routes/workspace-proxy";
-import { reconcilePortsFromDocker, cleanupOrphanedWorkspaces } from "./agent/src/workspace/container.js";
+// Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
 
@@ -203,17 +202,25 @@ const PORT = config.port;
 
 // Database is initialized at module load time in database.ts (before prepared statements)
 
-// Clean up orphaned workspace containers first, then reconcile gateway routes
-// (sequential: cleanup must finish before reconcile tries to connect to networks)
-cleanupOrphanedWorkspaces()
+// Always clean up orphaned workspace containers on startup (even if workspaces is now disabled,
+// containers may exist from when it was enabled). Only reconcile ports if currently enabled.
+import("./agent/src/workspace/container.js")
+  .then(({ cleanupOrphanedWorkspaces, reconcilePortsFromDocker }) =>
+    cleanupOrphanedWorkspaces()
+      .catch((err: unknown) => {
+        console.warn("[startup] cleanupOrphanedWorkspaces failed:", err);
+      })
+      .then(() => {
+        if (isWorkspacesEnabled()) {
+          return reconcilePortsFromDocker().catch((err: unknown) => {
+            console.warn("[startup] reconcilePortsFromDocker failed unexpectedly:", err);
+          });
+        }
+      }),
+  )
   .catch((err: unknown) => {
-    console.warn("[startup] cleanupOrphanedWorkspaces failed:", err);
-  })
-  .then(() =>
-    reconcilePortsFromDocker().catch((err: unknown) => {
-      console.warn("[startup] reconcilePortsFromDocker failed unexpectedly:", err);
-    }),
-  );
+    console.warn("[startup] workspace module import failed:", err);
+  });
 
 // Run channel ID migration on startup (normalizes legacy C-prefixed IDs to names)
 const migrated = migrateChannelIds();
@@ -462,16 +469,20 @@ const server = Bun.serve({
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
 
-    // Workspace noVNC WebSocket proxy
-    const wsProxyMatch = path.match(/^\/workspace\/([a-f0-9]{16})\/novnc\/websockify$/);
+    // Workspace noVNC WebSocket proxy (only when workspaces enabled)
+    const wsProxyMatch = isWorkspacesEnabled() ? path.match(/^\/workspace\/([a-f0-9]{16})\/novnc\/websockify$/) : null;
     if (wsProxyMatch) {
-      return upgradeWorkspaceWs(req, wsProxyMatch[1], server);
+      return import("./server/routes/workspace-proxy").then(({ upgradeWorkspaceWs }) =>
+        upgradeWorkspaceWs(req, wsProxyMatch[1], server),
+      );
     }
 
-    // Workspace noVNC HTTP proxy
-    const proxyMatch = path.match(/^\/workspace\/([a-f0-9]{16})\/novnc(\/.*)?$/);
+    // Workspace noVNC HTTP proxy (only when workspaces enabled)
+    const proxyMatch = isWorkspacesEnabled() ? path.match(/^\/workspace\/([a-f0-9]{16})\/novnc(\/.*)?$/) : null;
     if (proxyMatch) {
-      return handleWorkspaceProxy(req, url, proxyMatch[1]);
+      return import("./server/routes/workspace-proxy").then(({ handleWorkspaceProxy }) =>
+        handleWorkspaceProxy(req, url, proxyMatch[1]),
+      );
     }
 
     // API routes
@@ -1611,7 +1622,8 @@ const gracefulShutdown = async (signal: string) => {
     await scheduler.stop();
     await spaceWorkerManager.stopAll();
     await workerManager.stop();
-    // Destroy all workspace containers so Docker networks/resources are freed
+    // Always destroy workspace containers on shutdown (even if feature was disabled after
+    // containers were created, to prevent Docker resource leaks)
     const { listActiveWorkspaces, destroyWorkspace } = await import("./agent/src/workspace/container.js");
     const workspaces = listActiveWorkspaces();
     if (workspaces.length > 0) {

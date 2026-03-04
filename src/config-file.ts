@@ -26,6 +26,16 @@ export interface ConfigFile {
     daily_image_limit?: number;
   };
   /**
+   * Enable agent workspace features (Docker containers, noVNC, browser tools).
+   *
+   * - `true`  — enabled for ALL channels
+   * - `false` or omitted — disabled (default)
+   * - `string[]` — enabled only for the listed channel names
+   *
+   * Example: `"workspaces": ["demo-agent-workspace", "dev"]`
+   */
+  workspaces?: boolean | string[];
+  /**
    * Vision / image processing configuration.
    * Per-operation keys take precedence over top-level defaults.
    *
@@ -97,4 +107,21 @@ export function getEnvVar(key: string): string | undefined {
   const configEnv = getConfigEnv();
   if (key in configEnv) return configEnv[key];
   return process.env[key];
+}
+
+/**
+ * Check if workspace features are enabled.
+ * - No channel arg: returns true if workspaces are enabled at all (any channel).
+ * - With channel arg: returns true if workspaces are enabled for that specific channel.
+ */
+export function isWorkspacesEnabled(channel?: string): boolean {
+  const config = loadConfigFile();
+  const ws = config.workspaces;
+  if (ws === undefined || ws === false) return false;
+  if (ws === true) return true;
+  if (Array.isArray(ws)) {
+    if (!channel) return ws.length > 0;
+    return ws.includes(channel);
+  }
+  return false;
 }
