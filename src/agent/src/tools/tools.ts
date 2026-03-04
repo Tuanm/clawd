@@ -258,6 +258,34 @@ function registerTool(
 }
 
 // ============================================================================
+// Tool: Today
+// ============================================================================
+
+registerTool(
+  "today",
+  "Get today's date and current time. Use this when you need to know what day it is, the current time, or calculate relative dates.",
+  {},
+  [],
+  async () => {
+    const now = new Date();
+    return {
+      success: true,
+      output: JSON.stringify(
+        {
+          iso: now.toISOString(),
+          date: now.toLocaleDateString("en-CA"), // YYYY-MM-DD
+          time: now.toLocaleTimeString("en-US", { hour12: false }),
+          day: now.toLocaleDateString("en-US", { weekday: "long" }),
+          unix: Math.floor(now.getTime() / 1000),
+        },
+        null,
+        2,
+      ),
+    };
+  },
+);
+
+// ============================================================================
 // Tool: Get Project Root
 // ============================================================================
 
@@ -1168,7 +1196,7 @@ registerTool(
 
       return {
         success: true,
-        output: `Job submitted: ${jobId}\nProject: ${getProjectHash()}\nLogs: ${getProjectJobsDir()}/${jobId}/output.log`,
+        output: `Job submitted: ${jobId}\nName: ${name}\nUse job_status or job_logs with this ID to check progress.`,
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -2160,14 +2188,8 @@ echo "Exit code: $?" >> "${logFile}"
           agent_id: agentId,
           name,
           status: "running",
-          tmux_session: sessionName,
-          log_file: logFile,
-          result_file: resultFile,
           project_hash: currentProjectHash,
-          message: `Sub-agent spawned in tmux session "${sessionName}". It will respond directly to the chat channel when done.`,
-          view_output: `tmux -S "${socketPath}" attach -t ${sessionName}`,
-          view_logs: `tail -f ${logFile}`,
-          kill_command: `tmux -S "${socketPath}" kill-session -t ${sessionName}`,
+          message: `Sub-agent spawned. Use list_agents to check status, agent_logs to view output, or kill_agent to stop it.`,
         },
         null,
         2,
@@ -2300,6 +2322,58 @@ registerTool(
         2,
       ),
     };
+  },
+);
+
+// ============================================================================
+// Tool: Agent Logs
+// ============================================================================
+
+registerTool(
+  "agent_logs",
+  "Get the output logs of a sub-agent by its ID. Use this to check what a sub-agent is doing or has done.",
+  {
+    agent_id: {
+      type: "string",
+      description: "The ID of the sub-agent",
+    },
+    tail: {
+      type: "number",
+      description: "Only get last N lines (optional, returns last 100 by default)",
+    },
+  },
+  ["agent_id"],
+  async ({ agent_id, tail = 100 }) => {
+    const agentInfo = subAgents.get(agent_id);
+    if (!agentInfo) {
+      return {
+        success: false,
+        output: "",
+        error: `Agent ${agent_id} not found. Use list_agents to see available agents.`,
+      };
+    }
+
+    const { join } = require("node:path");
+    const agentsDir = getProjectAgentsDir();
+    const sessionName = agentInfo.tmuxSession || agent_id.replace(/^tmux-/, "");
+    const logFile = join(agentsDir, sessionName, "output.log");
+
+    try {
+      const { readFileSync } = require("node:fs");
+      const content = readFileSync(logFile, "utf-8");
+      const lines = content.split("\n");
+      const output = tail ? lines.slice(-tail).join("\n") : content;
+
+      return {
+        success: true,
+        output: `Agent: ${agentInfo.name} [${agentInfo.status.toUpperCase()}]\nTask: ${agentInfo.task.slice(0, 200)}${agentInfo.task.length > 200 ? "..." : ""}\n\n--- Output (last ${Math.min(tail, lines.length)} lines) ---\n${output || "(no output yet)"}`,
+      };
+    } catch {
+      return {
+        success: true,
+        output: `Agent: ${agentInfo.name} [${agentInfo.status.toUpperCase()}]\n(no output yet — agent may still be starting)`,
+      };
+    }
   },
 );
 
