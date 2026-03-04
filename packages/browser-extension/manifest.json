@@ -3,17 +3,8 @@
   "name": "Claw'd Browser Bridge",
   "version": "1.0.0",
   "description": "Connect your browser to Claw'd AI agents for browser automation and collaboration.",
-  "permissions": [
-    "activeTab",
-    "tabs",
-    "scripting",
-    "debugger",
-    "offscreen"
-  ],
-  "host_permissions": [
-    "http://localhost:*/*",
-    "http://127.0.0.1:*/*"
-  ],
+  "permissions": ["activeTab", "tabs", "scripting", "debugger", "offscreen"],
+  "host_permissions": ["http://localhost:*/*", "http://127.0.0.1:*/*"],
   "background": {
     "service_worker": "src/service-worker.js",
     "type": "module"

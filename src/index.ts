@@ -475,9 +475,7 @@ const server = Bun.serve({
       if (!isBrowserEnabled()) {
         return new Response("Browser features not enabled", { status: 403 });
       }
-      return import("./server/browser-bridge").then(({ upgradeBrowserWs }) =>
-        upgradeBrowserWs(req, server),
-      );
+      return import("./server/browser-bridge").then(({ upgradeBrowserWs }) => upgradeBrowserWs(req, server));
     }
 
     // Workspace noVNC WebSocket proxy (only when workspaces enabled)

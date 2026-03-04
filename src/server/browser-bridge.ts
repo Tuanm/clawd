@@ -51,7 +51,9 @@ export function handleBrowserWsOpen(ws: ServerWebSocket<BrowserWsData>) {
   // Replace any existing connection from same extension
   const existing = connections.get(extId);
   if (existing) {
-    try { existing.close(1000, "replaced"); } catch {}
+    try {
+      existing.close(1000, "replaced");
+    } catch {}
   } else if (connections.size >= MAX_CONNECTIONS) {
     ws.close(1013, "Too many browser extensions connected");
     return;
@@ -127,9 +129,7 @@ export async function sendBrowserCommand(
   params: Record<string, any> = {},
   extensionId?: string,
 ): Promise<any> {
-  const ws = extensionId
-    ? connections.get(extensionId)
-    : connections.values().next().value;
+  const ws = extensionId ? connections.get(extensionId) : connections.values().next().value;
 
   if (!ws) {
     throw new Error("No browser extension connected. Install the Claw'd Browser Extension and connect it.");
@@ -159,15 +159,10 @@ export async function sendBrowserCommand(
  * Upgrade HTTP request to browser bridge WebSocket.
  * Called from index.ts fetch handler.
  */
-export function upgradeBrowserWs(
-  req: Request,
-  server: any,
-): Response | undefined {
+export function upgradeBrowserWs(req: Request, server: any): Response | undefined {
   const url = new URL(req.url);
   const rawExtId = url.searchParams.get("extId");
-  const extId = rawExtId && EXT_ID_PATTERN.test(rawExtId)
-    ? rawExtId
-    : `ext_${randomBytes(4).toString("hex")}`;
+  const extId = rawExtId && EXT_ID_PATTERN.test(rawExtId) ? rawExtId : `ext_${randomBytes(4).toString("hex")}`;
 
   if (rawExtId && !EXT_ID_PATTERN.test(rawExtId)) {
     return new Response("Invalid extension ID", { status: 400 });

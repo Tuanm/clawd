@@ -36,8 +36,7 @@ export class BrowserPlugin implements ToolPlugin {
           },
           wait_for: {
             type: "string",
-            description:
-              'Wait condition: "load" (default), "domcontentloaded", or "networkidle"',
+            description: 'Wait condition: "load" (default), "domcontentloaded", or "networkidle"',
             enum: ["load", "domcontentloaded", "networkidle"],
           },
         },
@@ -131,8 +130,7 @@ export class BrowserPlugin implements ToolPlugin {
       },
       {
         name: "browser_tabs",
-        description:
-          "List open browser tabs or manage them (close, activate). Returns tab IDs, titles, and URLs.",
+        description: "List open browser tabs or manage them (close, activate). Returns tab IDs, titles, and URLs.",
         parameters: {
           action: {
             type: "string",
@@ -181,14 +179,18 @@ export class BrowserPlugin implements ToolPlugin {
     const extensions = getConnectedExtensions();
     return {
       success: true,
-      output: JSON.stringify({
-        connected,
-        extensions: extensions.length,
-        extension_ids: extensions,
-        message: connected
-          ? `Browser extension connected (${extensions.length} instance${extensions.length > 1 ? "s" : ""}).`
-          : "No browser extension connected. Install and enable the Claw'd Browser Extension.",
-      }, null, 2),
+      output: JSON.stringify(
+        {
+          connected,
+          extensions: extensions.length,
+          extension_ids: extensions,
+          message: connected
+            ? `Browser extension connected (${extensions.length} instance${extensions.length > 1 ? "s" : ""}).`
+            : "No browser extension connected. Install and enable the Claw'd Browser Extension.",
+        },
+        null,
+        2,
+      ),
     };
   }
 
@@ -202,11 +204,15 @@ export class BrowserPlugin implements ToolPlugin {
       });
       return {
         success: true,
-        output: JSON.stringify({
-          tab_id: result.tabId,
-          url: result.url,
-          title: result.title,
-        }, null, 2),
+        output: JSON.stringify(
+          {
+            tab_id: result.tabId,
+            url: result.url,
+            title: result.title,
+          },
+          null,
+          2,
+        ),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -231,14 +237,18 @@ export class BrowserPlugin implements ToolPlugin {
       }
       return {
         success: true,
-        output: JSON.stringify({
-          tab_id: result.tabId,
-          width: result.width,
-          height: result.height,
-          format: "jpeg",
-          file_path: filePath,
-          message: `Screenshot captured (${result.width}x${result.height}). Use read_image with file_path="${filePath}" to analyze the content.`,
-        }, null, 2),
+        output: JSON.stringify(
+          {
+            tab_id: result.tabId,
+            width: result.width,
+            height: result.height,
+            format: "jpeg",
+            file_path: filePath,
+            message: `Screenshot captured (${result.width}x${result.height}). Use read_image with file_path="${filePath}" to analyze the content.`,
+          },
+          null,
+          2,
+        ),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -260,11 +270,15 @@ export class BrowserPlugin implements ToolPlugin {
       });
       return {
         success: true,
-        output: JSON.stringify({
-          clicked: true,
-          element: result.element || args.selector || `(${args.x}, ${args.y})`,
-          tab_id: result.tabId,
-        }, null, 2),
+        output: JSON.stringify(
+          {
+            clicked: true,
+            element: result.element || args.selector || `(${args.x}, ${args.y})`,
+            tab_id: result.tabId,
+          },
+          null,
+          2,
+        ),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -283,12 +297,16 @@ export class BrowserPlugin implements ToolPlugin {
       });
       return {
         success: true,
-        output: JSON.stringify({
-          typed: true,
-          text_length: args.text.length,
-          element: result.element || args.selector || "(focused)",
-          tab_id: result.tabId,
-        }, null, 2),
+        output: JSON.stringify(
+          {
+            typed: true,
+            text_length: args.text.length,
+            element: result.element || args.selector || "(focused)",
+            tab_id: result.tabId,
+          },
+          null,
+          2,
+        ),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -341,11 +359,12 @@ export class BrowserPlugin implements ToolPlugin {
         code: args.code,
         tabId: args.tab_id,
       });
-      let output = result.value !== undefined
-        ? typeof result.value === "string"
-          ? result.value
-          : JSON.stringify(result.value, null, 2)
-        : "(undefined)";
+      let output =
+        result.value !== undefined
+          ? typeof result.value === "string"
+            ? result.value
+            : JSON.stringify(result.value, null, 2)
+          : "(undefined)";
       if (output.length > 50_000) {
         output = output.slice(0, 50_000) + "\n\n... (truncated at 50KB)";
       }

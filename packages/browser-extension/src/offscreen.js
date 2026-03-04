@@ -105,19 +105,23 @@ async function connect() {
           });
           // Send result back to server
           if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              id: data.id,
-              result: response?.result,
-              error: response?.error,
-            }));
+            ws.send(
+              JSON.stringify({
+                id: data.id,
+                result: response?.result,
+                error: response?.error,
+              }),
+            );
           }
         } catch (err) {
           // Service worker may have gone idle; send error back
           if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              id: data.id,
-              error: { message: `Service worker error: ${err.message}` },
-            }));
+            ws.send(
+              JSON.stringify({
+                id: data.id,
+                error: { message: `Service worker error: ${err.message}` },
+              }),
+            );
           }
         }
       }
@@ -152,12 +156,14 @@ function stopHeartbeat() {
 }
 
 function broadcastStatus(connected) {
-  chrome.runtime.sendMessage({
-    source: "offscreen",
-    type: "connection-status",
-    connected,
-    extensionId,
-  }).catch(() => {});
+  chrome.runtime
+    .sendMessage({
+      source: "offscreen",
+      type: "connection-status",
+      connected,
+      extensionId,
+    })
+    .catch(() => {});
 }
 
 // ============================================================================
@@ -184,7 +190,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ws = null;
       }
       stopHeartbeat();
-      try { await connect(); } catch {}
+      try {
+        await connect();
+      } catch {}
       sendResponse({ ok: true });
     });
     return true;

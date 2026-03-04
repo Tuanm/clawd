@@ -144,8 +144,7 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
           height: Math.ceil(height),
         };
       } finally {
-        await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride")
-          .catch(() => {}); // best-effort restore
+        await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride").catch(() => {}); // best-effort restore
       }
     }
 
@@ -161,7 +160,8 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
       const box = await sendDebuggerCommand(tid, "DOM.getBoxModel", { nodeId: node.nodeId });
       const quad = box.model.border;
       const clip = {
-        x: quad[0], y: quad[1],
+        x: quad[0],
+        y: quad[1],
         width: quad[2] - quad[0],
         height: quad[5] - quad[1],
         scale: 1,
@@ -210,10 +210,18 @@ async function handleClick({ selector, x, y, tabId, button }) {
   const clickCount = 1;
 
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-    type: "mousePressed", x: clickX, y: clickY, button: btn, clickCount,
+    type: "mousePressed",
+    x: clickX,
+    y: clickY,
+    button: btn,
+    clickCount,
   });
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-    type: "mouseReleased", x: clickX, y: clickY, button: btn, clickCount,
+    type: "mouseReleased",
+    x: clickX,
+    y: clickY,
+    button: btn,
+    clickCount,
   });
 
   return { tabId: tid, element: selector || `(${clickX},${clickY})` };
@@ -229,26 +237,43 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter }) {
     // Focus the element first
     const coords = await getElementCenter(tid, selector);
     await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-      type: "mousePressed", x: coords.x, y: coords.y, button: "left", clickCount: 1,
+      type: "mousePressed",
+      x: coords.x,
+      y: coords.y,
+      button: "left",
+      clickCount: 1,
     });
     await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-      type: "mouseReleased", x: coords.x, y: coords.y, button: "left", clickCount: 1,
+      type: "mouseReleased",
+      x: coords.x,
+      y: coords.y,
+      button: "left",
+      clickCount: 1,
     });
   }
 
   if (clearFirst) {
     // Select all + delete
     await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-      type: "keyDown", key: "a", code: "KeyA", modifiers: 2, // Ctrl
+      type: "keyDown",
+      key: "a",
+      code: "KeyA",
+      modifiers: 2, // Ctrl
     });
     await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-      type: "keyUp", key: "a", code: "KeyA",
+      type: "keyUp",
+      key: "a",
+      code: "KeyA",
     });
     await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-      type: "keyDown", key: "Backspace", code: "Backspace",
+      type: "keyDown",
+      key: "Backspace",
+      code: "Backspace",
     });
     await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-      type: "keyUp", key: "Backspace", code: "Backspace",
+      type: "keyUp",
+      key: "Backspace",
+      code: "Backspace",
     });
   }
 
@@ -257,10 +282,14 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter }) {
 
   if (pressEnter) {
     await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-      type: "keyDown", key: "Enter", code: "Enter",
+      type: "keyDown",
+      key: "Enter",
+      code: "Enter",
     });
     await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-      type: "keyUp", key: "Enter", code: "Enter",
+      type: "keyUp",
+      key: "Enter",
+      code: "Enter",
     });
   }
 
@@ -276,11 +305,14 @@ async function handleExtract({ mode, selector, tabId }) {
     await ensureDebugger(tid);
     const result = await sendDebuggerCommand(tid, "Accessibility.getFullAXTree");
     // Compact the tree
-    const nodes = (result.nodes || []).slice(0, 500).map((n) => ({
-      role: n.role?.value,
-      name: n.name?.value,
-      value: n.value?.value,
-    })).filter((n) => n.name || n.value);
+    const nodes = (result.nodes || [])
+      .slice(0, 500)
+      .map((n) => ({
+        role: n.role?.value,
+        name: n.name?.value,
+        value: n.value?.value,
+      }))
+      .filter((n) => n.name || n.value);
     return { data: nodes };
   }
 
@@ -303,28 +335,32 @@ function extractFromPage(mode, selector) {
     case "text":
       return root.innerText?.slice(0, 50000) || "";
     case "links":
-      return Array.from(root.querySelectorAll("a[href]")).map((a) => ({
-        text: a.textContent?.trim().slice(0, 100),
-        href: a.href,
-      })).slice(0, 200);
+      return Array.from(root.querySelectorAll("a[href]"))
+        .map((a) => ({
+          text: a.textContent?.trim().slice(0, 100),
+          href: a.href,
+        }))
+        .slice(0, 200);
     case "forms":
-      return Array.from(root.querySelectorAll("input,textarea,select")).map((el) => ({
-        tag: el.tagName.toLowerCase(),
-        type: el.type || "",
-        name: el.name || "",
-        id: el.id || "",
-        value: el.value?.slice(0, 200) || "",
-        placeholder: el.placeholder || "",
-      })).slice(0, 100);
+      return Array.from(root.querySelectorAll("input,textarea,select"))
+        .map((el) => ({
+          tag: el.tagName.toLowerCase(),
+          type: el.type || "",
+          name: el.name || "",
+          id: el.id || "",
+          value: el.value?.slice(0, 200) || "",
+          placeholder: el.placeholder || "",
+        }))
+        .slice(0, 100);
     case "tables":
-      return Array.from(root.querySelectorAll("table")).map((table) => {
-        const rows = Array.from(table.querySelectorAll("tr")).slice(0, 50);
-        return rows.map((row) =>
-          Array.from(row.querySelectorAll("td,th")).map((cell) =>
-            cell.textContent?.trim().slice(0, 200)
-          )
-        );
-      }).slice(0, 10);
+      return Array.from(root.querySelectorAll("table"))
+        .map((table) => {
+          const rows = Array.from(table.querySelectorAll("tr")).slice(0, 50);
+          return rows.map((row) =>
+            Array.from(row.querySelectorAll("td,th")).map((cell) => cell.textContent?.trim().slice(0, 200)),
+          );
+        })
+        .slice(0, 10);
     case "html":
       return root.outerHTML?.slice(0, 50000) || "";
     default:
@@ -370,9 +406,7 @@ async function handleExecute({ code, tabId }) {
   });
   if (result.exceptionDetails) {
     throw new Error(
-      result.exceptionDetails.exception?.description ||
-      result.exceptionDetails.text ||
-      "Script execution failed"
+      result.exceptionDetails.exception?.description || result.exceptionDetails.text || "Script execution failed",
     );
   }
   return { value: result.result?.value };
@@ -421,8 +455,14 @@ function waitForTab(tabId, event) {
     // Check if already in desired state (avoids race condition)
     try {
       const tab = await chrome.tabs.get(tabId);
-      if (tab.status === target) { resolve(); return; }
-    } catch { resolve(); return; }
+      if (tab.status === target) {
+        resolve();
+        return;
+      }
+    } catch {
+      resolve();
+      return;
+    }
 
     function listener(tid, changeInfo) {
       if (tid === tabId && changeInfo.status === target) {
