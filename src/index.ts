@@ -469,6 +469,17 @@ const server = Bun.serve({
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
 
+    // Browser extension WebSocket bridge (only when browser enabled)
+    if (path === "/browser/ws") {
+      const { isBrowserEnabled } = require("./config-file");
+      if (!isBrowserEnabled()) {
+        return new Response("Browser features not enabled", { status: 403 });
+      }
+      return import("./server/browser-bridge").then(({ upgradeBrowserWs }) =>
+        upgradeBrowserWs(req, server),
+      );
+    }
+
     // Workspace noVNC WebSocket proxy (only when workspaces enabled)
     const wsProxyMatch = isWorkspacesEnabled() ? path.match(/^\/workspace\/([a-f0-9]{16})\/novnc\/websockify$/) : null;
     if (wsProxyMatch) {

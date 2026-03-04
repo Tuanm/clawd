@@ -56,6 +56,14 @@ export interface ConfigFile {
     generate_image?: { provider: string; model?: string };
     edit_image?: { provider: string; model?: string };
   };
+  /**
+   * Enable browser automation tools (Chrome extension bridge).
+   *
+   * - `true`  — enabled for ALL channels
+   * - `false` or omitted — disabled (default)
+   * - `string[]` — enabled only for the listed channel names
+   */
+  browser?: boolean | string[];
 }
 
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");
@@ -122,6 +130,23 @@ export function isWorkspacesEnabled(channel?: string): boolean {
   if (Array.isArray(ws)) {
     if (!channel) return ws.length > 0;
     return ws.includes(channel);
+  }
+  return false;
+}
+
+/**
+ * Check if browser automation features are enabled.
+ * - No channel arg: returns true if browser is enabled at all (any channel).
+ * - With channel arg: returns true if browser is enabled for that specific channel.
+ */
+export function isBrowserEnabled(channel?: string): boolean {
+  const config = loadConfigFile();
+  const br = config.browser;
+  if (br === undefined || br === false) return false;
+  if (br === true) return true;
+  if (Array.isArray(br)) {
+    if (!channel) return br.length > 0;
+    return br.includes(channel);
   }
   return false;
 }

@@ -31,6 +31,7 @@ import { createContextModePlugin, type ContextModePluginResult } from "../plugin
 import { WorkspaceToolPlugin } from "../plugins/workspace-plugin";
 import { TunnelPlugin } from "../plugins/tunnel-plugin";
 import { isWorkspacesEnabled } from "../../../config-file";
+import { isBrowserEnabled } from "../../../config-file";
 import { getAgentContext } from "../utils/agent-context";
 import { ContextTracker } from "../utils/context-tracker";
 import { homedir } from "node:os";
@@ -254,6 +255,7 @@ export class Agent {
   private compacting = false;
   private _workspacePluginRegistered = false;
   private _tunnelPluginRegistered = false;
+  private _browserPluginRegistered = false;
 
   constructor(tokenOrProvider: string | LLMProvider, config: AgentConfig) {
     // Accept either token (legacy) or provider instance
@@ -1219,6 +1221,20 @@ SUMMARY:`;
       } catch (err: any) {
         if (this.config.verbose) {
           console.log(`[Agent] Tunnel plugin registration failed:`, err?.message || err);
+        }
+      }
+    }
+
+    // Register browser plugin (browser_navigate, browser_screenshot, browser_click, etc.)
+    // Only enabled when config.json has "browser": true or ["channel-1", ...].
+    if (!this._browserPluginRegistered && isBrowserEnabled(ctx?.channel)) {
+      try {
+        const { BrowserPlugin } = require("../plugins/browser-plugin");
+        this.toolPluginManager.register(new BrowserPlugin());
+        this._browserPluginRegistered = true;
+      } catch (err: any) {
+        if (this.config.verbose) {
+          console.log(`[Agent] Browser plugin registration failed:`, err?.message || err);
         }
       }
     }

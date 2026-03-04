@@ -7,6 +7,12 @@ import {
   handleWorkspaceWsClose,
   type WorkspaceWsData,
 } from "./routes/workspace-proxy";
+import {
+  handleBrowserWsOpen,
+  handleBrowserWsMessage,
+  handleBrowserWsClose,
+  type BrowserWsData,
+} from "./browser-bridge";
 
 /** Chat WebSocket data (regular connections) */
 interface ChatWebSocketData {
@@ -15,7 +21,7 @@ interface ChatWebSocketData {
   channel?: string;
 }
 
-export type WebSocketData = ChatWebSocketData | WorkspaceWsData;
+export type WebSocketData = ChatWebSocketData | WorkspaceWsData | BrowserWsData;
 
 const clients = new Set<ServerWebSocket<ChatWebSocketData>>();
 // Track multi-channel subscriptions per client (ws.data can only hold simple types)
@@ -31,6 +37,10 @@ export function handleWebSocketOpen(ws: ServerWebSocket<WebSocketData>) {
     handleWorkspaceWsOpen(ws as ServerWebSocket<WorkspaceWsData>);
     return;
   }
+  if (ws.data.type === "browser-extension") {
+    handleBrowserWsOpen(ws as ServerWebSocket<BrowserWsData>);
+    return;
+  }
   const chatWs = ws as ServerWebSocket<ChatWebSocketData>;
   clients.add(chatWs);
   clientChannels.set(chatWs, new Set());
@@ -40,6 +50,10 @@ export function handleWebSocketOpen(ws: ServerWebSocket<WebSocketData>) {
 export function handleWebSocketClose(ws: ServerWebSocket<WebSocketData>) {
   if (ws.data.type === "workspace-novnc") {
     handleWorkspaceWsClose(ws as ServerWebSocket<WorkspaceWsData>);
+    return;
+  }
+  if (ws.data.type === "browser-extension") {
+    handleBrowserWsClose(ws as ServerWebSocket<BrowserWsData>);
     return;
   }
   const chatWs = ws as ServerWebSocket<ChatWebSocketData>;
@@ -61,6 +75,10 @@ function isSubscribed(ws: ServerWebSocket<ChatWebSocketData>, channel: string): 
 export function handleWebSocketMessage(ws: ServerWebSocket<WebSocketData>, message: string | Buffer) {
   if (ws.data.type === "workspace-novnc") {
     handleWorkspaceWsMessage(ws as ServerWebSocket<WorkspaceWsData>, message);
+    return;
+  }
+  if (ws.data.type === "browser-extension") {
+    handleBrowserWsMessage(ws as ServerWebSocket<BrowserWsData>, message);
     return;
   }
   const chatWs = ws as ServerWebSocket<ChatWebSocketData>;

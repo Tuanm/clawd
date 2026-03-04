@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 320px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 13px;
+      color: #e0e0e0;
+      background: #1a1a2e;
+    }
+    h1 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #D97853;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #16213e;
+      margin-bottom: 12px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.connected { background: #4ade80; }
+    .dot.disconnected { background: #f87171; }
+    .status-text { flex: 1; }
+    label {
+      display: block;
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+    input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #333;
+      border-radius: 6px;
+      background: #0f0f23;
+      color: #e0e0e0;
+      font-size: 12px;
+      font-family: 'SF Mono', 'Cascadia Code', monospace;
+      margin-bottom: 10px;
+    }
+    input:focus { outline: none; border-color: #D97853; }
+    button {
+      width: 100%;
+      padding: 8px;
+      border: none;
+      border-radius: 6px;
+      background: #D97853;
+      color: white;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #c46842; }
+    .ext-id {
+      font-size: 11px;
+      color: #666;
+      margin-top: 8px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>🦞 Claw'd Browser Bridge</h1>
+
+  <div class="status">
+    <div class="dot disconnected" id="dot"></div>
+    <span class="status-text" id="statusText">Connecting...</span>
+  </div>
+
+  <label>Server URL</label>
+  <input type="text" id="serverUrl" placeholder="ws://localhost:3456/browser/ws" />
+
+  <button id="connectBtn">Reconnect</button>
+
+  <div class="ext-id" id="extId"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
