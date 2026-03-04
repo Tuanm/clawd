@@ -51,12 +51,21 @@ async function connect() {
   }
 
   // Get server URL from storage or use default
-  const config = await chrome.storage.local.get(["serverUrl", "extensionId"]);
+  let config;
+  try {
+    config = await chrome.storage.local.get(["serverUrl", "extensionId"]);
+  } catch (err) {
+    console.error("[clawd-offscreen] Storage access failed:", err);
+    scheduleReconnect();
+    return;
+  }
   const serverUrl = config.serverUrl || DEFAULT_URL;
   extensionId = config.extensionId || crypto.randomUUID().slice(0, 8);
 
   // Save extensionId for consistency
-  await chrome.storage.local.set({ extensionId });
+  try {
+    await chrome.storage.local.set({ extensionId });
+  } catch {}
 
   const url = `${serverUrl}?extId=${extensionId}`;
   console.log(`[clawd-offscreen] Connecting to ${url}`);
@@ -220,4 +229,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ============================================================================
 
 keepAlive();
-connect();
+connect().catch((err) => console.error("[clawd-offscreen] Initial connect failed:", err));

@@ -86,7 +86,8 @@ Examples:
 import { registerAgentRoutes } from "./api/agents";
 import { registerArticleRoutes } from "./api/articles";
 import { loadConfig, validateConfig } from "./config";
-import { loadConfigFile, isWorkspacesEnabled } from "./config-file";
+import { loadConfigFile, isWorkspacesEnabled, isBrowserEnabled } from "./config-file";
+import { upgradeBrowserWs } from "./server/browser-bridge";
 import { getEmbeddedAsset, hasEmbeddedUI, embeddedUIFileCount, embeddedUITotalSize } from "./embedded-ui";
 import { WorkerManager } from "./worker-manager";
 import { setDebug } from "./agent/src/utils/debug";
@@ -471,11 +472,11 @@ const server = Bun.serve({
 
     // Browser extension WebSocket bridge (only when browser enabled)
     if (path === "/browser/ws") {
-      const { isBrowserEnabled } = require("./config-file");
       if (!isBrowserEnabled()) {
+        console.log("[browser-bridge] Rejected /browser/ws — browser feature not enabled");
         return new Response("Browser features not enabled", { status: 403 });
       }
-      return import("./server/browser-bridge").then(({ upgradeBrowserWs }) => upgradeBrowserWs(req, server));
+      return upgradeBrowserWs(req, server);
     }
 
     // Workspace noVNC WebSocket proxy (only when workspaces enabled)

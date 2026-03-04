@@ -41,9 +41,7 @@ async function ensureOffscreen() {
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === "keepalive") {
     // Offscreen doc pings us to prevent idle shutdown
-    port.onDisconnect.addListener(() => {
-      offscreenReady = false;
-    });
+    // Don't clear offscreenReady on planned disconnect cycles
   }
 });
 
@@ -52,6 +50,11 @@ chrome.runtime.onConnect.addListener((port) => {
 // ============================================================================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Ensure offscreen exists on every message (handles SW restarts)
+  if (!message.source || message.source !== "offscreen") {
+    ensureOffscreen().catch(() => {});
+  }
+
   if (message.source === "offscreen" && message.type === "command") {
     handleCommand(message.id, message.method, message.params)
       .then((result) => sendResponse({ id: message.id, result }))
@@ -59,8 +62,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async response
   }
 
+  // Fallback status handler when offscreen doc is unavailable
+  if (message.type === "get-status" && !message.source) {
+    sendResponse({ connected: false, extensionId: null });
+    return false;
+  }
+
   if (message.source === "content-script" && message.type === "dom-result") {
-    // Content script responding to a DOM query
     sendResponse({ received: true });
   }
 
@@ -482,6 +490,9 @@ function waitForTab(tabId, event) {
 // ============================================================================
 // Initialization
 // ============================================================================
+
+// Ensure offscreen doc exists on every SW activation (covers restarts)
+ensureOffscreen().catch(() => {});
 
 chrome.runtime.onInstalled.addListener(async () => {
   console.log("[clawd] Browser extension installed");

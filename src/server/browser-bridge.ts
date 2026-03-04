@@ -162,11 +162,14 @@ export async function sendBrowserCommand(
 export function upgradeBrowserWs(req: Request, server: any): Response | undefined {
   const url = new URL(req.url);
   const rawExtId = url.searchParams.get("extId");
-  const extId = rawExtId && EXT_ID_PATTERN.test(rawExtId) ? rawExtId : `ext_${randomBytes(4).toString("hex")}`;
 
   if (rawExtId && !EXT_ID_PATTERN.test(rawExtId)) {
+    console.warn(`[browser-bridge] Rejected invalid extId: ${rawExtId}`);
     return new Response("Invalid extension ID", { status: 400 });
   }
+
+  const extId = rawExtId || `ext_${randomBytes(4).toString("hex")}`;
+  console.log(`[browser-bridge] Upgrading WebSocket for extId=${extId}`);
 
   const success = server.upgrade(req, {
     data: {
@@ -177,5 +180,6 @@ export function upgradeBrowserWs(req: Request, server: any): Response | undefine
   });
 
   if (success) return undefined;
+  console.error(`[browser-bridge] server.upgrade() failed for extId=${extId}`);
   return new Response("WebSocket upgrade failed", { status: 400 });
 }

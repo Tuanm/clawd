@@ -3,7 +3,7 @@
   "name": "Claw'd Browser Bridge",
   "version": "1.0.0",
   "description": "Connect your browser to Claw'd AI agents for browser automation and collaboration.",
-  "permissions": ["activeTab", "tabs", "scripting", "debugger", "offscreen"],
+  "permissions": ["activeTab", "tabs", "scripting", "debugger", "offscreen", "storage"],
   "host_permissions": ["http://localhost:*/*", "http://127.0.0.1:*/*"],
   "background": {
     "service_worker": "src/service-worker.js",
@@ -12,10 +12,6 @@
   "action": {
     "default_popup": "src/popup.html",
     "default_title": "Claw'd Browser Bridge"
-  },
-  "offscreen": {
-    "reasons": ["WORKERS"],
-    "justification": "Maintains persistent WebSocket connection to local Claw'd server"
   },
   "content_scripts": [
     {
