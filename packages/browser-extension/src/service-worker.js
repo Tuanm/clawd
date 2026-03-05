@@ -1135,6 +1135,20 @@ async function handleHistory({ action, tabId }) {
 
 // --- File Upload (set files on <input type="file">) ---
 
+// Helper: JS function injected into page to set a file on an input element via DataTransfer
+const SET_FILE_JS = `function(base64, fileName, mimeType) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const file = new File([bytes], fileName, { type: mimeType });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  this.files = dt.files;
+  this.dispatchEvent(new Event('change', { bubbles: true }));
+  this.dispatchEvent(new Event('input', { bubbles: true }));
+  return fileName;
+}`;
+
 async function handleFileUpload({ selector, fileId, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
@@ -1150,8 +1164,9 @@ async function handleFileUpload({ selector, fileId, tabId }) {
   const contentDisposition = resp.headers.get("Content-Disposition") || "";
   const nameMatch = contentDisposition.match(/filename="([^"]+)"/);
   const fileName = nameMatch ? nameMatch[1] : `upload_${fileId}`;
+  const mimeType = blob.type || "application/octet-stream";
 
-  // Save file to disk via chrome.downloads (needed for both CDP file-setting methods)
+  // Convert to base64 for injection into page context (avoids chrome.downloads entirely)
   const arrayBuffer = await blob.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
   let binary = "";
@@ -1159,74 +1174,45 @@ async function handleFileUpload({ selector, fileId, tabId }) {
   for (let i = 0; i < bytes.length; i += chunkSize) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
   }
-  const dataUrl = `data:${blob.type || "application/octet-stream"};base64,${btoa(binary)}`;
-  const downloadId = await new Promise((resolve, reject) => {
-    chrome.downloads.download(
-      { url: dataUrl, filename: `clawd_upload_${fileName}`, conflictAction: "uniquify" },
-      (id) => {
-        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-        else resolve(id);
-      },
-    );
-  });
-  const localPath = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      chrome.downloads.onChanged.removeListener(listener);
-      reject(new Error("Temp file download timed out"));
-    }, 30000);
-    function listener(delta) {
-      if (delta.id === downloadId && delta.state) {
-        if (delta.state.current === "complete") {
-          clearTimeout(timeout);
-          chrome.downloads.onChanged.removeListener(listener);
-          chrome.downloads.search({ id: downloadId }, (items) => {
-            resolve(items[0]?.filename);
-          });
-        } else if (delta.state.current === "interrupted") {
-          clearTimeout(timeout);
-          chrome.downloads.onChanged.removeListener(listener);
-          reject(new Error("Temp file download interrupted"));
-        }
-      }
-    }
-    chrome.downloads.onChanged.addListener(listener);
-  });
-  if (!localPath) throw new Error("Could not resolve temp file path");
+  const base64 = btoa(binary);
 
-  // If a file chooser dialog is pending (from a click on upload button), handle it via CDP
+  // If a file chooser dialog is pending (from a click with intercept_file_chooser), resolve its element
   const pendingFC = pendingFileChoosers.get(tid);
   if (pendingFC) {
     pendingFileChoosers.delete(tid);
-    await sendDebuggerCommand(tid, "DOM.setFileInputFiles", {
-      files: [localPath],
+    // Resolve backendNodeId to a JS object reference
+    const resolved = await sendDebuggerCommand(tid, "DOM.resolveNode", {
       backendNodeId: pendingFC.backendNodeId,
+    });
+    if (!resolved?.object?.objectId) throw new Error("Could not resolve file input element from file chooser");
+    await sendDebuggerCommand(tid, "Runtime.callFunctionOn", {
+      objectId: resolved.object.objectId,
+      functionDeclaration: SET_FILE_JS,
+      arguments: [{ value: base64 }, { value: fileName }, { value: mimeType }],
+      returnByValue: true,
     });
     // Disable interception now that the file has been provided
     await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
   } else if (selector) {
-    // Direct selector approach — find the file input and set files
+    // Direct selector approach — find the input and set files via JS DataTransfer
     const doc = await sendDebuggerCommand(tid, "DOM.getDocument");
     const node = await sendDebuggerCommand(tid, "DOM.querySelector", {
       nodeId: doc.root.nodeId,
       selector,
     });
     if (!node.nodeId) throw new Error(`File input not found: ${selector}`);
-    await sendDebuggerCommand(tid, "DOM.setFileInputFiles", {
-      nodeId: node.nodeId,
-      files: [localPath],
+    const resolved = await sendDebuggerCommand(tid, "DOM.resolveNode", { nodeId: node.nodeId });
+    if (!resolved?.object?.objectId) throw new Error(`Could not resolve file input: ${selector}`);
+    await sendDebuggerCommand(tid, "Runtime.callFunctionOn", {
+      objectId: resolved.object.objectId,
+      functionDeclaration: SET_FILE_JS,
+      arguments: [{ value: base64 }, { value: fileName }, { value: mimeType }],
+      returnByValue: true,
     });
   } else {
     throw new Error(
-      "No pending file chooser and no selector provided. Click the upload button first, then call browser_upload_file.",
+      "No pending file chooser and no selector provided. Click the upload button with intercept_file_chooser=true first, then call browser_upload_file.",
     );
-  }
-
-  // Clean up temp file
-  try {
-    await chrome.downloads.removeFile(downloadId);
-    await chrome.downloads.erase({ id: downloadId });
-  } catch {
-    // best-effort cleanup
   }
 
   return { tabId: tid, selector: selector || "(file chooser)", fileId, fileName };
