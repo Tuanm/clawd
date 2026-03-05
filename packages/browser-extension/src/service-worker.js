@@ -2018,7 +2018,7 @@ async function ensureDebugger(tabId) {
       eventsEnabled: true,
     }).catch(() => {});
     // Suppress Chrome's Downloads bubble/shelf UI so it doesn't obscure page content
-    chrome.downloads.setUiOptions({ isEnabled: false }).catch(() => {});
+    chrome.downloads.setUiOptions({ enabled: false }).catch(() => {});
     // Note: File chooser interception is NOT enabled globally.
     // It's enabled on-demand via handleClick({ intercept_file_chooser: true })
     // to avoid intercepting save/download dialogs (e.g., showSaveFilePicker).
