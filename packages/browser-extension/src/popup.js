@@ -24,10 +24,14 @@ function checkStatus() {
       setStatus(false);
       return;
     }
-    console.log("[clawd-popup] get-status response:", response);
+    console.log("[clawd-popup] get-status response:", JSON.stringify(response));
     setStatus(response?.connected || false);
     if (response?.extensionId) {
       extIdEl.textContent = `ID: ${response.extensionId}`;
+    }
+    // Show diagnostic info if not connected
+    if (!response?.connected && response?.lastError) {
+      statusText.textContent = `Disconnected: ${response.lastError}`;
     }
   });
 }

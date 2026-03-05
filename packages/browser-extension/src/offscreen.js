@@ -3,10 +3,9 @@
  *
  * Maintains a WebSocket connection to the local Claw'd server
  * and relays commands to/from the service worker.
- *
- * This document persists (unlike the service worker) because MV3
- * offscreen documents stay alive while active.
  */
+
+console.log("[clawd-offscreen] Script loaded");
 
 // ============================================================================
 // Configuration
@@ -15,7 +14,7 @@
 const DEFAULT_URL = "ws://localhost:3456/browser/ws";
 const RECONNECT_DELAY_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 20000;
-const KEEPALIVE_INTERVAL_MS = 25000; // Keep service worker alive
+const KEEPALIVE_INTERVAL_MS = 25000;
 
 // ============================================================================
 // State
@@ -25,6 +24,24 @@ let ws = null;
 let heartbeatTimer = null;
 let reconnectTimer = null;
 let extensionId = null;
+let connectAttempts = 0;
+let lastError = null;
+
+// ============================================================================
+// Early ExtensionId Init (before connect)
+// ============================================================================
+
+(async () => {
+  try {
+    const config = await chrome.storage.local.get(["extensionId"]);
+    extensionId = config.extensionId || crypto.randomUUID().slice(0, 8);
+    await chrome.storage.local.set({ extensionId });
+    console.log("[clawd-offscreen] extensionId initialized:", extensionId);
+  } catch (err) {
+    console.error("[clawd-offscreen] Failed to init extensionId:", err);
+    extensionId = crypto.randomUUID().slice(0, 8);
+  }
+})();
 
 // ============================================================================
 // Keep Service Worker Alive
@@ -46,46 +63,57 @@ function keepAlive() {
 // ============================================================================
 
 async function connect() {
+  console.log("[clawd-offscreen] connect() called, ws state:", ws?.readyState);
+
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    console.log("[clawd-offscreen] Already connected/connecting, skipping");
     return;
   }
 
-  // Get server URL from storage or use default
-  let config;
+  // Get server URL from storage
+  let serverUrl;
   try {
-    config = await chrome.storage.local.get(["serverUrl", "extensionId"]);
+    const config = await chrome.storage.local.get(["serverUrl", "extensionId"]);
+    console.log("[clawd-offscreen] Storage config:", JSON.stringify(config));
+    serverUrl = config.serverUrl || DEFAULT_URL;
+    if (config.extensionId) extensionId = config.extensionId;
+    if (!extensionId) {
+      extensionId = crypto.randomUUID().slice(0, 8);
+      await chrome.storage.local.set({ extensionId }).catch(() => {});
+    }
   } catch (err) {
-    console.error("[clawd-offscreen] Storage access failed:", err);
+    console.error("[clawd-offscreen] Storage read failed:", err);
+    lastError = `Storage: ${err.message}`;
     scheduleReconnect();
     return;
   }
-  const serverUrl = config.serverUrl || DEFAULT_URL;
-  extensionId = config.extensionId || crypto.randomUUID().slice(0, 8);
 
-  // Save extensionId for consistency
-  try {
-    await chrome.storage.local.set({ extensionId });
-  } catch {}
-
+  connectAttempts++;
   const url = `${serverUrl}?extId=${extensionId}`;
-  console.log(`[clawd-offscreen] Connecting to ${url}`);
+  console.log(`[clawd-offscreen] Connecting to ${url} (attempt ${connectAttempts})`);
 
   try {
     ws = new WebSocket(url);
   } catch (err) {
     console.error("[clawd-offscreen] WebSocket creation failed:", err);
+    lastError = `WS create: ${err.message}`;
+    ws = null;
     scheduleReconnect();
     return;
   }
 
   ws.onopen = () => {
     console.log("[clawd-offscreen] Connected to Claw'd server");
+    lastError = null;
+    connectAttempts = 0;
     broadcastStatus(true);
     startHeartbeat();
   };
 
   ws.onclose = (event) => {
-    console.log(`[clawd-offscreen] Disconnected (code: ${event.code})`);
+    console.log(`[clawd-offscreen] Disconnected (code: ${event.code}, reason: ${event.reason})`);
+    lastError = `WS closed: ${event.code}`;
+    ws = null;
     broadcastStatus(false);
     stopHeartbeat();
     scheduleReconnect();
@@ -93,16 +121,14 @@ async function connect() {
 
   ws.onerror = (err) => {
     console.error("[clawd-offscreen] WebSocket error:", err);
+    lastError = "WS error (see offscreen console)";
   };
 
   ws.onmessage = async (event) => {
     try {
       const data = JSON.parse(event.data);
-
-      // Server pong
       if (data.type === "pong") return;
 
-      // Command from server — relay to service worker
       if (data.id && data.method) {
         try {
           const response = await chrome.runtime.sendMessage({
@@ -112,25 +138,19 @@ async function connect() {
             method: data.method,
             params: data.params || {},
           });
-          // Send result back to server
           if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(
-              JSON.stringify({
-                id: data.id,
-                result: response?.result,
-                error: response?.error,
-              }),
-            );
+            ws.send(JSON.stringify({
+              id: data.id,
+              result: response?.result,
+              error: response?.error,
+            }));
           }
         } catch (err) {
-          // Service worker may have gone idle; send error back
           if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(
-              JSON.stringify({
-                id: data.id,
-                error: { message: `Service worker error: ${err.message}` },
-              }),
-            );
+            ws.send(JSON.stringify({
+              id: data.id,
+              error: { message: `Service worker error: ${err.message}` },
+            }));
           }
         }
       }
@@ -142,9 +162,10 @@ async function connect() {
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
+  console.log(`[clawd-offscreen] Scheduling reconnect in ${RECONNECT_DELAY_MS}ms`);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    connect();
+    connect().catch((err) => console.error("[clawd-offscreen] Reconnect failed:", err));
   }, RECONNECT_DELAY_MS);
 }
 
@@ -176,21 +197,29 @@ function broadcastStatus(connected) {
 }
 
 // ============================================================================
-// Message Listener — commands from popup or service worker
+// Message Listener
 // ============================================================================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log("[clawd-offscreen] Received message:", message.type);
+
   if (message.type === "get-status") {
-    sendResponse({
-      connected: ws && ws.readyState === WebSocket.OPEN,
+    const connected = ws !== null && ws.readyState === WebSocket.OPEN;
+    const status = {
+      connected,
       extensionId,
-    });
+      wsState: ws ? ws.readyState : "no-ws",
+      connectAttempts,
+      lastError,
+    };
+    console.log("[clawd-offscreen] Responding to get-status:", JSON.stringify(status));
+    sendResponse(status);
     return false;
   }
 
   if (message.type === "set-server-url") {
+    console.log("[clawd-offscreen] set-server-url:", message.url);
     chrome.storage.local.set({ serverUrl: message.url }).then(async () => {
-      // Detach old ws handlers before closing to prevent phantom status flickers
       if (ws) {
         ws.onclose = null;
         ws.onerror = null;
@@ -199,15 +228,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ws = null;
       }
       stopHeartbeat();
-      try {
-        await connect();
-      } catch {}
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      try { await connect(); } catch (err) {
+        console.error("[clawd-offscreen] connect after set-server-url failed:", err);
+      }
       sendResponse({ ok: true });
     });
     return true;
   }
 
   if (message.type === "reconnect") {
+    console.log("[clawd-offscreen] reconnect requested");
     if (ws) {
       ws.onclose = null;
       ws.onerror = null;
@@ -216,7 +247,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ws = null;
     }
     stopHeartbeat();
-    connect().catch(() => {});
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    connect().catch((err) => console.error("[clawd-offscreen] reconnect failed:", err));
     sendResponse({ ok: true });
     return false;
   }
@@ -229,4 +261,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ============================================================================
 
 keepAlive();
-connect().catch((err) => console.error("[clawd-offscreen] Initial connect failed:", err));
+// Small delay to let extensionId IIFE finish
+setTimeout(() => {
+  connect().catch((err) => console.error("[clawd-offscreen] Initial connect failed:", err));
+}, 100);
