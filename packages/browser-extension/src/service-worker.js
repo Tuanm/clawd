@@ -117,6 +117,14 @@ async function handleCommand(id, method, params) {
       return handleTabs(params);
     case "execute":
       return handleExecute(params);
+    case "scroll":
+      return handleScroll(params);
+    case "hover":
+      return handleHover(params);
+    case "drag":
+      return handleDrag(params);
+    case "keypress":
+      return handleKeypress(params);
     default:
       throw new Error(`Unknown method: ${method}`);
   }
@@ -440,6 +448,188 @@ async function handleExecute({ code, tabId }) {
     );
   }
   return { value: result.result?.value };
+}
+
+// --- Scroll ---
+
+async function handleScroll({ x, y, selector, direction, amount, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  let scrollX = x || 0;
+  let scrollY = y || 0;
+
+  if (selector) {
+    const coords = await getElementCenter(tid, selector);
+    scrollX = coords.x;
+    scrollY = coords.y;
+  }
+
+  // Calculate delta from direction/amount
+  const dist = amount || 300;
+  let deltaX = 0;
+  let deltaY = 0;
+  switch (direction) {
+    case "up": deltaY = -dist; break;
+    case "down": deltaY = dist; break;
+    case "left": deltaX = -dist; break;
+    case "right": deltaX = dist; break;
+    default: deltaY = dist; // default scroll down
+  }
+
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    x: scrollX,
+    y: scrollY,
+    deltaX,
+    deltaY,
+  });
+
+  return { tabId: tid, direction: direction || "down", amount: dist };
+}
+
+// --- Hover ---
+
+async function handleHover({ selector, x, y, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  let hoverX = x;
+  let hoverY = y;
+
+  if (selector) {
+    const coords = await getElementCenter(tid, selector);
+    hoverX = coords.x;
+    hoverY = coords.y;
+  } else if (hoverX === undefined || hoverY === undefined) {
+    throw new Error("Hover requires either 'selector' or both 'x' and 'y' coordinates");
+  }
+
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: hoverX,
+    y: hoverY,
+  });
+
+  return { tabId: tid, element: selector || `(${hoverX},${hoverY})` };
+}
+
+// --- Drag ---
+
+async function handleDrag({ fromSelector, fromX, fromY, toSelector, toX, toY, tabId, steps }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  let startX = fromX;
+  let startY = fromY;
+  let endX = toX;
+  let endY = toY;
+
+  if (fromSelector) {
+    const coords = await getElementCenter(tid, fromSelector);
+    startX = coords.x;
+    startY = coords.y;
+  }
+  if (toSelector) {
+    const coords = await getElementCenter(tid, toSelector);
+    endX = coords.x;
+    endY = coords.y;
+  }
+
+  if (startX === undefined || startY === undefined || endX === undefined || endY === undefined) {
+    throw new Error("Drag requires from/to coordinates or selectors");
+  }
+
+  const numSteps = steps || 10;
+
+  // Press at start
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: startX,
+    y: startY,
+    button: "left",
+    clickCount: 1,
+  });
+
+  // Move in steps
+  for (let i = 1; i <= numSteps; i++) {
+    const ratio = i / numSteps;
+    await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: startX + (endX - startX) * ratio,
+      y: startY + (endY - startY) * ratio,
+      button: "left",
+    });
+  }
+
+  // Release at end
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: endX,
+    y: endY,
+    button: "left",
+    clickCount: 1,
+  });
+
+  return { tabId: tid, from: fromSelector || `(${startX},${startY})`, to: toSelector || `(${endX},${endY})` };
+}
+
+// --- Keypress ---
+
+async function handleKeypress({ key, modifiers, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  const modifierFlags =
+    (modifiers?.includes("alt") ? 1 : 0) |
+    (modifiers?.includes("ctrl") ? 2 : 0) |
+    (modifiers?.includes("meta") ? 4 : 0) |
+    (modifiers?.includes("shift") ? 8 : 0);
+
+  // Map common key names to CDP key/code
+  const keyMap = {
+    enter: { key: "Enter", code: "Enter" },
+    tab: { key: "Tab", code: "Tab" },
+    escape: { key: "Escape", code: "Escape" },
+    backspace: { key: "Backspace", code: "Backspace" },
+    delete: { key: "Delete", code: "Delete" },
+    arrowup: { key: "ArrowUp", code: "ArrowUp" },
+    arrowdown: { key: "ArrowDown", code: "ArrowDown" },
+    arrowleft: { key: "ArrowLeft", code: "ArrowLeft" },
+    arrowright: { key: "ArrowRight", code: "ArrowRight" },
+    home: { key: "Home", code: "Home" },
+    end: { key: "End", code: "End" },
+    pageup: { key: "PageUp", code: "PageUp" },
+    pagedown: { key: "PageDown", code: "PageDown" },
+    space: { key: " ", code: "Space" },
+    f1: { key: "F1", code: "F1" }, f2: { key: "F2", code: "F2" },
+    f3: { key: "F3", code: "F3" }, f4: { key: "F4", code: "F4" },
+    f5: { key: "F5", code: "F5" }, f6: { key: "F6", code: "F6" },
+    f7: { key: "F7", code: "F7" }, f8: { key: "F8", code: "F8" },
+    f9: { key: "F9", code: "F9" }, f10: { key: "F10", code: "F10" },
+    f11: { key: "F11", code: "F11" }, f12: { key: "F12", code: "F12" },
+  };
+
+  const mapped = keyMap[key.toLowerCase()] || { key, code: `Key${key.toUpperCase()}` };
+
+  await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: mapped.key,
+    code: mapped.code,
+    modifiers: modifierFlags,
+  });
+  await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: mapped.key,
+    code: mapped.code,
+    modifiers: modifierFlags,
+  });
+
+  return {
+    tabId: tid,
+    key: mapped.key,
+    modifiers: modifiers || [],
+  };
 }
 
 // ============================================================================

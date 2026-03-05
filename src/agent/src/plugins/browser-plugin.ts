@@ -2,7 +2,8 @@
  * Browser Tool Plugin — Provides browser automation tools via Chrome extension bridge.
  *
  * Tools: browser_navigate, browser_screenshot, browser_click, browser_type,
- *        browser_extract, browser_tabs, browser_execute, browser_status
+ *        browser_extract, browser_tabs, browser_execute, browser_scroll,
+ *        browser_hover, browser_drag, browser_keypress, browser_status
  *
  * Requires: Chrome extension connected via WebSocket to /browser/ws
  * Gated behind: config.json "browser": true
@@ -158,6 +159,89 @@ export class BrowserPlugin implements ToolPlugin {
         },
         required: ["code"],
         handler: async (args) => this.handleExecute(args),
+      },
+      {
+        name: "browser_scroll",
+        description:
+          "Scroll the page or a specific element. Use direction and amount to control scrolling. Can scroll to an element by selector.",
+        parameters: {
+          direction: {
+            type: "string",
+            description: '"down" (default), "up", "left", or "right"',
+            enum: ["up", "down", "left", "right"],
+          },
+          amount: {
+            type: "number",
+            description: "Scroll distance in pixels (default: 300)",
+          },
+          selector: {
+            type: "string",
+            description: "CSS selector — scroll at this element's position (optional)",
+          },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+        },
+        required: [],
+        handler: async (args) => this.handleScroll(args),
+      },
+      {
+        name: "browser_hover",
+        description:
+          "Hover over an element by CSS selector or coordinates. Triggers hover effects, tooltips, and dropdown menus.",
+        parameters: {
+          selector: {
+            type: "string",
+            description: "CSS selector of element to hover over",
+          },
+          x: { type: "number", description: "X coordinate (if no selector)" },
+          y: { type: "number", description: "Y coordinate (if no selector)" },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+        },
+        required: [],
+        handler: async (args) => this.handleHover(args),
+      },
+      {
+        name: "browser_drag",
+        description:
+          "Drag and drop from one position to another. Use selectors or coordinates for source and target. Works for sliders, sortable lists, and drag-and-drop UIs.",
+        parameters: {
+          from_selector: {
+            type: "string",
+            description: "CSS selector of element to drag from",
+          },
+          from_x: { type: "number", description: "Start X coordinate (if no from_selector)" },
+          from_y: { type: "number", description: "Start Y coordinate (if no from_selector)" },
+          to_selector: {
+            type: "string",
+            description: "CSS selector of element to drop onto",
+          },
+          to_x: { type: "number", description: "End X coordinate (if no to_selector)" },
+          to_y: { type: "number", description: "End Y coordinate (if no to_selector)" },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+          steps: {
+            type: "number",
+            description: "Number of intermediate move steps (default: 10). More steps = smoother drag.",
+          },
+        },
+        required: [],
+        handler: async (args) => this.handleDrag(args),
+      },
+      {
+        name: "browser_keypress",
+        description:
+          'Send keyboard key presses with optional modifiers. Use for shortcuts, navigation keys, and special keys like Enter, Tab, Escape, Arrow keys, F1-F12, etc.',
+        parameters: {
+          key: {
+            type: "string",
+            description: 'Key to press: "Enter", "Tab", "Escape", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Home", "End", "PageUp", "PageDown", "F1"-"F12", or any character',
+          },
+          modifiers: {
+            type: "array",
+            description: 'Modifier keys to hold: ["ctrl"], ["shift"], ["alt"], ["meta"], or combinations like ["ctrl", "shift"]',
+          },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+        },
+        required: ["key"],
+        handler: async (args) => this.handleKeypress(args),
       },
     ];
   }
@@ -369,6 +453,90 @@ export class BrowserPlugin implements ToolPlugin {
         output = output.slice(0, 50_000) + "\n\n... (truncated at 50KB)";
       }
       return { success: true, output };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleScroll(args: Record<string, any>): Promise<ToolResult> {
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("scroll", {
+        direction: args.direction || "down",
+        amount: args.amount,
+        selector: args.selector,
+        tabId: args.tab_id,
+      });
+      return {
+        success: true,
+        output: JSON.stringify({ scrolled: true, direction: result.direction, amount: result.amount, tab_id: result.tabId }, null, 2),
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleHover(args: Record<string, any>): Promise<ToolResult> {
+    if (!args.selector && (args.x === undefined || args.y === undefined)) {
+      return { success: false, output: "", error: "Provide either a CSS selector or x,y coordinates" };
+    }
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("hover", {
+        selector: args.selector,
+        x: args.x,
+        y: args.y,
+        tabId: args.tab_id,
+      });
+      return {
+        success: true,
+        output: JSON.stringify({ hovered: true, element: result.element, tab_id: result.tabId }, null, 2),
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleDrag(args: Record<string, any>): Promise<ToolResult> {
+    if (!args.from_selector && (args.from_x === undefined || args.from_y === undefined)) {
+      return { success: false, output: "", error: "Provide from_selector or from_x/from_y coordinates" };
+    }
+    if (!args.to_selector && (args.to_x === undefined || args.to_y === undefined)) {
+      return { success: false, output: "", error: "Provide to_selector or to_x/to_y coordinates" };
+    }
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("drag", {
+        fromSelector: args.from_selector,
+        fromX: args.from_x,
+        fromY: args.from_y,
+        toSelector: args.to_selector,
+        toX: args.to_x,
+        toY: args.to_y,
+        tabId: args.tab_id,
+        steps: args.steps,
+      });
+      return {
+        success: true,
+        output: JSON.stringify({ dragged: true, from: result.from, to: result.to, tab_id: result.tabId }, null, 2),
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleKeypress(args: Record<string, any>): Promise<ToolResult> {
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("keypress", {
+        key: args.key,
+        modifiers: args.modifiers,
+        tabId: args.tab_id,
+      });
+      return {
+        success: true,
+        output: JSON.stringify({ pressed: true, key: result.key, modifiers: result.modifiers, tab_id: result.tabId }, null, 2),
+      };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
     }
