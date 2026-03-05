@@ -21,9 +21,11 @@ if (!window.__clawdBrowserBridge) {
   let hideTimer = null;
   let fadeTimer = null;
   let autoHideTimer = null;
+  let overlayPersistent = false;
 
-  function showAgentOverlay() {
+  function showAgentOverlay(persistent = false) {
     overlayCount++;
+    if (persistent) overlayPersistent = true;
     if (hideTimer) {
       clearTimeout(hideTimer);
       hideTimer = null;
@@ -32,13 +34,15 @@ if (!window.__clawdBrowserBridge) {
       clearTimeout(fadeTimer);
       fadeTimer = null;
     }
-    // Auto-hide after 10s in case agent finishes without sending hide signal
+    // Auto-hide after 10s as safety net, unless persistent (long-running download/upload)
     if (autoHideTimer) clearTimeout(autoHideTimer);
-    autoHideTimer = setTimeout(() => {
-      autoHideTimer = null;
-      overlayCount = 0;
-      hideAgentOverlay();
-    }, 10000);
+    if (!overlayPersistent) {
+      autoHideTimer = setTimeout(() => {
+        autoHideTimer = null;
+        overlayCount = 0;
+        hideAgentOverlay();
+      }, 10000);
+    }
     if (overlayEl) {
       overlayEl.style.opacity = "1"; // restore if mid-fade
       return;
@@ -82,6 +86,7 @@ if (!window.__clawdBrowserBridge) {
   function hideAgentOverlay() {
     overlayCount = Math.max(0, overlayCount - 1);
     if (overlayCount > 0 || !overlayEl) return;
+    overlayPersistent = false;
     if (autoHideTimer) {
       clearTimeout(autoHideTimer);
       autoHideTimer = null;
@@ -194,7 +199,7 @@ if (!window.__clawdBrowserBridge) {
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "show-agent-overlay") {
-      showAgentOverlay();
+      showAgentOverlay(message.persistent);
       sendResponse({ ok: true });
     } else if (message.type === "hide-agent-overlay") {
       hideAgentOverlay();

@@ -135,7 +135,9 @@ async function handleCommand(id, method, params) {
       indicatorTab = await getActiveTabId();
     } catch {}
   }
-  if (indicatorTab) showAgentIndicator(indicatorTab);
+  // Keep overlay persistent (no auto-hide) during long-running download/upload operations
+  const persistent = method === "download" || method === "file_upload";
+  if (indicatorTab) showAgentIndicator(indicatorTab, persistent);
   try {
     return await dispatchCommand(method, params);
   } finally {
@@ -1536,7 +1538,7 @@ async function uploadFileToChatServer(filePath, mime) {
     } else {
       throw new Error(
         `Upload failed for ${filePath}: ${resp?.error || "file not found"}` +
-        (fallbackResp?.error ? ` (.crdownload fallback also failed: ${fallbackResp.error})` : ""),
+          (fallbackResp?.error ? ` (.crdownload fallback also failed: ${fallbackResp.error})` : ""),
       );
     }
   }
@@ -1658,7 +1660,8 @@ async function handleDownload({ action, timeout }) {
             }
             // Check for interrupted downloads — provide specific error instead of generic timeout
             const interruptedAtEnd = final?.find(
-              (d) => d.state === "interrupted" && d.endTime && Date.now() - new Date(d.endTime).getTime() < maxWait + 5000,
+              (d) =>
+                d.state === "interrupted" && d.endTime && Date.now() - new Date(d.endTime).getTime() < maxWait + 5000,
             );
             if (interruptedAtEnd) {
               reject(new Error(`Download interrupted: ${interruptedAtEnd.error || "unknown reason"}`));
@@ -2014,6 +2017,8 @@ async function ensureDebugger(tabId) {
       behavior: "allow",
       eventsEnabled: true,
     }).catch(() => {});
+    // Suppress Chrome's Downloads bubble/shelf UI so it doesn't obscure page content
+    chrome.downloads.setUiOptions({ isEnabled: false }).catch(() => {});
     // Note: File chooser interception is NOT enabled globally.
     // It's enabled on-demand via handleClick({ intercept_file_chooser: true })
     // to avoid intercepting save/download dialogs (e.g., showSaveFilePicker).
@@ -2109,7 +2114,7 @@ async function resolveElementCoords(tabId, selector) {
 // Agent Activity Indicator
 // ============================================================================
 
-function showAgentIndicator(tabId) {
+function showAgentIndicator(tabId, persistent = false) {
   const count = (activeTabCommands.get(tabId) || 0) + 1;
   activeTabCommands.set(tabId, count);
   if (count === 1) {
@@ -2121,8 +2126,11 @@ function showAgentIndicator(tabId) {
       })
       .catch(() => {}) // Already injected or restricted page
       .then(() => {
-        chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay" }).catch(() => {});
+        chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay", persistent }).catch(() => {});
       });
+  } else if (persistent) {
+    // Upgrade existing overlay to persistent mode
+    chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay", persistent }).catch(() => {});
   }
 }
 
