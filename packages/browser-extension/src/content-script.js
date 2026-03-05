@@ -129,13 +129,13 @@ if (!window.__clawdBrowserBridge) {
     cursorStyleEl = document.createElement("style");
     cursorStyleEl.id = "__clawd-cursor-style";
     cursorStyleEl.textContent = `
-      @keyframes __clawd-legs {
-        0%, 100% {
-          transform: rotate(-12deg);
-        }
-        50% {
-          transform: rotate(12deg);
-        }
+      @keyframes __clawd-leg-run-1 {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-3px); }
+      }
+      @keyframes __clawd-leg-run-2 {
+        0%, 100% { transform: translateY(-3px); }
+        50% { transform: translateY(0); }
       }
       @keyframes __clawd-cursor-pop {
         0% { transform: translate(-50%, -50%) scale(0); opacity: 1; }
@@ -157,12 +157,12 @@ if (!window.__clawdBrowserBridge) {
       .__clawd-action-cursor .__clawd-leg-l1,
       .__clawd-action-cursor .__clawd-leg-r2 {
         transform-origin: center top;
-        animation: __clawd-legs 0.15s ease-in-out 4 alternate;
+        animation: __clawd-leg-run-1 0.12s ease-in-out infinite;
       }
       .__clawd-action-cursor .__clawd-leg-l2,
       .__clawd-action-cursor .__clawd-leg-r1 {
         transform-origin: center top;
-        animation: __clawd-legs 0.15s ease-in-out 4 alternate-reverse;
+        animation: __clawd-leg-run-2 0.12s ease-in-out infinite;
       }
     `;
     (document.head || document.documentElement).appendChild(cursorStyleEl);
