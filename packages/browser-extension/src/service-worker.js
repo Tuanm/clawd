@@ -1046,9 +1046,55 @@ async function handleHistory({ action, tabId }) {
 
 // --- File Upload (set files on <input type="file">) ---
 
-async function handleFileUpload({ selector, files, tabId }) {
+async function handleFileUpload({ selector, fileId, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
+
+  if (!fileId) throw new Error("fileId is required");
+
+  // Fetch file binary from chat server
+  const serverUrl = await getServerBaseUrl();
+  const resp = await fetch(`${serverUrl}/browser/files/${fileId}`);
+  if (!resp.ok) throw new Error(`File not found on server: ${fileId}`);
+  const blob = await resp.blob();
+  const contentDisposition = resp.headers.get("Content-Disposition") || "";
+  const nameMatch = contentDisposition.match(/filename="([^"]+)"/);
+  const fileName = nameMatch ? nameMatch[1] : `upload_${fileId}`;
+
+  // Download to a temp local path via chrome.downloads
+  const file = new File([blob], fileName, { type: blob.type });
+  const blobUrl = URL.createObjectURL(file);
+  const downloadId = await new Promise((resolve, reject) => {
+    chrome.downloads.download({ url: blobUrl, filename: `clawd_upload_${fileName}`, conflictAction: "uniquify" }, (id) => {
+      URL.revokeObjectURL(blobUrl);
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(id);
+    });
+  });
+  // Wait for temp download to complete
+  const localPath = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.downloads.onChanged.removeListener(listener);
+      reject(new Error("Temp file download timed out"));
+    }, 30000);
+    function listener(delta) {
+      if (delta.id === downloadId && delta.state) {
+        if (delta.state.current === "complete") {
+          clearTimeout(timeout);
+          chrome.downloads.onChanged.removeListener(listener);
+          chrome.downloads.search({ id: downloadId }, (items) => {
+            resolve(items[0]?.filename);
+          });
+        } else if (delta.state.current === "interrupted") {
+          clearTimeout(timeout);
+          chrome.downloads.onChanged.removeListener(listener);
+          reject(new Error("Temp file download interrupted"));
+        }
+      }
+    }
+    chrome.downloads.onChanged.addListener(listener);
+  });
+  if (!localPath) throw new Error("Could not resolve temp file path");
 
   const doc = await sendDebuggerCommand(tid, "DOM.getDocument");
   const node = await sendDebuggerCommand(tid, "DOM.querySelector", {
@@ -1059,10 +1105,10 @@ async function handleFileUpload({ selector, files, tabId }) {
 
   await sendDebuggerCommand(tid, "DOM.setFileInputFiles", {
     nodeId: node.nodeId,
-    files, // array of local file paths
+    files: [localPath],
   });
 
-  return { tabId: tid, selector, fileCount: files.length };
+  return { tabId: tid, selector, fileId, fileName };
 }
 
 // --- Frames (list iframes) ---
@@ -1264,6 +1310,38 @@ async function handleEmulate({ action, width, height, deviceScaleFactor, isMobil
 
 // --- Download Handling ---
 
+const MAX_BROWSER_FILE_BYTES = 500 * 1024 * 1024; // 500 MiB
+
+async function getServerBaseUrl() {
+  const config = await chrome.storage.local.get(["serverUrl"]);
+  const wsUrl = config.serverUrl || "ws://localhost:3457/browser/ws";
+  // Convert ws:// to http://, wss:// to https://, strip path
+  const httpUrl = wsUrl.replace(/^ws(s?):\/\//, "http$1://").replace(/\/browser\/ws.*$/, "");
+  return httpUrl;
+}
+
+async function uploadFileToChatServer(filePath, mime) {
+  // Read the downloaded file using fetch (works for local file:// in extensions with <all_urls>)
+  const response = await fetch(`file://${filePath}`);
+  if (!response.ok) throw new Error(`Cannot read file: ${filePath}`);
+  const blob = await response.blob();
+  if (blob.size > MAX_BROWSER_FILE_BYTES) {
+    throw new Error(`File too large (${(blob.size / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.`);
+  }
+  const filename = filePath.split(/[/\\]/).pop() || "download";
+  const file = new File([blob], filename, { type: mime || "application/octet-stream" });
+  const formData = new FormData();
+  formData.append("file", file);
+  const serverUrl = await getServerBaseUrl();
+  const uploadResp = await fetch(`${serverUrl}/browser/files/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  const result = await uploadResp.json();
+  if (!result.ok) throw new Error(result.error || "Upload failed");
+  return result.file;
+}
+
 async function handleDownload({ action, timeout }) {
   if (action === "list") {
     const items = await chrome.downloads.search({ limit: 20, orderBy: ["-startTime"] });
@@ -1284,7 +1362,7 @@ async function handleDownload({ action, timeout }) {
 
   if (action === "wait") {
     const maxWait = Math.min(timeout || 30000, 120000);
-    return new Promise((resolve, reject) => {
+    const downloadInfo = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         chrome.downloads.onChanged.removeListener(listener);
         reject(new Error(`No download completed within ${maxWait / 1000}s`));
@@ -1296,13 +1374,7 @@ async function handleDownload({ action, timeout }) {
           chrome.downloads.onChanged.removeListener(listener);
           chrome.downloads.search({ id: delta.id }, (items) => {
             if (items && items.length > 0) {
-              resolve({
-                id: items[0].id,
-                filename: items[0].filename,
-                url: items[0].url,
-                totalBytes: items[0].totalBytes,
-                mime: items[0].mime,
-              });
+              resolve(items[0]);
             } else {
               resolve({ id: delta.id });
             }
@@ -1311,18 +1383,29 @@ async function handleDownload({ action, timeout }) {
       }
       chrome.downloads.onChanged.addListener(listener);
     });
+    // Auto-upload to chat server
+    if (downloadInfo.filename) {
+      try {
+        const file = await uploadFileToChatServer(downloadInfo.filename, downloadInfo.mime);
+        return { file_id: file.id, filename: file.name, mime: downloadInfo.mime, size: file.size, source_url: downloadInfo.url };
+      } catch (uploadErr) {
+        return { filename: downloadInfo.filename, url: downloadInfo.url, mime: downloadInfo.mime, totalBytes: downloadInfo.totalBytes, upload_error: uploadErr.message };
+      }
+    }
+    return downloadInfo;
   }
 
   if (action === "latest") {
     const items = await chrome.downloads.search({ limit: 1, orderBy: ["-startTime"], state: "complete" });
     if (items.length === 0) throw new Error("No completed downloads found");
-    return {
-      id: items[0].id,
-      filename: items[0].filename,
-      url: items[0].url,
-      totalBytes: items[0].totalBytes,
-      mime: items[0].mime,
-    };
+    const item = items[0];
+    // Auto-upload to chat server
+    try {
+      const file = await uploadFileToChatServer(item.filename, item.mime);
+      return { file_id: file.id, filename: file.name, mime: item.mime, size: file.size, source_url: item.url };
+    } catch (uploadErr) {
+      return { filename: item.filename, url: item.url, mime: item.mime, totalBytes: item.totalBytes, upload_error: uploadErr.message };
+    }
   }
 
   throw new Error(`Unknown download action: ${action}. Use "list", "wait", or "latest".`);

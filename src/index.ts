@@ -445,6 +445,51 @@ async function parseBody(req: Request): Promise<Record<string, any>> {
 }
 
 // ============================================================================
+// Browser File Transfer API
+// ============================================================================
+
+const MAX_BROWSER_FILE_SIZE = 500 * 1024 * 1024; // 500 MiB
+
+async function handleBrowserFileRequest(req: Request, _url: URL, path: string): Promise<Response> {
+  // POST /browser/files/upload — extension uploads a file (multipart form data)
+  if (path === "/browser/files/upload" && req.method === "POST") {
+    try {
+      const formData = await req.formData();
+      const file = formData.get("file") as File;
+      if (!file) return json({ ok: false, error: "Missing 'file' in form data" }, 400);
+      if (file.size > MAX_BROWSER_FILE_SIZE) {
+        return json({ ok: false, error: `File too large (${(file.size / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.` }, 413);
+      }
+      const result = await uploadFile(file, "browser", undefined, "UBROWSER");
+      return json(result, result.ok ? 200 : 413);
+    } catch (err: any) {
+      return json({ ok: false, error: err.message }, 500);
+    }
+  }
+
+  // GET /browser/files/:fileId — extension downloads a file as raw binary
+  const fileMatch = path.match(/^\/browser\/files\/([A-Za-z0-9]+)$/);
+  if (fileMatch && req.method === "GET") {
+    const fileId = fileMatch[1];
+    const file = getFile(fileId);
+    if (!file) return new Response("Not found", { status: 404 });
+    if (file.data.length > MAX_BROWSER_FILE_SIZE) {
+      return json({ ok: false, error: `File too large (${(file.data.length / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.` }, 413);
+    }
+    return new Response(file.data, {
+      headers: {
+        "Content-Type": file.mimetype,
+        "Content-Disposition": `attachment; filename="${file.name}"`,
+        "Content-Length": String(file.data.length),
+        ...corsHeaders,
+      },
+    });
+  }
+
+  return json({ ok: false, error: "Not found" }, 404);
+}
+
+// ============================================================================
 // Server
 // ============================================================================
 
@@ -477,6 +522,14 @@ const server = Bun.serve({
         return new Response("Browser features not enabled", { status: 403 });
       }
       return upgradeBrowserWs(req, server);
+    }
+
+    // Browser file transfer API (extension uploads/downloads files via chat server)
+    if (path.startsWith("/browser/files")) {
+      if (!isBrowserEnabled()) {
+        return new Response("Browser features not enabled", { status: 403 });
+      }
+      return handleBrowserFileRequest(req, url, path);
     }
 
     // Workspace noVNC WebSocket proxy (only when workspaces enabled)

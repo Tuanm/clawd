@@ -14,8 +14,8 @@
 
 import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
 import type { ToolResult } from "../tools/tools.js";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export class BrowserPlugin implements ToolPlugin {
   readonly name = "browser";
@@ -384,7 +384,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_upload_file",
         description:
-          'Set files on a <input type="file"> element. Provide a CSS selector for the file input and either a file_id (from chat server) or a local file_path.',
+          'Set files on a <input type="file"> element. Provide a CSS selector for the file input and a file_id from the chat server.',
         parameters: {
           selector: {
             type: "string",
@@ -392,15 +392,11 @@ export class BrowserPlugin implements ToolPlugin {
           },
           file_id: {
             type: "string",
-            description: "File ID from chat server (resolved to local path)",
-          },
-          file_path: {
-            type: "string",
-            description: "Local file path (alternative to file_id)",
+            description: "File ID from chat server",
           },
           tab_id: { type: "number", description: "Target tab ID (optional)" },
         },
-        required: ["selector"],
+        required: ["selector", "file_id"],
         handler: async (args) => this.handleUploadFile(args),
       },
       {
@@ -486,7 +482,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_download",
         description:
-          'Track and capture file downloads. Use "list" to see recent downloads, "wait" to wait for a download to complete, or "latest" to get the most recent completed download. Downloaded files are uploaded to chat server and returned as file_id.',
+          'Track and capture file downloads. Use "list" to see recent downloads, "wait" to wait for a download to complete, or "latest" to get the most recent completed download. Completed downloads are automatically uploaded to the chat server and returned as file_id (max 500 MiB).',
         parameters: {
           action: {
             type: "string",
@@ -1039,35 +1035,21 @@ export class BrowserPlugin implements ToolPlugin {
         error: "selector is required (CSS selector for the <input type='file'> element)",
       };
     }
-    if (!args.file_id && !args.file_path) {
-      return { success: false, output: "", error: "Provide file_id or file_path" };
+    if (!args.file_id) {
+      return { success: false, output: "", error: "file_id is required (from chat server)" };
     }
     const { sendBrowserCommand } = await this.getBridge();
-
-    let filePaths: string[] = [];
-    if (args.file_id) {
-      const { db } = await import("../../../server/database");
-      const file = db.query("SELECT path FROM files WHERE id = ?").get(args.file_id) as any;
-      if (!file) return { success: false, output: "", error: `File not found: ${args.file_id}` };
-      if (!existsSync(file.path))
-        return { success: false, output: "", error: `File no longer exists on disk: ${args.file_id}` };
-      filePaths = [file.path];
-    } else {
-      const resolvedPath = resolve(args.file_path);
-      if (!existsSync(resolvedPath)) return { success: false, output: "", error: `File not found: ${args.file_path}` };
-      filePaths = [resolvedPath];
-    }
 
     try {
       const result = await sendBrowserCommand("file_upload", {
         selector: args.selector,
-        files: filePaths,
+        fileId: args.file_id,
         tabId: args.tab_id,
       });
       return {
         success: true,
         output: JSON.stringify(
-          { uploaded: true, selector: args.selector, file_count: filePaths.length, tab_id: result.tabId },
+          { uploaded: true, selector: args.selector, file_id: args.file_id, filename: result.fileName, tab_id: result.tabId },
           null,
           2,
         ),
@@ -1075,6 +1057,7 @@ export class BrowserPlugin implements ToolPlugin {
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
     }
+  }
   }
 
   private async handleFrames(args: Record<string, any>): Promise<ToolResult> {
@@ -1135,56 +1118,9 @@ export class BrowserPlugin implements ToolPlugin {
       const result = await sendBrowserCommand("download", {
         action: args.action,
         timeout: args.timeout,
-        tabId: args.tab_id,
       });
 
-      if (args.action === "list") {
-        return { success: true, output: JSON.stringify(result, null, 2) };
-      }
-
-      // For latest/wait, upload the file to chat server
-      if (result.filename) {
-        try {
-          const buffer = readFileSync(result.filename);
-          const name = basename(result.filename);
-          const mime = result.mime || "application/octet-stream";
-          const file = await this.uploadToChatServer(buffer, name, mime);
-          return {
-            success: true,
-            output: JSON.stringify(
-              {
-                file_id: file.id,
-                filename: name,
-                mime,
-                size: file.size,
-                download_url: result.url,
-                message: `Downloaded file uploaded as ${file.id}. Use appropriate tool to read or attach this file.`,
-              },
-              null,
-              2,
-            ),
-          };
-        } catch (readErr: any) {
-          // Can't read the file (WSL/Windows path mismatch, etc.)
-          console.error(`[browser-plugin] handleDownload read error: ${readErr.message}`);
-          return {
-            success: true,
-            output: JSON.stringify(
-              {
-                filename: result.filename,
-                url: result.url,
-                mime: result.mime,
-                size: result.totalBytes,
-                note: "File downloaded but could not be read by server. Path: " + result.filename,
-                error_detail: readErr.message,
-              },
-              null,
-              2,
-            ),
-          };
-        }
-      }
-
+      // Extension now auto-uploads to chat server for wait/latest — result has file_id directly
       return { success: true, output: JSON.stringify(result, null, 2) };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };

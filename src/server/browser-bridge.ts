@@ -38,7 +38,7 @@ const connections = new Map<string, ServerWebSocket<BrowserWsData>>();
 const pendingRequests = new Map<string, PendingRequest>();
 let requestCounter = 0;
 
-const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 120_000; // 120s — file transfers may take time
 const MAX_CONNECTIONS = 10;
 const EXT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
