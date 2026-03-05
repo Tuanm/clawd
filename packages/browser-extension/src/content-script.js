@@ -20,6 +20,7 @@ if (!window.__clawdBrowserBridge) {
   let styleEl = null;
   let hideTimer = null;
   let fadeTimer = null;
+  let autoHideTimer = null;
 
   function showAgentOverlay() {
     overlayCount++;
@@ -31,6 +32,13 @@ if (!window.__clawdBrowserBridge) {
       clearTimeout(fadeTimer);
       fadeTimer = null;
     }
+    // Auto-hide after 10s in case agent finishes without sending hide signal
+    if (autoHideTimer) clearTimeout(autoHideTimer);
+    autoHideTimer = setTimeout(() => {
+      autoHideTimer = null;
+      overlayCount = 0;
+      hideAgentOverlay();
+    }, 10000);
     if (overlayEl) {
       overlayEl.style.opacity = "1"; // restore if mid-fade
       return;
@@ -74,6 +82,10 @@ if (!window.__clawdBrowserBridge) {
   function hideAgentOverlay() {
     overlayCount = Math.max(0, overlayCount - 1);
     if (overlayCount > 0 || !overlayEl) return;
+    if (autoHideTimer) {
+      clearTimeout(autoHideTimer);
+      autoHideTimer = null;
+    }
 
     // Brief delay before fade-out for smoother visual
     hideTimer = setTimeout(() => {
