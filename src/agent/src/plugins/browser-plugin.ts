@@ -82,7 +82,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_click",
         description:
-          'Click an element on the page. Supports single-click, double-click (click_count=2 to select words or open items), and right-click (button="right" for context menus). For dynamic pages, prefer selectors over coordinates.',
+          'Click an element on the page. Supports single-click, double-click (click_count=2 to select words or open items), and right-click (button="right" for context menus). For dynamic pages, prefer selectors over coordinates. Set intercept_file_chooser=true when clicking upload/file buttons.',
         parameters: {
           selector: {
             type: "string",
@@ -104,6 +104,11 @@ export class BrowserPlugin implements ToolPlugin {
           pierce: {
             type: "boolean",
             description: "Pierce shadow DOM and iframes to find the element (default: false)",
+          },
+          intercept_file_chooser: {
+            type: "boolean",
+            description:
+              "Set true when clicking a file upload button. Intercepts the file chooser dialog so you can provide a file via browser_upload_file. Do NOT set for download buttons.",
           },
         },
         required: [],
@@ -765,6 +770,7 @@ export class BrowserPlugin implements ToolPlugin {
         button: args.button || "left",
         clickCount: args.click_count,
         pierce: args.pierce,
+        intercept_file_chooser: args.intercept_file_chooser,
       });
       return {
         success: true,

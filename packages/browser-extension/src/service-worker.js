@@ -327,7 +327,7 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
 
 // --- Click ---
 
-async function handleClick({ selector, x, y, tabId, button, clickCount: count, pierce }) {
+async function handleClick({ selector, x, y, tabId, button, clickCount: count, pierce, intercept_file_chooser }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
@@ -340,6 +340,12 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
     clickY = coords.y;
   } else if (clickX === undefined || clickY === undefined) {
     throw new Error("Click requires either 'selector' or both 'x' and 'y' coordinates");
+  }
+
+  // Enable file chooser interception on-demand (only when agent expects an upload dialog)
+  if (intercept_file_chooser) {
+    pendingFileChoosers.delete(tid); // clear any stale entry
+    await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: true }).catch(() => {});
   }
 
   const buttonMap = { left: "left", right: "right", middle: "middle" };
@@ -374,13 +380,16 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
       filename: dl.suggestedFilename,
       hint: "A file download was triggered. Use browser_download action=wait to capture it.",
     };
-  // Check if a file chooser dialog was intercepted
-  if (pendingFileChoosers.has(tid)) {
+  // Check if a file chooser dialog was intercepted (only possible when intercept_file_chooser was set)
+  if (intercept_file_chooser && pendingFileChoosers.has(tid)) {
     const fc = pendingFileChoosers.get(tid);
     result.file_chooser_opened = {
       mode: fc.mode,
       hint: "A file chooser dialog was intercepted. Use browser_upload_file with file_id to provide the file. No selector needed.",
     };
+  } else if (intercept_file_chooser) {
+    // No file chooser was triggered — disable interception to avoid interfering with future dialogs
+    await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
   }
   return result;
 }
@@ -1192,6 +1201,8 @@ async function handleFileUpload({ selector, fileId, tabId }) {
       files: [localPath],
       backendNodeId: pendingFC.backendNodeId,
     });
+    // Disable interception now that the file has been provided
+    await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
   } else if (selector) {
     // Direct selector approach — find the file input and set files
     const doc = await sendDebuggerCommand(tid, "DOM.getDocument");
@@ -1840,10 +1851,9 @@ async function ensureDebugger(tabId) {
       behavior: "allow",
       eventsEnabled: true,
     }).catch(() => {});
-    // Intercept file chooser dialogs so agent can upload files programmatically
-    await sendDebuggerCommand(tabId, "Page.setInterceptFileChooserDialog", {
-      enabled: true,
-    }).catch(() => {});
+    // Note: File chooser interception is NOT enabled globally.
+    // It's enabled on-demand via handleClick({ intercept_file_chooser: true })
+    // to avoid intercepting save/download dialogs (e.g., showSaveFilePicker).
   })();
 
   debuggerPending.set(tabId, promise);

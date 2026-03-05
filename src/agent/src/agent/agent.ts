@@ -1369,7 +1369,7 @@ SUMMARY:`;
         "3. Only use browser_screenshot when you specifically need VISUAL information that cannot be obtained from DOM (e.g., charts, images, visual styling, verifying visual layout).\n" +
         "4. When you execute similar code more than once, SAVE it as a reusable script via browser_store (action=set with a descriptive key and description), then use browser_execute with script_id for subsequent calls.\n" +
         "5. When a browser_click or browser_navigate response includes download_triggered, a file download has started. Use browser_download action=wait to capture it and upload to the chat server.\n" +
-        "6. When a browser_click response includes file_chooser_opened, a file upload dialog was intercepted. Call browser_upload_file with just file_id (no selector needed) to provide the file.\n" +
+        "6. To upload a file via a website's upload button: click the button with intercept_file_chooser=true, then when file_chooser_opened appears in the response, call browser_upload_file with just file_id (no selector needed). Do NOT use intercept_file_chooser for download buttons.\n" +
         "</browser_instructions>";
     }
 
