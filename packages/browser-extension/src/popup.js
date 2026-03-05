@@ -23,18 +23,25 @@ function maskToken(token) {
   if (!token) return "";
   if (token.length <= 5) return "***";
   if (token.length <= 8) return `${token.slice(0, 1)}***${token.slice(-1)}`;
+  if (token.length <= 12) return `${token.slice(0, 2)}***${token.slice(-2)}`;
   return `${token.slice(0, 3)}***${token.slice(-3)}`;
 }
 
 /** Build ws:// URL from host string (strip any user-supplied protocol/path). */
 function buildWsUrl(host) {
   // Strip protocol if user accidentally typed it (any scheme)
-  let h = (host || DEFAULT_HOST).trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
+  let h = (host || DEFAULT_HOST)
+    .trim()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+    .replace(/\/+$/, "");
   // Strip path if user accidentally added it
   const slashIdx = h.indexOf("/");
   if (slashIdx > 0) h = h.substring(0, slashIdx);
   // Determine protocol — use wss:// only if the host looks like a remote domain
-  const isLocal = /^(localhost|127\.\d|0\.0\.0\.0|\[::1\]|\[::ffff:127)/i.test(h);
+  const isLocal =
+    /^(localhost|127\.\d|0\.0\.0\.0|10\.\d|172\.(1[6-9]|2\d|3[01])\.|192\.168\.\d|\[::1\]|\[::ffff:127|\[fe80:)/i.test(
+      h,
+    );
   const protocol = isLocal ? "ws" : "wss";
   return `${protocol}://${h}/browser/ws`;
 }
@@ -79,6 +86,7 @@ chrome.storage.local.get(["serverHost", "serverUrl", "authToken", "extensionId"]
   serverHostInput.value = config.serverHost || DEFAULT_HOST;
   if (config.authToken) {
     realToken = config.authToken;
+    authTokenInput.type = "text"; // show readable mask, not password dots
     authTokenInput.value = maskToken(config.authToken);
     tokenMasked = true;
   }
@@ -126,22 +134,21 @@ connectBtn.addEventListener("click", () => {
   // Persist to storage (serverHost + legacy serverUrl for service-worker compat)
   const storageData = { serverHost: host, serverUrl: wsUrl };
   if (token) {
-    chrome.storage.local.set({ ...storageData, authToken: token })
+    chrome.storage.local
+      .set({ ...storageData, authToken: token })
       .then(() => console.log("[clawd-popup] Saved config to storage"));
   } else {
-    chrome.storage.local.set(storageData)
+    chrome.storage.local
+      .set(storageData)
       .then(() => chrome.storage.local.remove("authToken"))
       .then(() => console.log("[clawd-popup] Saved config to storage (no token)"));
   }
 
   // Send to offscreen with full WS URL + token
-  chrome.runtime.sendMessage(
-    { type: "reconnect", url: wsUrl, token: token || undefined },
-    (response) => {
-      console.log("[clawd-popup] reconnect response:", response, "lastError:", chrome.runtime.lastError?.message);
-      connectBtn.disabled = false;
-    },
-  );
+  chrome.runtime.sendMessage({ type: "reconnect", url: wsUrl, token: token || undefined }, (response) => {
+    console.log("[clawd-popup] reconnect response:", response, "lastError:", chrome.runtime.lastError?.message);
+    connectBtn.disabled = false;
+  });
 
   // After connecting with a token, mask it in the input
   if (token) {

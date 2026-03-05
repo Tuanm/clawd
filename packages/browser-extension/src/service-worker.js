@@ -1343,6 +1343,10 @@ async function uploadFileToChatServer(filePath, mime) {
     method: "POST",
     body: formData,
   });
+  if (!uploadResp.ok) {
+    const text = await uploadResp.text().catch(() => "");
+    throw new Error(`Upload failed (HTTP ${uploadResp.status}): ${text.slice(0, 200)}`);
+  }
   const result = await uploadResp.json();
   if (!result.ok) throw new Error(result.error || "Upload failed");
   return result.file;

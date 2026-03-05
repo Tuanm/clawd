@@ -233,9 +233,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    connect().catch((err) => console.error("[clawd-offscreen] reconnect failed:", err));
-    sendResponse({ ok: true });
-    return false;
+    connect()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => {
+        console.error("[clawd-offscreen] reconnect failed:", err);
+        sendResponse({ ok: true }); // still ok — reconnect will auto-retry
+      });
+    return true; // async response
   }
 
   return false;

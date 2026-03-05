@@ -492,8 +492,9 @@ async function handleBrowserFileRequest(req: Request, url: URL, path: string): P
     return new Response(file.data, {
       headers: {
         "Content-Type": file.mimetype,
-        "Content-Disposition": `attachment; filename="${file.name}"`,
+        "Content-Disposition": `attachment; filename="${file.name.replace(/["\r\n\\]/g, "_")}"`,
         "Content-Length": String(file.data.length),
+        "Referrer-Policy": "no-referrer",
         ...corsHeaders,
       },
     });

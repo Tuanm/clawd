@@ -20,11 +20,7 @@
 
 import type { ServerWebSocket } from "bun";
 import { randomBytes } from "node:crypto";
-import {
-  getAllBrowserTokens,
-  getChannelsForToken,
-  isBrowserAuthRequired,
-} from "../config-file";
+import { getAllBrowserTokens, getChannelsForToken, isBrowserAuthRequired } from "../config-file";
 
 // ============================================================================
 // Types
@@ -162,6 +158,7 @@ export function handleBrowserWsMessage(ws: ServerWebSocket<BrowserWsData>, messa
 function maskToken(token: string): string {
   if (token.length <= 5) return "***";
   if (token.length <= 8) return `${token.slice(0, 1)}***${token.slice(-1)}`;
+  if (token.length <= 12) return `${token.slice(0, 2)}***${token.slice(-2)}`;
   return `${token.slice(0, 3)}***${token.slice(-3)}`;
 }
 
@@ -172,6 +169,7 @@ function maskToken(token: string): string {
 export function validateBrowserToken(token: string | null): boolean {
   if (!isBrowserAuthRequired()) return true; // no auth configured
   if (!token) return false;
+  if (!AUTH_TOKEN_PATTERN.test(token)) return false; // invalid format
   const validTokens = getAllBrowserTokens();
   if (!validTokens || validTokens.size === 0) return false; // fail closed
   return validTokens.has(token);
@@ -207,7 +205,7 @@ function checkTabAccess(extensionId: string, agentId: string, params: Record<str
 
   if (owner === agentId) return null; // already owns it
 
-  return `Tab ${tabId} is owned by agent '${owner}'. Each agent operates in its own tabs to avoid conflicts.`;
+  return `Tab ${tabId} is owned by another agent. Each agent operates in its own tabs to avoid conflicts.`;
 }
 
 /**
@@ -242,10 +240,30 @@ export function releaseAgentTabs(agentId: string): void {
  * 3. Among eligible browsers, prefer ones with fewer active agents (least-loaded).
  */
 function selectBrowser(agentId: string, channel?: string): ServerWebSocket<BrowserWsData> | null {
-  // Sticky: reuse existing assignment if still connected
+  // When auth is required, channel must be provided
+  if (isBrowserAuthRequired() && !channel) return null;
+
+  // Sticky: reuse existing assignment if still connected AND authorized
   const existingExtId = agentBrowser.get(agentId);
   if (existingExtId && connections.has(existingExtId)) {
-    return connections.get(existingExtId)!;
+    const existingWs = connections.get(existingExtId)!;
+    // Re-validate channel authorization (browser may have reconnected with different token)
+    if (isBrowserAuthRequired() && channel) {
+      const browserChannels = existingWs.data.channels;
+      if (!browserChannels || !browserChannels.includes(channel)) {
+        // Stale assignment — clear and fall through to re-selection
+        agentBrowser.delete(agentId);
+        const agents = extensionAgents.get(existingExtId);
+        if (agents) {
+          agents.delete(agentId);
+          if (agents.size === 0) extensionAgents.delete(existingExtId);
+        }
+      } else {
+        return existingWs;
+      }
+    } else {
+      return existingWs;
+    }
   }
 
   // Build candidate list
@@ -328,7 +346,10 @@ export function getConnectionInfo(filterChannel?: string): Array<{
   for (const [extId, ws] of connections) {
     const channels = ws.data.channels ?? [];
     // If filtering by channel, skip browsers that don't serve this channel
-    if (filterChannel && channels.length > 0 && !channels.includes(filterChannel)) continue;
+    if (filterChannel) {
+      if (channels.length === 0 && isBrowserAuthRequired()) continue; // no-channel = unauthenticated
+      if (channels.length > 0 && !channels.includes(filterChannel)) continue;
+    }
     info.push({
       extensionId: extId,
       // Only show channels relevant to the caller (or all if no filter)
