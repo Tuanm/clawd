@@ -515,6 +515,17 @@ export class MCPManager extends EventEmitter {
     return [...this.connections.keys()];
   }
 
+  /**
+   * Get status of all connected servers (name, connected state, tool count)
+   */
+  getServerStatuses(): Array<{ name: string; connected: boolean; tools: number }> {
+    return [...this.connections.entries()].map(([name, conn]) => ({
+      name,
+      connected: conn.connected,
+      tools: conn.tools.length,
+    }));
+  }
+
   // ============================================================================
   // Get All Tools
   // ============================================================================

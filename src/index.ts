@@ -85,6 +85,8 @@ Examples:
 // Now import modules (database will initialize)
 import { registerAgentRoutes } from "./api/agents";
 import { registerArticleRoutes } from "./api/articles";
+import { registerMcpServerRoutes } from "./api/mcp-servers";
+import { exchangeOAuthCode, saveOAuthToken, validateOAuthState, escapeHtml } from "./mcp-oauth";
 import { loadConfig, validateConfig } from "./config";
 import { loadConfigFile, reloadConfigFile, isWorkspacesEnabled, isBrowserEnabled } from "./config-file";
 import { upgradeBrowserWs } from "./server/browser-bridge";
@@ -281,6 +283,9 @@ workerManager.setSpaceInfra(spaceManager, spaceWorkerManager);
 
 // Register agent management API routes
 const handleAgentRoute = registerAgentRoutes(db, workerManager);
+
+// Register MCP server management API routes
+const handleMcpServerRoute = registerMcpServerRoutes(workerManager);
 
 // Register article management API routes
 const handleArticleRoute = registerArticleRoutes(db);
@@ -603,6 +608,69 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     // Agent management routes (handled by registerAgentRoutes)
     const agentResponse = handleAgentRoute(req, url, path, bunServer);
     if (agentResponse) return agentResponse;
+
+    // MCP server management routes
+    const mcpResponse = handleMcpServerRoute(req, url, path);
+    if (mcpResponse) return mcpResponse;
+
+    // MCP OAuth callback route
+    if (path === "/api/mcp/oauth/callback" && req.method === "GET") {
+      const code = url.searchParams.get("code");
+      const stateParam = url.searchParams.get("state");
+      if (!code || !stateParam) {
+        return new Response("Missing code or state parameter", {
+          status: 400,
+          headers: { "Content-Type": "text/plain" },
+        });
+      }
+      try {
+        // Validate nonce against pending flows (CSRF protection)
+        const flow = validateOAuthState(stateParam);
+        if (!flow) {
+          return new Response("Invalid or expired OAuth state", {
+            status: 403,
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+        const { channel, server: serverName } = flow;
+        // Look up the OAuth config for this server
+        const { getChannelMCPServers } = await import("./agent/src/api/provider-config");
+        const configs = getChannelMCPServers(channel);
+        const serverConfig = configs[serverName];
+        if (!serverConfig?.oauth) {
+          return new Response("Unknown OAuth server", { status: 404, headers: { "Content-Type": "text/plain" } });
+        }
+        const tokenUrl = serverConfig.oauth.token_url || serverConfig.url?.replace(/\/mcp$/, "/oauth/token") || "";
+        if (!tokenUrl) {
+          return new Response("OAuth token URL not configured", {
+            status: 500,
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+        const redirectUri = `${url.origin}/api/mcp/oauth/callback`;
+        const token = await exchangeOAuthCode(code, tokenUrl, serverConfig.oauth.client_id, redirectUri);
+        saveOAuthToken(channel, serverName, token);
+
+        // Try reconnecting the MCP server with the new token
+        const connectConfig: any = {
+          transport: "http",
+          url: serverConfig.url,
+          token: token.access_token,
+        };
+        await workerManager.addChannelMcpServer(channel, serverName, connectConfig);
+
+        const safeName = escapeHtml(serverName);
+        return new Response(
+          `<html><body><h2>MCP Connected!</h2><p>Server <b>${safeName}</b> authenticated successfully. You can close this tab.</p><script>window.close()</script></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        );
+      } catch (err: any) {
+        return new Response(`OAuth error: ${escapeHtml(err.message || "Unknown error")}`, {
+          status: 500,
+          headers: { "Content-Type": "text/plain" },
+        });
+      }
+    }
 
     // Article management routes (handled by registerArticleRoutes)
     const articleResponse = handleArticleRoute(req, url, path, bunServer);

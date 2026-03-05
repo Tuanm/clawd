@@ -11,6 +11,7 @@ import type { SchedulerManager } from "./scheduler/manager";
 import { WorkerLoop, type WorkerLoopConfig } from "./worker-loop";
 import { MCPManager } from "./agent/src/mcp/client";
 import { getChannelMCPServers } from "./agent/src/api/provider-config";
+import { loadOAuthToken } from "./mcp-oauth";
 
 import type { SpaceManager } from "./spaces/manager";
 import type { SpaceWorkerManager } from "./spaces/worker";
@@ -274,10 +275,17 @@ export class WorkerManager {
     // Create and connect
     const setupPromise = (async (): Promise<MCPManager | null> => {
       const mcpManager = new MCPManager();
-      console.log(`[WorkerManager] Starting ${serverNames.length} MCP server(s) for channel: ${channel}`);
+      const enabledEntries = Object.entries(serverConfigs).filter(([, c]) => c.enabled !== false);
+      console.log(`[WorkerManager] Starting ${enabledEntries.length} MCP server(s) for channel: ${channel}`);
 
-      for (const [name, config] of Object.entries(serverConfigs)) {
+      for (const [name, config] of enabledEntries) {
         try {
+          // Load OAuth token for HTTP servers
+          let token: string | undefined;
+          if (config.oauth?.client_id) {
+            const stored = loadOAuthToken(channel, name);
+            token = stored?.access_token;
+          }
           await mcpManager.addServer({
             name,
             command: config.command,
@@ -285,6 +293,7 @@ export class WorkerManager {
             env: config.env,
             url: config.url,
             transport: config.transport,
+            token,
           });
           console.log(`[WorkerManager] Connected MCP server: ${name} (channel: ${channel})`);
         } catch (err) {
@@ -322,5 +331,92 @@ export class WorkerManager {
       console.error(`[WorkerManager] Error disconnecting channel MCP ${channel}:`, err);
     }
     this.channelMcp.delete(channel);
+  }
+
+  // ===========================================================================
+  // MCP Server CRUD (for UI)
+  // ===========================================================================
+
+  /** Get or create the MCPManager for a channel */
+  async getOrCreateChannelMcp(channel: string): Promise<MCPManager> {
+    const existing = this.channelMcp.get(channel);
+    if (existing) return existing;
+
+    // Wait for any in-flight ensureChannelMcp() to finish first
+    const pending = this.channelMcpPending.get(channel);
+    if (pending) {
+      const result = await pending;
+      if (result) return result;
+    }
+
+    const mgr = new MCPManager();
+    this.channelMcp.set(channel, mgr);
+    return mgr;
+  }
+
+  /** Add a single MCP server to a channel (hot-add at runtime) */
+  async addChannelMcpServer(
+    channel: string,
+    name: string,
+    config: {
+      command?: string;
+      args?: string[];
+      env?: Record<string, string>;
+      url?: string;
+      transport?: "stdio" | "http";
+      token?: string;
+    },
+  ): Promise<{ success: boolean; tools: number; error?: string }> {
+    const mgr = await this.getOrCreateChannelMcp(channel);
+
+    // Remove existing if re-adding
+    if (mgr.listServers().includes(name)) {
+      await mgr.removeServer(name);
+    }
+
+    try {
+      await mgr.addServer({
+        name,
+        command: config.command,
+        args: config.args,
+        env: config.env,
+        url: config.url,
+        transport: config.transport,
+        token: config.token,
+      });
+      const tools = mgr.getAllTools().filter((t) => t.server === name).length;
+      console.log(`[WorkerManager] Added MCP server: ${name} (channel: ${channel}, ${tools} tools)`);
+      return { success: true, tools };
+    } catch (err: any) {
+      console.error(`[WorkerManager] Failed to add MCP server ${name} for channel ${channel}:`, err);
+      return { success: false, tools: 0, error: err.message };
+    }
+  }
+
+  /** Remove a single MCP server from a channel */
+  async removeChannelMcpServer(channel: string, name: string): Promise<boolean> {
+    const mgr = this.channelMcp.get(channel);
+    if (!mgr) return false;
+
+    try {
+      await mgr.removeServer(name);
+    } catch (err) {
+      console.error(`[WorkerManager] Error removing MCP server ${name} from ${channel}:`, err);
+    }
+    console.log(`[WorkerManager] Removed MCP server: ${name} (channel: ${channel})`);
+
+    // Clean up empty MCPManager if no servers left and no agents
+    if (mgr.listServers().length === 0 && this.getChannelAgentCount(channel) === 0) {
+      this.channelMcp.delete(channel);
+      this.channelMcpPending.delete(channel);
+    }
+    return true;
+  }
+
+  /** Get runtime status of all MCP servers for a channel */
+  getChannelMcpStatus(channel: string): Array<{ name: string; connected: boolean; tools: number }> {
+    const mgr = this.channelMcp.get(channel);
+    if (!mgr) return [];
+    return mgr.getServerStatuses();
   }
 }

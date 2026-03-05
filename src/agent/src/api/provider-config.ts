@@ -7,7 +7,7 @@
  * Optimized with caching to avoid repeated file reads.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type {
@@ -392,4 +392,55 @@ export function hasMCPServers(): boolean {
 export function getChannelMCPServers(channel: string): Record<string, MCPServerConfig> {
   const config = loadConfig();
   return config.mcp_servers?.[channel] || {};
+}
+
+// ============================================================================
+// Config Persistence (write back to ~/.clawd/config.json)
+// ============================================================================
+
+/**
+ * Save a channel MCP server config to ~/.clawd/config.json
+ */
+export function saveChannelMCPServer(channel: string, name: string, serverConfig: MCPServerConfig): void {
+  const config = loadConfig();
+  if (!config.mcp_servers) config.mcp_servers = {};
+  if (!config.mcp_servers[channel]) config.mcp_servers[channel] = {};
+  config.mcp_servers[channel][name] = serverConfig;
+  writeConfigToDisk(config);
+}
+
+/**
+ * Remove a channel MCP server from ~/.clawd/config.json
+ */
+export function removeChannelMCPServer(channel: string, name: string): void {
+  const config = loadConfig();
+  if (config.mcp_servers?.[channel]) {
+    delete config.mcp_servers[channel][name];
+    if (Object.keys(config.mcp_servers[channel]).length === 0) {
+      delete config.mcp_servers[channel];
+    }
+  }
+  writeConfigToDisk(config);
+}
+
+/**
+ * Update the enabled field of a channel MCP server
+ */
+export function setChannelMCPServerEnabled(channel: string, name: string, enabled: boolean): void {
+  const config = loadConfig();
+  if (config.mcp_servers?.[channel]?.[name]) {
+    config.mcp_servers[channel][name].enabled = enabled;
+    writeConfigToDisk(config);
+  }
+}
+
+/**
+ * Write config back to disk and update cache
+ */
+function writeConfigToDisk(config: Config): void {
+  const dir = join(homedir(), ".clawd");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(DEFAULT_CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
+  cachedConfig = config;
+  cachedConfigPath = DEFAULT_CONFIG_PATH;
 }

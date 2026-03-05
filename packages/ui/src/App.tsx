@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import AgentDialog from "./AgentDialog";
+import McpDialog, { McpIcon } from "./McpDialog";
 import MessageComposer from "./MessageComposer";
 import MessageList, { StreamOutputDialog } from "./MessageList";
 import PlanModal from "./PlanModal";
@@ -464,6 +465,7 @@ export default function App({ channel: initialChannel }: Props) {
   const [spaceError, setSpaceError] = useState(false);
   const isSpaceLocked = spaceInfo != null && spaceInfo.status !== "active";
   const [showAgentDialog, setShowAgentDialog] = useState(false);
+  const [showMcpDialog, setShowMcpDialog] = useState(false);
   const [jumpToMessageTs, setJumpToMessageTs] = useState<string | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [isActiveChannelAtBottom, setIsActiveChannelAtBottom] = useState(true);
@@ -1940,6 +1942,11 @@ export default function App({ channel: initialChannel }: Props) {
             </svg>
           </button>
         }
+        mcpButton={
+          <button className="mcp-btn" onClick={() => setShowMcpDialog(true)} title="MCP Servers">
+            <McpIcon size={16} />
+          </button>
+        }
       />
       <StreamOutputDialog
         open={streamDialogOpen}
@@ -1968,6 +1975,7 @@ export default function App({ channel: initialChannel }: Props) {
         }}
       />
       <AgentDialog channel={activeChannel} isOpen={showAgentDialog} onClose={() => setShowAgentDialog(false)} />
+      <McpDialog channel={activeChannel} isOpen={showMcpDialog} onClose={() => setShowMcpDialog(false)} />
       <ProjectsDialog
         channel={activeChannel}
         isOpen={showProjectsDialog}

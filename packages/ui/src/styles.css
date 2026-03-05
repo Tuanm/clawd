@@ -5566,3 +5566,286 @@ textarea {
     transform: rotate(360deg);
   }
 }
+
+/* ============================================================================
+   MCP Dialog & Button Styles
+   ============================================================================ */
+
+.mcp-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 4px;
+}
+
+.mcp-btn:hover {
+  color: hsl(var(--accent));
+  background: hsl(var(--text) / 5%);
+}
+
+.mcp-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* MCP server icon in the dialog bar */
+.mcp-server-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: hsl(var(--text) / 8%);
+  color: var(--text-muted);
+  transition: all 0.2s;
+}
+
+.mcp-server-icon.connected {
+  background: hsl(142 76% 36% / 15%);
+  color: hsl(142 76% 36%);
+}
+
+.mcp-server-icon.disconnected {
+  background: hsl(var(--text) / 6%);
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+/* Type selector */
+.mcp-type-select {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid hsl(var(--text) / 15%);
+  border-radius: 6px;
+  background: hsl(var(--bg));
+  color: hsl(var(--text));
+  font-size: 13px;
+}
+
+/* Environment textarea */
+.mcp-env-textarea {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid hsl(var(--text) / 15%);
+  border-radius: 6px;
+  background: hsl(var(--bg));
+  color: hsl(var(--text));
+  font-size: 12px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  resize: vertical;
+  min-height: 48px;
+}
+
+.mcp-optional {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Error message */
+.mcp-error {
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: hsl(0 70% 50% / 12%);
+  border: 1px solid hsl(0 70% 50% / 20%);
+  border-radius: 6px;
+  color: hsl(0 70% 50%);
+  font-size: 12px;
+}
+
+/* Server detail view */
+.mcp-server-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mcp-detail-row {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.mcp-detail-label {
+  flex: 0 0 80px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.mcp-detail-value {
+  font-size: 13px;
+  color: hsl(var(--text));
+  word-break: break-all;
+}
+
+.mcp-mono {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 12px;
+}
+
+/* Status indicator */
+.mcp-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.mcp-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.mcp-status.connected .mcp-status-dot {
+  background: hsl(142 76% 36%);
+  box-shadow: 0 0 6px hsl(142 76% 36% / 40%);
+}
+
+.mcp-status.disconnected .mcp-status-dot {
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+
+.mcp-status.connected {
+  color: hsl(142 76% 36%);
+}
+
+.mcp-status.disconnected {
+  color: var(--text-muted);
+}
+
+/* Server action buttons */
+.mcp-server-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid hsl(var(--text) / 8%);
+}
+
+.agent-btn-danger {
+  background: hsl(0 70% 50% / 12%) !important;
+  color: hsl(0 70% 50%) !important;
+  border-color: hsl(0 70% 50% / 20%) !important;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-btn-danger:hover {
+  background: hsl(0 70% 50% / 20%) !important;
+}
+
+/* Empty state */
+.mcp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px 16px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.mcp-empty p {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* Shared form/button classes used by MCP and Agent dialogs */
+.agent-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.agent-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-form-field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #aaa;
+  text-transform: uppercase;
+}
+
+.agent-form-field input,
+.agent-form-field select,
+.agent-form-field textarea {
+  padding: 8px 10px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #2a2a2a;
+  color: #e0e0e0;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.agent-form-field input:focus,
+.agent-form-field select:focus,
+.agent-form-field textarea:focus {
+  border-color: #666;
+}
+
+.agent-form-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.agent-btn {
+  padding: 8px 16px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #333;
+  color: #e0e0e0;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.agent-btn:hover {
+  background: #444;
+}
+
+.agent-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-btn-primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.agent-btn-primary:hover {
+  background: #1d4ed8;
+}
+
+.agent-btn-secondary {
+  background: #333;
+  border-color: #555;
+}
+
+.agent-btn-secondary:hover {
+  background: #444;
+}

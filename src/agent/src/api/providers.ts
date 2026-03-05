@@ -156,11 +156,18 @@ export interface OllamaProviderConfig {
 
 // MCP Server configuration
 export interface MCPServerConfig {
-  command: string;
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
   url?: string; // For HTTP transport
   transport?: "stdio" | "http";
+  enabled?: boolean; // false = temporarily disconnected
+  oauth?: {
+    client_id: string;
+    authorize_url?: string; // OAuth authorization endpoint
+    token_url?: string; // OAuth token exchange endpoint
+    scopes?: string[];
+  };
 }
 
 export interface Config {
