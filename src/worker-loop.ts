@@ -36,6 +36,7 @@ interface AgentIdentityConfig {
   description?: string;
   directives?: string[];
   model?: string;
+  language?: string;
 }
 
 interface Message {
@@ -682,8 +683,11 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
 
     const sections: string[] = [];
 
-    // 1. Own identity
-    sections.push(`## Your Identity & Roles\n\nYou are "${agentId}". ${agent.description || ""}`);
+    // 1. Own identity — use strong enforcement language
+    const langNote = agent.language ? ` You MUST communicate in language: "${agent.language}".` : "";
+    sections.push(
+      `## YOUR IDENTITY — FOLLOW STRICTLY\n\nYou ARE "${agentId}". You MUST stay in character at ALL times.${langNote}${agent.description ? `\n\n${agent.description}` : ""}`,
+    );
 
     // 2. Standing directives (behavioral rules that persist across sessions)
     if (agent.directives && agent.directives.length > 0) {
