@@ -59,7 +59,9 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_screenshot",
         description:
-          "Take a screenshot of the current browser tab. Returns a base64 JPEG image. Use read_image tool to analyze the screenshot content if needed.",
+          "Take a screenshot of the current browser tab. Returns a base64 JPEG image. Use read_image tool to analyze the screenshot content if needed. " +
+          "PREFER browser_extract or browser_execute (with stored scripts) to read page content — they return structured data, are faster, and use less context. " +
+          "Only use screenshots when you need visual layout information that cannot be obtained from DOM/text extraction (e.g., charts, images, visual styling, spatial layout).",
         parameters: {
           tab_id: {
             type: "number",
@@ -137,7 +139,8 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_extract",
         description:
-          "Extract structured content from the current page. Can extract text, links, form data, tables, or the accessibility tree.",
+          "Extract structured content from the current page. Can extract text, links, form data, tables, or the accessibility tree. " +
+          "PREFERRED over browser_screenshot for reading page content — returns structured text data that is faster, cheaper, and more accurate than OCR from screenshots.",
         parameters: {
           mode: {
             type: "string",
@@ -182,7 +185,8 @@ export class BrowserPlugin implements ToolPlugin {
         description:
           "Execute JavaScript in the browser tab. Supports running inline code OR a stored script by ID (saved via browser_store). " +
           "When reusing a stored script, pass script_id (and optional script_args) instead of code — this avoids re-sending large scripts and enables reuse across sessions. " +
-          "If both code and script_id are provided, script_id takes priority.",
+          "If both code and script_id are provided, script_id takes priority. " +
+          "TIP: If you find yourself running similar code more than once, save it as a reusable script via browser_store (with a description) and call it by script_id going forward.",
         parameters: {
           code: {
             type: "string",
