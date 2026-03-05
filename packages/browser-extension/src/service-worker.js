@@ -17,6 +17,7 @@ const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
 let currentEmulation = null; // Track active emulation state {metrics, hasTouch, userAgent} for screenshot restore
 const pendingAuth = new Map(); // requestId -> { tabId, url, scheme, realm }
 const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status lookup)
+const recentDownloads = []; // Recent download events (from CDP Browser.downloadWillBegin), max 20
 
 // Clean up debugger state on detach (registered once at module scope)
 chrome.debugger.onDetach.addListener((source) => {
@@ -203,7 +204,16 @@ async function handleNavigate({ url, tabId, waitFor }) {
   await waitForTab(tab.id, waitFor || "load");
   tab = await chrome.tabs.get(tab.id);
 
-  return { tabId: tab.id, url: tab.url, title: tab.title };
+  const result = { tabId: tab.id, url: tab.url, title: tab.title };
+  // Check if navigation triggered a file download
+  const dl = consumeRecentDownload(tab.id);
+  if (dl)
+    result.download_triggered = {
+      url: dl.url,
+      filename: dl.suggestedFilename,
+      hint: "A file download was triggered. Use browser_download action=wait to capture it.",
+    };
+  return result;
 }
 
 // --- Screenshot ---
@@ -347,7 +357,17 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
   }
 
   showActionCursor(tid, clickX, clickY);
-  return { tabId: tid, element: selector || `(${clickX},${clickY})` };
+  // Brief delay to let download events propagate from CDP
+  await new Promise((r) => setTimeout(r, 300));
+  const dl = consumeRecentDownload(tid);
+  const result = { tabId: tid, element: selector || `(${clickX},${clickY})` };
+  if (dl)
+    result.download_triggered = {
+      url: dl.url,
+      filename: dl.suggestedFilename,
+      hint: "A file download was triggered. Use browser_download action=wait to capture it.",
+    };
+  return result;
 }
 
 // --- Type ---
@@ -952,6 +972,17 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       message: params.message,
       defaultPrompt: params.defaultPrompt,
     });
+  }
+  // Track download events (from Browser.setDownloadBehavior eventsEnabled)
+  if (method === "Browser.downloadWillBegin" && source.tabId) {
+    recentDownloads.push({
+      tabId: source.tabId,
+      guid: params.guid,
+      url: params.url,
+      suggestedFilename: params.suggestedFilename,
+      timestamp: Date.now(),
+    });
+    if (recentDownloads.length > 20) recentDownloads.shift();
   }
   // Track execution contexts for frame targeting
   if (method === "Runtime.executionContextCreated" && source.tabId) {
@@ -1833,6 +1864,14 @@ function hideAgentIndicator(tabId) {
 function showActionCursor(tabId, x, y) {
   if (x === undefined || y === undefined) return;
   chrome.tabs.sendMessage(tabId, { type: "show-action-cursor", x, y }).catch(() => {});
+}
+
+/** Check if a download was triggered on this tab within the last N ms. Returns download info or null. */
+function consumeRecentDownload(tabId, withinMs = 3000) {
+  const cutoff = Date.now() - withinMs;
+  const idx = recentDownloads.findIndex((d) => d.tabId === tabId && d.timestamp >= cutoff);
+  if (idx === -1) return null;
+  return recentDownloads.splice(idx, 1)[0];
 }
 
 async function getActiveTabId() {

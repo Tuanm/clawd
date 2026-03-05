@@ -1362,12 +1362,13 @@ SUMMARY:`;
     if (this._browserPluginRegistered) {
       browserInstructions =
         "\n\n<browser_instructions>\n" +
-        "When using browser tools, follow these rules:\n" +
-        "1. ALWAYS run browser_store action=list FIRST before reading page content — check for existing scripts that can extract the data you need.\n" +
-        "2. PREFER browser_extract and browser_execute (with stored scripts) over browser_screenshot for reading page content. " +
-        "Screenshots are expensive (require read_image), slow, and less accurate. Only use screenshots when you specifically need visual/layout information (charts, images, styling, spatial positioning).\n" +
-        "3. When you execute similar code more than once, SAVE it as a reusable script via browser_store (action=set, with a descriptive key and description), then use browser_execute with script_id for subsequent calls.\n" +
-        "4. Before creating a new script, check browser_store list — a suitable script may already exist.\n" +
+        "When using browser tools, follow these rules strictly:\n" +
+        "1. ALWAYS run browser_store action=list FIRST before interacting with a page — check for existing scripts that can extract data or perform actions you need.\n" +
+        "2. To read page content or find interactive elements, use browser_extract (mode=text, links, forms, tables, accessibility) or browser_execute with scripts. " +
+        "DO NOT take screenshots to read text or find element positions — use browser_extract mode=accessibility to get element roles, names, and coordinates instead.\n" +
+        "3. Only use browser_screenshot when you specifically need VISUAL information that cannot be obtained from DOM (e.g., charts, images, visual styling, verifying visual layout).\n" +
+        "4. When you execute similar code more than once, SAVE it as a reusable script via browser_store (action=set with a descriptive key and description), then use browser_execute with script_id for subsequent calls.\n" +
+        "5. When a browser_click or browser_navigate response includes download_triggered, a file download has started. Use browser_download action=wait to capture it and upload to the chat server.\n" +
         "</browser_instructions>";
     }
 
