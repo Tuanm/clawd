@@ -14,7 +14,7 @@ const debuggerAttached = new Set(); // Set of tabIds with debugger attached
 const debuggerPending = new Map(); // tabId -> Promise (serializes attachment)
 const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)
 const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
-let currentEmulation = null; // Track active emulation state for full-page screenshot restore
+let currentEmulation = null; // Track active emulation state {metrics, hasTouch, userAgent} for screenshot restore
 
 // Clean up debugger state on detach (registered once at module scope)
 chrome.debugger.onDetach.addListener((source) => {
@@ -223,8 +223,14 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
         };
       } finally {
         // Restore active emulation if set, otherwise clear
-        if (currentEmulation) {
-          await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", currentEmulation).catch(() => {});
+        if (currentEmulation?.metrics) {
+          await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", currentEmulation.metrics).catch(() => {});
+          if (currentEmulation.hasTouch !== undefined) {
+            await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: currentEmulation.hasTouch }).catch(() => {});
+          }
+          if (currentEmulation.userAgent) {
+            await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent: currentEmulation.userAgent }).catch(() => {});
+          }
         } else {
           await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride").catch(() => {});
         }
@@ -1051,27 +1057,28 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
   }
 
   if (action === "pinch") {
-    const pinchScale = scale ?? endX ?? 0.5; // prefer dedicated scale param, fallback to endX for backward compat
-    const x2 = touchX + 50;
-    const y2 = touchY;
+    const pinchScale = scale ?? endX ?? 0.5;
+    const halfGap = 50; // initial half-distance between fingers
+    const centerX = touchX + halfGap;
+    const centerY = touchY;
     const steps = 10;
 
     await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
       type: "touchStart",
       touchPoints: [
-        { x: touchX, y: touchY, id: 0 },
-        { x: x2, y: y2, id: 1 },
+        { x: centerX - halfGap, y: centerY, id: 0 },
+        { x: centerX + halfGap, y: centerY, id: 1 },
       ],
     });
 
     for (let i = 1; i <= steps; i++) {
       const ratio = i / steps;
-      const offset = 50 * (1 + (pinchScale - 1) * ratio);
+      const currentHalf = halfGap * (1 + (pinchScale - 1) * ratio);
       await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
         type: "touchMove",
         touchPoints: [
-          { x: touchX - (offset - 50) * ratio, y: touchY, id: 0 },
-          { x: touchX + offset, y: y2, id: 1 },
+          { x: centerX - currentHalf, y: centerY, id: 0 },
+          { x: centerX + currentHalf, y: centerY, id: 1 },
         ],
       });
       await new Promise((r) => setTimeout(r, 20));
@@ -1081,7 +1088,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
       type: "touchEnd",
       touchPoints: [],
     });
-    return { tabId: tid, action: "pinch", center: { x: touchX, y: touchY }, scale: pinchScale };
+    return { tabId: tid, action: "pinch", center: { x: centerX, y: centerY }, scale: pinchScale };
   }
 
   throw new Error(`Unknown touch action: ${action}. Use "tap", "swipe", "long-press", or "pinch".`);
@@ -1109,17 +1116,19 @@ async function handleEmulate({ action, width, height, deviceScaleFactor, isMobil
       mobile: isMobile || false,
     };
     await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", metrics);
-    currentEmulation = metrics; // Track for screenshot restore
+    currentEmulation = { metrics };
   }
 
   if (hasTouch !== undefined) {
     await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", {
       enabled: !!hasTouch,
     });
+    if (currentEmulation) currentEmulation.hasTouch = !!hasTouch;
   }
 
   if (userAgent) {
     await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent });
+    if (currentEmulation) currentEmulation.userAgent = userAgent;
   }
 
   return {
@@ -1383,6 +1392,7 @@ chrome.runtime.onStartup.addListener(async () => {
 // Clean up all state on tab close
 chrome.tabs.onRemoved.addListener((tabId) => {
   debuggerAttached.delete(tabId);
+  debuggerPending.delete(tabId);
   activeTabCommands.delete(tabId);
   pendingDialogs.delete(tabId);
   for (const key of frameContexts.keys()) {
