@@ -11,8 +11,10 @@
 
 let offscreenReady = false;
 const debuggerAttached = new Set(); // Set of tabIds with debugger attached
+const debuggerPending = new Map(); // tabId -> Promise (serializes attachment)
 const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)
 const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
+let currentEmulation = null; // Track active emulation state for full-page screenshot restore
 
 // Clean up debugger state on detach (registered once at module scope)
 chrome.debugger.onDetach.addListener((source) => {
@@ -24,31 +26,33 @@ chrome.debugger.onDetach.addListener((source) => {
 // ============================================================================
 
 async function ensureOffscreen() {
-  if (offscreenReady) return;
+  // Always verify — offscreen doc can crash under memory pressure
   const existing = await chrome.offscreen.hasDocument();
-  if (!existing) {
-    await chrome.offscreen.createDocument({
-      url: "src/offscreen.html",
-      reasons: ["WORKERS"],
-      justification: "WebSocket connection to local Claw'd server",
-    });
-    // Send saved config to offscreen (it can't access chrome.storage)
-    try {
-      const config = await chrome.storage.local.get(["serverUrl", "extensionId"]);
-      if (config.serverUrl || config.extensionId) {
-        // Small delay to let offscreen script initialize its listener
-        setTimeout(() => {
-          chrome.runtime
-            .sendMessage({
-              type: "reconnect",
-              url: config.serverUrl,
-              extensionId: config.extensionId,
-            })
-            .catch(() => {});
-        }, 200);
-      }
-    } catch {}
+  if (existing) {
+    offscreenReady = true;
+    return;
   }
+  offscreenReady = false;
+  await chrome.offscreen.createDocument({
+    url: "src/offscreen.html",
+    reasons: ["WORKERS"],
+    justification: "WebSocket connection to local Claw'd server",
+  });
+  // Send saved config to offscreen (it can't access chrome.storage)
+  try {
+    const config = await chrome.storage.local.get(["serverUrl", "extensionId"]);
+    if (config.serverUrl || config.extensionId) {
+      setTimeout(() => {
+        chrome.runtime
+          .sendMessage({
+            type: "reconnect",
+            url: config.serverUrl,
+            extensionId: config.extensionId,
+          })
+          .catch(() => {});
+      }, 200);
+    }
+  } catch {}
   offscreenReady = true;
 }
 
@@ -105,9 +109,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function handleCommand(id, method, params) {
   // Show glow indicator on target tab
-  let indicatorTab = params.tabId || null;
+  let indicatorTab = params?.tabId || null;
   if (!indicatorTab) {
-    try { indicatorTab = await getActiveTabId(); } catch {}
+    try {
+      indicatorTab = await getActiveTabId();
+    } catch {}
   }
   if (indicatorTab) showAgentIndicator(indicatorTab);
   try {
@@ -186,8 +192,8 @@ async function handleNavigate({ url, tabId, waitFor }) {
 async function handleScreenshot({ tabId, selector, fullPage }) {
   const tid = tabId || (await getActiveTabId());
 
-  if (selector || fullPage) {
-    // Use chrome.debugger for element/full-page screenshots
+  if (selector || fullPage || tabId) {
+    // Use chrome.debugger for element/full-page/tab-specific screenshots
     await ensureDebugger(tid);
 
     if (fullPage) {
@@ -216,7 +222,12 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
           height: Math.ceil(height),
         };
       } finally {
-        await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride").catch(() => {}); // best-effort restore
+        // Restore active emulation if set, otherwise clear
+        if (currentEmulation) {
+          await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", currentEmulation).catch(() => {});
+        } else {
+          await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride").catch(() => {});
+        }
       }
     }
 
@@ -252,9 +263,16 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
         height: Math.ceil(clip.height),
       };
     }
+
+    // Tab-specific viewport screenshot via CDP (not captureVisibleTab which ignores tabId)
+    const result = await sendDebuggerCommand(tid, "Page.captureScreenshot", {
+      format: "jpeg",
+      quality: 60,
+    });
+    return { tabId: tid, dataUrl: `data:image/jpeg;base64,${result.data}`, width: null, height: null };
   }
 
-  // Simple viewport screenshot via tabs API
+  // Simple viewport screenshot of active visible tab via tabs API
   const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "jpeg", quality: 60 });
   return { tabId: tid, dataUrl, width: null, height: null };
 }
@@ -482,7 +500,8 @@ async function handleExecute({ code, tabId, frameId }) {
   };
   if (frameId) {
     const contextId = frameContexts.get(`${tid}:${frameId}`);
-    if (contextId) evalParams.contextId = contextId;
+    if (!contextId) throw new Error(`No execution context for frame ${frameId}. Call browser_frames first.`);
+    evalParams.contextId = contextId;
   }
 
   // Use CDP Runtime.evaluate — MV3 blocks new Function()/eval in service workers
@@ -515,11 +534,20 @@ async function handleScroll({ x, y, selector, direction, amount, tabId }) {
   let deltaX = 0;
   let deltaY = 0;
   switch (direction) {
-    case "up": deltaY = -dist; break;
-    case "down": deltaY = dist; break;
-    case "left": deltaX = -dist; break;
-    case "right": deltaX = dist; break;
-    default: deltaY = dist; // default scroll down
+    case "up":
+      deltaY = -dist;
+      break;
+    case "down":
+      deltaY = dist;
+      break;
+    case "left":
+      deltaX = -dist;
+      break;
+    case "right":
+      deltaX = dist;
+      break;
+    default:
+      deltaY = dist; // default scroll down
   }
 
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
@@ -651,25 +679,41 @@ async function handleKeypress({ key, modifiers, tabId }) {
     pagedown: { key: "PageDown", code: "PageDown" },
     space: { key: " ", code: "Space" },
     // Digits
-    "0": { key: "0", code: "Digit0" }, "1": { key: "1", code: "Digit1" },
-    "2": { key: "2", code: "Digit2" }, "3": { key: "3", code: "Digit3" },
-    "4": { key: "4", code: "Digit4" }, "5": { key: "5", code: "Digit5" },
-    "6": { key: "6", code: "Digit6" }, "7": { key: "7", code: "Digit7" },
-    "8": { key: "8", code: "Digit8" }, "9": { key: "9", code: "Digit9" },
+    0: { key: "0", code: "Digit0" },
+    1: { key: "1", code: "Digit1" },
+    2: { key: "2", code: "Digit2" },
+    3: { key: "3", code: "Digit3" },
+    4: { key: "4", code: "Digit4" },
+    5: { key: "5", code: "Digit5" },
+    6: { key: "6", code: "Digit6" },
+    7: { key: "7", code: "Digit7" },
+    8: { key: "8", code: "Digit8" },
+    9: { key: "9", code: "Digit9" },
     // Special characters
-    "-": { key: "-", code: "Minus" }, "=": { key: "=", code: "Equal" },
-    "[": { key: "[", code: "BracketLeft" }, "]": { key: "]", code: "BracketRight" },
-    "\\": { key: "\\", code: "Backslash" }, ";": { key: ";", code: "Semicolon" },
-    "'": { key: "'", code: "Quote" }, "`": { key: "`", code: "Backquote" },
-    ",": { key: ",", code: "Comma" }, ".": { key: ".", code: "Period" },
+    "-": { key: "-", code: "Minus" },
+    "=": { key: "=", code: "Equal" },
+    "[": { key: "[", code: "BracketLeft" },
+    "]": { key: "]", code: "BracketRight" },
+    "\\": { key: "\\", code: "Backslash" },
+    ";": { key: ";", code: "Semicolon" },
+    "'": { key: "'", code: "Quote" },
+    "`": { key: "`", code: "Backquote" },
+    ",": { key: ",", code: "Comma" },
+    ".": { key: ".", code: "Period" },
     "/": { key: "/", code: "Slash" },
     // Function keys
-    f1: { key: "F1", code: "F1" }, f2: { key: "F2", code: "F2" },
-    f3: { key: "F3", code: "F3" }, f4: { key: "F4", code: "F4" },
-    f5: { key: "F5", code: "F5" }, f6: { key: "F6", code: "F6" },
-    f7: { key: "F7", code: "F7" }, f8: { key: "F8", code: "F8" },
-    f9: { key: "F9", code: "F9" }, f10: { key: "F10", code: "F10" },
-    f11: { key: "F11", code: "F11" }, f12: { key: "F12", code: "F12" },
+    f1: { key: "F1", code: "F1" },
+    f2: { key: "F2", code: "F2" },
+    f3: { key: "F3", code: "F3" },
+    f4: { key: "F4", code: "F4" },
+    f5: { key: "F5", code: "F5" },
+    f6: { key: "F6", code: "F6" },
+    f7: { key: "F7", code: "F7" },
+    f8: { key: "F8", code: "F8" },
+    f9: { key: "F9", code: "F9" },
+    f10: { key: "F10", code: "F10" },
+    f11: { key: "F11", code: "F11" },
+    f12: { key: "F12", code: "F12" },
   };
 
   // For single letters, use KeyA-KeyZ; for unmapped, use key as code
@@ -758,7 +802,9 @@ async function handleWaitFor({ selector, tabId, timeout, visible, pierce }) {
       if (results[0]?.result) {
         return { found: true, tabId: tid, element: results[0].result, elapsed: Date.now() - start };
       }
-    } catch { /* page might be navigating */ }
+    } catch {
+      /* page might be navigating */
+    }
     await new Promise((r) => setTimeout(r, interval));
   }
 
@@ -826,6 +872,13 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       }
     }
   }
+  // Clear all frame contexts on full navigation (Chrome doesn't fire individual destroy events)
+  if (method === "Runtime.executionContextsCleared" && source.tabId) {
+    const prefix = `${source.tabId}:`;
+    for (const key of frameContexts.keys()) {
+      if (key.startsWith(prefix)) frameContexts.delete(key);
+    }
+  }
 });
 
 async function handleDialog({ action, promptText, tabId }) {
@@ -860,6 +913,8 @@ async function handleHistory({ action, tabId }) {
   } else {
     throw new Error(`Unknown history action: ${action}. Use "back" or "forward".`);
   }
+  // Yield to let Chrome transition tab.status from "complete" to "loading"
+  await new Promise((r) => setTimeout(r, 100));
   await waitForTab(tid, "load");
   const tab = await chrome.tabs.get(tid);
   return { tabId: tid, url: tab.url, title: tab.title, action };
@@ -922,7 +977,7 @@ async function handleFrames({ tabId }) {
 
 // --- Touch Events ---
 
-async function handleTouch({ action, x, y, selector, endX, endY, tabId, duration }) {
+async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, duration }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
@@ -964,10 +1019,12 @@ async function handleTouch({ action, x, y, selector, endX, endY, tabId, duration
       const ratio = i / steps;
       await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
         type: "touchMove",
-        touchPoints: [{
-          x: touchX + (eX - touchX) * ratio,
-          y: touchY + (eY - touchY) * ratio,
-        }],
+        touchPoints: [
+          {
+            x: touchX + (eX - touchX) * ratio,
+            y: touchY + (eY - touchY) * ratio,
+          },
+        ],
       });
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -994,7 +1051,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, tabId, duration
   }
 
   if (action === "pinch") {
-    const scale = endX || 0.5; // reuse endX as scale factor
+    const pinchScale = scale ?? endX ?? 0.5; // prefer dedicated scale param, fallback to endX for backward compat
     const x2 = touchX + 50;
     const y2 = touchY;
     const steps = 10;
@@ -1009,7 +1066,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, tabId, duration
 
     for (let i = 1; i <= steps; i++) {
       const ratio = i / steps;
-      const offset = 50 * (1 + (scale - 1) * ratio);
+      const offset = 50 * (1 + (pinchScale - 1) * ratio);
       await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
         type: "touchMove",
         touchPoints: [
@@ -1024,7 +1081,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, tabId, duration
       type: "touchEnd",
       touchPoints: [],
     });
-    return { tabId: tid, action: "pinch", center: { x: touchX, y: touchY }, scale };
+    return { tabId: tid, action: "pinch", center: { x: touchX, y: touchY }, scale: pinchScale };
   }
 
   throw new Error(`Unknown touch action: ${action}. Use "tap", "swipe", "long-press", or "pinch".`);
@@ -1039,16 +1096,20 @@ async function handleEmulate({ action, width, height, deviceScaleFactor, isMobil
   if (action === "clear") {
     await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride").catch(() => {});
     await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent: "" }).catch(() => {});
+    currentEmulation = null;
     return { tabId: tid, emulation: "cleared" };
   }
 
   if (width && height) {
-    await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", {
+    const metrics = {
       width,
       height,
       deviceScaleFactor: deviceScaleFactor || 1,
       mobile: isMobile || false,
-    });
+    };
+    await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", metrics);
+    currentEmulation = metrics; // Track for screenshot restore
   }
 
   if (hasTouch !== undefined) {
@@ -1064,7 +1125,8 @@ async function handleEmulate({ action, width, height, deviceScaleFactor, isMobil
   return {
     tabId: tid,
     emulation: {
-      width, height,
+      width,
+      height,
       deviceScaleFactor: deviceScaleFactor || 1,
       mobile: isMobile || false,
       touch: !!hasTouch,
@@ -1145,10 +1207,28 @@ async function handleDownload({ action, timeout }) {
 
 async function ensureDebugger(tabId) {
   if (debuggerAttached.has(tabId)) return;
-  await chrome.debugger.attach({ tabId }, "1.3");
-  debuggerAttached.add(tabId);
-  // Enable Runtime to track execution contexts for frame targeting
-  await sendDebuggerCommand(tabId, "Runtime.enable").catch(() => {});
+  // Serialize concurrent attachment attempts for same tab
+  if (debuggerPending.has(tabId)) return debuggerPending.get(tabId);
+
+  const promise = (async () => {
+    try {
+      await chrome.debugger.attach({ tabId }, "1.3");
+    } catch (err) {
+      // Handle SW restart where debugger is already attached from prior lifecycle
+      if (!err.message?.includes("Already attached")) throw err;
+    }
+    debuggerAttached.add(tabId);
+    // Enable Runtime for frame context tracking, Page for dialog events
+    await sendDebuggerCommand(tabId, "Runtime.enable").catch(() => {});
+    await sendDebuggerCommand(tabId, "Page.enable").catch(() => {});
+  })();
+
+  debuggerPending.set(tabId, promise);
+  try {
+    await promise;
+  } finally {
+    debuggerPending.delete(tabId);
+  }
 }
 
 function sendDebuggerCommand(tabId, method, params) {
@@ -1165,9 +1245,10 @@ async function getElementCenter(tabId, selector) {
 
   const box = await sendDebuggerCommand(tabId, "DOM.getBoxModel", { nodeId: node.nodeId });
   const quad = box.model.content;
+  // Average all 4 corners for correct center even with CSS transforms
   return {
-    x: (quad[0] + quad[2]) / 2,
-    y: (quad[1] + quad[5]) / 2,
+    x: (quad[0] + quad[2] + quad[4] + quad[6]) / 4,
+    y: (quad[1] + quad[3] + quad[5] + quad[7]) / 4,
   };
 }
 
@@ -1299,10 +1380,11 @@ chrome.runtime.onStartup.addListener(async () => {
   await ensureOffscreen();
 });
 
-// Clean up debugger and frame contexts on tab close
+// Clean up all state on tab close
 chrome.tabs.onRemoved.addListener((tabId) => {
   debuggerAttached.delete(tabId);
   activeTabCommands.delete(tabId);
+  pendingDialogs.delete(tabId);
   for (const key of frameContexts.keys()) {
     if (key.startsWith(`${tabId}:`)) frameContexts.delete(key);
   }

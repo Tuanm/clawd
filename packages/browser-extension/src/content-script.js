@@ -19,6 +19,7 @@ if (!window.__clawdBrowserBridge) {
   let overlayEl = null;
   let styleEl = null;
   let hideTimer = null;
+  let fadeTimer = null;
 
   function showAgentOverlay() {
     overlayCount++;
@@ -26,7 +27,14 @@ if (!window.__clawdBrowserBridge) {
       clearTimeout(hideTimer);
       hideTimer = null;
     }
-    if (overlayEl) return;
+    if (fadeTimer) {
+      clearTimeout(fadeTimer);
+      fadeTimer = null;
+    }
+    if (overlayEl) {
+      overlayEl.style.opacity = "1"; // restore if mid-fade
+      return;
+    }
 
     styleEl = document.createElement("style");
     styleEl.id = "__clawd-overlay-style";
@@ -59,16 +67,17 @@ if (!window.__clawdBrowserBridge) {
 
     // Brief delay before fade-out for smoother visual
     hideTimer = setTimeout(() => {
+      hideTimer = null;
       if (overlayEl) {
         overlayEl.style.opacity = "0";
-        setTimeout(() => {
+        fadeTimer = setTimeout(() => {
           overlayEl?.remove();
           overlayEl = null;
           styleEl?.remove();
           styleEl = null;
+          fadeTimer = null;
         }, 300);
       }
-      hideTimer = null;
     }, 500);
   }
 
@@ -115,7 +124,7 @@ if (!window.__clawdBrowserBridge) {
         transition: "opacity 0.3s",
       });
 
-      document.body.appendChild(overlay);
+      (document.body || document.documentElement).appendChild(overlay);
 
       setTimeout(() => {
         overlay.style.opacity = "0";

@@ -14,8 +14,8 @@
 
 import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
 import type { ToolResult } from "../tools/tools.js";
-import { readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 
 export class BrowserPlugin implements ToolPlugin {
   readonly name = "browser";
@@ -42,8 +42,8 @@ export class BrowserPlugin implements ToolPlugin {
           },
           wait_for: {
             type: "string",
-            description: 'Wait condition: "load" (default), "domcontentloaded", or "networkidle"',
-            enum: ["load", "domcontentloaded", "networkidle"],
+            description: 'Wait condition: "load" (default) or "domcontentloaded"',
+            enum: ["load", "domcontentloaded"],
           },
         },
         required: ["url"],
@@ -257,15 +257,18 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_keypress",
         description:
-          'Send keyboard key presses with optional modifiers. Use for shortcuts, navigation keys, and special keys like Enter, Tab, Escape, Arrow keys, F1-F12, etc.',
+          "Send keyboard key presses with optional modifiers. Use for shortcuts, navigation keys, and special keys like Enter, Tab, Escape, Arrow keys, F1-F12, etc.",
         parameters: {
           key: {
             type: "string",
-            description: 'Key to press: "Enter", "Tab", "Escape", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Home", "End", "PageUp", "PageDown", "F1"-"F12", or any character',
+            description:
+              'Key to press: "Enter", "Tab", "Escape", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Home", "End", "PageUp", "PageDown", "F1"-"F12", or any character',
           },
           modifiers: {
             type: "array",
-            description: 'Modifier keys to hold: ["ctrl"], ["shift"], ["alt"], ["meta"], or combinations like ["ctrl", "shift"]',
+            items: { type: "string" },
+            description:
+              'Modifier keys to hold: "ctrl", "shift", "alt", "meta", or combinations like ["ctrl", "shift"]',
           },
           tab_id: { type: "number", description: "Target tab ID (optional)" },
         },
@@ -393,7 +396,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_touch",
         description:
-          'Dispatch touch events for mobile interaction testing. Supports tap, swipe, long-press, and pinch gestures.',
+          "Dispatch touch events for mobile interaction testing. Supports tap, swipe, long-press, and pinch gestures.",
         parameters: {
           action: {
             type: "string",
@@ -408,11 +411,15 @@ export class BrowserPlugin implements ToolPlugin {
           y: { type: "number", description: "Start Y coordinate" },
           end_x: {
             type: "number",
-            description: "End X for swipe, or scale factor for pinch (e.g., 0.5 = zoom out, 2.0 = zoom in)",
+            description: "End X coordinate for swipe gesture",
           },
           end_y: {
             type: "number",
             description: "End Y coordinate for swipe",
+          },
+          scale: {
+            type: "number",
+            description: "Scale factor for pinch gesture (e.g., 0.5 = zoom out, 2.0 = zoom in)",
           },
           duration: {
             type: "number",
@@ -463,7 +470,8 @@ export class BrowserPlugin implements ToolPlugin {
         parameters: {
           action: {
             type: "string",
-            description: '"list" (recent downloads), "wait" (wait for next download), or "latest" (most recent completed)',
+            description:
+              '"list" (recent downloads), "wait" (wait for next download), or "latest" (most recent completed)',
             enum: ["list", "wait", "latest"],
           },
           timeout: {
@@ -493,14 +501,19 @@ export class BrowserPlugin implements ToolPlugin {
   private async uploadToChatServer(buffer: Buffer, filename: string, mimetype: string) {
     const { ATTACHMENTS_DIR, db, generateId } = await import("../../../server/database");
     const id = generateId("F");
-    const ext = filename.split(".").pop() || "";
-    const storedName = `${id}.${ext}`;
+    const dotIndex = filename.lastIndexOf(".");
+    const ext = dotIndex > 0 ? filename.slice(dotIndex + 1) : "";
+    const storedName = ext ? `${id}.${ext}` : id;
     const filepath = join(ATTACHMENTS_DIR, storedName);
     writeFileSync(filepath, buffer);
-    db.run(
-      `INSERT INTO files (id, name, mimetype, size, path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, filename, mimetype, buffer.length, filepath, "UAGENT"],
-    );
+    db.run(`INSERT INTO files (id, name, mimetype, size, path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)`, [
+      id,
+      filename,
+      mimetype,
+      buffer.length,
+      filepath,
+      "UAGENT",
+    ]);
     return { id, name: filename, mimetype, size: buffer.length };
   }
 
@@ -565,7 +578,11 @@ export class BrowserPlugin implements ToolPlugin {
       // Limit screenshot size to 10MB decoded
       const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
       if (base64.length * 0.75 > MAX_SCREENSHOT_BYTES) {
-        return { success: false, output: "", error: `Screenshot too large (>${Math.round(MAX_SCREENSHOT_BYTES / 1024 / 1024)}MB). Try capturing a smaller area with selector or disable full_page.` };
+        return {
+          success: false,
+          output: "",
+          error: `Screenshot too large (>${Math.round(MAX_SCREENSHOT_BYTES / 1024 / 1024)}MB). Try capturing a smaller area with selector or disable full_page.`,
+        };
       }
       const buffer = Buffer.from(base64, "base64");
       const filename = `screenshot-${Date.now()}.jpg`;
@@ -726,7 +743,11 @@ export class BrowserPlugin implements ToolPlugin {
       });
       return {
         success: true,
-        output: JSON.stringify({ scrolled: true, direction: result.direction, amount: result.amount, tab_id: result.tabId }, null, 2),
+        output: JSON.stringify(
+          { scrolled: true, direction: result.direction, amount: result.amount, tab_id: result.tabId },
+          null,
+          2,
+        ),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -793,7 +814,11 @@ export class BrowserPlugin implements ToolPlugin {
       });
       return {
         success: true,
-        output: JSON.stringify({ pressed: true, key: result.key, modifiers: result.modifiers, tab_id: result.tabId }, null, 2),
+        output: JSON.stringify(
+          { pressed: true, key: result.key, modifiers: result.modifiers, tab_id: result.tabId },
+          null,
+          2,
+        ),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -812,7 +837,11 @@ export class BrowserPlugin implements ToolPlugin {
       });
       return {
         success: true,
-        output: JSON.stringify({ found: true, element: result.element, elapsed_ms: result.elapsed, tab_id: result.tabId }, null, 2),
+        output: JSON.stringify(
+          { found: true, element: result.element, elapsed_ms: result.elapsed, tab_id: result.tabId },
+          null,
+          2,
+        ),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -837,7 +866,11 @@ export class BrowserPlugin implements ToolPlugin {
       });
       return {
         success: true,
-        output: JSON.stringify({ selected: true, value: result.selected, text: result.text, index: result.index, tab_id: result.tabId }, null, 2),
+        output: JSON.stringify(
+          { selected: true, value: result.selected, text: result.text, index: result.index, tab_id: result.tabId },
+          null,
+          2,
+        ),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -854,12 +887,16 @@ export class BrowserPlugin implements ToolPlugin {
       });
       return {
         success: true,
-        output: JSON.stringify({
-          handled: result.handled,
-          type: result.type,
-          dialog_message: result.dialogMessage,
-          tab_id: result.tabId,
-        }, null, 2),
+        output: JSON.stringify(
+          {
+            handled: result.handled,
+            type: result.type,
+            dialog_message: result.dialogMessage,
+            tab_id: result.tabId,
+          },
+          null,
+          2,
+        ),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -877,7 +914,8 @@ export class BrowserPlugin implements ToolPlugin {
         success: true,
         output: JSON.stringify(
           { navigated: true, action: result.action, url: result.url, title: result.title, tab_id: result.tabId },
-          null, 2,
+          null,
+          2,
         ),
       };
     } catch (err: any) {
@@ -896,9 +934,13 @@ export class BrowserPlugin implements ToolPlugin {
       const { db } = await import("../../../server/database");
       const file = db.query("SELECT path FROM files WHERE id = ?").get(args.file_id) as any;
       if (!file) return { success: false, output: "", error: `File not found: ${args.file_id}` };
+      if (!existsSync(file.path))
+        return { success: false, output: "", error: `File no longer exists on disk: ${args.file_id}` };
       filePaths = [file.path];
     } else {
-      filePaths = [args.file_path];
+      const resolvedPath = resolve(args.file_path);
+      if (!existsSync(resolvedPath)) return { success: false, output: "", error: `File not found: ${args.file_path}` };
+      filePaths = [resolvedPath];
     }
 
     try {
@@ -911,7 +953,8 @@ export class BrowserPlugin implements ToolPlugin {
         success: true,
         output: JSON.stringify(
           { uploaded: true, selector: args.selector, file_count: filePaths.length, tab_id: result.tabId },
-          null, 2,
+          null,
+          2,
         ),
       };
     } catch (err: any) {
@@ -942,6 +985,7 @@ export class BrowserPlugin implements ToolPlugin {
         y: args.y,
         endX: args.end_x,
         endY: args.end_y,
+        scale: args.scale,
         duration: args.duration,
         tabId: args.tab_id,
       });
@@ -992,26 +1036,36 @@ export class BrowserPlugin implements ToolPlugin {
           const file = await this.uploadToChatServer(buffer, name, mime);
           return {
             success: true,
-            output: JSON.stringify({
-              file_id: file.id,
-              filename: name,
-              mime,
-              size: file.size,
-              download_url: result.url,
-              message: `Downloaded file uploaded as ${file.id}. Use appropriate tool to read or attach this file.`,
-            }, null, 2),
+            output: JSON.stringify(
+              {
+                file_id: file.id,
+                filename: name,
+                mime,
+                size: file.size,
+                download_url: result.url,
+                message: `Downloaded file uploaded as ${file.id}. Use appropriate tool to read or attach this file.`,
+              },
+              null,
+              2,
+            ),
           };
-        } catch {
+        } catch (readErr: any) {
           // Can't read the file (WSL/Windows path mismatch, etc.)
+          console.error(`[browser-plugin] handleDownload read error: ${readErr.message}`);
           return {
             success: true,
-            output: JSON.stringify({
-              filename: result.filename,
-              url: result.url,
-              mime: result.mime,
-              size: result.totalBytes,
-              note: "File downloaded but could not be read by server. Path: " + result.filename,
-            }, null, 2),
+            output: JSON.stringify(
+              {
+                filename: result.filename,
+                url: result.url,
+                mime: result.mime,
+                size: result.totalBytes,
+                note: "File downloaded but could not be read by server. Path: " + result.filename,
+                error_detail: readErr.message,
+              },
+              null,
+              2,
+            ),
           };
         }
       }
