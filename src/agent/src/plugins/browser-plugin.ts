@@ -11,6 +11,8 @@
 
 import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
 import type { ToolResult } from "../tools/tools.js";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export class BrowserPlugin implements ToolPlugin {
   readonly name = "browser";
@@ -257,6 +259,21 @@ export class BrowserPlugin implements ToolPlugin {
     return { isExtensionConnected, getConnectedExtensions, sendBrowserCommand };
   }
 
+  /** Save a buffer as a chat file and return its file ID + metadata. */
+  private async uploadToChatServer(buffer: Buffer, filename: string, mimetype: string) {
+    const { ATTACHMENTS_DIR, db, generateId } = await import("../../../server/database");
+    const id = generateId("F");
+    const ext = filename.split(".").pop() || "";
+    const storedName = `${id}.${ext}`;
+    const filepath = join(ATTACHMENTS_DIR, storedName);
+    writeFileSync(filepath, buffer);
+    db.run(
+      `INSERT INTO files (id, name, mimetype, size, path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, filename, mimetype, buffer.length, filepath, "UAGENT"],
+    );
+    return { id, name: filename, mimetype, size: buffer.length };
+  }
+
   private async handleStatus(): Promise<ToolResult> {
     const { isExtensionConnected, getConnectedExtensions } = await this.getBridge();
     const connected = isExtensionConnected();
@@ -311,24 +328,24 @@ export class BrowserPlugin implements ToolPlugin {
         selector: args.selector,
         fullPage: args.full_page,
       });
-      // Save screenshot to temp file to avoid polluting agent context
-      const tmpDir = require("os").tmpdir();
-      const filename = `clawd-screenshot-${Date.now()}.jpg`;
-      const filePath = require("path").join(tmpDir, filename);
-      if (result.dataUrl) {
-        const base64 = result.dataUrl.replace(/^data:image\/\w+;base64,/, "");
-        require("fs").writeFileSync(filePath, Buffer.from(base64, "base64"));
+      if (!result.dataUrl) {
+        return { success: false, output: "", error: "No screenshot data returned" };
       }
+      const base64 = result.dataUrl.replace(/^data:image\/\w+;base64,/, "");
+      const buffer = Buffer.from(base64, "base64");
+      const filename = `screenshot-${Date.now()}.jpg`;
+      const file = await this.uploadToChatServer(buffer, filename, "image/jpeg");
       return {
         success: true,
         output: JSON.stringify(
           {
+            file_id: file.id,
             tab_id: result.tabId,
             width: result.width,
             height: result.height,
             format: "jpeg",
-            file_path: filePath,
-            message: `Screenshot captured (${result.width}x${result.height}). Use read_image with file_path="${filePath}" to analyze the content.`,
+            size: file.size,
+            message: `Screenshot captured (${result.width}x${result.height}). Use read_image with file_id="${file.id}" to analyze the content.`,
           },
           null,
           2,
