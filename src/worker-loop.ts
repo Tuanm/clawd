@@ -77,6 +77,8 @@ export interface WorkerLoopConfig {
     plugin?: import("./agent/src/plugins/manager").Plugin;
     toolPlugin?: import("./agent/src/tools/plugin").ToolPlugin;
   }>;
+  /** Shared MCPManager for channel-scoped MCP servers (owned by WorkerManager) */
+  channelMcpManager?: import("./agent/src/mcp/client").MCPManager;
 }
 
 export class WorkerLoop {
@@ -534,6 +536,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
             maxIterations: 0, // Unlimited for worker mode
             contextMode: this.config.contextMode,
             additionalContext: clawdContext || undefined,
+            sharedMcpManager: this.config.channelMcpManager,
             onToken: (token) => {
               process.stdout.write(token);
             },

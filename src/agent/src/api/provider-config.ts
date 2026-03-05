@@ -368,31 +368,28 @@ export { ensureKeyPoolInitialized };
  * Get all MCP servers from config
  * Returns MCP servers defined in ~/.clawd/config.json under mcp_servers
  */
-export function getMCPServers(): Record<string, MCPServerConfig> {
+/**
+ * Get all channel-scoped MCP server configurations
+ * Returns the full mcp_servers map: { channel → { serverName → config } }
+ */
+export function getAllChannelMCPServers(): Record<string, Record<string, MCPServerConfig>> {
   const config = loadConfig();
   return config.mcp_servers || {};
 }
 
 /**
- * Get a specific MCP server by name
- */
-export function getMCPServer(name: string): MCPServerConfig | undefined {
-  const servers = getMCPServers();
-  return servers[name];
-}
-
-/**
- * Get all MCP server names configured
- */
-export function getMCPServerNames(): string[] {
-  const servers = getMCPServers();
-  return Object.keys(servers);
-}
-
-/**
- * Check if any MCP servers are configured
+ * Check if any MCP servers are configured for any channel
  */
 export function hasMCPServers(): boolean {
-  const servers = getMCPServers();
-  return Object.keys(servers).length > 0;
+  const channels = getAllChannelMCPServers();
+  return Object.values(channels).some((servers) => Object.keys(servers).length > 0);
+}
+
+/**
+ * Get MCP servers for a specific channel
+ * Returns MCP servers defined in ~/.clawd/config.json under mcp_servers[channel]
+ */
+export function getChannelMCPServers(channel: string): Record<string, MCPServerConfig> {
+  const config = loadConfig();
+  return config.mcp_servers?.[channel] || {};
 }

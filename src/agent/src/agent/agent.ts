@@ -74,6 +74,8 @@ export interface AgentConfig {
   compactKeepCount?: number; // Messages to keep after compaction (default: 30)
   onCompaction?: (deleted: number, remaining: number) => void; // Called after compaction
   contextMode?: boolean;
+  /** Shared MCP manager for channel-scoped MCP servers (owned by WorkerManager, NOT disconnected on agent close) */
+  sharedMcpManager?: import("../mcp/client").MCPManager;
 }
 
 export interface AgentResult {
@@ -750,6 +752,24 @@ SUMMARY:`;
       }
     }
 
+    // Add shared (channel-scoped) MCP tools (dedupe)
+    if (this.config.sharedMcpManager) {
+      const sharedTools = this.config.sharedMcpManager.getToolDefinitions();
+      if (isDebugEnabled()) {
+        console.log(
+          `[Agent] Shared MCP tools: ${sharedTools.length} (servers: ${this.config.sharedMcpManager.listServers().join(", ") || "none"})`,
+        );
+      }
+      for (const tool of sharedTools) {
+        if (!toolNames.has(tool.function.name)) {
+          tools.push(tool);
+          toolNames.add(tool.function.name);
+        }
+      }
+    } else if (isDebugEnabled()) {
+      console.log("[Agent] No shared MCP manager configured");
+    }
+
     // Add plugin tools (dedupe)
     const pluginTools = this.toolPluginManager.getToolDefinitions();
     for (const tool of pluginTools) {
@@ -787,6 +807,17 @@ SUMMARY:`;
         console.log(`[Agent] Executing MCP tool: ${toolCall.function.name}`);
       }
       const mcpResult = await this.mcpManager.executeMCPTool(toolCall.function.name, transformedArgs);
+      result = {
+        success: mcpResult.success,
+        output: mcpResult.success ? JSON.stringify(mcpResult.result) : "",
+        error: mcpResult.error,
+      };
+    } else if (this.config.sharedMcpManager?.hasTool(toolCall.function.name)) {
+      // Channel-scoped shared MCP tool
+      if (isDebugEnabled()) {
+        console.log(`[Agent] Executing shared MCP tool: ${toolCall.function.name}`);
+      }
+      const mcpResult = await this.config.sharedMcpManager.executeMCPTool(toolCall.function.name, transformedArgs);
       result = {
         success: mcpResult.success,
         output: mcpResult.success ? JSON.stringify(mcpResult.result) : "",

@@ -448,7 +448,7 @@ export function registerAgentRoutes(
         }
 
         // Start the worker loop
-        workerManager.startAgent({
+        await workerManager.startAgent({
           channel,
           agentId: agent_id,
           provider: agentProvider,

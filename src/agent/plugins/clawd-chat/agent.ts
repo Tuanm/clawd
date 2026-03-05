@@ -12,7 +12,6 @@
 import type { Plugin, PluginContext } from "../../src/plugins/manager";
 import type { ToolPlugin, ToolRegistration } from "../../src/tools/plugin";
 import { setCurrentAgentId, setCurrentChannel, setChatApiUrl } from "../../src/tools/tools";
-import { getMCPServers } from "../../src/api/provider-config";
 
 // ============================================================================
 // Types
@@ -437,7 +436,8 @@ ${recentTopics.join("\n")}`;
     version: "1.0.0",
     description: "Integration with clawd-chat server for streaming and interrupts",
 
-    // Provide clawd-chat MCP server for chat tools + any additional MCP servers from config
+    // Provide clawd-chat MCP server for chat tools
+    // Channel-scoped MCP servers are handled by WorkerManager via sharedMcpManager
     getMcpServers() {
       // Workers only get tools through ToolPlugin — skip MCP to prevent scheduler tool access (S6)
       if (config.isWorker && !config.isSpaceAgent) return [];
@@ -453,37 +453,13 @@ ${recentTopics.join("\n")}`;
         ];
       }
 
-      const servers: ReturnType<typeof getMCPServers> = getMCPServers();
-
-      // Build MCP server list: always include clawd-chat first, then add configured servers
-      const mcpServers: Array<{
-        name: string;
-        url?: string;
-        transport?: "http" | "stdio";
-        command?: string;
-        args?: string[];
-        env?: Record<string, string>;
-      }> = [
+      return [
         {
           name: "clawd-chat",
           url: `${apiUrl}/mcp`,
           transport: "http" as const,
         },
       ];
-
-      // Add configured MCP servers from ~/.clawd/config.json
-      for (const [serverName, serverConfig] of Object.entries(servers)) {
-        mcpServers.push({
-          name: serverName,
-          command: serverConfig.command,
-          args: serverConfig.args,
-          env: serverConfig.env,
-          transport: serverConfig.transport || "stdio",
-          url: serverConfig.url,
-        });
-      }
-
-      return mcpServers;
     },
 
     hooks: {

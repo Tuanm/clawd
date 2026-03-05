@@ -181,5 +181,9 @@ export interface Config {
    * CPA (legacy) can be used as: "cpa": { "type": "openai", ... }
    */
   providers: Record<string, ProviderConfig | CopilotProviderConfig | OllamaProviderConfig>;
-  mcp_servers?: Record<string, MCPServerConfig>;
+  /**
+   * MCP servers configuration. Channel-scoped format:
+   * { "channel-name": { "server-name": { command, args, env } } }
+   */
+  mcp_servers?: Record<string, Record<string, MCPServerConfig>>;
 }

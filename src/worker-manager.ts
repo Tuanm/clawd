@@ -9,6 +9,8 @@
 import type { AppConfig } from "./config";
 import type { SchedulerManager } from "./scheduler/manager";
 import { WorkerLoop, type WorkerLoopConfig } from "./worker-loop";
+import { MCPManager } from "./agent/src/mcp/client";
+import { getChannelMCPServers } from "./agent/src/api/provider-config";
 
 import type { SpaceManager } from "./spaces/manager";
 import type { SpaceWorkerManager } from "./spaces/worker";
@@ -36,6 +38,10 @@ export class WorkerManager {
   private scheduler?: SchedulerManager;
   private spaceManager?: SpaceManager;
   private spaceWorkerManager?: SpaceWorkerManager;
+  /** Channel-scoped MCP managers: channel → MCPManager */
+  private channelMcp: Map<string, MCPManager> = new Map();
+  /** Pending MCP setup promises to prevent double-creation on concurrent agent starts */
+  private channelMcpPending: Map<string, Promise<MCPManager | null>> = new Map();
 
   constructor(config: AppConfig, scheduler?: SchedulerManager) {
     this.config = config;
@@ -58,7 +64,7 @@ export class WorkerManager {
     // Start active agents
     for (const agent of agents) {
       if (agent.active) {
-        this.startAgent(agent);
+        await this.startAgent(agent);
       }
     }
 
@@ -71,17 +77,33 @@ export class WorkerManager {
     const stopPromises = Array.from(this.loops.values()).map((loop) => loop.stop());
     await Promise.all(stopPromises);
     this.loops.clear();
+
+    // Disconnect all channel MCP managers
+    for (const [channel, mcp] of this.channelMcp) {
+      try {
+        await mcp.disconnectAll();
+        console.log(`[WorkerManager] Disconnected channel MCP: ${channel}`);
+      } catch (err) {
+        console.error(`[WorkerManager] Error disconnecting channel MCP ${channel}:`, err);
+      }
+    }
+    this.channelMcp.clear();
+    this.channelMcpPending.clear();
+
     console.log("[WorkerManager] All worker loops stopped");
   }
 
   /** Add and start a new agent */
-  startAgent(agent: AgentConfig): boolean {
+  async startAgent(agent: AgentConfig): Promise<boolean> {
     const key = `${agent.channel}:${agent.agentId}`;
 
     if (this.loops.has(key)) {
       console.log(`[WorkerManager] Agent ${key} already running`);
       return false;
     }
+
+    // Ensure channel MCP servers are running (starts on first agent in channel)
+    const channelMcpManager = await this.ensureChannelMcp(agent.channel);
 
     const loopConfig: WorkerLoopConfig = {
       channel: agent.channel,
@@ -96,6 +118,7 @@ export class WorkerManager {
       scheduler: this.scheduler,
       spaceManager: this.spaceManager,
       spaceWorkerManager: this.spaceWorkerManager,
+      channelMcpManager: channelMcpManager || undefined,
     };
 
     const loop = new WorkerLoop(loopConfig);
@@ -128,6 +151,9 @@ export class WorkerManager {
     await loop.stop();
     this.loops.delete(key);
 
+    // Tear down channel MCP if this was the last agent in the channel
+    await this.teardownChannelMcpIfEmpty(channel);
+
     console.log(`[WorkerManager] Stopped agent: ${key}`);
     return true;
   }
@@ -148,7 +174,7 @@ export class WorkerManager {
   /** Restart an agent (e.g., after model change) */
   async restartAgent(agent: AgentConfig): Promise<boolean> {
     await this.stopAgent(agent.channel, agent.agentId);
-    return this.startAgent(agent);
+    return await this.startAgent(agent);
   }
 
   /**
@@ -207,5 +233,94 @@ export class WorkerManager {
     }
 
     return [];
+  }
+
+  // ===========================================================================
+  // Channel MCP Lifecycle
+  // ===========================================================================
+
+  /** Count running agents in a channel */
+  private getChannelAgentCount(channel: string): number {
+    let count = 0;
+    for (const key of this.loops.keys()) {
+      if (key.startsWith(`${channel}:`)) count++;
+    }
+    return count;
+  }
+
+  /**
+   * Ensure channel MCP servers are running.
+   * Creates and connects an MCPManager for the channel on first agent start.
+   * Uses a pending-promise map to prevent double-creation on concurrent starts.
+   */
+  private async ensureChannelMcp(channel: string): Promise<MCPManager | null> {
+    // Already running
+    if (this.channelMcp.has(channel)) {
+      return this.channelMcp.get(channel)!;
+    }
+
+    // Another agent is concurrently setting up — wait for it
+    if (this.channelMcpPending.has(channel)) {
+      return this.channelMcpPending.get(channel)!;
+    }
+
+    // Load channel MCP server configs
+    const serverConfigs = getChannelMCPServers(channel);
+    const serverNames = Object.keys(serverConfigs);
+    if (serverNames.length === 0) {
+      return null; // No MCP servers configured for this channel
+    }
+
+    // Create and connect
+    const setupPromise = (async (): Promise<MCPManager | null> => {
+      const mcpManager = new MCPManager();
+      console.log(`[WorkerManager] Starting ${serverNames.length} MCP server(s) for channel: ${channel}`);
+
+      for (const [name, config] of Object.entries(serverConfigs)) {
+        try {
+          await mcpManager.addServer({
+            name,
+            command: config.command,
+            args: config.args,
+            env: config.env,
+            url: config.url,
+            transport: config.transport,
+          });
+          console.log(`[WorkerManager] Connected MCP server: ${name} (channel: ${channel})`);
+        } catch (err) {
+          console.error(`[WorkerManager] Failed to connect MCP server ${name} for channel ${channel}:`, err);
+        }
+      }
+
+      this.channelMcp.set(channel, mcpManager);
+      this.channelMcpPending.delete(channel);
+      return mcpManager;
+    })();
+
+    this.channelMcpPending.set(channel, setupPromise);
+
+    try {
+      return await setupPromise;
+    } catch (err) {
+      this.channelMcpPending.delete(channel);
+      console.error(`[WorkerManager] Failed to setup channel MCP for ${channel}:`, err);
+      return null;
+    }
+  }
+
+  /** Tear down channel MCP if no more agents in the channel */
+  private async teardownChannelMcpIfEmpty(channel: string): Promise<void> {
+    if (this.getChannelAgentCount(channel) > 0) return;
+
+    const mcp = this.channelMcp.get(channel);
+    if (!mcp) return;
+
+    try {
+      await mcp.disconnectAll();
+      console.log(`[WorkerManager] Disconnected channel MCP: ${channel} (last agent stopped)`);
+    } catch (err) {
+      console.error(`[WorkerManager] Error disconnecting channel MCP ${channel}:`, err);
+    }
+    this.channelMcp.delete(channel);
   }
 }
