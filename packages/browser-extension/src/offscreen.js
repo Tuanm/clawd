@@ -242,6 +242,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async response
   }
 
+  // Read local file and upload to chat server (offscreen can access file:// URLs, service worker cannot)
+  if (message.type === "upload-file") {
+    (async () => {
+      try {
+        const { filePath, mime, uploadUrl } = message;
+        const response = await fetch(`file://${filePath}`);
+        if (!response.ok) throw new Error(`Cannot read file: ${filePath}`);
+        const blob = await response.blob();
+        if (blob.size > 500 * 1024 * 1024) {
+          throw new Error(`File too large (${(blob.size / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.`);
+        }
+        const filename = filePath.split(/[/\\]/).pop() || "download";
+        const file = new File([blob], filename, { type: mime || "application/octet-stream" });
+        const formData = new FormData();
+        formData.append("file", file);
+        const uploadResp = await fetch(uploadUrl, { method: "POST", body: formData });
+        if (!uploadResp.ok) {
+          const text = await uploadResp.text().catch(() => "");
+          throw new Error(`Upload failed (HTTP ${uploadResp.status}): ${text.slice(0, 200)}`);
+        }
+        const result = await uploadResp.json();
+        sendResponse({ ok: true, result });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true; // async response
+  }
+
   return false;
 });
 

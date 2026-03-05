@@ -1349,28 +1349,21 @@ async function getServerBaseUrl() {
 }
 
 async function uploadFileToChatServer(filePath, mime) {
-  // Read the downloaded file using fetch (works for local file:// in extensions with <all_urls>)
-  const response = await fetch(`file://${filePath}`);
-  if (!response.ok) throw new Error(`Cannot read file: ${filePath}`);
-  const blob = await response.blob();
-  if (blob.size > MAX_BROWSER_FILE_BYTES) {
-    throw new Error(`File too large (${(blob.size / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.`);
-  }
-  const filename = filePath.split(/[/\\]/).pop() || "download";
-  const file = new File([blob], filename, { type: mime || "application/octet-stream" });
-  const formData = new FormData();
-  formData.append("file", file);
   const { baseUrl, authToken } = await getServerBaseUrl();
   const uploadUrl = `${baseUrl}/browser/files/upload` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
-  const uploadResp = await fetch(uploadUrl, {
-    method: "POST",
-    body: formData,
+
+  // Route through offscreen document — MV3 service workers cannot fetch file:// URLs
+  await ensureOffscreen();
+  const resp = await chrome.runtime.sendMessage({
+    type: "upload-file",
+    filePath,
+    mime: mime || "application/octet-stream",
+    uploadUrl,
   });
-  if (!uploadResp.ok) {
-    const text = await uploadResp.text().catch(() => "");
-    throw new Error(`Upload failed (HTTP ${uploadResp.status}): ${text.slice(0, 200)}`);
+  if (!resp || !resp.ok) {
+    throw new Error(resp?.error || "Upload via offscreen failed");
   }
-  const result = await uploadResp.json();
+  const result = resp.result;
   if (!result.ok) throw new Error(result.error || "Upload failed");
   return result.file;
 }
