@@ -86,13 +86,16 @@ Examples:
 import { registerAgentRoutes } from "./api/agents";
 import { registerArticleRoutes } from "./api/articles";
 import { loadConfig, validateConfig } from "./config";
-import { loadConfigFile, isWorkspacesEnabled, isBrowserEnabled } from "./config-file";
+import { loadConfigFile, reloadConfigFile, isWorkspacesEnabled, isBrowserEnabled } from "./config-file";
 import { upgradeBrowserWs } from "./server/browser-bridge";
 import { getEmbeddedAsset, hasEmbeddedUI, embeddedUIFileCount, embeddedUITotalSize } from "./embedded-ui";
 import { WorkerManager } from "./worker-manager";
 import { setDebug } from "./agent/src/utils/debug";
 import { keyPool } from "./agent/src/api/key-pool";
-import { ensureKeyPoolInitialized } from "./agent/src/api/provider-config";
+import {
+  ensureKeyPoolInitialized,
+  clearConfigCache as clearProviderConfigCache,
+} from "./agent/src/api/provider-config";
 import {
   queryCalls,
   queryCallsCount,
@@ -669,6 +672,13 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     if (path === "/api/keys/sync" && req.method === "POST") {
       keyPool.syncAllQuotas().catch(() => {});
       return json({ ok: true, message: "Quota sync triggered" });
+    }
+
+    // Reload config from disk (picks up new API keys, browser tokens, etc.)
+    if (path === "/api/config/reload" && req.method === "POST") {
+      reloadConfigFile();
+      clearProviderConfigCache();
+      return json({ ok: true, message: "Config reloaded from disk" });
     }
 
     // ---- Copilot Analytics ----

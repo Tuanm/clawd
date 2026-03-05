@@ -94,6 +94,12 @@ export function loadConfigFile(): ConfigFile {
   return _cached;
 }
 
+/** Invalidate the cached config so the next loadConfigFile() re-reads from disk. */
+export function reloadConfigFile(): ConfigFile {
+  _cached = null;
+  return loadConfigFile();
+}
+
 /** Get data directory from config file or default */
 export function getDataDir(): string {
   const config = loadConfigFile();
