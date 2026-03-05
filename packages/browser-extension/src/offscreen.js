@@ -260,7 +260,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (blob.size > 500 * 1024 * 1024) {
           throw new Error(`File too large (${(blob.size / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.`);
         }
-        const filename = filePath.split(/[/\\]/).pop() || "download";
+        let filename = filePath.split(/[/\\]/).pop() || "download";
+        // Strip Chrome's temp download suffix if present (.crdownload fallback path)
+        if (filename.endsWith(".crdownload")) {
+          filename = filename.slice(0, -".crdownload".length);
+        }
         const file = new File([blob], filename, { type: mime || "application/octet-stream" });
         const formData = new FormData();
         formData.append("file", file);

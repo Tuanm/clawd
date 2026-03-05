@@ -1527,7 +1527,10 @@ async function uploadFileToChatServer(filePath, mime) {
     if (fallbackResp?.ok) {
       resp = fallbackResp;
     } else {
-      throw new Error(resp?.error || "Upload via offscreen failed");
+      throw new Error(
+        `Upload failed for ${filePath}: ${resp?.error || "file not found"}` +
+        (fallbackResp?.error ? ` (.crdownload fallback also failed: ${fallbackResp.error})` : ""),
+      );
     }
   }
 
@@ -1577,10 +1580,24 @@ async function handleDownload({ action, timeout }) {
           (d) => d.state === "in_progress" && d.totalBytes > 0 && d.bytesReceived >= d.totalBytes,
         );
         if (stuck) {
+          // Check if CDP already confirmed completion (reliable for blob: URLs)
+          const cdpEntry = recentDownloads.find((rd) => rd.url === stuck.url && rd.cdpCompleted);
+          if (cdpEntry) {
+            // CDP confirmed — skip polling, proceed immediately
+            resolve(stuck);
+            return;
+          }
           // Brief poll — give Chrome a chance to finalize before resolving with stuck state
           let pollCount = 0;
           const pollTimer = setInterval(() => {
             pollCount++;
+            // Check CDP signal first (fires before chrome.downloads transitions for blob: URLs)
+            const rdEntry = recentDownloads.find((rd) => rd.url === stuck.url && rd.cdpCompleted);
+            if (rdEntry) {
+              clearInterval(pollTimer);
+              resolve(stuck);
+              return;
+            }
             chrome.downloads.search({ id: stuck.id }, (updated) => {
               if (updated?.[0]?.state === "complete") {
                 clearInterval(pollTimer);
@@ -1630,6 +1647,12 @@ async function handleDownload({ action, timeout }) {
                 resolve({ id: delta.id });
               }
             });
+          } else if (delta.state && delta.state.current === "interrupted") {
+            clearTimeout(timer);
+            chrome.downloads.onChanged.removeListener(listener);
+            chrome.downloads.search({ id: delta.id }, (found) => {
+              reject(new Error(`Download interrupted: ${found?.[0]?.error || "unknown reason"}`));
+            });
           }
         }
         chrome.downloads.onChanged.addListener(listener);
@@ -1668,6 +1691,18 @@ async function handleDownload({ action, timeout }) {
       state: "complete",
       startedAfter: fiveMinAgo,
     });
+    // Fallback: check for stuck downloads (all bytes received, state still in_progress)
+    if (items.length === 0) {
+      const allRecent = await chrome.downloads.search({ limit: 5, orderBy: ["-startTime"] });
+      const stuck = allRecent?.find(
+        (d) =>
+          d.state === "in_progress" &&
+          d.totalBytes > 0 &&
+          d.bytesReceived >= d.totalBytes &&
+          new Date(d.startTime).toISOString() >= fiveMinAgo,
+      );
+      if (stuck) items = [stuck];
+    }
     if (items.length === 0) throw new Error("No recent completed downloads found (within last 5 minutes)");
     const item = items[0];
     // Auto-upload to chat server
