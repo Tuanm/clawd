@@ -135,12 +135,14 @@ async function handleCommand(id, method, params) {
       indicatorTab = await getActiveTabId();
     } catch {}
   }
-  // Keep overlay persistent (no auto-hide) during long-running download/upload operations
-  const persistent = method === "download" || method === "file_upload";
-  if (indicatorTab) showAgentIndicator(indicatorTab, persistent);
+  if (indicatorTab) showAgentIndicator(indicatorTab);
+  // Show persistent Claw'd icon during long-running download/upload operations
+  const showActivity = method === "download" || method === "file_upload";
+  if (showActivity && indicatorTab) showActivityCursor(indicatorTab);
   try {
     return await dispatchCommand(method, params);
   } finally {
+    if (showActivity && indicatorTab) hideActivityCursor(indicatorTab);
     if (indicatorTab) hideAgentIndicator(indicatorTab);
   }
 }
@@ -2114,7 +2116,7 @@ async function resolveElementCoords(tabId, selector) {
 // Agent Activity Indicator
 // ============================================================================
 
-function showAgentIndicator(tabId, persistent = false) {
+function showAgentIndicator(tabId) {
   const count = (activeTabCommands.get(tabId) || 0) + 1;
   activeTabCommands.set(tabId, count);
   if (count === 1) {
@@ -2126,11 +2128,8 @@ function showAgentIndicator(tabId, persistent = false) {
       })
       .catch(() => {}) // Already injected or restricted page
       .then(() => {
-        chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay", persistent }).catch(() => {});
+        chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay" }).catch(() => {});
       });
-  } else if (persistent) {
-    // Upgrade existing overlay to persistent mode
-    chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay", persistent }).catch(() => {});
   }
 }
 
@@ -2147,6 +2146,16 @@ function hideAgentIndicator(tabId) {
 function showActionCursor(tabId, x, y) {
   if (x === undefined || y === undefined) return;
   chrome.tabs.sendMessage(tabId, { type: "show-action-cursor", x, y }).catch(() => {});
+}
+
+/** Show persistent Claw'd activity cursor during long-running operations (download/upload). */
+function showActivityCursor(tabId) {
+  chrome.tabs.sendMessage(tabId, { type: "show-activity-cursor" }).catch(() => {});
+}
+
+/** Hide persistent Claw'd activity cursor when operation completes/fails. */
+function hideActivityCursor(tabId) {
+  chrome.tabs.sendMessage(tabId, { type: "hide-activity-cursor" }).catch(() => {});
 }
 
 /** Check if a download was triggered on this tab within the last N ms. Returns download info or null. */

@@ -21,11 +21,9 @@ if (!window.__clawdBrowserBridge) {
   let hideTimer = null;
   let fadeTimer = null;
   let autoHideTimer = null;
-  let overlayPersistent = false;
 
-  function showAgentOverlay(persistent = false) {
+  function showAgentOverlay() {
     overlayCount++;
-    if (persistent) overlayPersistent = true;
     if (hideTimer) {
       clearTimeout(hideTimer);
       hideTimer = null;
@@ -34,15 +32,13 @@ if (!window.__clawdBrowserBridge) {
       clearTimeout(fadeTimer);
       fadeTimer = null;
     }
-    // Auto-hide after 10s as safety net, unless persistent (long-running download/upload)
+    // Auto-hide after 5s in case agent finishes without sending hide signal
     if (autoHideTimer) clearTimeout(autoHideTimer);
-    if (!overlayPersistent) {
-      autoHideTimer = setTimeout(() => {
-        autoHideTimer = null;
-        overlayCount = 0;
-        hideAgentOverlay();
-      }, 10000);
-    }
+    autoHideTimer = setTimeout(() => {
+      autoHideTimer = null;
+      overlayCount = 0;
+      hideAgentOverlay();
+    }, 5000);
     if (overlayEl) {
       overlayEl.style.opacity = "1"; // restore if mid-fade
       return;
@@ -86,7 +82,6 @@ if (!window.__clawdBrowserBridge) {
   function hideAgentOverlay() {
     overlayCount = Math.max(0, overlayCount - 1);
     if (overlayCount > 0 || !overlayEl) return;
-    overlayPersistent = false;
     if (autoHideTimer) {
       clearTimeout(autoHideTimer);
       autoHideTimer = null;
@@ -194,12 +189,73 @@ if (!window.__clawdBrowserBridge) {
   }
 
   // ==========================================================================
+  // Persistent Activity Cursor — Claw'd icon that stays during long operations
+  // ==========================================================================
+
+  let activityCursorEl = null;
+
+  function showActivityCursor() {
+    if (activityCursorEl) return;
+    try {
+      ensureCursorStyles();
+      activityCursorEl = document.createElement("div");
+      activityCursorEl.id = "__clawd-activity-cursor";
+      activityCursorEl.innerHTML = CLAWD_CURSOR_SVG;
+      Object.assign(activityCursorEl.style, {
+        position: "fixed",
+        bottom: "24px",
+        right: "24px",
+        zIndex: "2147483647",
+        pointerEvents: "none",
+        filter: "drop-shadow(0 2px 6px rgba(0,0,0,0.35))",
+        animation: "__clawd-cursor-bounce 1s ease-in-out infinite",
+        transition: "opacity 0.3s ease-out",
+      });
+      // Add bounce animation if not already present
+      let bounceStyle = document.getElementById("__clawd-bounce-style");
+      if (!bounceStyle) {
+        bounceStyle = document.createElement("style");
+        bounceStyle.id = "__clawd-bounce-style";
+        bounceStyle.textContent = `
+          @keyframes __clawd-cursor-bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-6px); }
+          }
+          #__clawd-activity-cursor svg { display: block; width: 32px; height: 32px; }
+          #__clawd-activity-cursor .__clawd-leg-l1,
+          #__clawd-activity-cursor .__clawd-leg-r2 {
+            transform-origin: center top;
+            animation: __clawd-leg-run-1 0.12s ease-in-out infinite;
+          }
+          #__clawd-activity-cursor .__clawd-leg-l2,
+          #__clawd-activity-cursor .__clawd-leg-r1 {
+            transform-origin: center top;
+            animation: __clawd-leg-run-2 0.12s ease-in-out infinite;
+          }
+        `;
+        (document.head || document.documentElement).appendChild(bounceStyle);
+      }
+      (document.body || document.documentElement).appendChild(activityCursorEl);
+    } catch {
+      // Ignore errors on restricted pages
+    }
+  }
+
+  function hideActivityCursor() {
+    if (!activityCursorEl) return;
+    activityCursorEl.style.opacity = "0";
+    const el = activityCursorEl;
+    activityCursorEl = null;
+    setTimeout(() => el.remove(), 300);
+  }
+
+  // ==========================================================================
   // Message Handlers
   // ==========================================================================
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "show-agent-overlay") {
-      showAgentOverlay(message.persistent);
+      showAgentOverlay();
       sendResponse({ ok: true });
     } else if (message.type === "hide-agent-overlay") {
       hideAgentOverlay();
@@ -209,6 +265,12 @@ if (!window.__clawdBrowserBridge) {
       sendResponse({ ok: true });
     } else if (message.type === "show-action-cursor") {
       showActionCursor(message.x, message.y);
+      sendResponse({ ok: true });
+    } else if (message.type === "show-activity-cursor") {
+      showActivityCursor();
+      sendResponse({ ok: true });
+    } else if (message.type === "hide-activity-cursor") {
+      hideActivityCursor();
       sendResponse({ ok: true });
     }
     return false;
