@@ -346,6 +346,7 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
     });
   }
 
+  showActionCursor(tid, clickX, clickY);
   return { tabId: tid, element: selector || `(${clickX},${clickY})` };
 }
 
@@ -355,9 +356,11 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierc
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
+  let actionCoords = null;
   if (selector) {
     // Focus the element first
     const coords = pierce ? await resolveElementCoords(tid, selector) : await getElementCenter(tid, selector);
+    actionCoords = coords;
     await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
       type: "mousePressed",
       x: coords.x,
@@ -415,6 +418,7 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierc
     });
   }
 
+  if (actionCoords) showActionCursor(tid, actionCoords.x, actionCoords.y);
   return { tabId: tid, element: selector || "(focused)" };
 }
 
@@ -598,6 +602,8 @@ async function handleScroll({ x, y, selector, direction, amount, tabId }) {
     deltaY,
   });
 
+  showActionCursor(tid, scrollX, scrollY);
+
   // Wait for scroll to settle (mouseWheel resolves before DOM updates)
   await new Promise((r) => setTimeout(r, 150));
 
@@ -627,6 +633,7 @@ async function handleHover({ selector, x, y, tabId, pierce }) {
     y: hoverY,
   });
 
+  showActionCursor(tid, hoverX, hoverY);
   return { tabId: tid, element: selector || `(${hoverX},${hoverY})` };
 }
 
@@ -664,6 +671,7 @@ async function handleMouseMove({ x, y, tabId, steps }) {
     });
   }
 
+  showActionCursor(tid, x, y);
   return { tabId: tid, position: { x, y }, steps: numSteps };
 }
 
@@ -715,6 +723,7 @@ async function handleDrag({ fromSelector, fromX, fromY, toSelector, toX, toY, ta
     });
   }
 
+  showActionCursor(tid, startX, startY);
   // Release at end
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
     type: "mouseReleased",
@@ -724,6 +733,7 @@ async function handleDrag({ fromSelector, fromX, fromY, toSelector, toX, toY, ta
     clickCount: 1,
   });
 
+  showActionCursor(tid, endX, endY);
   return { tabId: tid, from: fromSelector || `(${startX},${startY})`, to: toSelector || `(${endX},${endY})` };
 }
 
@@ -909,16 +919,25 @@ async function handleSelect({ selector, value, text, index, tabId }) {
       }
       if (!option) return { error: `Option not found (value=${val}, text=${txt}, index=${idx})` };
 
+      const rect = el.getBoundingClientRect();
       el.value = option.value;
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
-      return { selected: option.value, text: option.text, index: option.index };
+      return {
+        selected: option.value,
+        text: option.text,
+        index: option.index,
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2,
+      };
     },
     args: [selector, value ?? null, text ?? null, index ?? null],
   });
   const result = results[0]?.result;
   if (result?.error) throw new Error(result.error);
-  return { tabId: tid, ...result };
+  if (result?.x != null && result?.y != null) showActionCursor(tid, result.x, result.y);
+  const { x: _x, y: _y, ...rest } = result;
+  return { tabId: tid, ...rest };
 }
 
 // --- Dialog Handling (alert/confirm/prompt) ---
@@ -1177,6 +1196,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
       type: "touchEnd",
       touchPoints: [],
     });
+    showActionCursor(tid, touchX, touchY);
     return { tabId: tid, action: "tap", x: touchX, y: touchY };
   }
 
@@ -1208,6 +1228,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
       type: "touchEnd",
       touchPoints: [],
     });
+    showActionCursor(tid, touchX, touchY);
     return { tabId: tid, action: "swipe", from: { x: touchX, y: touchY }, to: { x: eX, y: eY } };
   }
 
@@ -1222,6 +1243,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
       type: "touchEnd",
       touchPoints: [],
     });
+    showActionCursor(tid, touchX, touchY);
     return { tabId: tid, action: "long-press", x: touchX, y: touchY, duration: holdMs };
   }
 
@@ -1257,6 +1279,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
       type: "touchEnd",
       touchPoints: [],
     });
+    showActionCursor(tid, centerX, centerY);
     return { tabId: tid, action: "pinch", center: { x: centerX, y: centerY }, scale: pinchScale };
   }
 
@@ -1806,6 +1829,12 @@ function hideAgentIndicator(tabId) {
     activeTabCommands.delete(tabId);
     chrome.tabs.sendMessage(tabId, { type: "hide-agent-overlay" }).catch(() => {});
   }
+}
+
+/** Show animated Claw'd cursor at action position (fire-and-forget). */
+function showActionCursor(tabId, x, y) {
+  if (x === undefined || y === undefined) return;
+  chrome.tabs.sendMessage(tabId, { type: "show-action-cursor", x, y }).catch(() => {});
 }
 
 async function getActiveTabId() {
