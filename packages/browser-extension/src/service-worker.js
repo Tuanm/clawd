@@ -350,7 +350,7 @@ async function handleExtract({ mode, selector, tabId }) {
   const results = await chrome.scripting.executeScript({
     target: { tabId: tid },
     func: extractFromPage,
-    args: [mode, selector],
+    args: [mode || "text", selector || null],
   });
 
   return { data: results[0]?.result || "" };

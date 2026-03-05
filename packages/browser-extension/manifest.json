@@ -3,7 +3,7 @@
   "name": "Claw'd Browser",
   "version": "1.0.0",
   "description": "Connect your browser to Claw'd AI agents for browser automation and collaboration.",
-  "permissions": ["activeTab", "tabs", "scripting", "debugger", "offscreen", "storage"],
+  "permissions": ["activeTab", "tabs", "scripting", "debugger", "offscreen", "storage", "<all_urls>"],
   "host_permissions": ["http://localhost:*/*", "http://127.0.0.1:*/*", "http://*/*"],
   "background": {
     "service_worker": "src/service-worker.js",
