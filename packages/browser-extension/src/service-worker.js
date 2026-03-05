@@ -1167,90 +1167,115 @@ async function handleFileUpload({ selector, fileId, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
-  if (!fileId) throw new Error("fileId is required");
-
-  // Fetch file binary from chat server
-  const { baseUrl, authToken } = await getServerBaseUrl();
-  const fileUrl = `${baseUrl}/browser/files/${fileId}` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
-  let resp;
+  // Track whether a pending file chooser exists at entry — needed for cleanup on early errors
+  const hadPendingFC = pendingFileChoosers.has(tid);
   try {
-    resp = await fetch(fileUrl);
-  } catch (err) {
-    throw new Error(`Failed to reach file server: ${err.message}`);
-  }
-  if (!resp.ok) throw new Error(`File server returned ${resp.status} for fileId: ${fileId}`);
-  let blob;
-  try {
-    blob = await resp.blob();
-  } catch (err) {
-    throw new Error(`Failed to download file data: ${err.message}`);
-  }
-  const contentDisposition = resp.headers.get("Content-Disposition") || "";
-  const nameMatch = contentDisposition.match(/filename="([^"]+)"/);
-  const fileName = nameMatch ? nameMatch[1] : `upload_${fileId}`;
-  const mimeType = blob.type || "application/octet-stream";
+    if (!fileId) throw new Error("fileId is required");
 
-  // Guard against large files that would OOM the service worker during base64 encoding
-  const MAX_INJECT_SIZE = 25 * 1024 * 1024; // 25 MiB practical limit for base64 injection
-  if (blob.size > MAX_INJECT_SIZE) {
-    throw new Error(
-      `File too large for browser upload (${(blob.size / 1024 / 1024).toFixed(1)} MiB). Max ${MAX_INJECT_SIZE / 1024 / 1024} MiB.`,
-    );
-  }
-
-  // Convert to base64 for injection into page context (avoids chrome.downloads entirely)
-  const arrayBuffer = await blob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
-  const parts = [];
-  const chunkSize = 32768; // 32KB — safe for String.fromCharCode.apply (V8 limit ~65K args)
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize)));
-  }
-  const base64 = btoa(parts.join(''));
-
-  // If a file chooser dialog is pending (from a click with intercept_file_chooser), resolve its element
-  const pendingFC = pendingFileChoosers.get(tid);
-  if (pendingFC) {
-    pendingFileChoosers.delete(tid);
+    // Fetch file binary from chat server
+    const { baseUrl, authToken } = await getServerBaseUrl();
+    const fileUrl = `${baseUrl}/browser/files/${fileId}` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
+    let resp;
     try {
-      // Resolve backendNodeId to a JS object reference
-      const resolved = await sendDebuggerCommand(tid, "DOM.resolveNode", {
-        backendNodeId: pendingFC.backendNodeId,
+      resp = await fetch(fileUrl);
+    } catch (err) {
+      throw new Error(`Failed to reach file server: ${err.message}`);
+    }
+    if (!resp.ok) throw new Error(`File server returned ${resp.status} for fileId: ${fileId}`);
+    let blob;
+    try {
+      blob = await resp.blob();
+    } catch (err) {
+      throw new Error(`Failed to download file data: ${err.message}`);
+    }
+    const contentDisposition = resp.headers.get("Content-Disposition") || "";
+    const nameMatch = contentDisposition.match(/filename="([^"]+)"/);
+    const fileName = nameMatch ? nameMatch[1] : `upload_${fileId}`;
+    const mimeType = blob.type || "application/octet-stream";
+
+    // Guard against large files that would OOM the service worker during base64 encoding
+    const MAX_INJECT_SIZE = 25 * 1024 * 1024; // 25 MiB practical limit for base64 injection
+    if (blob.size > MAX_INJECT_SIZE) {
+      throw new Error(
+        `File too large for browser upload (${(blob.size / 1024 / 1024).toFixed(1)} MiB). Max ${MAX_INJECT_SIZE / 1024 / 1024} MiB.`,
+      );
+    }
+
+    // Convert to base64 for injection into page context (avoids chrome.downloads entirely)
+    const arrayBuffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    const parts = [];
+    const chunkSize = 32768; // 32KB — safe for String.fromCharCode.apply (V8 limit ~65K args)
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize)));
+    }
+    const base64 = btoa(parts.join(""));
+
+    // If a file chooser dialog is pending (from a click with intercept_file_chooser), resolve its element
+    const pendingFC = pendingFileChoosers.get(tid);
+    if (pendingFC) {
+      pendingFileChoosers.delete(tid);
+      try {
+        // Resolve backendNodeId to a JS object reference
+        const resolved = await sendDebuggerCommand(tid, "DOM.resolveNode", {
+          backendNodeId: pendingFC.backendNodeId,
+        });
+        if (!resolved?.object?.objectId) throw new Error("Could not resolve file input element from file chooser");
+        const callResult = await sendDebuggerCommand(tid, "Runtime.callFunctionOn", {
+          objectId: resolved.object.objectId,
+          functionDeclaration: SET_FILE_JS,
+          arguments: [{ value: base64 }, { value: fileName }, { value: mimeType }],
+          returnByValue: true,
+        });
+        if (callResult?.exceptionDetails) {
+          throw new Error(
+            callResult.exceptionDetails.exception?.description ||
+              callResult.exceptionDetails.text ||
+              "File injection failed in page context",
+          );
+        }
+      } finally {
+        // Always disable interception, even on error, to prevent leaking state
+        await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+      }
+    } else if (selector) {
+      // Direct selector approach — find the input and set files via JS DataTransfer
+      const doc = await sendDebuggerCommand(tid, "DOM.getDocument");
+      const node = await sendDebuggerCommand(tid, "DOM.querySelector", {
+        nodeId: doc.root.nodeId,
+        selector,
       });
-      if (!resolved?.object?.objectId) throw new Error("Could not resolve file input element from file chooser");
-      await sendDebuggerCommand(tid, "Runtime.callFunctionOn", {
+      if (!node.nodeId) throw new Error(`File input not found: ${selector}`);
+      const resolved = await sendDebuggerCommand(tid, "DOM.resolveNode", { nodeId: node.nodeId });
+      if (!resolved?.object?.objectId) throw new Error(`Could not resolve file input: ${selector}`);
+      const callResult = await sendDebuggerCommand(tid, "Runtime.callFunctionOn", {
         objectId: resolved.object.objectId,
         functionDeclaration: SET_FILE_JS,
         arguments: [{ value: base64 }, { value: fileName }, { value: mimeType }],
         returnByValue: true,
       });
-    } finally {
-      // Always disable interception, even on error, to prevent leaking state
+      if (callResult?.exceptionDetails) {
+        throw new Error(
+          callResult.exceptionDetails.exception?.description ||
+            callResult.exceptionDetails.text ||
+            "File injection failed in page context",
+        );
+      }
+    } else {
+      throw new Error(
+        "No pending file chooser and no selector provided. Click the upload button with intercept_file_chooser=true first, then call browser_upload_file.",
+      );
+    }
+
+    return { tabId: tid, selector: selector || "(file chooser)", fileId, fileName };
+  } catch (err) {
+    // Clean up file chooser interception state if an early error occurred before the pendingFC branch handled it
+    if (hadPendingFC && pendingFileChoosers.has(tid)) {
+      pendingFileChoosers.delete(tid);
       await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
     }
-  } else if (selector) {
-    // Direct selector approach — find the input and set files via JS DataTransfer
-    const doc = await sendDebuggerCommand(tid, "DOM.getDocument");
-    const node = await sendDebuggerCommand(tid, "DOM.querySelector", {
-      nodeId: doc.root.nodeId,
-      selector,
-    });
-    if (!node.nodeId) throw new Error(`File input not found: ${selector}`);
-    const resolved = await sendDebuggerCommand(tid, "DOM.resolveNode", { nodeId: node.nodeId });
-    if (!resolved?.object?.objectId) throw new Error(`Could not resolve file input: ${selector}`);
-    await sendDebuggerCommand(tid, "Runtime.callFunctionOn", {
-      objectId: resolved.object.objectId,
-      functionDeclaration: SET_FILE_JS,
-      arguments: [{ value: base64 }, { value: fileName }, { value: mimeType }],
-      returnByValue: true,
-    });
-  } else {
-    throw new Error(
-      "No pending file chooser and no selector provided. Click the upload button with intercept_file_chooser=true first, then call browser_upload_file.",
-    );
+    throw err;
   }
-
-  return { tabId: tid, selector: selector || "(file chooser)", fileId, fileName };
 }
 
 // --- Frames (list iframes) ---
