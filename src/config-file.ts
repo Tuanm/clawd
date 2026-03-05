@@ -26,6 +26,12 @@ export interface ConfigFile {
     daily_image_limit?: number;
   };
   /**
+   * Remote worker configuration.
+   * - `true` → allow all workers on all channels (prints startup warning)
+   * - `{ "channel-1": ["token-1", "token-2"] }` → channel-specific tokens
+   */
+  worker?: boolean | Record<string, string[]>;
+  /**
    * Vision / image processing configuration.
    * Per-operation keys take precedence over top-level defaults.
    *
@@ -69,6 +75,11 @@ export function loadConfigFile(): ConfigFile {
   }
 
   return _cached;
+}
+
+/** Force re-read config from disk (clears cache) */
+export function reloadConfigFile(): void {
+  _cached = null;
 }
 
 /** Get data directory from config file or default */

@@ -190,6 +190,7 @@ import {
   handleWebSocketOpen,
 } from "./server/websocket";
 import { handleWorkspaceProxy, upgradeWorkspaceWs } from "./server/routes/workspace-proxy";
+import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import { reconcilePortsFromDocker, cleanupOrphanedWorkspaces } from "./agent/src/workspace/container.js";
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
@@ -466,6 +467,11 @@ const server = Bun.serve({
     const wsProxyMatch = path.match(/^\/workspace\/([a-f0-9]{16})\/novnc\/websockify$/);
     if (wsProxyMatch) {
       return upgradeWorkspaceWs(req, wsProxyMatch[1], server);
+    }
+
+    // Remote worker WebSocket upgrade
+    if (path === "/ws/remote-worker") {
+      return upgradeRemoteWorkerWs(req, server);
     }
 
     // Workspace noVNC HTTP proxy

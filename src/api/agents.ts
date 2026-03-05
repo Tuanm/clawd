@@ -354,6 +354,13 @@ export function initAgentsTable(db: Database): void {
   } catch {
     // Column already exists
   }
+
+  // Add worker_token column if table already exists without it
+  try {
+    db.exec(`ALTER TABLE channel_agents ADD COLUMN worker_token TEXT DEFAULT NULL`);
+  } catch {
+    // Column already exists
+  }
 }
 
 /** Register agent management API routes */
@@ -394,6 +401,9 @@ export function registerAgentRoutes(
         active: a.active === 1,
         sleeping: a.sleeping === 1,
         running: workerManager.isAgentRunning(a.channel, a.agent_id),
+        worker_token: a.worker_token
+          ? `${a.worker_token.slice(0, 4)}***${a.worker_token.slice(-3)}`
+          : null,
       }));
 
       return json({ ok: true, agents: enriched });
@@ -403,7 +413,7 @@ export function registerAgentRoutes(
     if (path === "/api/app.agents.add" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
-        const { channel, agent_id, provider, model, project } = body;
+        const { channel, agent_id, provider, model, project, worker_token } = body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
@@ -430,18 +440,20 @@ export function registerAgentRoutes(
         }
 
         const agentProject = project || "";
+        const agentWorkerToken = worker_token || null;
 
         try {
           db.run(
-            `INSERT INTO channel_agents (channel, agent_id, provider, model, project, active)
-             VALUES (?, ?, ?, ?, ?, 1)
+            `INSERT INTO channel_agents (channel, agent_id, provider, model, project, active, worker_token)
+             VALUES (?, ?, ?, ?, ?, 1, ?)
              ON CONFLICT(channel, agent_id) DO UPDATE SET
                provider = excluded.provider,
                model = excluded.model,
                project = excluded.project,
+               worker_token = excluded.worker_token,
                active = 1,
                updated_at = strftime('%s', 'now')`,
-            [channel, agent_id, agentProvider, agentModel, agentProject],
+            [channel, agent_id, agentProvider, agentModel, agentProject, agentWorkerToken],
           );
         } catch (error) {
           return json({ ok: false, error: String(error) }, 500);
@@ -455,6 +467,7 @@ export function registerAgentRoutes(
           model: agentModel,
           active: true,
           project: agentProject,
+          workerToken: agentWorkerToken || undefined,
         });
 
         return json({
@@ -496,7 +509,7 @@ export function registerAgentRoutes(
     if (path === "/api/app.agents.update" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
-        const { channel, agent_id, model, active, project, sleeping, provider } = body;
+        const { channel, agent_id, model, active, project, sleeping, provider, worker_token } = body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
@@ -538,6 +551,10 @@ export function registerAgentRoutes(
           updates.push("sleeping = ?");
           params.push(sleeping ? 1 : 0);
         }
+        if (worker_token !== undefined) {
+          updates.push("worker_token = ?");
+          params.push(worker_token || null);
+        }
 
         if (updates.length === 0) {
           return json({ ok: false, error: "nothing to update" }, 400);
@@ -557,8 +574,8 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "agent_not_found" }, 404);
         }
 
-        // Restart worker if model, provider, project changed, or active state changed
-        if (model !== undefined || provider !== undefined || active !== undefined || project !== undefined) {
+        // Restart worker if model, provider, project, or worker_token changed, or active state changed
+        if (model !== undefined || provider !== undefined || active !== undefined || project !== undefined || worker_token !== undefined) {
           if (agent.active === 1) {
             await workerManager.restartAgent({
               channel,
@@ -567,6 +584,7 @@ export function registerAgentRoutes(
               model: agent.model,
               active: true,
               project: agent.project || "",
+              workerToken: agent.worker_token || undefined,
             });
           } else {
             await workerManager.stopAgent(channel, agent_id);

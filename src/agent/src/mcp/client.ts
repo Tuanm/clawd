@@ -70,7 +70,7 @@ interface MCPResponse {
 // MCP Connection Interface
 // ============================================================================
 
-interface IMCPConnection extends EventEmitter {
+export interface IMCPConnection extends EventEmitter {
   readonly name: string;
   tools: MCPTool[];
   resources: MCPResource[];
@@ -503,6 +503,35 @@ export class MCPManager extends EventEmitter {
     const connection = this.connections.get(name);
     if (connection) {
       await connection.disconnect();
+      this.connections.delete(name);
+    }
+  }
+
+  // ============================================================================
+  // Add Connection (upsert — for remote workers / external connections)
+  // ============================================================================
+
+  async addConnection(connection: IMCPConnection): Promise<void> {
+    const existing = this.connections.get(connection.name);
+    if (existing) {
+      try { await existing.disconnect(); } catch {}
+      this.connections.delete(connection.name);
+    }
+    connection.on("error", (error) => this.emit("server:error", connection.name, error));
+    connection.on("connected", () => this.emit("server:connected", connection.name));
+    connection.on("disconnected", () => this.emit("server:disconnected", connection.name));
+    await connection.connect();
+    this.connections.set(connection.name, connection);
+  }
+
+  // ============================================================================
+  // Remove Connection (by name)
+  // ============================================================================
+
+  async removeConnection(name: string): Promise<void> {
+    const conn = this.connections.get(name);
+    if (conn) {
+      try { await conn.disconnect(); } catch {}
       this.connections.delete(name);
     }
   }
