@@ -1582,6 +1582,19 @@ async function handleDownload({ action, timeout }) {
           return;
         }
 
+        // Check for recently interrupted downloads — fail fast instead of waiting maxWait
+        const interrupted = items?.find((d) => {
+          if (d.state === "interrupted" && d.endTime) {
+            const endTs = new Date(d.endTime).getTime();
+            return now - endTs < 10000;
+          }
+          return false;
+        });
+        if (interrupted) {
+          reject(new Error(`Download interrupted: ${interrupted.error || "unknown reason"}`));
+          return;
+        }
+
         // Check for stuck downloads (all bytes received but state still in_progress, e.g. blob: URLs)
         const stuck = items?.find(
           (d) => d.state === "in_progress" && d.totalBytes > 0 && d.bytesReceived >= d.totalBytes,
@@ -1641,6 +1654,14 @@ async function handleDownload({ action, timeout }) {
             );
             if (stuckAtEnd) {
               resolve({ ...stuckAtEnd, _stuck: true });
+              return;
+            }
+            // Check for interrupted downloads — provide specific error instead of generic timeout
+            const interruptedAtEnd = final?.find(
+              (d) => d.state === "interrupted" && d.endTime && Date.now() - new Date(d.endTime).getTime() < maxWait + 5000,
+            );
+            if (interruptedAtEnd) {
+              reject(new Error(`Download interrupted: ${interruptedAtEnd.error || "unknown reason"}`));
               return;
             }
             reject(new Error(`No download completed within ${maxWait / 1000}s`));
