@@ -77,8 +77,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async response
   }
 
-  // Connection status broadcast from offscreen — let it pass through to popup
+  // Connection status broadcast from offscreen — update toolbar icon and let popup hear it
   if (message.source === "offscreen" && message.type === "connection-status") {
+    const prefix = message.connected ? "connected" : "disconnected";
+    chrome.action.setIcon({
+      path: {
+        16: `icons/${prefix}-16.png`,
+        48: `icons/${prefix}-48.png`,
+        128: `icons/${prefix}-128.png`,
+      },
+    }).catch(() => {});
     return false;
   }
 
