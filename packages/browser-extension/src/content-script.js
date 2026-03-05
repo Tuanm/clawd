@@ -172,13 +172,13 @@ if (!window.__clawdBrowserBridge) {
     if (activeCursors >= MAX_CURSORS) return;
     try {
       ensureCursorStyles();
-      activeCursors++;
       const cursor = document.createElement("div");
       cursor.className = "__clawd-action-cursor";
       cursor.innerHTML = CLAWD_CURSOR_SVG;
       cursor.style.left = `${x}px`;
       cursor.style.top = `${y}px`;
       (document.body || document.documentElement).appendChild(cursor);
+      activeCursors++;
       setTimeout(() => {
         cursor.remove();
         activeCursors--;

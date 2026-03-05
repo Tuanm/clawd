@@ -14,7 +14,7 @@ const debuggerAttached = new Set(); // Set of tabIds with debugger attached
 const debuggerPending = new Map(); // tabId -> Promise (serializes attachment)
 const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)
 const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
-let currentEmulation = null; // Track active emulation state {metrics, hasTouch, userAgent} for screenshot restore
+const tabEmulation = new Map(); // tabId -> {metrics, hasTouch, userAgent} for screenshot restore
 const pendingAuth = new Map(); // requestId -> { tabId, url, scheme, realm }
 const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status lookup)
 const recentDownloads = []; // Recent download events (from CDP Browser.downloadWillBegin), max 20
@@ -23,11 +23,17 @@ const recentDownloads = []; // Recent download events (from CDP Browser.download
 chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId) {
     debuggerAttached.delete(source.tabId);
+    pendingDialogs.delete(source.tabId);
+    tabEmulation.delete(source.tabId);
     // Clean up auth state for detached tab
     const reqIds = pendingAuthByTab.get(source.tabId);
     if (reqIds) {
       for (const rid of reqIds) pendingAuth.delete(rid);
       pendingAuthByTab.delete(source.tabId);
+    }
+    // Invalidate stale frame contexts
+    for (const key of frameContexts.keys()) {
+      if (key.startsWith(`${source.tabId}:`)) frameContexts.delete(key);
     }
   }
 });
@@ -201,12 +207,13 @@ async function handleNavigate({ url, tabId, waitFor }) {
   }
 
   // Wait for page load
+  const preNavTs = Date.now();
   await waitForTab(tab.id, waitFor || "load");
   tab = await chrome.tabs.get(tab.id);
 
   const result = { tabId: tab.id, url: tab.url, title: tab.title };
-  // Check if navigation triggered a file download
-  const dl = consumeRecentDownload(tab.id);
+  // Check if navigation triggered a file download (use preNavTs to cover the entire wait window)
+  const dl = consumeRecentDownload(tab.id, Date.now() - preNavTs + 2000);
   if (dl)
     result.download_triggered = {
       url: dl.url,
@@ -251,19 +258,18 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
           height: Math.ceil(height),
         };
       } finally {
-        // Restore active emulation if set, otherwise clear
-        if (currentEmulation?.metrics) {
-          await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", currentEmulation.metrics).catch(
-            () => {},
-          );
-          if (currentEmulation.hasTouch !== undefined) {
+        // Restore active emulation for this specific tab, otherwise clear
+        const emu = tabEmulation.get(tid);
+        if (emu?.metrics) {
+          await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", emu.metrics).catch(() => {});
+          if (emu.hasTouch !== undefined) {
             await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", {
-              enabled: currentEmulation.hasTouch,
+              enabled: emu.hasTouch,
             }).catch(() => {});
           }
-          if (currentEmulation.userAgent) {
+          if (emu.userAgent) {
             await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", {
-              userAgent: currentEmulation.userAgent,
+              userAgent: emu.userAgent,
             }).catch(() => {});
           }
         } else {
@@ -450,15 +456,16 @@ async function handleExtract({ mode, selector, tabId, frameId }) {
   if (mode === "accessibility") {
     await ensureDebugger(tid);
     const result = await sendDebuggerCommand(tid, "Accessibility.getFullAXTree");
-    // Compact the tree
-    const nodes = (result.nodes || [])
-      .slice(0, 500)
-      .map((n) => ({
-        role: n.role?.value,
-        name: n.name?.value,
-        value: n.value?.value,
-      }))
-      .filter((n) => n.name || n.value);
+    // Filter meaningful nodes first, then truncate
+    const nodes = [];
+    for (const n of result.nodes || []) {
+      const name = n.name?.value;
+      const value = n.value?.value;
+      if (name || value) {
+        nodes.push({ role: n.role?.value, name, value });
+        if (nodes.length >= 500) break;
+      }
+    }
     return { data: nodes };
   }
 
@@ -519,11 +526,13 @@ function extractFromPage(mode, selector) {
 // --- Tabs ---
 
 async function handleTabs({ action, tabId }) {
-  if (action === "close" && tabId) {
+  if (action === "close") {
+    if (!tabId) throw new Error("tabId is required for close action");
     await chrome.tabs.remove(tabId);
     return { closed: tabId };
   }
-  if (action === "activate" && tabId) {
+  if (action === "activate") {
+    if (!tabId) throw new Error("tabId is required for activate action");
     await chrome.tabs.update(tabId, { active: true });
     const tab = await chrome.tabs.get(tabId);
     return { activated: tabId, title: tab.title, url: tab.url };
@@ -552,6 +561,7 @@ async function handleExecute({ code, tabId, frameId }) {
     expression: code,
     returnByValue: true,
     awaitPromise: true,
+    timeout: 30000,
   };
   if (frameId) {
     const contextId = frameContexts.get(`${tid}:${frameId}`);
@@ -1163,6 +1173,14 @@ async function handleFileUpload({ selector, fileId, tabId }) {
     files: [localPath],
   });
 
+  // Clean up temp file
+  try {
+    await chrome.downloads.removeFile(downloadId);
+    await chrome.downloads.erase({ id: downloadId });
+  } catch {
+    // best-effort cleanup
+  }
+
   return { tabId: tid, selector, fileId, fileName };
 }
 
@@ -1327,7 +1345,7 @@ async function handleEmulate({ action, width, height, deviceScaleFactor, isMobil
     await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride").catch(() => {});
     await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
     await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent: "" }).catch(() => {});
-    currentEmulation = null;
+    tabEmulation.delete(tid);
     return { tabId: tid, emulation: "cleared" };
   }
 
@@ -1339,19 +1357,21 @@ async function handleEmulate({ action, width, height, deviceScaleFactor, isMobil
       mobile: isMobile || false,
     };
     await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", metrics);
-    currentEmulation = { metrics };
+    tabEmulation.set(tid, { metrics });
   }
 
   if (hasTouch !== undefined) {
     await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", {
       enabled: !!hasTouch,
     });
-    if (currentEmulation) currentEmulation.hasTouch = !!hasTouch;
+    const emu = tabEmulation.get(tid);
+    if (emu) emu.hasTouch = !!hasTouch;
   }
 
   if (userAgent) {
     await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent });
-    if (currentEmulation) currentEmulation.userAgent = userAgent;
+    const emu = tabEmulation.get(tid);
+    if (emu) emu.userAgent = userAgent;
   }
 
   return {
@@ -1496,15 +1516,15 @@ async function handleDownload({ action, timeout }) {
   }
 
   if (action === "latest") {
-    // Try completed first, then check for stuck in_progress downloads
-    let items = await chrome.downloads.search({ limit: 1, orderBy: ["-startTime"], state: "complete" });
-    if (items.length === 0) {
-      // Check for downloads stuck as in_progress but fully received
-      const inProgress = await chrome.downloads.search({ limit: 5, orderBy: ["-startTime"], state: "in_progress" });
-      const stuck = inProgress.find((d) => d.totalBytes > 0 && d.bytesReceived >= d.totalBytes);
-      if (stuck) items = [stuck];
-    }
-    if (items.length === 0) throw new Error("No completed downloads found");
+    // Only consider downloads from the last 5 minutes
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    let items = await chrome.downloads.search({
+      limit: 1,
+      orderBy: ["-startTime"],
+      state: "complete",
+      startedAfter: fiveMinAgo,
+    });
+    if (items.length === 0) throw new Error("No recent completed downloads found (within last 5 minutes)");
     const item = items[0];
     // Auto-upload to chat server
     try {
@@ -1805,6 +1825,9 @@ async function getElementCenter(tabId, selector) {
   });
   if (!node.nodeId) throw new Error(`Element not found: ${selector}`);
 
+  // Ensure element is in viewport before reading coordinates
+  await sendDebuggerCommand(tabId, "DOM.scrollIntoViewIfNeeded", { nodeId: node.nodeId }).catch(() => {});
+
   const box = await sendDebuggerCommand(tabId, "DOM.getBoxModel", { nodeId: node.nodeId });
   const quad = box.model.content;
   // Average all 4 corners for correct center even with CSS transforms
@@ -1971,6 +1994,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   debuggerPending.delete(tabId);
   activeTabCommands.delete(tabId);
   pendingDialogs.delete(tabId);
+  tabEmulation.delete(tabId);
   // Clean up per-requestId auth entries for this tab
   const reqIds = pendingAuthByTab.get(tabId);
   if (reqIds) {
@@ -1979,5 +2003,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
   for (const key of frameContexts.keys()) {
     if (key.startsWith(`${tabId}:`)) frameContexts.delete(key);
+  }
+  // Remove stale download records for closed tab
+  for (let i = recentDownloads.length - 1; i >= 0; i--) {
+    if (recentDownloads[i].tabId === tabId) recentDownloads.splice(i, 1);
   }
 });

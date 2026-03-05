@@ -247,7 +247,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const { filePath, mime, uploadUrl } = message;
-        const response = await fetch(`file://${filePath}`);
+        // Normalize Windows paths (C:\... -> file:///C:/...)
+        let fileUrl;
+        if (/^[A-Za-z]:/.test(filePath)) {
+          fileUrl = `file:///${filePath.replace(/\\/g, "/")}`;
+        } else {
+          fileUrl = `file://${filePath}`;
+        }
+        const response = await fetch(fileUrl);
         if (!response.ok) throw new Error(`Cannot read file: ${filePath}`);
         const blob = await response.blob();
         if (blob.size > 500 * 1024 * 1024) {
