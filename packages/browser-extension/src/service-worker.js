@@ -11,6 +11,8 @@
 
 let offscreenReady = false;
 const debuggerAttached = new Set(); // Set of tabIds with debugger attached
+const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)
+const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
 
 // Clean up debugger state on detach (registered once at module scope)
 chrome.debugger.onDetach.addListener((source) => {
@@ -102,6 +104,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ============================================================================
 
 async function handleCommand(id, method, params) {
+  // Show glow indicator on target tab
+  let indicatorTab = params.tabId || null;
+  if (!indicatorTab) {
+    try { indicatorTab = await getActiveTabId(); } catch {}
+  }
+  if (indicatorTab) showAgentIndicator(indicatorTab);
+  try {
+    return await dispatchCommand(method, params);
+  } finally {
+    if (indicatorTab) hideAgentIndicator(indicatorTab);
+  }
+}
+
+async function dispatchCommand(method, params) {
   switch (method) {
     case "navigate":
       return handleNavigate(params);
@@ -131,6 +147,18 @@ async function handleCommand(id, method, params) {
       return handleSelect(params);
     case "dialog":
       return handleDialog(params);
+    case "history":
+      return handleHistory(params);
+    case "file_upload":
+      return handleFileUpload(params);
+    case "frames":
+      return handleFrames(params);
+    case "touch":
+      return handleTouch(params);
+    case "emulate":
+      return handleEmulate(params);
+    case "download":
+      return handleDownload(params);
     default:
       throw new Error(`Unknown method: ${method}`);
   }
@@ -233,7 +261,7 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
 
 // --- Click ---
 
-async function handleClick({ selector, x, y, tabId, button, clickCount: count }) {
+async function handleClick({ selector, x, y, tabId, button, clickCount: count, pierce }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
@@ -241,7 +269,7 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count })
   let clickY = y;
 
   if (selector) {
-    const coords = await getElementCenter(tid, selector);
+    const coords = pierce ? await resolveElementCoords(tid, selector) : await getElementCenter(tid, selector);
     clickX = coords.x;
     clickY = coords.y;
   } else if (clickX === undefined || clickY === undefined) {
@@ -274,13 +302,13 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count })
 
 // --- Type ---
 
-async function handleType({ text, selector, tabId, clearFirst, pressEnter }) {
+async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierce }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
   if (selector) {
     // Focus the element first
-    const coords = await getElementCenter(tid, selector);
+    const coords = pierce ? await resolveElementCoords(tid, selector) : await getElementCenter(tid, selector);
     await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
       type: "mousePressed",
       x: coords.x,
@@ -343,7 +371,7 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter }) {
 
 // --- Extract ---
 
-async function handleExtract({ mode, selector, tabId }) {
+async function handleExtract({ mode, selector, tabId, frameId }) {
   const tid = tabId || (await getActiveTabId());
 
   if (mode === "accessibility") {
@@ -362,8 +390,10 @@ async function handleExtract({ mode, selector, tabId }) {
   }
 
   // Use content script for DOM extraction
+  const target = { tabId: tid };
+  if (frameId) target.frameIds = [frameId];
   const results = await chrome.scripting.executeScript({
-    target: { tabId: tid },
+    target,
     func: extractFromPage,
     args: [mode || "text", selector || null],
   });
@@ -440,15 +470,23 @@ async function handleTabs({ action, tabId }) {
 
 // --- Execute JS ---
 
-async function handleExecute({ code, tabId }) {
+async function handleExecute({ code, tabId, frameId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
-  // Use CDP Runtime.evaluate — MV3 blocks new Function()/eval in service workers
-  const result = await sendDebuggerCommand(tid, "Runtime.evaluate", {
+
+  // Determine execution context for frame targeting
+  const evalParams = {
     expression: code,
     returnByValue: true,
     awaitPromise: true,
-  });
+  };
+  if (frameId) {
+    const contextId = frameContexts.get(`${tid}:${frameId}`);
+    if (contextId) evalParams.contextId = contextId;
+  }
+
+  // Use CDP Runtime.evaluate — MV3 blocks new Function()/eval in service workers
+  const result = await sendDebuggerCommand(tid, "Runtime.evaluate", evalParams);
   if (result.exceptionDetails) {
     throw new Error(
       result.exceptionDetails.exception?.description || result.exceptionDetails.text || "Script execution failed",
@@ -500,7 +538,7 @@ async function handleScroll({ x, y, selector, direction, amount, tabId }) {
 
 // --- Hover ---
 
-async function handleHover({ selector, x, y, tabId }) {
+async function handleHover({ selector, x, y, tabId, pierce }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
@@ -508,7 +546,7 @@ async function handleHover({ selector, x, y, tabId }) {
   let hoverY = y;
 
   if (selector) {
-    const coords = await getElementCenter(tid, selector);
+    const coords = pierce ? await resolveElementCoords(tid, selector) : await getElementCenter(tid, selector);
     hoverX = coords.x;
     hoverY = coords.y;
   } else if (hoverX === undefined || hoverY === undefined) {
@@ -666,7 +704,7 @@ async function handleKeypress({ key, modifiers, tabId }) {
 
 // --- Wait For Element ---
 
-async function handleWaitFor({ selector, tabId, timeout, visible }) {
+async function handleWaitFor({ selector, tabId, timeout, visible, pierce }) {
   const tid = tabId || (await getActiveTabId());
   const maxWait = Math.min(timeout || 5000, 30000);
   const interval = 200;
@@ -676,8 +714,36 @@ async function handleWaitFor({ selector, tabId, timeout, visible }) {
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId: tid },
-        func: (sel, checkVisible) => {
-          const el = document.querySelector(sel);
+        func: (sel, checkVisible, doPierce) => {
+          function query(s) {
+            let el = document.querySelector(s);
+            if (el || !doPierce) return el;
+            // Search shadow DOMs
+            function searchShadow(root) {
+              for (const node of root.querySelectorAll("*")) {
+                if (node.shadowRoot) {
+                  const found = node.shadowRoot.querySelector(s);
+                  if (found) return found;
+                  const deep = searchShadow(node.shadowRoot);
+                  if (deep) return deep;
+                }
+              }
+              return null;
+            }
+            el = searchShadow(document);
+            if (el) return el;
+            // Search same-origin iframes
+            for (const iframe of document.querySelectorAll("iframe")) {
+              try {
+                if (iframe.contentDocument) {
+                  const found = iframe.contentDocument.querySelector(s);
+                  if (found) return found;
+                }
+              } catch {}
+            }
+            return null;
+          }
+          const el = query(sel);
           if (!el) return null;
           if (checkVisible) {
             const rect = el.getBoundingClientRect();
@@ -687,7 +753,7 @@ async function handleWaitFor({ selector, tabId, timeout, visible }) {
           }
           return { tag: el.tagName.toLowerCase(), text: (el.textContent || "").slice(0, 100) };
         },
-        args: [selector, visible !== false],
+        args: [selector, visible !== false, !!pierce],
       });
       if (results[0]?.result) {
         return { found: true, tabId: tid, element: results[0].result, elapsed: Date.now() - start };
@@ -736,7 +802,7 @@ async function handleSelect({ selector, value, text, index, tabId }) {
 
 const pendingDialogs = new Map(); // tabId -> { type, message, defaultPrompt }
 
-// Listen for JavaScript dialogs
+// Listen for JavaScript dialogs and frame execution contexts
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (method === "Page.javascriptDialogOpening" && source.tabId) {
     pendingDialogs.set(source.tabId, {
@@ -744,6 +810,21 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       message: params.message,
       defaultPrompt: params.defaultPrompt,
     });
+  }
+  // Track execution contexts for frame targeting
+  if (method === "Runtime.executionContextCreated" && source.tabId) {
+    const ctx = params.context;
+    if (ctx.auxData?.frameId) {
+      frameContexts.set(`${source.tabId}:${ctx.auxData.frameId}`, ctx.id);
+    }
+  }
+  if (method === "Runtime.executionContextDestroyed" && source.tabId) {
+    for (const [key, ctxId] of frameContexts) {
+      if (ctxId === params.executionContextId) {
+        frameContexts.delete(key);
+        break;
+      }
+    }
   }
 });
 
@@ -768,6 +849,296 @@ async function handleDialog({ action, promptText, tabId }) {
   return { tabId: tid, handled: true, type: dialog.type, dialogMessage: dialog.message };
 }
 
+// --- History (Back/Forward) ---
+
+async function handleHistory({ action, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  if (action === "back") {
+    await chrome.tabs.goBack(tid);
+  } else if (action === "forward") {
+    await chrome.tabs.goForward(tid);
+  } else {
+    throw new Error(`Unknown history action: ${action}. Use "back" or "forward".`);
+  }
+  await waitForTab(tid, "load");
+  const tab = await chrome.tabs.get(tid);
+  return { tabId: tid, url: tab.url, title: tab.title, action };
+}
+
+// --- File Upload (set files on <input type="file">) ---
+
+async function handleFileUpload({ selector, files, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  const doc = await sendDebuggerCommand(tid, "DOM.getDocument");
+  const node = await sendDebuggerCommand(tid, "DOM.querySelector", {
+    nodeId: doc.root.nodeId,
+    selector,
+  });
+  if (!node.nodeId) throw new Error(`File input not found: ${selector}`);
+
+  await sendDebuggerCommand(tid, "DOM.setFileInputFiles", {
+    nodeId: node.nodeId,
+    files, // array of local file paths
+  });
+
+  return { tabId: tid, selector, fileCount: files.length };
+}
+
+// --- Frames (list iframes) ---
+
+async function handleFrames({ tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  // Enable Page + Runtime domains for frame/context tracking
+  await sendDebuggerCommand(tid, "Page.enable").catch(() => {});
+  await sendDebuggerCommand(tid, "Runtime.enable").catch(() => {});
+
+  const result = await sendDebuggerCommand(tid, "Page.getFrameTree");
+
+  function flattenFrames(frameTree, depth = 0) {
+    const frames = [];
+    const frame = frameTree.frame;
+    frames.push({
+      frameId: frame.id,
+      parentFrameId: frame.parentId || null,
+      url: frame.url,
+      name: frame.name || "",
+      securityOrigin: frame.securityOrigin,
+      depth,
+    });
+    if (frameTree.childFrames) {
+      for (const child of frameTree.childFrames) {
+        frames.push(...flattenFrames(child, depth + 1));
+      }
+    }
+    return frames;
+  }
+
+  return { tabId: tid, frames: flattenFrames(result.frameTree) };
+}
+
+// --- Touch Events ---
+
+async function handleTouch({ action, x, y, selector, endX, endY, tabId, duration }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  let touchX = x;
+  let touchY = y;
+  if (selector) {
+    const coords = await getElementCenter(tid, selector);
+    touchX = coords.x;
+    touchY = coords.y;
+  }
+  if (touchX === undefined || touchY === undefined) {
+    throw new Error("Touch requires selector or x,y coordinates");
+  }
+
+  if (action === "tap") {
+    await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: touchX, y: touchY }],
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    return { tabId: tid, action: "tap", x: touchX, y: touchY };
+  }
+
+  if (action === "swipe") {
+    const eX = endX ?? touchX;
+    const eY = endY ?? touchY;
+    const steps = 10;
+
+    await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: touchX, y: touchY }],
+    });
+
+    for (let i = 1; i <= steps; i++) {
+      const ratio = i / steps;
+      await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [{
+          x: touchX + (eX - touchX) * ratio,
+          y: touchY + (eY - touchY) * ratio,
+        }],
+      });
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    return { tabId: tid, action: "swipe", from: { x: touchX, y: touchY }, to: { x: eX, y: eY } };
+  }
+
+  if (action === "long-press") {
+    const holdMs = duration || 500;
+    await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: touchX, y: touchY }],
+    });
+    await new Promise((r) => setTimeout(r, holdMs));
+    await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    return { tabId: tid, action: "long-press", x: touchX, y: touchY, duration: holdMs };
+  }
+
+  if (action === "pinch") {
+    const scale = endX || 0.5; // reuse endX as scale factor
+    const x2 = touchX + 50;
+    const y2 = touchY;
+    const steps = 10;
+
+    await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [
+        { x: touchX, y: touchY, id: 0 },
+        { x: x2, y: y2, id: 1 },
+      ],
+    });
+
+    for (let i = 1; i <= steps; i++) {
+      const ratio = i / steps;
+      const offset = 50 * (1 + (scale - 1) * ratio);
+      await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [
+          { x: touchX - (offset - 50) * ratio, y: touchY, id: 0 },
+          { x: touchX + offset, y: y2, id: 1 },
+        ],
+      });
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    return { tabId: tid, action: "pinch", center: { x: touchX, y: touchY }, scale };
+  }
+
+  throw new Error(`Unknown touch action: ${action}. Use "tap", "swipe", "long-press", or "pinch".`);
+}
+
+// --- Device Emulation ---
+
+async function handleEmulate({ action, width, height, deviceScaleFactor, isMobile, hasTouch, userAgent, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  if (action === "clear") {
+    await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride").catch(() => {});
+    await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    return { tabId: tid, emulation: "cleared" };
+  }
+
+  if (width && height) {
+    await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", {
+      width,
+      height,
+      deviceScaleFactor: deviceScaleFactor || 1,
+      mobile: isMobile || false,
+    });
+  }
+
+  if (hasTouch !== undefined) {
+    await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", {
+      enabled: !!hasTouch,
+    });
+  }
+
+  if (userAgent) {
+    await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent });
+  }
+
+  return {
+    tabId: tid,
+    emulation: {
+      width, height,
+      deviceScaleFactor: deviceScaleFactor || 1,
+      mobile: isMobile || false,
+      touch: !!hasTouch,
+      userAgent: userAgent || null,
+    },
+  };
+}
+
+// --- Download Handling ---
+
+async function handleDownload({ action, timeout }) {
+  if (action === "list") {
+    const items = await chrome.downloads.search({ limit: 20, orderBy: ["-startTime"] });
+    return {
+      downloads: items.map((d) => ({
+        id: d.id,
+        filename: d.filename,
+        url: d.url,
+        state: d.state,
+        totalBytes: d.totalBytes,
+        bytesReceived: d.bytesReceived,
+        startTime: d.startTime,
+        endTime: d.endTime,
+        mime: d.mime,
+      })),
+    };
+  }
+
+  if (action === "wait") {
+    const maxWait = Math.min(timeout || 30000, 120000);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        chrome.downloads.onChanged.removeListener(listener);
+        reject(new Error(`No download completed within ${maxWait / 1000}s`));
+      }, maxWait);
+
+      function listener(delta) {
+        if (delta.state && delta.state.current === "complete") {
+          clearTimeout(timer);
+          chrome.downloads.onChanged.removeListener(listener);
+          chrome.downloads.search({ id: delta.id }, (items) => {
+            if (items && items.length > 0) {
+              resolve({
+                id: items[0].id,
+                filename: items[0].filename,
+                url: items[0].url,
+                totalBytes: items[0].totalBytes,
+                mime: items[0].mime,
+              });
+            } else {
+              resolve({ id: delta.id });
+            }
+          });
+        }
+      }
+      chrome.downloads.onChanged.addListener(listener);
+    });
+  }
+
+  if (action === "latest") {
+    const items = await chrome.downloads.search({ limit: 1, orderBy: ["-startTime"], state: "complete" });
+    if (items.length === 0) throw new Error("No completed downloads found");
+    return {
+      id: items[0].id,
+      filename: items[0].filename,
+      url: items[0].url,
+      totalBytes: items[0].totalBytes,
+      mime: items[0].mime,
+    };
+  }
+
+  throw new Error(`Unknown download action: ${action}. Use "list", "wait", or "latest".`);
+}
+
 // ============================================================================
 // Debugger Helpers
 // ============================================================================
@@ -776,6 +1147,8 @@ async function ensureDebugger(tabId) {
   if (debuggerAttached.has(tabId)) return;
   await chrome.debugger.attach({ tabId }, "1.3");
   debuggerAttached.add(tabId);
+  // Enable Runtime to track execution contexts for frame targeting
+  await sendDebuggerCommand(tabId, "Runtime.enable").catch(() => {});
 }
 
 function sendDebuggerCommand(tabId, method, params) {
@@ -796,6 +1169,81 @@ async function getElementCenter(tabId, selector) {
     x: (quad[0] + quad[2]) / 2,
     y: (quad[1] + quad[5]) / 2,
   };
+}
+
+/**
+ * Deep element query — pierces shadow DOM and same-origin iframes.
+ * Returns viewport-relative coordinates of the element center.
+ */
+async function resolveElementCoords(tabId, selector) {
+  await ensureDebugger(tabId);
+  const result = await sendDebuggerCommand(tabId, "Runtime.evaluate", {
+    expression: `(function() {
+      function deepQuery(sel) {
+        let el = document.querySelector(sel);
+        if (el) return el;
+        function searchShadow(root) {
+          for (const node of root.querySelectorAll("*")) {
+            if (node.shadowRoot) {
+              const found = node.shadowRoot.querySelector(sel);
+              if (found) return found;
+              const deep = searchShadow(node.shadowRoot);
+              if (deep) return deep;
+            }
+          }
+          return null;
+        }
+        el = searchShadow(document);
+        if (el) return el;
+        for (const iframe of document.querySelectorAll("iframe")) {
+          try {
+            if (iframe.contentDocument) {
+              const found = iframe.contentDocument.querySelector(sel);
+              if (found) return found;
+            }
+          } catch {}
+        }
+        return null;
+      }
+      const el = deepQuery(${JSON.stringify(selector)});
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      let x = rect.x + rect.width / 2;
+      let y = rect.y + rect.height / 2;
+      let frame = el.ownerDocument.defaultView?.frameElement;
+      while (frame) {
+        const fRect = frame.getBoundingClientRect();
+        x += fRect.x;
+        y += fRect.y;
+        frame = frame.ownerDocument.defaultView?.frameElement;
+      }
+      return { x, y };
+    })()`,
+    returnByValue: true,
+  });
+  if (!result.result?.value) throw new Error(`Element not found (deep): ${selector}`);
+  return result.result.value;
+}
+
+// ============================================================================
+// Agent Activity Indicator
+// ============================================================================
+
+function showAgentIndicator(tabId) {
+  const count = (activeTabCommands.get(tabId) || 0) + 1;
+  activeTabCommands.set(tabId, count);
+  if (count === 1) {
+    chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay" }).catch(() => {});
+  }
+}
+
+function hideAgentIndicator(tabId) {
+  const count = Math.max(0, (activeTabCommands.get(tabId) || 0) - 1);
+  activeTabCommands.set(tabId, count);
+  if (count === 0) {
+    activeTabCommands.delete(tabId);
+    chrome.tabs.sendMessage(tabId, { type: "hide-agent-overlay" }).catch(() => {});
+  }
 }
 
 async function getActiveTabId() {
@@ -851,7 +1299,11 @@ chrome.runtime.onStartup.addListener(async () => {
   await ensureOffscreen();
 });
 
-// Clean up debugger on tab close
+// Clean up debugger and frame contexts on tab close
 chrome.tabs.onRemoved.addListener((tabId) => {
   debuggerAttached.delete(tabId);
+  activeTabCommands.delete(tabId);
+  for (const key of frameContexts.keys()) {
+    if (key.startsWith(`${tabId}:`)) frameContexts.delete(key);
+  }
 });
