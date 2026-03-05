@@ -40,8 +40,18 @@ if (!window.__clawdBrowserBridge) {
     styleEl.id = "__clawd-overlay-style";
     styleEl.textContent = `
       @keyframes __clawd-glow {
-        0%, 100% { box-shadow: inset 0 0 8px 2px rgba(217, 120, 83, 0.5); }
-        50% { box-shadow: inset 0 0 20px 4px rgba(217, 120, 83, 0.85); }
+        0%, 100% {
+          box-shadow: inset 0 0 6px 2px rgba(217, 120, 83, 0.3);
+          border-color: rgba(217, 120, 83, 0.4);
+        }
+        50% {
+          box-shadow: inset 0 0 24px 6px rgba(217, 120, 83, 0.7);
+          border-color: rgba(217, 120, 83, 0.9);
+        }
+      }
+      @keyframes __clawd-glow-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
       }
     `;
     (document.head || document.documentElement).appendChild(styleEl);
@@ -50,13 +60,16 @@ if (!window.__clawdBrowserBridge) {
     overlayEl.id = "__clawd-agent-overlay";
     Object.assign(overlayEl.style, {
       position: "fixed",
-      inset: "0",
+      top: "0",
+      left: "0",
+      right: "0",
+      bottom: "0",
       zIndex: "2147483647",
       pointerEvents: "none",
-      border: "2px solid rgba(217, 120, 83, 0.6)",
-      borderRadius: "0",
-      animation: "__clawd-glow 2s ease-in-out infinite",
-      transition: "opacity 0.3s",
+      border: "3px solid rgba(217, 120, 83, 0.6)",
+      boxSizing: "border-box",
+      animation: "__clawd-glow 2s ease-in-out infinite, __clawd-glow-in 0.3s ease-out",
+      transition: "opacity 0.3s ease-out",
     });
     document.documentElement.appendChild(overlayEl);
   }

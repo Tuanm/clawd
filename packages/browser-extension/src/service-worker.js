@@ -1648,7 +1648,16 @@ function showAgentIndicator(tabId) {
   const count = (activeTabCommands.get(tabId) || 0) + 1;
   activeTabCommands.set(tabId, count);
   if (count === 1) {
-    chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay" }).catch(() => {});
+    // Ensure content script is injected, then show overlay
+    chrome.scripting
+      .executeScript({
+        target: { tabId },
+        files: ["src/content-script.js"],
+      })
+      .catch(() => {}) // Already injected or restricted page
+      .then(() => {
+        chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay" }).catch(() => {});
+      });
   }
 }
 
