@@ -1357,10 +1357,25 @@ SUMMARY:`;
       } catch {}
     }
 
+    // Browser automation instructions (injected when browser tools are active)
+    let browserInstructions = "";
+    if (this._browserPluginRegistered) {
+      browserInstructions =
+        "\n\n<browser_instructions>\n" +
+        "When using browser tools, follow these rules:\n" +
+        "1. ALWAYS run browser_store action=list FIRST before reading page content — check for existing scripts that can extract the data you need.\n" +
+        "2. PREFER browser_extract and browser_execute (with stored scripts) over browser_screenshot for reading page content. " +
+        "Screenshots are expensive (require read_image), slow, and less accurate. Only use screenshots when you specifically need visual/layout information (charts, images, styling, spatial positioning).\n" +
+        "3. When you execute similar code more than once, SAVE it as a reusable script via browser_store (action=set, with a descriptive key and description), then use browser_execute with script_id for subsequent calls.\n" +
+        "4. Before creating a new script, check browser_store list — a suitable script may already exist.\n" +
+        "</browser_instructions>";
+    }
+
     const systemPrompt =
       (this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT) +
       contextHint +
       (this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "") +
+      browserInstructions +
       checkpointContext +
       skillsSummary +
       pluginContext;
@@ -1575,6 +1590,7 @@ SUMMARY:`;
             const updatedSystemPrompt =
               (this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT) +
               (this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "") +
+              browserInstructions +
               updatedCheckpointContext +
               skillsSummary +
               pluginContext;
@@ -1783,6 +1799,7 @@ SUMMARY:`;
               const updatedSystemPrompt =
                 (this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT) +
                 (this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "") +
+                browserInstructions +
                 updatedCheckpointContext +
                 skillsSummary +
                 pluginContext;
