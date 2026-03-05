@@ -1022,6 +1022,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     });
     if (recentDownloads.length > 20) recentDownloads.shift();
   }
+  // Track download completion via CDP (more reliable than chrome.downloads for blob: URLs)
+  if (method === "Browser.downloadProgress" && params.state === "completed") {
+    const rd = recentDownloads.find((d) => d.guid === params.guid);
+    if (rd) rd.cdpCompleted = true;
+  }
   // Track file chooser dialogs (intercepted by Page.setInterceptFileChooserDialog)
   if (method === "Page.fileChooserOpened" && source.tabId) {
     pendingFileChoosers.set(source.tabId, {
@@ -1499,15 +1504,33 @@ async function uploadFileToChatServer(filePath, mime) {
 
   // Route through offscreen document — MV3 service workers cannot fetch file:// URLs
   await ensureOffscreen();
-  const resp = await chrome.runtime.sendMessage({
+
+  // Try primary path first, then .crdownload fallback (for stuck blob: downloads)
+  let resp = await chrome.runtime.sendMessage({
     type: "upload-file",
     filePath,
     mime: mime || "application/octet-stream",
     uploadUrl,
   });
+
   if (!resp || !resp.ok) {
-    throw new Error(resp?.error || "Upload via offscreen failed");
+    // Fallback: try the .crdownload path (Chrome's temp download file extension)
+    // This handles downloads stuck in "in_progress" where all bytes are received but
+    // Chrome hasn't finalized the file (common with blob:null URLs from sites like Gemini)
+    const crdownloadPath = filePath + ".crdownload";
+    const fallbackResp = await chrome.runtime.sendMessage({
+      type: "upload-file",
+      filePath: crdownloadPath,
+      mime: mime || "application/octet-stream",
+      uploadUrl,
+    });
+    if (fallbackResp?.ok) {
+      resp = fallbackResp;
+    } else {
+      throw new Error(resp?.error || "Upload via offscreen failed");
+    }
   }
+
   const result = resp.result;
   if (!result.ok) throw new Error(result.error || "Upload failed");
   return result.file;
@@ -1542,10 +1565,6 @@ async function handleDownload({ action, timeout }) {
             const endTs = new Date(d.endTime).getTime();
             return now - endTs < 10000;
           }
-          // Handle edge case: bytesReceived === totalBytes but state still in_progress
-          if (d.state === "in_progress" && d.totalBytes > 0 && d.bytesReceived >= d.totalBytes) {
-            return true;
-          }
           return false;
         });
         if (recent) {
@@ -1553,17 +1572,48 @@ async function handleDownload({ action, timeout }) {
           return;
         }
 
+        // Check for stuck downloads (all bytes received but state still in_progress, e.g. blob: URLs)
+        const stuck = items?.find(
+          (d) => d.state === "in_progress" && d.totalBytes > 0 && d.bytesReceived >= d.totalBytes,
+        );
+        if (stuck) {
+          // Brief poll — give Chrome a chance to finalize before resolving with stuck state
+          let pollCount = 0;
+          const pollTimer = setInterval(() => {
+            pollCount++;
+            chrome.downloads.search({ id: stuck.id }, (updated) => {
+              if (updated?.[0]?.state === "complete") {
+                clearInterval(pollTimer);
+                resolve(updated[0]);
+              } else if (pollCount >= 10) {
+                // 5 seconds — download is truly stuck (common for blob:null URLs)
+                clearInterval(pollTimer);
+                resolve({ ...stuck, _stuck: true });
+              }
+            });
+          }, 500);
+          return;
+        }
+
         // No recent completion found — listen for future events
         const timer = setTimeout(() => {
           chrome.downloads.onChanged.removeListener(listener);
-          // Last-resort: check again for any completed downloads
-          chrome.downloads.search({ limit: 1, orderBy: ["-startTime"], state: "complete" }, (final) => {
-            if (final?.length > 0) {
-              const endTs = new Date(final[0].endTime).getTime();
-              if (Date.now() - endTs < maxWait + 5000) {
-                resolve(final[0]);
-                return;
-              }
+          // Last-resort: check for completed or stuck downloads
+          chrome.downloads.search({ limit: 5, orderBy: ["-startTime"] }, (final) => {
+            const completed = final?.find(
+              (d) => d.state === "complete" && d.endTime && Date.now() - new Date(d.endTime).getTime() < maxWait + 5000,
+            );
+            if (completed) {
+              resolve(completed);
+              return;
+            }
+            // Also check for stuck downloads at timeout
+            const stuckAtEnd = final?.find(
+              (d) => d.state === "in_progress" && d.totalBytes > 0 && d.bytesReceived >= d.totalBytes,
+            );
+            if (stuckAtEnd) {
+              resolve({ ...stuckAtEnd, _stuck: true });
+              return;
             }
             reject(new Error(`No download completed within ${maxWait / 1000}s`));
           });
