@@ -1124,13 +1124,20 @@ async function handleFileUpload({ selector, fileId, tabId }) {
   const fileName = nameMatch ? nameMatch[1] : `upload_${fileId}`;
 
   // Download to a temp local path via chrome.downloads
-  const file = new File([blob], fileName, { type: blob.type });
-  const blobUrl = URL.createObjectURL(file);
+  // MV3 service workers don't have URL.createObjectURL — use data URL instead
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  // Chunked base64 encoding to avoid call stack overflow on large files
+  let binary = "";
+  const chunkSize = 32768;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  const dataUrl = `data:${blob.type || "application/octet-stream"};base64,${btoa(binary)}`;
   const downloadId = await new Promise((resolve, reject) => {
     chrome.downloads.download(
-      { url: blobUrl, filename: `clawd_upload_${fileName}`, conflictAction: "uniquify" },
+      { url: dataUrl, filename: `clawd_upload_${fileName}`, conflictAction: "uniquify" },
       (id) => {
-        URL.revokeObjectURL(blobUrl);
         if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
         else resolve(id);
       },
