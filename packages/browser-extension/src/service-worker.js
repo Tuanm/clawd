@@ -50,11 +50,12 @@ chrome.runtime.onConnect.addListener((port) => {
 // ============================================================================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Ensure offscreen exists on every message (handles SW restarts)
+  // Ensure offscreen exists on every non-offscreen message (handles SW restarts)
   if (!message.source || message.source !== "offscreen") {
     ensureOffscreen().catch(() => {});
   }
 
+  // Commands from offscreen (WebSocket relay)
   if (message.source === "offscreen" && message.type === "command") {
     handleCommand(message.id, message.method, message.params)
       .then((result) => sendResponse({ id: message.id, result }))
@@ -62,9 +63,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async response
   }
 
-  // Fallback status handler when offscreen doc is unavailable
-  if (message.type === "get-status" && !message.source) {
-    sendResponse({ connected: false, extensionId: null });
+  // Connection status broadcast from offscreen — let it pass through to popup
+  if (message.source === "offscreen" && message.type === "connection-status") {
+    return false;
+  }
+
+  // Messages from popup meant for offscreen — don't intercept, let offscreen handle
+  if (message.type === "get-status" || message.type === "set-server-url" || message.type === "reconnect") {
+    // Don't call sendResponse — offscreen document handles these
     return false;
   }
 
