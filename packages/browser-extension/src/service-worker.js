@@ -226,12 +226,18 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
       } finally {
         // Restore active emulation if set, otherwise clear
         if (currentEmulation?.metrics) {
-          await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", currentEmulation.metrics).catch(() => {});
+          await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", currentEmulation.metrics).catch(
+            () => {},
+          );
           if (currentEmulation.hasTouch !== undefined) {
-            await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: currentEmulation.hasTouch }).catch(() => {});
+            await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", {
+              enabled: currentEmulation.hasTouch,
+            }).catch(() => {});
           }
           if (currentEmulation.userAgent) {
-            await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent: currentEmulation.userAgent }).catch(() => {});
+            await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", {
+              userAgent: currentEmulation.userAgent,
+            }).catch(() => {});
           }
         } else {
           await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride").catch(() => {});
@@ -528,8 +534,17 @@ async function handleScroll({ x, y, selector, direction, amount, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
-  let scrollX = x || 0;
-  let scrollY = y || 0;
+  // Default to viewport center if no position specified
+  let scrollX = x ?? 0;
+  let scrollY = y ?? 0;
+  if (!selector && x === undefined && y === undefined) {
+    // Get viewport size for centering
+    const layout = await sendDebuggerCommand(tid, "Page.getLayoutMetrics").catch(() => null);
+    if (layout?.cssVisualViewport) {
+      scrollX = Math.round(layout.cssVisualViewport.clientWidth / 2);
+      scrollY = Math.round(layout.cssVisualViewport.clientHeight / 2);
+    }
+  }
 
   if (selector) {
     const coords = await getElementCenter(tid, selector);
@@ -608,25 +623,28 @@ async function handleMouseMove({ x, y, tabId, steps }) {
     throw new Error("mouse_move requires both 'x' and 'y' coordinates");
   }
 
-  const numSteps = steps || 1;
-  if (numSteps <= 1) {
+  const numSteps = Math.max(1, steps || 1);
+  // CDP doesn't track cursor position, so multi-step interpolation
+  // uses small offsets approaching the target to generate mousemove events
+  for (let i = 1; i <= numSteps; i++) {
+    const ratio = i / numSteps;
+    await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      // For single step, jump directly to target
+      // For multi-step, approach from slight offset to generate events
+      x: numSteps === 1 ? x : Math.round(x + (1 - ratio) * -20),
+      y: numSteps === 1 ? y : Math.round(y + (1 - ratio) * -10),
+    });
+    if (numSteps > 1 && i < numSteps) await new Promise((r) => setTimeout(r, 10));
+  }
+
+  // Final position is always exact target
+  if (numSteps > 1) {
     await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
       type: "mouseMoved",
       x,
       y,
     });
-  } else {
-    // Interpolate movement in multiple steps for smoother cursor travel
-    // Start from a nearby offset (browsers don't track cursor position in CDP)
-    for (let i = 1; i <= numSteps; i++) {
-      const ratio = i / numSteps;
-      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x: Math.round(x * ratio),
-        y: Math.round(y * ratio),
-      });
-      await new Promise((r) => setTimeout(r, 10));
-    }
   }
 
   return { tabId: tid, position: { x, y }, steps: numSteps };

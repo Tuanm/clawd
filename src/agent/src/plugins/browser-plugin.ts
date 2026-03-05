@@ -89,7 +89,8 @@ export class BrowserPlugin implements ToolPlugin {
           },
           click_count: {
             type: "number",
-            description: "1 = single-click (default), 2 = double-click (select word, open item), 3 = triple-click (select line/paragraph)",
+            description:
+              "1 = single-click (default), 2 = double-click (select word, open item), 3 = triple-click (select line/paragraph)",
           },
           pierce: {
             type: "boolean",
@@ -188,7 +189,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_scroll",
         description:
-          'Scroll the page or a specific scrollable area (sidebar, panel, chat list, etc.). When selector is given, the scroll event targets that element — the browser automatically scrolls the nearest scrollable ancestor. Use this to scroll within nested containers, not just the main page.',
+          "Scroll the page or a specific scrollable area (sidebar, panel, chat list, etc.). When selector is given, the scroll event targets that element — the browser automatically scrolls the nearest scrollable ancestor. Use this to scroll within nested containers, not just the main page.",
         parameters: {
           direction: {
             type: "string",
@@ -201,7 +202,8 @@ export class BrowserPlugin implements ToolPlugin {
           },
           selector: {
             type: "string",
-            description: "CSS selector — scroll event fires at this element's center, scrolling its nearest scrollable container (sidebar, panel, etc.)",
+            description:
+              "CSS selector — scroll event fires at this element's center, scrolling its nearest scrollable container (sidebar, panel, etc.)",
           },
           x: { type: "number", description: "X coordinate to scroll at (alternative to selector)" },
           y: { type: "number", description: "Y coordinate to scroll at (alternative to selector)" },
@@ -233,7 +235,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_mouse_move",
         description:
-          'Move the mouse cursor to specific coordinates. Use sparingly — most interactions should use browser_click or browser_hover instead. Useful when you need to position the cursor at a precise location (e.g., to dismiss a popup, move away from an element, or prepare for a manual sequence).',
+          "Move the mouse cursor to specific coordinates. Use sparingly — most interactions should use browser_click or browser_hover instead. Useful when you need to position the cursor at a precise location (e.g., to dismiss a popup, move away from an element, or prepare for a manual sequence).",
         parameters: {
           x: { type: "number", description: "Target X coordinate" },
           y: { type: "number", description: "Target Y coordinate" },
@@ -797,6 +799,9 @@ export class BrowserPlugin implements ToolPlugin {
   }
 
   private async handleMouseMove(args: Record<string, any>): Promise<ToolResult> {
+    if (args.x === undefined || args.y === undefined) {
+      return { success: false, output: "", error: "Both x and y coordinates are required" };
+    }
     const { sendBrowserCommand } = await this.getBridge();
     try {
       const result = await sendBrowserCommand("mouse_move", {
@@ -864,6 +869,9 @@ export class BrowserPlugin implements ToolPlugin {
   }
 
   private async handleWaitFor(args: Record<string, any>): Promise<ToolResult> {
+    if (!args.selector) {
+      return { success: false, output: "", error: "selector is required" };
+    }
     const { sendBrowserCommand } = await this.getBridge();
     try {
       const result = await sendBrowserCommand("wait_for", {
@@ -962,6 +970,13 @@ export class BrowserPlugin implements ToolPlugin {
   }
 
   private async handleUploadFile(args: Record<string, any>): Promise<ToolResult> {
+    if (!args.selector) {
+      return {
+        success: false,
+        output: "",
+        error: "selector is required (CSS selector for the <input type='file'> element)",
+      };
+    }
     if (!args.file_id && !args.file_path) {
       return { success: false, output: "", error: "Provide file_id or file_path" };
     }
