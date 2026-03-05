@@ -59,11 +59,16 @@ export interface ConfigFile {
   /**
    * Enable browser automation tools (Chrome extension bridge).
    *
-   * - `true`  — enabled for ALL channels
+   * - `true`  — enabled for ALL channels, any browser can connect (no auth)
    * - `false` or omitted — disabled (default)
-   * - `string[]` — enabled only for the listed channel names
+   * - `string[]` — enabled only for the listed channel names (no auth)
+   * - `Record<string, string[]>` — per-channel auth tokens. Keys are channel
+   *   names, values are arrays of auth tokens that browsers must provide.
+   *   Only browsers with a matching token can be used by agents in that channel.
+   *
+   * Example: `"browser": { "dev": ["tok_abc", "tok_xyz"], "prod": ["tok_prod"] }`
    */
-  browser?: boolean | string[];
+  browser?: boolean | string[] | Record<string, string[]>;
 }
 
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");
@@ -148,5 +153,67 @@ export function isBrowserEnabled(channel?: string): boolean {
     if (!channel) return br.length > 0;
     return br.includes(channel);
   }
+  // Record<string, string[]> — per-channel auth tokens
+  if (typeof br === "object" && br !== null) {
+    if (!channel) return Object.keys(br).length > 0;
+    return Object.hasOwn(br, channel);
+  }
   return false;
+}
+
+/**
+ * Check if browser auth tokens are required (config is a token map, not boolean/array).
+ */
+export function isBrowserAuthRequired(): boolean {
+  const config = loadConfigFile();
+  const br = config.browser;
+  return typeof br === "object" && br !== null && !Array.isArray(br);
+}
+
+/**
+ * Get the set of valid auth tokens across all channels (for connection validation).
+ * Returns null if no auth is required (browser: true or string[]).
+ */
+export function getAllBrowserTokens(): Set<string> | null {
+  const config = loadConfigFile();
+  const br = config.browser;
+  if (typeof br !== "object" || br === null || Array.isArray(br)) return null;
+  const tokens = new Set<string>();
+  for (const arr of Object.values(br)) {
+    if (Array.isArray(arr)) {
+      for (const t of arr) {
+        if (typeof t === "string" && t.length > 0) tokens.add(t);
+      }
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Get the auth tokens valid for a specific channel.
+ * Returns null if no auth is required; empty array if channel has no tokens.
+ */
+export function getBrowserTokensForChannel(channel: string): string[] | null {
+  const config = loadConfigFile();
+  const br = config.browser;
+  if (typeof br !== "object" || br === null || Array.isArray(br)) return null;
+  const tokens = br[channel];
+  if (!Array.isArray(tokens)) return [];
+  return tokens.filter((t) => typeof t === "string" && t.length > 0);
+}
+
+/**
+ * Find which channels a given auth token belongs to.
+ */
+export function getChannelsForToken(token: string): string[] {
+  const config = loadConfigFile();
+  const br = config.browser;
+  if (typeof br !== "object" || br === null || Array.isArray(br)) return [];
+  const channels: string[] = [];
+  for (const [channel, tokens] of Object.entries(br)) {
+    if (Array.isArray(tokens) && token.length > 0 && tokens.includes(token)) {
+      channels.push(channel);
+    }
+  }
+  return channels;
 }

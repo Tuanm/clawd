@@ -1226,11 +1226,16 @@ SUMMARY:`;
     }
 
     // Register browser plugin (browser_navigate, browser_screenshot, browser_click, etc.)
-    // Only enabled when config.json has "browser": true or ["channel-1", ...].
+    // Only enabled when config.json has "browser": true, ["channel-1", ...], or { channel: [tokens] }.
     if (!this._browserPluginRegistered && isBrowserEnabled(ctx?.channel)) {
       try {
         const { BrowserPlugin } = require("../plugins/browser-plugin");
-        this.toolPluginManager.register(new BrowserPlugin());
+        // Use channel:agentName as browser identity — two agents in different channels
+        // can share the same name, so both parts are needed for uniqueness.
+        const browserAgentId = ctx?.channel && ctx?.agentId
+          ? `${ctx.channel}:${ctx.agentId}`
+          : ctx?.agentId || `agent_${Date.now().toString(36)}`;
+        this.toolPluginManager.register(new BrowserPlugin(ctx?.channel, browserAgentId));
         this._browserPluginRegistered = true;
       } catch (err: any) {
         if (this.config.verbose) {

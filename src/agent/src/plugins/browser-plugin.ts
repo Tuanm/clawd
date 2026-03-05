@@ -19,6 +19,13 @@ import { join } from "node:path";
 
 export class BrowserPlugin implements ToolPlugin {
   readonly name = "browser";
+  private channel?: string;
+  private agentId?: string;
+
+  constructor(channel?: string, agentId?: string) {
+    this.channel = channel;
+    this.agentId = agentId;
+  }
 
   getTools(): ToolRegistration[] {
     return [
@@ -569,10 +576,15 @@ export class BrowserPlugin implements ToolPlugin {
   // ===========================================================================
 
   private async getBridge() {
-    const { isExtensionConnected, getConnectedExtensions, sendBrowserCommand } = await import(
+    const { isExtensionConnected, isExtensionConnectedForChannel, getConnectedExtensions, sendBrowserCommand, getConnectionInfo, releaseAgentTabs } = await import(
       "../../../server/browser-bridge"
     );
-    return { isExtensionConnected, getConnectedExtensions, sendBrowserCommand };
+    const channel = this.channel;
+    const agentId = this.agentId;
+    // Wrap sendBrowserCommand to auto-inject agent routing options
+    const send = (method: string, params: Record<string, any> = {}) =>
+      sendBrowserCommand(method, params, { agentId, channel });
+    return { isExtensionConnected, isExtensionConnectedForChannel, getConnectedExtensions, sendBrowserCommand: send, getConnectionInfo, releaseAgentTabs };
   }
 
   /** Save a buffer as a chat file and return its file ID + metadata. */
@@ -596,16 +608,24 @@ export class BrowserPlugin implements ToolPlugin {
   }
 
   private async handleStatus(): Promise<ToolResult> {
-    const { isExtensionConnected, getConnectedExtensions } = await this.getBridge();
-    const connected = isExtensionConnected();
+    const { isExtensionConnectedForChannel, getConnectedExtensions, getConnectionInfo } = await this.getBridge();
+    const connected = isExtensionConnectedForChannel(this.channel);
     const extensions = getConnectedExtensions();
+    // Filter info to only this agent's channel to prevent cross-channel leakage
+    const info = getConnectionInfo(this.channel);
     return {
       success: true,
       output: JSON.stringify(
         {
           connected,
           extensions: extensions.length,
-          extension_ids: extensions,
+          browsers: info.map((b) => ({
+            id: b.extensionId,
+            channels: b.channels,
+            agent_count: b.agentCount,
+            connected_at: new Date(b.connectedAt).toISOString(),
+          })),
+          agent_channel: this.channel ?? null,
           message: connected
             ? `Browser extension connected (${extensions.length} instance${extensions.length > 1 ? "s" : ""}).`
             : "No browser extension connected. Install and enable the Claw'd Browser Extension.",
@@ -1187,6 +1207,9 @@ export class BrowserPlugin implements ToolPlugin {
   }
 
   async destroy(): Promise<void> {
-    // No persistent state to clean up
+    if (this.agentId) {
+      const { releaseAgentTabs } = await import("../../../server/browser-bridge");
+      releaseAgentTabs(this.agentId);
+    }
   }
 }

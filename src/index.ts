@@ -450,7 +450,14 @@ async function parseBody(req: Request): Promise<Record<string, any>> {
 
 const MAX_BROWSER_FILE_SIZE = 500 * 1024 * 1024; // 500 MiB
 
-async function handleBrowserFileRequest(req: Request, _url: URL, path: string): Promise<Response> {
+async function handleBrowserFileRequest(req: Request, url: URL, path: string): Promise<Response> {
+  // Auth token validation (query param ?token=...)
+  const token = url.searchParams.get("token");
+  const { validateBrowserToken } = await import("./server/browser-bridge");
+  if (!validateBrowserToken(token)) {
+    return json({ ok: false, error: "Invalid or missing auth token" }, 403);
+  }
+
   // POST /browser/files/upload — extension uploads a file (multipart form data)
   if (path === "/browser/files/upload" && req.method === "POST") {
     try {

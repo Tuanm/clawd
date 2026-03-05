@@ -8,10 +8,23 @@
  * Protocol:
  *   Agent → Bridge → Extension:  { id, method, params }
  *   Extension → Bridge → Agent:  { id, result } | { id, error }
+ *
+ * Auth: When config.browser is a token map, extensions must provide a
+ * valid token via ?token= query param. The token determines which
+ * channels can use this browser.
+ *
+ * Tab isolation: Each agent (identified by agentId) owns specific tabs.
+ * When an agent first interacts with a tab, it claims ownership.
+ * Other agents cannot send commands to tabs they don't own.
  */
 
 import type { ServerWebSocket } from "bun";
 import { randomBytes } from "node:crypto";
+import {
+  getAllBrowserTokens,
+  getChannelsForToken,
+  isBrowserAuthRequired,
+} from "../config-file";
 
 // ============================================================================
 // Types
@@ -21,6 +34,10 @@ export interface BrowserWsData {
   type: "browser-extension";
   extensionId: string;
   connectedAt: number;
+  /** Auth token provided at connect time (undefined if no auth required) */
+  authToken?: string;
+  /** Channels this browser is authorized for (derived from token) */
+  channels?: string[];
 }
 
 interface PendingRequest {
@@ -28,6 +45,7 @@ interface PendingRequest {
   reject: (error: Error) => void;
   method: string;
   timer: ReturnType<typeof setTimeout>;
+  extensionId: string;
 }
 
 // ============================================================================
@@ -38,9 +56,19 @@ const connections = new Map<string, ServerWebSocket<BrowserWsData>>();
 const pendingRequests = new Map<string, PendingRequest>();
 let requestCounter = 0;
 
+/** Tab ownership: tabId → agentId. Cleared when agent releases or disconnects. */
+const tabOwnership = new Map<string, string>();
+
+/** Which extension each agent is currently using: agentId → extensionId */
+const agentBrowser = new Map<string, string>();
+
+/** Active agent count per extension: extensionId → Set<agentId> */
+const extensionAgents = new Map<string, Set<string>>();
+
 const REQUEST_TIMEOUT_MS = 120_000; // 120s — file transfers may take time
 const MAX_CONNECTIONS = 10;
 const EXT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+const AUTH_TOKEN_PATTERN = /^[a-zA-Z0-9_\-.:]{1,256}$/;
 
 // ============================================================================
 // WebSocket Handlers (called from websocket.ts dispatcher)
@@ -59,22 +87,42 @@ export function handleBrowserWsOpen(ws: ServerWebSocket<BrowserWsData>) {
     return;
   }
   connections.set(extId, ws);
-  console.log(`[browser-bridge] Extension connected: ${extId} (${connections.size} total)`);
+  const authInfo = ws.data.authToken ? ` (token: ${maskToken(ws.data.authToken)})` : " (no auth)";
+  console.log(`[browser-bridge] Extension connected: ${extId}${authInfo} (${connections.size} total)`);
 }
 
 export function handleBrowserWsClose(ws: ServerWebSocket<BrowserWsData>) {
   const extId = ws.data.extensionId;
-  if (connections.get(extId) === ws) {
-    connections.delete(extId);
+
+  // If this ws was already replaced by a newer connection, skip all cleanup
+  // to avoid wiping state that the replacement connection now owns.
+  if (connections.get(extId) !== ws) return;
+
+  connections.delete(extId);
+
+  // Clean up tab ownership for tabs on this extension
+  // Safe: Map spec guarantees iteration handles concurrent deletes
+  for (const [tabKey] of tabOwnership) {
+    if (tabKey.startsWith(`${extId}:`)) {
+      tabOwnership.delete(tabKey);
+    }
   }
-  // Reject pending requests when no connections remain
-  if (connections.size === 0) {
-    for (const [id, pending] of pendingRequests) {
+
+  // Clean up agent→browser mapping
+  for (const [aid, mappedExtId] of agentBrowser) {
+    if (mappedExtId === extId) agentBrowser.delete(aid);
+  }
+  extensionAgents.delete(extId);
+
+  // Reject pending requests targeting this extension
+  for (const [id, pending] of pendingRequests) {
+    if (pending.extensionId === extId) {
       clearTimeout(pending.timer);
       pendingRequests.delete(id);
       pending.reject(new Error(`Browser extension disconnected during '${pending.method}'`));
     }
   }
+
   console.log(`[browser-bridge] Extension disconnected: ${extId} (${connections.size} total)`);
 }
 
@@ -107,6 +155,138 @@ export function handleBrowserWsMessage(ws: ServerWebSocket<BrowserWsData>, messa
 }
 
 // ============================================================================
+// Auth Helpers
+// ============================================================================
+
+/** Mask a token for logging: never reveal more than ~50% of chars */
+function maskToken(token: string): string {
+  if (token.length <= 5) return "***";
+  if (token.length <= 8) return `${token.slice(0, 1)}***${token.slice(-1)}`;
+  return `${token.slice(0, 3)}***${token.slice(-3)}`;
+}
+
+/**
+ * Validate an auth token for browser file endpoints (HTTP).
+ * Returns true if the token is valid or no auth is required.
+ */
+export function validateBrowserToken(token: string | null): boolean {
+  if (!isBrowserAuthRequired()) return true; // no auth configured
+  if (!token) return false;
+  const validTokens = getAllBrowserTokens();
+  if (!validTokens || validTokens.size === 0) return false; // fail closed
+  return validTokens.has(token);
+}
+
+// ============================================================================
+// Tab Isolation
+// ============================================================================
+
+/**
+ * Composite key for tab ownership: "extensionId:tabId"
+ */
+function tabKey(extensionId: string, tabId: number | string): string {
+  return `${extensionId}:${tabId}`;
+}
+
+/**
+ * Check/claim tab ownership for an agent. Returns true if the agent
+ * can use this tab. Methods that don't specify a tabId are always allowed.
+ */
+function checkTabAccess(extensionId: string, agentId: string, params: Record<string, any>): string | null {
+  const tabId = params.tabId ?? params.tab_id;
+  if (tabId === undefined || tabId === null) return null; // no tab involved
+
+  const key = tabKey(extensionId, tabId);
+  const owner = tabOwnership.get(key);
+
+  if (!owner) {
+    // First touch — claim it
+    tabOwnership.set(key, agentId);
+    return null;
+  }
+
+  if (owner === agentId) return null; // already owns it
+
+  return `Tab ${tabId} is owned by agent '${owner}'. Each agent operates in its own tabs to avoid conflicts.`;
+}
+
+/**
+ * Release all tabs owned by an agent (called when agent disconnects).
+ */
+export function releaseAgentTabs(agentId: string): void {
+  for (const [key, owner] of tabOwnership) {
+    if (owner === agentId) tabOwnership.delete(key);
+  }
+  // Clean agent→browser mapping
+  const extId = agentBrowser.get(agentId);
+  if (extId) {
+    agentBrowser.delete(agentId);
+    const agents = extensionAgents.get(extId);
+    if (agents) {
+      agents.delete(agentId);
+      if (agents.size === 0) extensionAgents.delete(extId);
+    }
+  }
+}
+
+// ============================================================================
+// Browser Selection (Agent Routing)
+// ============================================================================
+
+/**
+ * Select the best browser (extensionId) for an agent.
+ *
+ * Strategy:
+ * 1. If agent already has a browser assigned, reuse it (sticky).
+ * 2. If auth is required, filter to browsers whose token covers the agent's channel.
+ * 3. Among eligible browsers, prefer ones with fewer active agents (least-loaded).
+ */
+function selectBrowser(agentId: string, channel?: string): ServerWebSocket<BrowserWsData> | null {
+  // Sticky: reuse existing assignment if still connected
+  const existingExtId = agentBrowser.get(agentId);
+  if (existingExtId && connections.has(existingExtId)) {
+    return connections.get(existingExtId)!;
+  }
+
+  // Build candidate list
+  const candidates: Array<{ extId: string; ws: ServerWebSocket<BrowserWsData>; load: number }> = [];
+
+  for (const [extId, ws] of connections) {
+    // Auth filter: if auth is required and channel is specified,
+    // the browser's token must cover this channel
+    if (isBrowserAuthRequired() && channel) {
+      const browserChannels = ws.data.channels;
+      if (!browserChannels || !browserChannels.includes(channel)) continue;
+    }
+
+    const agents = extensionAgents.get(extId);
+    const load = agents ? agents.size : 0;
+    candidates.push({ extId, ws, load });
+  }
+
+  if (candidates.length === 0) return null;
+
+  // Sort by load (ascending), then by connectedAt (oldest first for stability)
+  candidates.sort((a, b) => {
+    if (a.load !== b.load) return a.load - b.load;
+    return a.ws.data.connectedAt - b.ws.data.connectedAt;
+  });
+
+  const chosen = candidates[0];
+
+  // Record assignment
+  agentBrowser.set(agentId, chosen.extId);
+  let agents = extensionAgents.get(chosen.extId);
+  if (!agents) {
+    agents = new Set();
+    extensionAgents.set(chosen.extId, agents);
+  }
+  agents.add(agentId);
+
+  return chosen.ws;
+}
+
+// ============================================================================
 // API for Agent Tools
 // ============================================================================
 
@@ -115,27 +295,95 @@ export function isExtensionConnected(): boolean {
   return connections.size > 0;
 }
 
+/** Check if any browser extension is connected for a specific channel */
+export function isExtensionConnectedForChannel(channel?: string): boolean {
+  if (!isBrowserAuthRequired() || !channel) return connections.size > 0;
+  for (const ws of connections.values()) {
+    if (ws.data.channels?.includes(channel)) return true;
+  }
+  return false;
+}
+
 /** Get list of connected extensions */
 export function getConnectedExtensions(): string[] {
   return Array.from(connections.keys());
 }
 
 /**
+ * Get connection info for status display.
+ * Optionally filter by channel to prevent cross-channel information leakage.
+ */
+export function getConnectionInfo(filterChannel?: string): Array<{
+  extensionId: string;
+  channels: string[];
+  agentCount: number;
+  connectedAt: number;
+}> {
+  const info: Array<{
+    extensionId: string;
+    channels: string[];
+    agentCount: number;
+    connectedAt: number;
+  }> = [];
+  for (const [extId, ws] of connections) {
+    const channels = ws.data.channels ?? [];
+    // If filtering by channel, skip browsers that don't serve this channel
+    if (filterChannel && channels.length > 0 && !channels.includes(filterChannel)) continue;
+    info.push({
+      extensionId: extId,
+      // Only show channels relevant to the caller (or all if no filter)
+      channels: filterChannel ? channels.filter((c) => c === filterChannel) : channels,
+      agentCount: extensionAgents.get(extId)?.size ?? 0,
+      connectedAt: ws.data.connectedAt,
+    });
+  }
+  return info;
+}
+
+/**
  * Send a command to the browser extension and await result.
- * Uses the first connected extension if extensionId not specified.
+ *
+ * When agentId + channel are provided, uses smart browser selection
+ * with tab-level isolation. Falls back to first connection if not specified.
  */
 export async function sendBrowserCommand(
   method: string,
   params: Record<string, any> = {},
-  extensionId?: string,
+  options?: {
+    extensionId?: string;
+    agentId?: string;
+    channel?: string;
+  },
 ): Promise<any> {
-  const ws = extensionId ? connections.get(extensionId) : connections.values().next().value;
+  const agentId = options?.agentId;
+  const channel = options?.channel;
+
+  let ws: ServerWebSocket<BrowserWsData> | null | undefined;
+
+  if (options?.extensionId) {
+    ws = connections.get(options.extensionId);
+  } else if (agentId) {
+    ws = selectBrowser(agentId, channel);
+  } else {
+    ws = connections.values().next().value;
+  }
 
   if (!ws) {
-    throw new Error("No browser extension connected. Install the Claw'd Browser Extension and connect it.");
+    const channelHint = channel ? ` for channel '${channel}'` : "";
+    throw new Error(
+      `No browser extension connected${channelHint}. Install the Claw'd Browser Extension and connect it.`,
+    );
+  }
+
+  // Tab isolation check
+  if (agentId) {
+    const extId = ws.data.extensionId;
+    const err = checkTabAccess(extId, agentId, params);
+    if (err) throw new Error(err);
   }
 
   const id = `req_${++requestCounter}_${randomBytes(4).toString("hex")}`;
+  const extId = ws.data.extensionId;
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -143,10 +391,10 @@ export async function sendBrowserCommand(
       reject(new Error(`Browser command '${method}' timed out after ${REQUEST_TIMEOUT_MS / 1000}s`));
     }, REQUEST_TIMEOUT_MS);
 
-    pendingRequests.set(id, { resolve, reject, method, timer });
+    pendingRequests.set(id, { resolve, reject, method, timer, extensionId: extId });
 
     try {
-      ws.send(JSON.stringify({ id, method, params }));
+      ws!.send(JSON.stringify({ id, method, params }));
     } catch (err) {
       clearTimeout(timer);
       pendingRequests.delete(id);
@@ -157,25 +405,48 @@ export async function sendBrowserCommand(
 
 /**
  * Upgrade HTTP request to browser bridge WebSocket.
+ * Validates auth token if config requires it.
  * Called from index.ts fetch handler.
  */
 export function upgradeBrowserWs(req: Request, server: any): Response | undefined {
   const url = new URL(req.url);
   const rawExtId = url.searchParams.get("extId");
+  const rawToken = url.searchParams.get("token");
 
   if (rawExtId && !EXT_ID_PATTERN.test(rawExtId)) {
     console.warn(`[browser-bridge] Rejected invalid extId: ${rawExtId}`);
     return new Response("Invalid extension ID", { status: 400 });
   }
 
+  // Auth validation
+  if (isBrowserAuthRequired()) {
+    if (!rawToken) {
+      console.warn("[browser-bridge] Rejected connection: auth token required but not provided");
+      return new Response("Auth token required. Provide ?token= parameter.", { status: 401 });
+    }
+    if (!AUTH_TOKEN_PATTERN.test(rawToken)) {
+      console.warn("[browser-bridge] Rejected connection: invalid token format");
+      return new Response("Invalid auth token format", { status: 400 });
+    }
+    const validTokens = getAllBrowserTokens();
+    if (!validTokens || !validTokens.has(rawToken)) {
+      console.warn(`[browser-bridge] Rejected connection: invalid auth token ${maskToken(rawToken)}`);
+      return new Response("Invalid auth token", { status: 403 });
+    }
+  }
+
   const extId = rawExtId || `ext_${randomBytes(4).toString("hex")}`;
-  console.log(`[browser-bridge] Upgrading WebSocket for extId=${extId}`);
+  const channels = rawToken ? getChannelsForToken(rawToken) : undefined;
+  const tokenInfo = rawToken ? ` token=${maskToken(rawToken)} channels=[${channels?.join(",")}]` : "";
+  console.log(`[browser-bridge] Upgrading WebSocket for extId=${extId}${tokenInfo}`);
 
   const success = server.upgrade(req, {
     data: {
       type: "browser-extension" as const,
       extensionId: extId,
       connectedAt: Date.now(),
+      authToken: rawToken || undefined,
+      channels,
     },
   });
 

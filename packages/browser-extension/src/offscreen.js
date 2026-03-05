@@ -25,6 +25,7 @@ let heartbeatTimer = null;
 let reconnectTimer = null;
 let extensionId = crypto.randomUUID().slice(0, 8);
 let serverUrl = DEFAULT_URL;
+let authToken = null;
 let connectAttempts = 0;
 let lastError = null;
 
@@ -56,8 +57,10 @@ async function connect() {
   }
 
   connectAttempts++;
-  const url = `${serverUrl}?extId=${extensionId}`;
-  console.log(`[clawd-offscreen] Connecting to ${url} (attempt ${connectAttempts})`);
+  let url = `${serverUrl}?extId=${extensionId}`;
+  if (authToken) url += `&token=${encodeURIComponent(authToken)}`;
+  const safeUrl = authToken ? url.replace(/token=[^&]+/, "token=***") : url;
+  console.log(`[clawd-offscreen] Connecting to ${safeUrl} (attempt ${connectAttempts})`);
 
   try {
     ws = new WebSocket(url);
@@ -191,6 +194,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "set-server-url") {
     console.log("[clawd-offscreen] set-server-url:", message.url);
     serverUrl = message.url || DEFAULT_URL;
+    if (message.token !== undefined) authToken = message.token || null;
     if (ws) {
       ws.onclose = null;
       ws.onerror = null;
@@ -216,6 +220,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log("[clawd-offscreen] reconnect requested, url from message:", message.url);
     if (message.url) serverUrl = message.url;
     if (message.extensionId) extensionId = message.extensionId;
+    if (message.token !== undefined) authToken = message.token || null;
     if (ws) {
       ws.onclose = null;
       ws.onerror = null;

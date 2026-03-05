@@ -50,7 +50,7 @@ async function ensureOffscreen() {
   });
   // Send saved config to offscreen (it can't access chrome.storage)
   try {
-    const config = await chrome.storage.local.get(["serverUrl", "extensionId"]);
+    const config = await chrome.storage.local.get(["serverUrl", "extensionId", "authToken"]);
     if (config.serverUrl || config.extensionId) {
       setTimeout(() => {
         chrome.runtime
@@ -58,6 +58,7 @@ async function ensureOffscreen() {
             type: "reconnect",
             url: config.serverUrl,
             extensionId: config.extensionId,
+            token: config.authToken || undefined,
           })
           .catch(() => {});
       }, 200);
@@ -1053,8 +1054,9 @@ async function handleFileUpload({ selector, fileId, tabId }) {
   if (!fileId) throw new Error("fileId is required");
 
   // Fetch file binary from chat server
-  const serverUrl = await getServerBaseUrl();
-  const resp = await fetch(`${serverUrl}/browser/files/${fileId}`);
+  const { baseUrl, authToken } = await getServerBaseUrl();
+  const fileUrl = `${baseUrl}/browser/files/${fileId}` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
+  const resp = await fetch(fileUrl);
   if (!resp.ok) throw new Error(`File not found on server: ${fileId}`);
   const blob = await resp.blob();
   const contentDisposition = resp.headers.get("Content-Disposition") || "";
@@ -1316,11 +1318,11 @@ async function handleEmulate({ action, width, height, deviceScaleFactor, isMobil
 const MAX_BROWSER_FILE_BYTES = 500 * 1024 * 1024; // 500 MiB
 
 async function getServerBaseUrl() {
-  const config = await chrome.storage.local.get(["serverUrl"]);
-  const wsUrl = config.serverUrl || "ws://localhost:3457/browser/ws";
+  const config = await chrome.storage.local.get(["serverUrl", "authToken"]);
+  const wsUrl = config.serverUrl || "ws://localhost:3456/browser/ws";
   // Convert ws:// to http://, wss:// to https://, strip path
   const httpUrl = wsUrl.replace(/^ws(s?):\/\//, "http$1://").replace(/\/browser\/ws.*$/, "");
-  return httpUrl;
+  return { baseUrl: httpUrl, authToken: config.authToken || null };
 }
 
 async function uploadFileToChatServer(filePath, mime) {
@@ -1335,8 +1337,9 @@ async function uploadFileToChatServer(filePath, mime) {
   const file = new File([blob], filename, { type: mime || "application/octet-stream" });
   const formData = new FormData();
   formData.append("file", file);
-  const serverUrl = await getServerBaseUrl();
-  const uploadResp = await fetch(`${serverUrl}/browser/files/upload`, {
+  const { baseUrl, authToken } = await getServerBaseUrl();
+  const uploadUrl = `${baseUrl}/browser/files/upload` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
+  const uploadResp = await fetch(uploadUrl, {
     method: "POST",
     body: formData,
   });

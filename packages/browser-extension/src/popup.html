@@ -119,10 +119,13 @@
     <span class="status-text" id="statusText">Connecting...</span>
   </div>
 
-  <label>Server URL</label>
-  <input type="text" id="serverUrl" placeholder="ws://localhost:3456/browser/ws" />
+  <label>Server Host</label>
+  <input type="text" id="serverHost" placeholder="localhost:3456" />
 
-  <button id="connectBtn">Reconnect</button>
+  <label>Auth Token <span style="font-size:10px;text-transform:none;letter-spacing:0">(optional)</span></label>
+  <input type="password" id="authToken" placeholder="Leave empty if not required" autocomplete="new-password" spellcheck="false" />
+
+  <button id="connectBtn">Connect</button>
 
   <div class="ext-id" id="extId"></div>
 
