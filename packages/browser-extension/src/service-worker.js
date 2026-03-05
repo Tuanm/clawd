@@ -1709,6 +1709,11 @@ async function ensureDebugger(tabId) {
     await sendDebuggerCommand(tabId, "Runtime.enable").catch(() => {});
     await sendDebuggerCommand(tabId, "Page.enable").catch(() => {});
     await sendDebuggerCommand(tabId, "Fetch.enable", { handleAuthRequests: true }).catch(() => {});
+    // Auto-accept downloads (suppresses Chrome's "Keep/Discard" confirmation popup)
+    await sendDebuggerCommand(tabId, "Browser.setDownloadBehavior", {
+      behavior: "allow",
+      eventsEnabled: true,
+    }).catch(() => {});
   })();
 
   debuggerPending.set(tabId, promise);
