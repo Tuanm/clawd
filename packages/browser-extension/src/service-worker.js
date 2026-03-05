@@ -143,6 +143,8 @@ async function dispatchCommand(method, params) {
       return handleScroll(params);
     case "hover":
       return handleHover(params);
+    case "mouse_move":
+      return handleMouseMove(params);
     case "drag":
       return handleDrag(params);
     case "keypress":
@@ -594,6 +596,40 @@ async function handleHover({ selector, x, y, tabId, pierce }) {
   });
 
   return { tabId: tid, element: selector || `(${hoverX},${hoverY})` };
+}
+
+// --- Mouse Move ---
+
+async function handleMouseMove({ x, y, tabId, steps }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  if (x === undefined || y === undefined) {
+    throw new Error("mouse_move requires both 'x' and 'y' coordinates");
+  }
+
+  const numSteps = steps || 1;
+  if (numSteps <= 1) {
+    await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x,
+      y,
+    });
+  } else {
+    // Interpolate movement in multiple steps for smoother cursor travel
+    // Start from a nearby offset (browsers don't track cursor position in CDP)
+    for (let i = 1; i <= numSteps; i++) {
+      const ratio = i / numSteps;
+      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: Math.round(x * ratio),
+        y: Math.round(y * ratio),
+      });
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  return { tabId: tid, position: { x, y }, steps: numSteps };
 }
 
 // --- Drag ---

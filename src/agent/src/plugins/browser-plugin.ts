@@ -73,7 +73,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_click",
         description:
-          "Click an element on the page by CSS selector or coordinates. For dynamic pages, prefer selectors over coordinates.",
+          'Click an element on the page. Supports single-click, double-click (click_count=2 to select words or open items), and right-click (button="right" for context menus). For dynamic pages, prefer selectors over coordinates.',
         parameters: {
           selector: {
             type: "string",
@@ -84,12 +84,12 @@ export class BrowserPlugin implements ToolPlugin {
           tab_id: { type: "number", description: "Target tab ID (optional)" },
           button: {
             type: "string",
-            description: '"left" (default), "right", or "middle"',
+            description: '"left" (default) for normal click, "right" for context menu, "middle" for new-tab link open',
             enum: ["left", "right", "middle"],
           },
           click_count: {
             type: "number",
-            description: "Number of clicks: 1 (default) for single-click, 2 for double-click",
+            description: "1 = single-click (default), 2 = double-click (select word, open item), 3 = triple-click (select line/paragraph)",
           },
           pierce: {
             type: "boolean",
@@ -188,7 +188,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_scroll",
         description:
-          "Scroll the page or a specific element. Use direction and amount to control scrolling. Can scroll to an element by selector.",
+          'Scroll the page or a specific scrollable area (sidebar, panel, chat list, etc.). When selector is given, the scroll event targets that element — the browser automatically scrolls the nearest scrollable ancestor. Use this to scroll within nested containers, not just the main page.',
         parameters: {
           direction: {
             type: "string",
@@ -201,8 +201,10 @@ export class BrowserPlugin implements ToolPlugin {
           },
           selector: {
             type: "string",
-            description: "CSS selector — scroll at this element's position (optional)",
+            description: "CSS selector — scroll event fires at this element's center, scrolling its nearest scrollable container (sidebar, panel, etc.)",
           },
+          x: { type: "number", description: "X coordinate to scroll at (alternative to selector)" },
+          y: { type: "number", description: "Y coordinate to scroll at (alternative to selector)" },
           tab_id: { type: "number", description: "Target tab ID (optional)" },
         },
         required: [],
@@ -211,7 +213,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_hover",
         description:
-          "Hover over an element by CSS selector or coordinates. Triggers hover effects, tooltips, and dropdown menus.",
+          "Hover over an element to reveal hidden UI: tooltips, dropdown menus, action buttons, preview popups, and hover-only content. Essential for inspecting elements that only appear on mouse-over. After hovering, take a screenshot or extract to see the revealed content.",
         parameters: {
           selector: {
             type: "string",
@@ -227,6 +229,22 @@ export class BrowserPlugin implements ToolPlugin {
         },
         required: [],
         handler: async (args) => this.handleHover(args),
+      },
+      {
+        name: "browser_mouse_move",
+        description:
+          'Move the mouse cursor to specific coordinates. Use sparingly — most interactions should use browser_click or browser_hover instead. Useful when you need to position the cursor at a precise location (e.g., to dismiss a popup, move away from an element, or prepare for a manual sequence).',
+        parameters: {
+          x: { type: "number", description: "Target X coordinate" },
+          y: { type: "number", description: "Target Y coordinate" },
+          steps: {
+            type: "number",
+            description: "Number of intermediate movement steps (default: 1). Use higher values for smoother travel.",
+          },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+        },
+        required: ["x", "y"],
+        handler: async (args) => this.handleMouseMove(args),
       },
       {
         name: "browser_drag",
@@ -739,6 +757,8 @@ export class BrowserPlugin implements ToolPlugin {
         direction: args.direction || "down",
         amount: args.amount,
         selector: args.selector,
+        x: args.x,
+        y: args.y,
         tabId: args.tab_id,
       });
       return {
@@ -770,6 +790,24 @@ export class BrowserPlugin implements ToolPlugin {
       return {
         success: true,
         output: JSON.stringify({ hovered: true, element: result.element, tab_id: result.tabId }, null, 2),
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleMouseMove(args: Record<string, any>): Promise<ToolResult> {
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("mouse_move", {
+        x: args.x,
+        y: args.y,
+        steps: args.steps,
+        tabId: args.tab_id,
+      });
+      return {
+        success: true,
+        output: JSON.stringify({ moved: true, position: result.position, tab_id: result.tabId }, null, 2),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
