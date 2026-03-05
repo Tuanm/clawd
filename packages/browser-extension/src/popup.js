@@ -8,9 +8,6 @@ const serverUrlInput = document.getElementById("serverUrl");
 const connectBtn = document.getElementById("connectBtn");
 const extIdEl = document.getElementById("extId");
 
-// Show disconnected icon initially
-document.getElementById("icon-disconnected").style.display = "block";
-
 // Load saved config
 chrome.storage.local.get(["serverUrl", "extensionId"]).then((config) => {
   serverUrlInput.value = config.serverUrl || "ws://localhost:3456/browser/ws";
@@ -83,7 +80,4 @@ chrome.runtime.onMessage.addListener((message) => {
 function setStatus(connected) {
   dot.className = connected ? "dot connected" : "dot disconnected";
   statusText.textContent = connected ? "Connected to Claw'd" : "Disconnected";
-  // Toggle header icon
-  document.getElementById("icon-connected").style.display = connected ? "block" : "none";
-  document.getElementById("icon-disconnected").style.display = connected ? "none" : "block";
 }

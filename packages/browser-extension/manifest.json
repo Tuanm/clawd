@@ -24,5 +24,6 @@
     "16": "icons/app-icon-16.png",
     "48": "icons/app-icon-48.png",
     "128": "icons/app-icon-128.png"
-  }
+  },
+  "incognito": "spanning"
 }
