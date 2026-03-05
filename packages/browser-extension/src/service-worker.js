@@ -20,7 +20,15 @@ const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status look
 
 // Clean up debugger state on detach (registered once at module scope)
 chrome.debugger.onDetach.addListener((source) => {
-  if (source.tabId) debuggerAttached.delete(source.tabId);
+  if (source.tabId) {
+    debuggerAttached.delete(source.tabId);
+    // Clean up auth state for detached tab
+    const reqIds = pendingAuthByTab.get(source.tabId);
+    if (reqIds) {
+      for (const rid of reqIds) pendingAuth.delete(rid);
+      pendingAuthByTab.delete(source.tabId);
+    }
+  }
 });
 
 // ============================================================================
@@ -905,7 +913,7 @@ async function handleSelect({ selector, value, text, index, tabId }) {
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return { selected: option.value, text: option.text, index: option.index };
     },
-    args: [selector, value || null, text || null, index ?? null],
+    args: [selector, value ?? null, text ?? null, index ?? null],
   });
   const result = results[0]?.result;
   if (result?.error) throw new Error(result.error);
@@ -966,7 +974,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
           authChallengeResponse: { response: "CancelAuth" },
         }).catch(() => {});
         pendingAuth.delete(rid);
-        pendingAuthByTab.get(source.tabId)?.delete(rid);
+        const tabSet = pendingAuthByTab.get(source.tabId);
+        if (tabSet) {
+          tabSet.delete(rid);
+          if (tabSet.size === 0) pendingAuthByTab.delete(source.tabId);
+        }
       }
     }, 60000);
   }
@@ -977,6 +989,18 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       sendDebuggerCommand(source.tabId, "Fetch.continueRequest", {
         requestId: params.requestId,
       }).catch(() => {});
+    } else {
+      // If Fetch.authRequired doesn't fire within 2s, this is a non-challenge 401/407 (e.g. API response).
+      // Continue the request to avoid hanging forever.
+      const rid = params.requestId;
+      const tabId = source.tabId;
+      setTimeout(() => {
+        if (!pendingAuth.has(rid)) {
+          sendDebuggerCommand(tabId, "Fetch.continueRequest", {
+            requestId: rid,
+          }).catch(() => {});
+        }
+      }, 2000);
     }
   }
 });
@@ -1151,7 +1175,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
   }
 
   if (action === "pinch") {
-    const pinchScale = scale ?? endX ?? 0.5;
+    const pinchScale = scale ?? 0.5;
     const halfGap = 50; // initial half-distance between fingers
     const centerX = touchX + halfGap;
     const centerY = touchY;
@@ -1324,6 +1348,10 @@ async function handleAuth({ action, username, password, tabId }) {
     if (!reqIds || reqIds.size === 0) throw new Error("No pending auth request on this tab");
     const rid = reqIds.values().next().value;
     const auth = pendingAuth.get(rid);
+    // Remove BEFORE awaiting to prevent timeout from double-continuing
+    pendingAuth.delete(rid);
+    reqIds.delete(rid);
+    if (reqIds.size === 0) pendingAuthByTab.delete(tid);
     await sendDebuggerCommand(tid, "Fetch.continueWithAuth", {
       requestId: rid,
       authChallengeResponse: {
@@ -1332,9 +1360,6 @@ async function handleAuth({ action, username, password, tabId }) {
         password: password || "",
       },
     });
-    pendingAuth.delete(rid);
-    reqIds.delete(rid);
-    if (reqIds.size === 0) pendingAuthByTab.delete(tid);
     return { tabId: tid, authenticated: true, url: auth?.url };
   }
 
@@ -1342,13 +1367,14 @@ async function handleAuth({ action, username, password, tabId }) {
     const reqIds = pendingAuthByTab.get(tid);
     if (!reqIds || reqIds.size === 0) throw new Error("No pending auth request on this tab");
     const rid = reqIds.values().next().value;
+    // Remove BEFORE awaiting to prevent timeout from double-continuing
+    pendingAuth.delete(rid);
+    reqIds.delete(rid);
+    if (reqIds.size === 0) pendingAuthByTab.delete(tid);
     await sendDebuggerCommand(tid, "Fetch.continueWithAuth", {
       requestId: rid,
       authChallengeResponse: { response: "CancelAuth" },
     });
-    pendingAuth.delete(rid);
-    reqIds.delete(rid);
-    if (reqIds.size === 0) pendingAuthByTab.delete(tid);
     return { tabId: tid, cancelled: true };
   }
 
@@ -1367,11 +1393,11 @@ async function handlePermissions({ action, permissions, origin, tabId }) {
   let permOrigin = origin;
   if (!permOrigin) {
     const tab = await chrome.tabs.get(tid);
-    const parsed = new URL(tab.url);
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      throw new Error(`Cannot set permissions for ${parsed.protocol}// URLs. Navigate to an http/https page first.`);
-    }
-    permOrigin = parsed.origin;
+    permOrigin = new URL(tab.url).origin;
+  }
+  // Validate origin regardless of source
+  if (permOrigin === "null" || !/^https?:\/\//.test(permOrigin)) {
+    throw new Error(`Invalid origin "${permOrigin}" — Browser.setPermission requires an http:// or https:// origin.`);
   }
 
   const setting = action === "grant" ? "granted" : action === "deny" ? "denied" : action === "reset" ? "prompt" : null;
@@ -1385,13 +1411,19 @@ async function handlePermissions({ action, permissions, origin, tabId }) {
     });
   }
 
-  return { tabId: tid, [action === "reset" ? "reset" : action + "ed"]: permissions, origin: permOrigin };
+  const resultKey = { grant: "granted", deny: "denied", reset: "reset" }[action];
+  return { tabId: tid, [resultKey]: permissions, origin: permOrigin };
 }
 
 // --- Agent Script Storage (per-origin via localStorage) ---
 
 async function handleStore({ action, key, value, tabId }) {
   const tid = tabId || (await getActiveTabId());
+  // Guard against non-injectable pages (localStorage not available)
+  const tab = await chrome.tabs.get(tid);
+  if (tab.url && /^(chrome|devtools|edge|about):/.test(tab.url)) {
+    throw new Error(`Cannot use store on ${tab.url.split(":")[0]}:// pages. Navigate to an http/https page first.`);
+  }
   const NS = "__clawd_store__";
 
   if (action === "set") {
@@ -1449,8 +1481,14 @@ async function handleStore({ action, key, value, tabId }) {
     });
     const r = results[0]?.result;
     if (r?.error) throw new Error(`Store list failed: ${r.error}`);
-    const tab = await chrome.tabs.get(tid);
-    return { tabId: tid, origin: new URL(tab.url).origin, ...r };
+    let origin = "unknown";
+    try {
+      const tab = await chrome.tabs.get(tid);
+      origin = new URL(tab.url).origin;
+    } catch {
+      /* tab closed or special URL — degrade gracefully */
+    }
+    return { tabId: tid, origin, ...r };
   }
 
   if (action === "delete") {
