@@ -1420,25 +1420,56 @@ async function handleDownload({ action, timeout }) {
   if (action === "wait") {
     const maxWait = Math.min(timeout || 30000, 120000);
     const downloadInfo = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        chrome.downloads.onChanged.removeListener(listener);
-        reject(new Error(`No download completed within ${maxWait / 1000}s`));
-      }, maxWait);
-
-      function listener(delta) {
-        if (delta.state && delta.state.current === "complete") {
-          clearTimeout(timer);
-          chrome.downloads.onChanged.removeListener(listener);
-          chrome.downloads.search({ id: delta.id }, (items) => {
-            if (items && items.length > 0) {
-              resolve(items[0]);
-            } else {
-              resolve({ id: delta.id });
-            }
-          });
+      // First check for downloads that already completed recently (within 10s)
+      chrome.downloads.search({ limit: 5, orderBy: ["-startTime"] }, (items) => {
+        const now = Date.now();
+        const recent = items?.find((d) => {
+          if (d.state === "complete" && d.endTime) {
+            const endTs = new Date(d.endTime).getTime();
+            return now - endTs < 10000;
+          }
+          // Handle edge case: bytesReceived === totalBytes but state still in_progress
+          if (d.state === "in_progress" && d.totalBytes > 0 && d.bytesReceived >= d.totalBytes) {
+            return true;
+          }
+          return false;
+        });
+        if (recent) {
+          resolve(recent);
+          return;
         }
-      }
-      chrome.downloads.onChanged.addListener(listener);
+
+        // No recent completion found — listen for future events
+        const timer = setTimeout(() => {
+          chrome.downloads.onChanged.removeListener(listener);
+          // Last-resort: check again for any completed downloads
+          chrome.downloads.search({ limit: 1, orderBy: ["-startTime"], state: "complete" }, (final) => {
+            if (final?.length > 0) {
+              const endTs = new Date(final[0].endTime).getTime();
+              if (Date.now() - endTs < maxWait + 5000) {
+                resolve(final[0]);
+                return;
+              }
+            }
+            reject(new Error(`No download completed within ${maxWait / 1000}s`));
+          });
+        }, maxWait);
+
+        function listener(delta) {
+          if (delta.state && delta.state.current === "complete") {
+            clearTimeout(timer);
+            chrome.downloads.onChanged.removeListener(listener);
+            chrome.downloads.search({ id: delta.id }, (found) => {
+              if (found && found.length > 0) {
+                resolve(found[0]);
+              } else {
+                resolve({ id: delta.id });
+              }
+            });
+          }
+        }
+        chrome.downloads.onChanged.addListener(listener);
+      });
     });
     // Auto-upload to chat server
     if (downloadInfo.filename) {
@@ -1465,7 +1496,14 @@ async function handleDownload({ action, timeout }) {
   }
 
   if (action === "latest") {
-    const items = await chrome.downloads.search({ limit: 1, orderBy: ["-startTime"], state: "complete" });
+    // Try completed first, then check for stuck in_progress downloads
+    let items = await chrome.downloads.search({ limit: 1, orderBy: ["-startTime"], state: "complete" });
+    if (items.length === 0) {
+      // Check for downloads stuck as in_progress but fully received
+      const inProgress = await chrome.downloads.search({ limit: 5, orderBy: ["-startTime"], state: "in_progress" });
+      const stuck = inProgress.find((d) => d.totalBytes > 0 && d.bytesReceived >= d.totalBytes);
+      if (stuck) items = [stuck];
+    }
     if (items.length === 0) throw new Error("No completed downloads found");
     const item = items[0];
     // Auto-upload to chat server
