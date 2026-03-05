@@ -3,7 +3,8 @@
  *
  * Tools: browser_navigate, browser_screenshot, browser_click, browser_type,
  *        browser_extract, browser_tabs, browser_execute, browser_scroll,
- *        browser_hover, browser_drag, browser_keypress, browser_status
+ *        browser_hover, browser_drag, browser_keypress, browser_wait_for,
+ *        browser_select, browser_handle_dialog, browser_status
  *
  * Requires: Chrome extension connected via WebSocket to /browser/ws
  * Gated behind: config.json "browser": true
@@ -83,6 +84,10 @@ export class BrowserPlugin implements ToolPlugin {
             type: "string",
             description: '"left" (default), "right", or "middle"',
             enum: ["left", "right", "middle"],
+          },
+          click_count: {
+            type: "number",
+            description: "Number of clicks: 1 (default) for single-click, 2 for double-click",
           },
         },
         required: [],
@@ -245,6 +250,73 @@ export class BrowserPlugin implements ToolPlugin {
         required: ["key"],
         handler: async (args) => this.handleKeypress(args),
       },
+      {
+        name: "browser_wait_for",
+        description:
+          "Wait for an element to appear on the page. Polls until the element matching the selector exists and is visible. Use before interacting with dynamically loaded content.",
+        parameters: {
+          selector: {
+            type: "string",
+            description: "CSS selector to wait for",
+          },
+          timeout: {
+            type: "number",
+            description: "Maximum wait time in milliseconds (default: 5000, max: 30000)",
+          },
+          visible: {
+            type: "boolean",
+            description: "Require element to be visible, not just in DOM (default: true)",
+          },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+        },
+        required: ["selector"],
+        handler: async (args) => this.handleWaitFor(args),
+      },
+      {
+        name: "browser_select",
+        description:
+          'Select an option from a <select> dropdown element. Can select by value, visible text, or index. Dispatches "input" and "change" events.',
+        parameters: {
+          selector: {
+            type: "string",
+            description: "CSS selector of the <select> element",
+          },
+          value: {
+            type: "string",
+            description: "Option value attribute to select",
+          },
+          text: {
+            type: "string",
+            description: "Visible text of the option to select",
+          },
+          index: {
+            type: "number",
+            description: "Zero-based index of the option to select",
+          },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+        },
+        required: ["selector"],
+        handler: async (args) => this.handleSelect(args),
+      },
+      {
+        name: "browser_handle_dialog",
+        description:
+          'Handle a JavaScript dialog (alert, confirm, or prompt). Must be called after a dialog appears. Use action "accept" to click OK or "dismiss" to click Cancel.',
+        parameters: {
+          action: {
+            type: "string",
+            description: '"accept" (click OK, default) or "dismiss" (click Cancel)',
+            enum: ["accept", "dismiss"],
+          },
+          prompt_text: {
+            type: "string",
+            description: "Text to enter in a prompt() dialog (optional)",
+          },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+        },
+        required: [],
+        handler: async (args) => this.handleDialog(args),
+      },
     ];
   }
 
@@ -332,6 +404,11 @@ export class BrowserPlugin implements ToolPlugin {
         return { success: false, output: "", error: "No screenshot data returned" };
       }
       const base64 = result.dataUrl.replace(/^data:image\/\w+;base64,/, "");
+      // Limit screenshot size to 10MB decoded
+      const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
+      if (base64.length * 0.75 > MAX_SCREENSHOT_BYTES) {
+        return { success: false, output: "", error: `Screenshot too large (>${Math.round(MAX_SCREENSHOT_BYTES / 1024 / 1024)}MB). Try capturing a smaller area with selector or disable full_page.` };
+      }
       const buffer = Buffer.from(base64, "base64");
       const filename = `screenshot-${Date.now()}.jpg`;
       const file = await this.uploadToChatServer(buffer, filename, "image/jpeg");
@@ -368,6 +445,7 @@ export class BrowserPlugin implements ToolPlugin {
         y: args.y,
         tabId: args.tab_id,
         button: args.button || "left",
+        clickCount: args.click_count,
       });
       return {
         success: true,
@@ -553,6 +631,71 @@ export class BrowserPlugin implements ToolPlugin {
       return {
         success: true,
         output: JSON.stringify({ pressed: true, key: result.key, modifiers: result.modifiers, tab_id: result.tabId }, null, 2),
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleWaitFor(args: Record<string, any>): Promise<ToolResult> {
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("wait_for", {
+        selector: args.selector,
+        tabId: args.tab_id,
+        timeout: args.timeout,
+        visible: args.visible,
+      });
+      return {
+        success: true,
+        output: JSON.stringify({ found: true, element: result.element, elapsed_ms: result.elapsed, tab_id: result.tabId }, null, 2),
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleSelect(args: Record<string, any>): Promise<ToolResult> {
+    if (!args.selector) {
+      return { success: false, output: "", error: "selector is required" };
+    }
+    if (args.value === undefined && args.text === undefined && args.index === undefined) {
+      return { success: false, output: "", error: "Provide value, text, or index to select" };
+    }
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("select", {
+        selector: args.selector,
+        value: args.value,
+        text: args.text,
+        index: args.index,
+        tabId: args.tab_id,
+      });
+      return {
+        success: true,
+        output: JSON.stringify({ selected: true, value: result.selected, text: result.text, index: result.index, tab_id: result.tabId }, null, 2),
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleDialog(args: Record<string, any>): Promise<ToolResult> {
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("dialog", {
+        action: args.action || "accept",
+        promptText: args.prompt_text,
+        tabId: args.tab_id,
+      });
+      return {
+        success: true,
+        output: JSON.stringify({
+          handled: result.handled,
+          type: result.type,
+          dialog_message: result.dialogMessage,
+          tab_id: result.tabId,
+        }, null, 2),
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };

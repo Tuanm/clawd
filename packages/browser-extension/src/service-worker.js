@@ -125,6 +125,12 @@ async function handleCommand(id, method, params) {
       return handleDrag(params);
     case "keypress":
       return handleKeypress(params);
+    case "wait_for":
+      return handleWaitFor(params);
+    case "select":
+      return handleSelect(params);
+    case "dialog":
+      return handleDialog(params);
     default:
       throw new Error(`Unknown method: ${method}`);
   }
@@ -227,7 +233,7 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
 
 // --- Click ---
 
-async function handleClick({ selector, x, y, tabId, button }) {
+async function handleClick({ selector, x, y, tabId, button, clickCount: count }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
@@ -235,7 +241,6 @@ async function handleClick({ selector, x, y, tabId, button }) {
   let clickY = y;
 
   if (selector) {
-    // Resolve selector to coordinates
     const coords = await getElementCenter(tid, selector);
     clickX = coords.x;
     clickY = coords.y;
@@ -245,22 +250,24 @@ async function handleClick({ selector, x, y, tabId, button }) {
 
   const buttonMap = { left: "left", right: "right", middle: "middle" };
   const btn = buttonMap[button] || "left";
-  const clickCount = 1;
+  const clickCount = count || 1;
 
-  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    x: clickX,
-    y: clickY,
-    button: btn,
-    clickCount,
-  });
-  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    x: clickX,
-    y: clickY,
-    button: btn,
-    clickCount,
-  });
+  for (let i = 0; i < clickCount; i++) {
+    await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: clickX,
+      y: clickY,
+      button: btn,
+      clickCount: i + 1,
+    });
+    await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: clickX,
+      y: clickY,
+      button: btn,
+      clickCount: i + 1,
+    });
+  }
 
   return { tabId: tid, element: selector || `(${clickX},${clickY})` };
 }
@@ -485,6 +492,9 @@ async function handleScroll({ x, y, selector, direction, amount, tabId }) {
     deltaY,
   });
 
+  // Wait for scroll to settle (mouseWheel resolves before DOM updates)
+  await new Promise((r) => setTimeout(r, 150));
+
   return { tabId: tid, direction: direction || "down", amount: dist };
 }
 
@@ -602,6 +612,20 @@ async function handleKeypress({ key, modifiers, tabId }) {
     pageup: { key: "PageUp", code: "PageUp" },
     pagedown: { key: "PageDown", code: "PageDown" },
     space: { key: " ", code: "Space" },
+    // Digits
+    "0": { key: "0", code: "Digit0" }, "1": { key: "1", code: "Digit1" },
+    "2": { key: "2", code: "Digit2" }, "3": { key: "3", code: "Digit3" },
+    "4": { key: "4", code: "Digit4" }, "5": { key: "5", code: "Digit5" },
+    "6": { key: "6", code: "Digit6" }, "7": { key: "7", code: "Digit7" },
+    "8": { key: "8", code: "Digit8" }, "9": { key: "9", code: "Digit9" },
+    // Special characters
+    "-": { key: "-", code: "Minus" }, "=": { key: "=", code: "Equal" },
+    "[": { key: "[", code: "BracketLeft" }, "]": { key: "]", code: "BracketRight" },
+    "\\": { key: "\\", code: "Backslash" }, ";": { key: ";", code: "Semicolon" },
+    "'": { key: "'", code: "Quote" }, "`": { key: "`", code: "Backquote" },
+    ",": { key: ",", code: "Comma" }, ".": { key: ".", code: "Period" },
+    "/": { key: "/", code: "Slash" },
+    // Function keys
     f1: { key: "F1", code: "F1" }, f2: { key: "F2", code: "F2" },
     f3: { key: "F3", code: "F3" }, f4: { key: "F4", code: "F4" },
     f5: { key: "F5", code: "F5" }, f6: { key: "F6", code: "F6" },
@@ -610,7 +634,15 @@ async function handleKeypress({ key, modifiers, tabId }) {
     f11: { key: "F11", code: "F11" }, f12: { key: "F12", code: "F12" },
   };
 
-  const mapped = keyMap[key.toLowerCase()] || { key, code: `Key${key.toUpperCase()}` };
+  // For single letters, use KeyA-KeyZ; for unmapped, use key as code
+  function resolveKey(k) {
+    const lower = k.toLowerCase();
+    if (keyMap[lower]) return keyMap[lower];
+    if (/^[a-z]$/i.test(k)) return { key: k, code: `Key${k.toUpperCase()}` };
+    return { key: k, code: k };
+  }
+
+  const mapped = resolveKey(key);
 
   await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
     type: "keyDown",
@@ -630,6 +662,110 @@ async function handleKeypress({ key, modifiers, tabId }) {
     key: mapped.key,
     modifiers: modifiers || [],
   };
+}
+
+// --- Wait For Element ---
+
+async function handleWaitFor({ selector, tabId, timeout, visible }) {
+  const tid = tabId || (await getActiveTabId());
+  const maxWait = Math.min(timeout || 5000, 30000);
+  const interval = 200;
+  const start = Date.now();
+
+  while (Date.now() - start < maxWait) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tid },
+        func: (sel, checkVisible) => {
+          const el = document.querySelector(sel);
+          if (!el) return null;
+          if (checkVisible) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) return null;
+            const style = getComputedStyle(el);
+            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return null;
+          }
+          return { tag: el.tagName.toLowerCase(), text: (el.textContent || "").slice(0, 100) };
+        },
+        args: [selector, visible !== false],
+      });
+      if (results[0]?.result) {
+        return { found: true, tabId: tid, element: results[0].result, elapsed: Date.now() - start };
+      }
+    } catch { /* page might be navigating */ }
+    await new Promise((r) => setTimeout(r, interval));
+  }
+
+  throw new Error(`Element "${selector}" not found within ${maxWait}ms`);
+}
+
+// --- Select Dropdown ---
+
+async function handleSelect({ selector, value, text, index, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    func: (sel, val, txt, idx) => {
+      const el = document.querySelector(sel);
+      if (!el) return { error: `Element not found: ${sel}` };
+      if (el.tagName.toLowerCase() !== "select") return { error: `Element is not a <select>: ${el.tagName}` };
+
+      let option = null;
+      if (val !== null && val !== undefined) {
+        option = Array.from(el.options).find((o) => o.value === val);
+      } else if (txt !== null && txt !== undefined) {
+        option = Array.from(el.options).find((o) => o.text.trim() === txt);
+      } else if (idx !== null && idx !== undefined) {
+        option = el.options[idx];
+      }
+      if (!option) return { error: `Option not found (value=${val}, text=${txt}, index=${idx})` };
+
+      el.value = option.value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { selected: option.value, text: option.text, index: option.index };
+    },
+    args: [selector, value || null, text || null, index ?? null],
+  });
+  const result = results[0]?.result;
+  if (result?.error) throw new Error(result.error);
+  return { tabId: tid, ...result };
+}
+
+// --- Dialog Handling (alert/confirm/prompt) ---
+
+const pendingDialogs = new Map(); // tabId -> { type, message, defaultPrompt }
+
+// Listen for JavaScript dialogs
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (method === "Page.javascriptDialogOpening" && source.tabId) {
+    pendingDialogs.set(source.tabId, {
+      type: params.type,
+      message: params.message,
+      defaultPrompt: params.defaultPrompt,
+    });
+  }
+});
+
+async function handleDialog({ action, promptText, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  // Enable Page domain to receive dialog events
+  await sendDebuggerCommand(tid, "Page.enable").catch(() => {});
+
+  const dialog = pendingDialogs.get(tid);
+  if (!dialog) {
+    return { tabId: tid, handled: false, message: "No pending dialog" };
+  }
+
+  await sendDebuggerCommand(tid, "Page.handleJavaScriptDialog", {
+    accept: action !== "dismiss",
+    promptText: promptText || "",
+  });
+
+  pendingDialogs.delete(tid);
+  return { tabId: tid, handled: true, type: dialog.type, dialogMessage: dialog.message };
 }
 
 // ============================================================================
