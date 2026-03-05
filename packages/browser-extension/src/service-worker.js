@@ -15,6 +15,7 @@ const debuggerPending = new Map(); // tabId -> Promise (serializes attachment)
 const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)
 const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
 let currentEmulation = null; // Track active emulation state {metrics, hasTouch, userAgent} for screenshot restore
+const pendingAuth = new Map(); // tabId -> { requestId, url, scheme, realm }
 
 // Clean up debugger state on detach (registered once at module scope)
 chrome.debugger.onDetach.addListener((source) => {
@@ -167,6 +168,12 @@ async function dispatchCommand(method, params) {
       return handleEmulate(params);
     case "download":
       return handleDownload(params);
+    case "auth":
+      return handleAuth(params);
+    case "permissions":
+      return handlePermissions(params);
+    case "store":
+      return handleStore(params);
     default:
       throw new Error(`Unknown method: ${method}`);
   }
@@ -939,6 +946,21 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       if (key.startsWith(prefix)) frameContexts.delete(key);
     }
   }
+  // Track HTTP authentication requests
+  if (method === "Fetch.authRequired" && source.tabId) {
+    pendingAuth.set(source.tabId, {
+      requestId: params.requestId,
+      url: params.request?.url,
+      scheme: params.authChallenge?.scheme,
+      realm: params.authChallenge?.realm,
+    });
+  }
+  // Auto-continue non-auth paused requests (Fetch.enable pauses all by default)
+  if (method === "Fetch.requestPaused" && source.tabId && !pendingAuth.has(source.tabId)) {
+    sendDebuggerCommand(source.tabId, "Fetch.continueRequest", {
+      requestId: params.requestId,
+    }).catch(() => {});
+  }
 });
 
 async function handleDialog({ action, promptText, tabId }) {
@@ -1264,6 +1286,176 @@ async function handleDownload({ action, timeout }) {
   throw new Error(`Unknown download action: ${action}. Use "list", "wait", or "latest".`);
 }
 
+// --- HTTP Authentication ---
+
+async function handleAuth({ action, username, password, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  if (action === "status") {
+    const auth = pendingAuth.get(tid);
+    if (!auth) return { tabId: tid, pending: false };
+    return { tabId: tid, pending: true, url: auth.url, scheme: auth.scheme, realm: auth.realm };
+  }
+
+  if (action === "provide") {
+    const auth = pendingAuth.get(tid);
+    if (!auth) throw new Error("No pending auth request on this tab");
+    await sendDebuggerCommand(tid, "Fetch.continueWithAuth", {
+      requestId: auth.requestId,
+      authChallengeResponse: {
+        response: "ProvideCredentials",
+        username: username || "",
+        password: password || "",
+      },
+    });
+    pendingAuth.delete(tid);
+    return { tabId: tid, authenticated: true, url: auth.url };
+  }
+
+  if (action === "cancel") {
+    const auth = pendingAuth.get(tid);
+    if (!auth) throw new Error("No pending auth request on this tab");
+    await sendDebuggerCommand(tid, "Fetch.continueWithAuth", {
+      requestId: auth.requestId,
+      authChallengeResponse: { response: "CancelAuth" },
+    });
+    pendingAuth.delete(tid);
+    return { tabId: tid, cancelled: true };
+  }
+
+  throw new Error(`Unknown auth action: ${action}. Use "status", "provide", or "cancel".`);
+}
+
+// --- Browser Permissions ---
+
+async function handlePermissions({ action, permissions, origin, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  if (action === "grant") {
+    if (!permissions || !permissions.length) throw new Error("permissions array is required");
+    const tab = await chrome.tabs.get(tid);
+    const permOrigin = origin || new URL(tab.url).origin;
+    for (const perm of permissions) {
+      await sendDebuggerCommand(tid, "Browser.setPermission", {
+        permission: { name: perm },
+        setting: "granted",
+        origin: permOrigin,
+      });
+    }
+    return { tabId: tid, granted: permissions, origin: permOrigin };
+  }
+
+  if (action === "deny") {
+    if (!permissions || !permissions.length) throw new Error("permissions array is required");
+    const tab = await chrome.tabs.get(tid);
+    const permOrigin = origin || new URL(tab.url).origin;
+    for (const perm of permissions) {
+      await sendDebuggerCommand(tid, "Browser.setPermission", {
+        permission: { name: perm },
+        setting: "denied",
+        origin: permOrigin,
+      });
+    }
+    return { tabId: tid, denied: permissions, origin: permOrigin };
+  }
+
+  if (action === "reset") {
+    if (!permissions || !permissions.length) throw new Error("permissions array is required");
+    const tab = await chrome.tabs.get(tid);
+    const permOrigin = origin || new URL(tab.url).origin;
+    for (const perm of permissions) {
+      await sendDebuggerCommand(tid, "Browser.setPermission", {
+        permission: { name: perm },
+        setting: "prompt",
+        origin: permOrigin,
+      });
+    }
+    return { tabId: tid, reset: permissions, origin: permOrigin };
+  }
+
+  throw new Error(`Unknown permissions action: ${action}. Use "grant", "deny", or "reset".`);
+}
+
+// --- Agent Script Storage (per-origin via localStorage) ---
+
+async function handleStore({ action, key, value, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  const NS = "__clawd_store__";
+
+  if (action === "set") {
+    if (!key) throw new Error("key is required for store set");
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tid },
+      func: (ns, k, v) => {
+        const store = JSON.parse(localStorage.getItem(ns) || "{}");
+        store[k] = v;
+        localStorage.setItem(ns, JSON.stringify(store));
+        return { stored: true, key: k };
+      },
+      args: [NS, key, value],
+    });
+    return { tabId: tid, ...results[0]?.result };
+  }
+
+  if (action === "get") {
+    if (!key) throw new Error("key is required for store get");
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tid },
+      func: (ns, k) => {
+        const store = JSON.parse(localStorage.getItem(ns) || "{}");
+        return { key: k, value: store[k] ?? null, found: k in store };
+      },
+      args: [NS, key],
+    });
+    return { tabId: tid, ...results[0]?.result };
+  }
+
+  if (action === "list") {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tid },
+      func: (ns) => {
+        const store = JSON.parse(localStorage.getItem(ns) || "{}");
+        return { keys: Object.keys(store), count: Object.keys(store).length };
+      },
+      args: [NS],
+    });
+    const tab = await chrome.tabs.get(tid);
+    return { tabId: tid, origin: new URL(tab.url).origin, ...results[0]?.result };
+  }
+
+  if (action === "delete") {
+    if (!key) throw new Error("key is required for store delete");
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tid },
+      func: (ns, k) => {
+        const store = JSON.parse(localStorage.getItem(ns) || "{}");
+        const existed = k in store;
+        delete store[k];
+        localStorage.setItem(ns, JSON.stringify(store));
+        return { deleted: existed, key: k };
+      },
+      args: [NS, key],
+    });
+    return { tabId: tid, ...results[0]?.result };
+  }
+
+  if (action === "clear") {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tid },
+      func: (ns) => {
+        localStorage.removeItem(ns);
+        return { cleared: true };
+      },
+      args: [NS],
+    });
+    return { tabId: tid, ...results[0]?.result };
+  }
+
+  throw new Error(`Unknown store action: ${action}. Use "set", "get", "list", "delete", or "clear".`);
+}
+
 // ============================================================================
 // Debugger Helpers
 // ============================================================================
@@ -1281,9 +1473,10 @@ async function ensureDebugger(tabId) {
       if (!err.message?.includes("Already attached")) throw err;
     }
     debuggerAttached.add(tabId);
-    // Enable Runtime for frame context tracking, Page for dialog events
+    // Enable Runtime for frame context tracking, Page for dialog events, Fetch for HTTP auth
     await sendDebuggerCommand(tabId, "Runtime.enable").catch(() => {});
     await sendDebuggerCommand(tabId, "Page.enable").catch(() => {});
+    await sendDebuggerCommand(tabId, "Fetch.enable", { handleAuthRequests: true }).catch(() => {});
   })();
 
   debuggerPending.set(tabId, promise);
@@ -1449,6 +1642,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   debuggerPending.delete(tabId);
   activeTabCommands.delete(tabId);
   pendingDialogs.delete(tabId);
+  pendingAuth.delete(tabId);
   for (const key of frameContexts.keys()) {
     if (key.startsWith(`${tabId}:`)) frameContexts.delete(key);
   }

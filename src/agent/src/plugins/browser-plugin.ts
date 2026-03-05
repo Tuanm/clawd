@@ -503,6 +503,68 @@ export class BrowserPlugin implements ToolPlugin {
         required: ["action"],
         handler: async (args) => this.handleDownload(args),
       },
+      {
+        name: "browser_auth",
+        description:
+          'Handle HTTP Basic/Digest authentication popups (e.g., staging servers, enterprise proxies). Use "status" to check if a page requires auth, "provide" to supply credentials, or "cancel" to dismiss.',
+        parameters: {
+          action: {
+            type: "string",
+            description: '"status" (check for pending auth), "provide" (supply credentials), or "cancel"',
+            enum: ["status", "provide", "cancel"],
+          },
+          username: { type: "string", description: "Username for authentication (required for 'provide')" },
+          password: { type: "string", description: "Password for authentication (required for 'provide')" },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+        },
+        required: ["action"],
+        handler: async (args) => this.handleAuth(args),
+      },
+      {
+        name: "browser_permissions",
+        description:
+          'Grant, deny, or reset browser permissions for a site. Controls access to camera, microphone, geolocation, notifications, clipboard, MIDI, and other web APIs. Grant permissions before interacting with features that need them (e.g., grant "geolocation" before testing a map app).',
+        parameters: {
+          action: {
+            type: "string",
+            description: '"grant", "deny", or "reset" (back to prompt)',
+            enum: ["grant", "deny", "reset"],
+          },
+          permissions: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              'Permission names: "geolocation", "camera", "microphone", "notifications", "clipboard-read", "clipboard-write", "midi", "background-sync", "sensors", "screen-wake-lock"',
+          },
+          origin: {
+            type: "string",
+            description: "Origin to set permission for (default: current page origin)",
+          },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+        },
+        required: ["action", "permissions"],
+        handler: async (args) => this.handlePermissions(args),
+      },
+      {
+        name: "browser_store",
+        description:
+          'Store and retrieve data per-website using the browser\'s localStorage. Useful for saving reusable scripts, selectors, credentials references, or any data scoped to a specific website that persists across sessions. Data is stored under a private namespace only the agent can access. Each origin has its own isolated storage.',
+        parameters: {
+          action: {
+            type: "string",
+            description: '"set", "get", "list" (all keys), "delete" (one key), or "clear" (all data for this origin)',
+            enum: ["set", "get", "list", "delete", "clear"],
+          },
+          key: { type: "string", description: "Storage key (required for set/get/delete)" },
+          value: {
+            type: "string",
+            description: "Value to store (required for set). For scripts, store as a string.",
+          },
+          tab_id: { type: "number", description: "Target tab ID (optional)" },
+        },
+        required: ["action"],
+        handler: async (args) => this.handleStore(args),
+      },
     ];
   }
 
@@ -1123,6 +1185,54 @@ export class BrowserPlugin implements ToolPlugin {
         }
       }
 
+      return { success: true, output: JSON.stringify(result, null, 2) };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleAuth(args: Record<string, any>): Promise<ToolResult> {
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("auth", {
+        action: args.action,
+        username: args.username,
+        password: args.password,
+        tabId: args.tab_id,
+      });
+      return { success: true, output: JSON.stringify(result, null, 2) };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handlePermissions(args: Record<string, any>): Promise<ToolResult> {
+    if (!args.permissions?.length) {
+      return { success: false, output: "", error: "permissions array is required" };
+    }
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("permissions", {
+        action: args.action,
+        permissions: args.permissions,
+        origin: args.origin,
+        tabId: args.tab_id,
+      });
+      return { success: true, output: JSON.stringify(result, null, 2) };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleStore(args: Record<string, any>): Promise<ToolResult> {
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("store", {
+        action: args.action,
+        key: args.key,
+        value: args.value,
+        tabId: args.tab_id,
+      });
       return { success: true, output: JSON.stringify(result, null, 2) };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
