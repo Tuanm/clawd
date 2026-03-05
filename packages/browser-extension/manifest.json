@@ -21,8 +21,8 @@
     }
   ],
   "icons": {
-    "16": "icons/disconnected-16.png",
-    "48": "icons/disconnected-48.png",
-    "128": "icons/disconnected-128.png"
+    "16": "icons/connected-16.png",
+    "48": "icons/connected-48.png",
+    "128": "icons/connected-128.png"
   }
 }

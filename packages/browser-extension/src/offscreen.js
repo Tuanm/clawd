@@ -106,18 +106,22 @@ async function connect() {
             params: data.params || {},
           });
           if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              id: data.id,
-              result: response?.result,
-              error: response?.error,
-            }));
+            ws.send(
+              JSON.stringify({
+                id: data.id,
+                result: response?.result,
+                error: response?.error,
+              }),
+            );
           }
         } catch (err) {
           if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              id: data.id,
-              error: { message: `Service worker error: ${err.message}` },
-            }));
+            ws.send(
+              JSON.stringify({
+                id: data.id,
+                error: { message: `Service worker error: ${err.message}` },
+              }),
+            );
           }
         }
       }
@@ -195,8 +199,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ws = null;
     }
     stopHeartbeat();
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    connect().then(() => sendResponse({ ok: true }))
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    connect()
+      .then(() => sendResponse({ ok: true }))
       .catch((err) => {
         console.error("[clawd-offscreen] connect after set-server-url failed:", err);
         sendResponse({ ok: true });
@@ -216,7 +224,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ws = null;
     }
     stopHeartbeat();
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     connect().catch((err) => console.error("[clawd-offscreen] reconnect failed:", err));
     sendResponse({ ok: true });
     return false;

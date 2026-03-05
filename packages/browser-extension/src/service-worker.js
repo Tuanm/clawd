@@ -36,11 +36,13 @@ async function ensureOffscreen() {
       if (config.serverUrl || config.extensionId) {
         // Small delay to let offscreen script initialize its listener
         setTimeout(() => {
-          chrome.runtime.sendMessage({
-            type: "reconnect",
-            url: config.serverUrl,
-            extensionId: config.extensionId,
-          }).catch(() => {});
+          chrome.runtime
+            .sendMessage({
+              type: "reconnect",
+              url: config.serverUrl,
+              extensionId: config.extensionId,
+            })
+            .catch(() => {});
         }, 200);
       }
     } catch {}
@@ -77,16 +79,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async response
   }
 
-  // Connection status broadcast from offscreen — update toolbar icon and let popup hear it
+  // Connection status broadcast from offscreen — let popup hear it
   if (message.source === "offscreen" && message.type === "connection-status") {
-    const prefix = message.connected ? "connected" : "disconnected";
-    chrome.action.setIcon({
-      path: {
-        16: `icons/${prefix}-16.png`,
-        48: `icons/${prefix}-48.png`,
-        128: `icons/${prefix}-128.png`,
-      },
-    }).catch(() => {});
     return false;
   }
 
