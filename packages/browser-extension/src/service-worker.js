@@ -30,6 +30,20 @@ async function ensureOffscreen() {
       reasons: ["WORKERS"],
       justification: "WebSocket connection to local Claw'd server",
     });
+    // Send saved config to offscreen (it can't access chrome.storage)
+    try {
+      const config = await chrome.storage.local.get(["serverUrl", "extensionId"]);
+      if (config.serverUrl || config.extensionId) {
+        // Small delay to let offscreen script initialize its listener
+        setTimeout(() => {
+          chrome.runtime.sendMessage({
+            type: "reconnect",
+            url: config.serverUrl,
+            extensionId: config.extensionId,
+          }).catch(() => {});
+        }, 200);
+      }
+    } catch {}
   }
   offscreenReady = true;
 }

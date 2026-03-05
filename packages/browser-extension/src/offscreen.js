@@ -23,25 +23,10 @@ const KEEPALIVE_INTERVAL_MS = 25000;
 let ws = null;
 let heartbeatTimer = null;
 let reconnectTimer = null;
-let extensionId = null;
+let extensionId = crypto.randomUUID().slice(0, 8);
+let serverUrl = DEFAULT_URL;
 let connectAttempts = 0;
 let lastError = null;
-
-// ============================================================================
-// Early ExtensionId Init (before connect)
-// ============================================================================
-
-(async () => {
-  try {
-    const config = await chrome.storage.local.get(["extensionId"]);
-    extensionId = config.extensionId || crypto.randomUUID().slice(0, 8);
-    await chrome.storage.local.set({ extensionId });
-    console.log("[clawd-offscreen] extensionId initialized:", extensionId);
-  } catch (err) {
-    console.error("[clawd-offscreen] Failed to init extensionId:", err);
-    extensionId = crypto.randomUUID().slice(0, 8);
-  }
-})();
 
 // ============================================================================
 // Keep Service Worker Alive
@@ -63,28 +48,10 @@ function keepAlive() {
 // ============================================================================
 
 async function connect() {
-  console.log("[clawd-offscreen] connect() called, ws state:", ws?.readyState);
+  console.log("[clawd-offscreen] connect() called, ws state:", ws?.readyState, "url:", serverUrl);
 
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     console.log("[clawd-offscreen] Already connected/connecting, skipping");
-    return;
-  }
-
-  // Get server URL from storage
-  let serverUrl;
-  try {
-    const config = await chrome.storage.local.get(["serverUrl", "extensionId"]);
-    console.log("[clawd-offscreen] Storage config:", JSON.stringify(config));
-    serverUrl = config.serverUrl || DEFAULT_URL;
-    if (config.extensionId) extensionId = config.extensionId;
-    if (!extensionId) {
-      extensionId = crypto.randomUUID().slice(0, 8);
-      await chrome.storage.local.set({ extensionId }).catch(() => {});
-    }
-  } catch (err) {
-    console.error("[clawd-offscreen] Storage read failed:", err);
-    lastError = `Storage: ${err.message}`;
-    scheduleReconnect();
     return;
   }
 
@@ -219,26 +186,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "set-server-url") {
     console.log("[clawd-offscreen] set-server-url:", message.url);
-    chrome.storage.local.set({ serverUrl: message.url }).then(async () => {
-      if (ws) {
-        ws.onclose = null;
-        ws.onerror = null;
-        ws.onmessage = null;
-        ws.close();
-        ws = null;
-      }
-      stopHeartbeat();
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-      try { await connect(); } catch (err) {
+    serverUrl = message.url || DEFAULT_URL;
+    if (ws) {
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close();
+      ws = null;
+    }
+    stopHeartbeat();
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    connect().then(() => sendResponse({ ok: true }))
+      .catch((err) => {
         console.error("[clawd-offscreen] connect after set-server-url failed:", err);
-      }
-      sendResponse({ ok: true });
-    });
+        sendResponse({ ok: true });
+      });
     return true;
   }
 
   if (message.type === "reconnect") {
-    console.log("[clawd-offscreen] reconnect requested");
+    console.log("[clawd-offscreen] reconnect requested, url from message:", message.url);
+    if (message.url) serverUrl = message.url;
+    if (message.extensionId) extensionId = message.extensionId;
     if (ws) {
       ws.onclose = null;
       ws.onerror = null;

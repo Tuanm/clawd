@@ -48,22 +48,18 @@ connectBtn.addEventListener("click", () => {
   dot.className = "dot disconnected";
   connectBtn.disabled = true;
 
+  // Save URL to storage for persistence across restarts
   if (url) {
-    // Save URL to storage directly (popup has storage permission)
     chrome.storage.local.set({ serverUrl: url }).then(() => {
       console.log("[clawd-popup] Saved serverUrl to storage");
-      // Tell offscreen to reconnect
-      chrome.runtime.sendMessage({ type: "reconnect" }, (response) => {
-        console.log("[clawd-popup] reconnect response:", response, "lastError:", chrome.runtime.lastError?.message);
-        connectBtn.disabled = false;
-      });
-    });
-  } else {
-    chrome.runtime.sendMessage({ type: "reconnect" }, (response) => {
-      console.log("[clawd-popup] reconnect response:", response, "lastError:", chrome.runtime.lastError?.message);
-      connectBtn.disabled = false;
     });
   }
+
+  // Send reconnect with URL directly to offscreen (it can't read storage)
+  chrome.runtime.sendMessage({ type: "reconnect", url: url || undefined }, (response) => {
+    console.log("[clawd-popup] reconnect response:", response, "lastError:", chrome.runtime.lastError?.message);
+    connectBtn.disabled = false;
+  });
 
   // Poll status after a delay
   setTimeout(checkStatus, 2000);
