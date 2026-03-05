@@ -24,6 +24,7 @@ chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId) {
     debuggerAttached.delete(source.tabId);
     pendingDialogs.delete(source.tabId);
+    pendingFileChoosers.delete(source.tabId);
     tabEmulation.delete(source.tabId);
     // Clean up auth state for detached tab
     const reqIds = pendingAuthByTab.get(source.tabId);
@@ -363,7 +364,7 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
   }
 
   showActionCursor(tid, clickX, clickY);
-  // Brief delay to let download events propagate from CDP
+  // Brief delay to let download/file-chooser events propagate from CDP
   await new Promise((r) => setTimeout(r, 300));
   const dl = consumeRecentDownload(tid);
   const result = { tabId: tid, element: selector || `(${clickX},${clickY})` };
@@ -373,6 +374,14 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
       filename: dl.suggestedFilename,
       hint: "A file download was triggered. Use browser_download action=wait to capture it.",
     };
+  // Check if a file chooser dialog was intercepted
+  if (pendingFileChoosers.has(tid)) {
+    const fc = pendingFileChoosers.get(tid);
+    result.file_chooser_opened = {
+      mode: fc.mode,
+      hint: "A file chooser dialog was intercepted. Use browser_upload_file with file_id to provide the file. No selector needed.",
+    };
+  }
   return result;
 }
 
@@ -973,6 +982,7 @@ async function handleSelect({ selector, value, text, index, tabId }) {
 // --- Dialog Handling (alert/confirm/prompt) ---
 
 const pendingDialogs = new Map(); // tabId -> { type, message, defaultPrompt }
+const pendingFileChoosers = new Map(); // tabId -> { backendNodeId, mode }
 
 // Listen for JavaScript dialogs and frame execution contexts
 chrome.debugger.onEvent.addListener((source, method, params) => {
@@ -993,6 +1003,15 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       timestamp: Date.now(),
     });
     if (recentDownloads.length > 20) recentDownloads.shift();
+  }
+  // Track file chooser dialogs (intercepted by Page.setInterceptFileChooserDialog)
+  if (method === "Page.fileChooserOpened" && source.tabId) {
+    pendingFileChoosers.set(source.tabId, {
+      backendNodeId: params.backendNodeId,
+      mode: params.mode, // "selectSingle" or "selectMultiple"
+      frameId: params.frameId,
+      timestamp: Date.now(),
+    });
   }
   // Track execution contexts for frame targeting
   if (method === "Runtime.executionContextCreated" && source.tabId) {
@@ -1123,11 +1142,9 @@ async function handleFileUpload({ selector, fileId, tabId }) {
   const nameMatch = contentDisposition.match(/filename="([^"]+)"/);
   const fileName = nameMatch ? nameMatch[1] : `upload_${fileId}`;
 
-  // Download to a temp local path via chrome.downloads
-  // MV3 service workers don't have URL.createObjectURL — use data URL instead
+  // Save file to disk via chrome.downloads (needed for both CDP file-setting methods)
   const arrayBuffer = await blob.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
-  // Chunked base64 encoding to avoid call stack overflow on large files
   let binary = "";
   const chunkSize = 32768;
   for (let i = 0; i < bytes.length; i += chunkSize) {
@@ -1143,7 +1160,6 @@ async function handleFileUpload({ selector, fileId, tabId }) {
       },
     );
   });
-  // Wait for temp download to complete
   const localPath = await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       chrome.downloads.onChanged.removeListener(listener);
@@ -1168,17 +1184,31 @@ async function handleFileUpload({ selector, fileId, tabId }) {
   });
   if (!localPath) throw new Error("Could not resolve temp file path");
 
-  const doc = await sendDebuggerCommand(tid, "DOM.getDocument");
-  const node = await sendDebuggerCommand(tid, "DOM.querySelector", {
-    nodeId: doc.root.nodeId,
-    selector,
-  });
-  if (!node.nodeId) throw new Error(`File input not found: ${selector}`);
-
-  await sendDebuggerCommand(tid, "DOM.setFileInputFiles", {
-    nodeId: node.nodeId,
-    files: [localPath],
-  });
+  // If a file chooser dialog is pending (from a click on upload button), handle it via CDP
+  const pendingFC = pendingFileChoosers.get(tid);
+  if (pendingFC) {
+    pendingFileChoosers.delete(tid);
+    await sendDebuggerCommand(tid, "DOM.setFileInputFiles", {
+      files: [localPath],
+      backendNodeId: pendingFC.backendNodeId,
+    });
+  } else if (selector) {
+    // Direct selector approach — find the file input and set files
+    const doc = await sendDebuggerCommand(tid, "DOM.getDocument");
+    const node = await sendDebuggerCommand(tid, "DOM.querySelector", {
+      nodeId: doc.root.nodeId,
+      selector,
+    });
+    if (!node.nodeId) throw new Error(`File input not found: ${selector}`);
+    await sendDebuggerCommand(tid, "DOM.setFileInputFiles", {
+      nodeId: node.nodeId,
+      files: [localPath],
+    });
+  } else {
+    throw new Error(
+      "No pending file chooser and no selector provided. Click the upload button first, then call browser_upload_file.",
+    );
+  }
 
   // Clean up temp file
   try {
@@ -1188,7 +1218,7 @@ async function handleFileUpload({ selector, fileId, tabId }) {
     // best-effort cleanup
   }
 
-  return { tabId: tid, selector, fileId, fileName };
+  return { tabId: tid, selector: selector || "(file chooser)", fileId, fileName };
 }
 
 // --- Frames (list iframes) ---
@@ -1810,6 +1840,10 @@ async function ensureDebugger(tabId) {
       behavior: "allow",
       eventsEnabled: true,
     }).catch(() => {});
+    // Intercept file chooser dialogs so agent can upload files programmatically
+    await sendDebuggerCommand(tabId, "Page.setInterceptFileChooserDialog", {
+      enabled: true,
+    }).catch(() => {});
   })();
 
   debuggerPending.set(tabId, promise);
@@ -2001,6 +2035,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   debuggerPending.delete(tabId);
   activeTabCommands.delete(tabId);
   pendingDialogs.delete(tabId);
+  pendingFileChoosers.delete(tabId);
   tabEmulation.delete(tabId);
   // Clean up per-requestId auth entries for this tab
   const reqIds = pendingAuthByTab.get(tabId);

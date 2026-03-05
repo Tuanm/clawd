@@ -411,11 +411,13 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_upload_file",
         description:
-          'Set files on a <input type="file"> element. Provide a CSS selector for the file input and a file_id from the chat server.',
+          "Upload a file to a web page. Two modes: (1) After clicking an upload button that opens a file chooser dialog (file_chooser_opened in response), just provide file_id — no selector needed. " +
+          '(2) Direct mode: provide both file_id and a CSS selector for the <input type="file"> element.',
         parameters: {
           selector: {
             type: "string",
-            description: 'CSS selector of the <input type="file"> element',
+            description:
+              'CSS selector of the <input type="file"> element. Optional if a file chooser dialog is pending from a previous click.',
           },
           file_id: {
             type: "string",
@@ -423,7 +425,7 @@ export class BrowserPlugin implements ToolPlugin {
           },
           tab_id: { type: "number", description: "Target tab ID (optional)" },
         },
-        required: ["selector", "file_id"],
+        required: ["file_id"],
         handler: async (args) => this.handleUploadFile(args),
       },
       {
@@ -772,6 +774,7 @@ export class BrowserPlugin implements ToolPlugin {
             element: result.element || args.selector || `(${args.x}, ${args.y})`,
             tab_id: result.tabId,
             ...(result.download_triggered && { download_triggered: result.download_triggered }),
+            ...(result.file_chooser_opened && { file_chooser_opened: result.file_chooser_opened }),
           },
           null,
           2,
