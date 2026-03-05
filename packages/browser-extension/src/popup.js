@@ -17,39 +17,59 @@ chrome.storage.local.get(["serverUrl", "extensionId"]).then((config) => {
 });
 
 // Check connection status
-chrome.runtime.sendMessage({ type: "get-status" }, (response) => {
-  if (chrome.runtime.lastError) {
-    setStatus(false);
-    return;
-  }
-  setStatus(response?.connected || false);
-  if (response?.extensionId) {
-    extIdEl.textContent = `ID: ${response.extensionId}`;
-  }
-});
+function checkStatus() {
+  chrome.runtime.sendMessage({ type: "get-status" }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.log("[clawd-popup] get-status error:", chrome.runtime.lastError.message);
+      setStatus(false);
+      return;
+    }
+    console.log("[clawd-popup] get-status response:", response);
+    setStatus(response?.connected || false);
+    if (response?.extensionId) {
+      extIdEl.textContent = `ID: ${response.extensionId}`;
+    }
+  });
+}
+
+checkStatus();
 
 // Reconnect button
 connectBtn.addEventListener("click", () => {
   const url = serverUrlInput.value.trim();
+  console.log("[clawd-popup] Reconnect clicked, url:", url);
+
+  // Immediate visual feedback
+  statusText.textContent = "Reconnecting...";
+  dot.className = "dot disconnected";
+  connectBtn.disabled = true;
+
   if (url) {
-    chrome.runtime.sendMessage({ type: "set-server-url", url }, () => {
-      if (chrome.runtime.lastError) {
-        setStatus(false);
-        return;
-      }
-      statusText.textContent = "Reconnecting...";
-      dot.className = "dot disconnected";
+    // Save URL to storage directly (popup has storage permission)
+    chrome.storage.local.set({ serverUrl: url }).then(() => {
+      console.log("[clawd-popup] Saved serverUrl to storage");
+      // Tell offscreen to reconnect
+      chrome.runtime.sendMessage({ type: "reconnect" }, (response) => {
+        console.log("[clawd-popup] reconnect response:", response, "lastError:", chrome.runtime.lastError?.message);
+        connectBtn.disabled = false;
+      });
     });
   } else {
-    chrome.runtime.sendMessage({ type: "reconnect" }, () => {
-      if (chrome.runtime.lastError) setStatus(false);
+    chrome.runtime.sendMessage({ type: "reconnect" }, (response) => {
+      console.log("[clawd-popup] reconnect response:", response, "lastError:", chrome.runtime.lastError?.message);
+      connectBtn.disabled = false;
     });
   }
+
+  // Poll status after a delay
+  setTimeout(checkStatus, 2000);
+  setTimeout(checkStatus, 5000);
 });
 
-// Listen for status updates
+// Listen for status updates from offscreen
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "connection-status") {
+    console.log("[clawd-popup] connection-status:", message.connected);
     setStatus(message.connected);
     if (message.extensionId) {
       extIdEl.textContent = `ID: ${message.extensionId}`;
