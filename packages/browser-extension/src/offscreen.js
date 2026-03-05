@@ -263,7 +263,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let filename = filePath.split(/[/\\]/).pop() || "download";
         // Strip Chrome's temp download suffix if present (.crdownload fallback path)
         if (filename.endsWith(".crdownload")) {
-          filename = filename.slice(0, -".crdownload".length);
+          filename = filename.slice(0, -".crdownload".length) || "download";
         }
         const file = new File([blob], filename, { type: mime || "application/octet-stream" });
         const formData = new FormData();

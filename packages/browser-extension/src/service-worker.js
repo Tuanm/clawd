@@ -18,6 +18,7 @@ const tabEmulation = new Map(); // tabId -> {metrics, hasTouch, userAgent} for s
 const pendingAuth = new Map(); // requestId -> { tabId, url, scheme, realm }
 const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status lookup)
 const recentDownloads = []; // Recent download events (from CDP Browser.downloadWillBegin), max 20
+const cdpCompletedUrls = new Map(); // url -> timestamp — CDP-confirmed download completions (separate from recentDownloads to survive consumeRecentDownload splice)
 
 // Clean up debugger state on detach (registered once at module scope)
 chrome.debugger.onDetach.addListener((source) => {
@@ -1025,7 +1026,13 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   // Track download completion via CDP (more reliable than chrome.downloads for blob: URLs)
   if (method === "Browser.downloadProgress" && params.state === "completed") {
     const rd = recentDownloads.find((d) => d.guid === params.guid);
-    if (rd) rd.cdpCompleted = true;
+    if (rd) {
+      rd.cdpCompleted = true;
+      // Store in separate Map so it survives consumeRecentDownload splice
+      cdpCompletedUrls.set(rd.url, Date.now());
+      // Auto-expire after 60s to prevent unbounded growth
+      setTimeout(() => cdpCompletedUrls.delete(rd.url), 60000);
+    }
   }
   // Track file chooser dialogs (intercepted by Page.setInterceptFileChooserDialog)
   if (method === "Page.fileChooserOpened" && source.tabId) {
@@ -1580,10 +1587,9 @@ async function handleDownload({ action, timeout }) {
           (d) => d.state === "in_progress" && d.totalBytes > 0 && d.bytesReceived >= d.totalBytes,
         );
         if (stuck) {
-          // Check if CDP already confirmed completion (reliable for blob: URLs)
-          const cdpEntry = recentDownloads.find((rd) => rd.url === stuck.url && rd.cdpCompleted);
-          if (cdpEntry) {
-            // CDP confirmed — skip polling, proceed immediately
+          // Check if CDP already confirmed completion (survives consumeRecentDownload splice)
+          if (cdpCompletedUrls.has(stuck.url)) {
+            cdpCompletedUrls.delete(stuck.url);
             resolve(stuck);
             return;
           }
@@ -1592,16 +1598,21 @@ async function handleDownload({ action, timeout }) {
           const pollTimer = setInterval(() => {
             pollCount++;
             // Check CDP signal first (fires before chrome.downloads transitions for blob: URLs)
-            const rdEntry = recentDownloads.find((rd) => rd.url === stuck.url && rd.cdpCompleted);
-            if (rdEntry) {
+            if (cdpCompletedUrls.has(stuck.url)) {
+              cdpCompletedUrls.delete(stuck.url);
               clearInterval(pollTimer);
               resolve(stuck);
               return;
             }
             chrome.downloads.search({ id: stuck.id }, (updated) => {
-              if (updated?.[0]?.state === "complete") {
+              const state = updated?.[0]?.state;
+              if (state === "complete") {
                 clearInterval(pollTimer);
                 resolve(updated[0]);
+              } else if (state === "interrupted") {
+                // User cancelled or download failed during polling
+                clearInterval(pollTimer);
+                reject(new Error(`Download interrupted: ${updated?.[0]?.error || "unknown reason"}`));
               } else if (pollCount >= 10) {
                 // 5 seconds — download is truly stuck (common for blob:null URLs)
                 clearInterval(pollTimer);
