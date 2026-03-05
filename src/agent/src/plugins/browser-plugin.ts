@@ -548,7 +548,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_store",
         description:
-          'Store and retrieve data per-website using the browser\'s localStorage. Useful for saving reusable scripts, selectors, credentials references, or any data scoped to a specific website that persists across sessions. Data is stored under a private namespace only the agent can access. Each origin has its own isolated storage.',
+          'Store and retrieve data per-website using the browser\'s localStorage. Useful for saving reusable scripts, selectors, or any data scoped to a specific website that persists across sessions. Data is stored under a namespaced key (__clawd_store__) in the page\'s localStorage — note that page scripts could theoretically access this data. Each origin has its own isolated storage.',
         parameters: {
           action: {
             type: "string",
@@ -1227,6 +1227,14 @@ export class BrowserPlugin implements ToolPlugin {
   private async handleStore(args: Record<string, any>): Promise<ToolResult> {
     const { sendBrowserCommand } = await this.getBridge();
     try {
+      // Pre-validate value is JSON-serializable (catches circular references before sending to browser)
+      if (args.action === "set" && args.value !== undefined) {
+        try {
+          JSON.stringify(args.value);
+        } catch {
+          return { success: false, output: "", error: "Value is not JSON-serializable (check for circular references)" };
+        }
+      }
       const result = await sendBrowserCommand("store", {
         action: args.action,
         key: args.key,

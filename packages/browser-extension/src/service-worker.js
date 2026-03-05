@@ -15,7 +15,8 @@ const debuggerPending = new Map(); // tabId -> Promise (serializes attachment)
 const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)
 const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
 let currentEmulation = null; // Track active emulation state {metrics, hasTouch, userAgent} for screenshot restore
-const pendingAuth = new Map(); // tabId -> { requestId, url, scheme, realm }
+const pendingAuth = new Map(); // requestId -> { tabId, url, scheme, realm }
+const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status lookup)
 
 // Clean up debugger state on detach (registered once at module scope)
 chrome.debugger.onDetach.addListener((source) => {
@@ -946,20 +947,37 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       if (key.startsWith(prefix)) frameContexts.delete(key);
     }
   }
-  // Track HTTP authentication requests
+  // Track HTTP authentication requests (keyed by requestId to avoid blocking other requests)
   if (method === "Fetch.authRequired" && source.tabId) {
-    pendingAuth.set(source.tabId, {
-      requestId: params.requestId,
+    const rid = params.requestId;
+    pendingAuth.set(rid, {
+      tabId: source.tabId,
       url: params.request?.url,
       scheme: params.authChallenge?.scheme,
       realm: params.authChallenge?.realm,
     });
+    if (!pendingAuthByTab.has(source.tabId)) pendingAuthByTab.set(source.tabId, new Set());
+    pendingAuthByTab.get(source.tabId).add(rid);
+    // Auto-cancel after 60s to prevent indefinite hangs
+    setTimeout(() => {
+      if (pendingAuth.has(rid)) {
+        sendDebuggerCommand(source.tabId, "Fetch.continueWithAuth", {
+          requestId: rid,
+          authChallengeResponse: { response: "CancelAuth" },
+        }).catch(() => {});
+        pendingAuth.delete(rid);
+        pendingAuthByTab.get(source.tabId)?.delete(rid);
+      }
+    }, 60000);
   }
-  // Auto-continue non-auth paused requests (Fetch.enable pauses all by default)
-  if (method === "Fetch.requestPaused" && source.tabId && !pendingAuth.has(source.tabId)) {
-    sendDebuggerCommand(source.tabId, "Fetch.continueRequest", {
-      requestId: params.requestId,
-    }).catch(() => {});
+  // Auto-continue non-auth paused requests. Skip auth requests (401/407 — will be handled via Fetch.authRequired).
+  if (method === "Fetch.requestPaused" && source.tabId) {
+    const code = params.responseStatusCode;
+    if (code !== 401 && code !== 407) {
+      sendDebuggerCommand(source.tabId, "Fetch.continueRequest", {
+        requestId: params.requestId,
+      }).catch(() => {});
+    }
   }
 });
 
@@ -1293,34 +1311,44 @@ async function handleAuth({ action, username, password, tabId }) {
   await ensureDebugger(tid);
 
   if (action === "status") {
-    const auth = pendingAuth.get(tid);
-    if (!auth) return { tabId: tid, pending: false };
-    return { tabId: tid, pending: true, url: auth.url, scheme: auth.scheme, realm: auth.realm };
+    const reqIds = pendingAuthByTab.get(tid);
+    if (!reqIds || reqIds.size === 0) return { tabId: tid, pending: false };
+    // Return first pending auth request
+    const rid = reqIds.values().next().value;
+    const auth = pendingAuth.get(rid);
+    return { tabId: tid, pending: true, request_id: rid, url: auth?.url, scheme: auth?.scheme, realm: auth?.realm };
   }
 
   if (action === "provide") {
-    const auth = pendingAuth.get(tid);
-    if (!auth) throw new Error("No pending auth request on this tab");
+    const reqIds = pendingAuthByTab.get(tid);
+    if (!reqIds || reqIds.size === 0) throw new Error("No pending auth request on this tab");
+    const rid = reqIds.values().next().value;
+    const auth = pendingAuth.get(rid);
     await sendDebuggerCommand(tid, "Fetch.continueWithAuth", {
-      requestId: auth.requestId,
+      requestId: rid,
       authChallengeResponse: {
         response: "ProvideCredentials",
         username: username || "",
         password: password || "",
       },
     });
-    pendingAuth.delete(tid);
-    return { tabId: tid, authenticated: true, url: auth.url };
+    pendingAuth.delete(rid);
+    reqIds.delete(rid);
+    if (reqIds.size === 0) pendingAuthByTab.delete(tid);
+    return { tabId: tid, authenticated: true, url: auth?.url };
   }
 
   if (action === "cancel") {
-    const auth = pendingAuth.get(tid);
-    if (!auth) throw new Error("No pending auth request on this tab");
+    const reqIds = pendingAuthByTab.get(tid);
+    if (!reqIds || reqIds.size === 0) throw new Error("No pending auth request on this tab");
+    const rid = reqIds.values().next().value;
     await sendDebuggerCommand(tid, "Fetch.continueWithAuth", {
-      requestId: auth.requestId,
+      requestId: rid,
       authChallengeResponse: { response: "CancelAuth" },
     });
-    pendingAuth.delete(tid);
+    pendingAuth.delete(rid);
+    reqIds.delete(rid);
+    if (reqIds.size === 0) pendingAuthByTab.delete(tid);
     return { tabId: tid, cancelled: true };
   }
 
@@ -1333,49 +1361,31 @@ async function handlePermissions({ action, permissions, origin, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
-  if (action === "grant") {
-    if (!permissions || !permissions.length) throw new Error("permissions array is required");
+  if (!permissions || !permissions.length) throw new Error("permissions array is required");
+
+  // Resolve origin, guard against special URLs
+  let permOrigin = origin;
+  if (!permOrigin) {
     const tab = await chrome.tabs.get(tid);
-    const permOrigin = origin || new URL(tab.url).origin;
-    for (const perm of permissions) {
-      await sendDebuggerCommand(tid, "Browser.setPermission", {
-        permission: { name: perm },
-        setting: "granted",
-        origin: permOrigin,
-      });
+    const parsed = new URL(tab.url);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      throw new Error(`Cannot set permissions for ${parsed.protocol}// URLs. Navigate to an http/https page first.`);
     }
-    return { tabId: tid, granted: permissions, origin: permOrigin };
+    permOrigin = parsed.origin;
   }
 
-  if (action === "deny") {
-    if (!permissions || !permissions.length) throw new Error("permissions array is required");
-    const tab = await chrome.tabs.get(tid);
-    const permOrigin = origin || new URL(tab.url).origin;
-    for (const perm of permissions) {
-      await sendDebuggerCommand(tid, "Browser.setPermission", {
-        permission: { name: perm },
-        setting: "denied",
-        origin: permOrigin,
-      });
-    }
-    return { tabId: tid, denied: permissions, origin: permOrigin };
+  const setting = action === "grant" ? "granted" : action === "deny" ? "denied" : action === "reset" ? "prompt" : null;
+  if (!setting) throw new Error(`Unknown permissions action: ${action}. Use "grant", "deny", or "reset".`);
+
+  for (const perm of permissions) {
+    await sendDebuggerCommand(tid, "Browser.setPermission", {
+      permission: { name: perm },
+      setting,
+      origin: permOrigin,
+    });
   }
 
-  if (action === "reset") {
-    if (!permissions || !permissions.length) throw new Error("permissions array is required");
-    const tab = await chrome.tabs.get(tid);
-    const permOrigin = origin || new URL(tab.url).origin;
-    for (const perm of permissions) {
-      await sendDebuggerCommand(tid, "Browser.setPermission", {
-        permission: { name: perm },
-        setting: "prompt",
-        origin: permOrigin,
-      });
-    }
-    return { tabId: tid, reset: permissions, origin: permOrigin };
-  }
-
-  throw new Error(`Unknown permissions action: ${action}. Use "grant", "deny", or "reset".`);
+  return { tabId: tid, [action === "reset" ? "reset" : action + "ed"]: permissions, origin: permOrigin };
 }
 
 // --- Agent Script Storage (per-origin via localStorage) ---
@@ -1389,14 +1399,20 @@ async function handleStore({ action, key, value, tabId }) {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tid },
       func: (ns, k, v) => {
-        const store = JSON.parse(localStorage.getItem(ns) || "{}");
-        store[k] = v;
-        localStorage.setItem(ns, JSON.stringify(store));
-        return { stored: true, key: k };
+        try {
+          const store = JSON.parse(localStorage.getItem(ns) || "{}");
+          store[k] = v;
+          localStorage.setItem(ns, JSON.stringify(store));
+          return { stored: true, key: k };
+        } catch (e) {
+          return { error: e.message };
+        }
       },
       args: [NS, key, value],
     });
-    return { tabId: tid, ...results[0]?.result };
+    const r = results[0]?.result;
+    if (r?.error) throw new Error(`Store set failed: ${r.error}`);
+    return { tabId: tid, ...r };
   }
 
   if (action === "get") {
@@ -1404,25 +1420,37 @@ async function handleStore({ action, key, value, tabId }) {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tid },
       func: (ns, k) => {
-        const store = JSON.parse(localStorage.getItem(ns) || "{}");
-        return { key: k, value: store[k] ?? null, found: k in store };
+        try {
+          const store = JSON.parse(localStorage.getItem(ns) || "{}");
+          return { key: k, value: store[k] ?? null, found: k in store };
+        } catch (e) {
+          return { error: e.message };
+        }
       },
       args: [NS, key],
     });
-    return { tabId: tid, ...results[0]?.result };
+    const r = results[0]?.result;
+    if (r?.error) throw new Error(`Store get failed: ${r.error}`);
+    return { tabId: tid, ...r };
   }
 
   if (action === "list") {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tid },
       func: (ns) => {
-        const store = JSON.parse(localStorage.getItem(ns) || "{}");
-        return { keys: Object.keys(store), count: Object.keys(store).length };
+        try {
+          const store = JSON.parse(localStorage.getItem(ns) || "{}");
+          return { keys: Object.keys(store), count: Object.keys(store).length };
+        } catch (e) {
+          return { error: e.message };
+        }
       },
       args: [NS],
     });
+    const r = results[0]?.result;
+    if (r?.error) throw new Error(`Store list failed: ${r.error}`);
     const tab = await chrome.tabs.get(tid);
-    return { tabId: tid, origin: new URL(tab.url).origin, ...results[0]?.result };
+    return { tabId: tid, origin: new URL(tab.url).origin, ...r };
   }
 
   if (action === "delete") {
@@ -1430,27 +1458,39 @@ async function handleStore({ action, key, value, tabId }) {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tid },
       func: (ns, k) => {
-        const store = JSON.parse(localStorage.getItem(ns) || "{}");
-        const existed = k in store;
-        delete store[k];
-        localStorage.setItem(ns, JSON.stringify(store));
-        return { deleted: existed, key: k };
+        try {
+          const store = JSON.parse(localStorage.getItem(ns) || "{}");
+          const existed = k in store;
+          delete store[k];
+          localStorage.setItem(ns, JSON.stringify(store));
+          return { deleted: existed, key: k };
+        } catch (e) {
+          return { error: e.message };
+        }
       },
       args: [NS, key],
     });
-    return { tabId: tid, ...results[0]?.result };
+    const r = results[0]?.result;
+    if (r?.error) throw new Error(`Store delete failed: ${r.error}`);
+    return { tabId: tid, ...r };
   }
 
   if (action === "clear") {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tid },
       func: (ns) => {
-        localStorage.removeItem(ns);
-        return { cleared: true };
+        try {
+          localStorage.removeItem(ns);
+          return { cleared: true };
+        } catch (e) {
+          return { error: e.message };
+        }
       },
       args: [NS],
     });
-    return { tabId: tid, ...results[0]?.result };
+    const r = results[0]?.result;
+    if (r?.error) throw new Error(`Store clear failed: ${r.error}`);
+    return { tabId: tid, ...r };
   }
 
   throw new Error(`Unknown store action: ${action}. Use "set", "get", "list", "delete", or "clear".`);
@@ -1642,7 +1682,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   debuggerPending.delete(tabId);
   activeTabCommands.delete(tabId);
   pendingDialogs.delete(tabId);
-  pendingAuth.delete(tabId);
+  // Clean up per-requestId auth entries for this tab
+  const reqIds = pendingAuthByTab.get(tabId);
+  if (reqIds) {
+    for (const rid of reqIds) pendingAuth.delete(rid);
+    pendingAuthByTab.delete(tabId);
+  }
   for (const key of frameContexts.keys()) {
     if (key.startsWith(`${tabId}:`)) frameContexts.delete(key);
   }
