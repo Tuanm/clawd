@@ -458,7 +458,10 @@ async function handleBrowserFileRequest(req: Request, _url: URL, path: string): 
       const file = formData.get("file") as File;
       if (!file) return json({ ok: false, error: "Missing 'file' in form data" }, 400);
       if (file.size > MAX_BROWSER_FILE_SIZE) {
-        return json({ ok: false, error: `File too large (${(file.size / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.` }, 413);
+        return json(
+          { ok: false, error: `File too large (${(file.size / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.` },
+          413,
+        );
       }
       const result = await uploadFile(file, "browser", undefined, "UBROWSER");
       return json(result, result.ok ? 200 : 413);
@@ -474,7 +477,10 @@ async function handleBrowserFileRequest(req: Request, _url: URL, path: string): 
     const file = getFile(fileId);
     if (!file) return new Response("Not found", { status: 404 });
     if (file.data.length > MAX_BROWSER_FILE_SIZE) {
-      return json({ ok: false, error: `File too large (${(file.data.length / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.` }, 413);
+      return json(
+        { ok: false, error: `File too large (${(file.data.length / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.` },
+        413,
+      );
     }
     return new Response(file.data, {
       headers: {

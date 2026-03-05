@@ -1058,7 +1058,6 @@ export class BrowserPlugin implements ToolPlugin {
       return { success: false, output: "", error: err.message };
     }
   }
-  }
 
   private async handleFrames(args: Record<string, any>): Promise<ToolResult> {
     const { sendBrowserCommand } = await this.getBridge();

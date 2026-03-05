@@ -1065,11 +1065,14 @@ async function handleFileUpload({ selector, fileId, tabId }) {
   const file = new File([blob], fileName, { type: blob.type });
   const blobUrl = URL.createObjectURL(file);
   const downloadId = await new Promise((resolve, reject) => {
-    chrome.downloads.download({ url: blobUrl, filename: `clawd_upload_${fileName}`, conflictAction: "uniquify" }, (id) => {
-      URL.revokeObjectURL(blobUrl);
-      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-      else resolve(id);
-    });
+    chrome.downloads.download(
+      { url: blobUrl, filename: `clawd_upload_${fileName}`, conflictAction: "uniquify" },
+      (id) => {
+        URL.revokeObjectURL(blobUrl);
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(id);
+      },
+    );
   });
   // Wait for temp download to complete
   const localPath = await new Promise((resolve, reject) => {
@@ -1387,9 +1390,21 @@ async function handleDownload({ action, timeout }) {
     if (downloadInfo.filename) {
       try {
         const file = await uploadFileToChatServer(downloadInfo.filename, downloadInfo.mime);
-        return { file_id: file.id, filename: file.name, mime: downloadInfo.mime, size: file.size, source_url: downloadInfo.url };
+        return {
+          file_id: file.id,
+          filename: file.name,
+          mime: downloadInfo.mime,
+          size: file.size,
+          source_url: downloadInfo.url,
+        };
       } catch (uploadErr) {
-        return { filename: downloadInfo.filename, url: downloadInfo.url, mime: downloadInfo.mime, totalBytes: downloadInfo.totalBytes, upload_error: uploadErr.message };
+        return {
+          filename: downloadInfo.filename,
+          url: downloadInfo.url,
+          mime: downloadInfo.mime,
+          totalBytes: downloadInfo.totalBytes,
+          upload_error: uploadErr.message,
+        };
       }
     }
     return downloadInfo;
@@ -1404,7 +1419,13 @@ async function handleDownload({ action, timeout }) {
       const file = await uploadFileToChatServer(item.filename, item.mime);
       return { file_id: file.id, filename: file.name, mime: item.mime, size: file.size, source_url: item.url };
     } catch (uploadErr) {
-      return { filename: item.filename, url: item.url, mime: item.mime, totalBytes: item.totalBytes, upload_error: uploadErr.message };
+      return {
+        filename: item.filename,
+        url: item.url,
+        mime: item.mime,
+        totalBytes: item.totalBytes,
+        upload_error: uploadErr.message,
+      };
     }
   }
 
