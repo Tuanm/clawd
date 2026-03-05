@@ -348,50 +348,59 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
     await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: true }).catch(() => {});
   }
 
-  const buttonMap = { left: "left", right: "right", middle: "middle" };
-  const btn = buttonMap[button] || "left";
-  const clickCount = count || 1;
+  try {
+    const buttonMap = { left: "left", right: "right", middle: "middle" };
+    const btn = buttonMap[button] || "left";
+    const clickCount = count || 1;
 
-  for (let i = 0; i < clickCount; i++) {
-    await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: clickX,
-      y: clickY,
-      button: btn,
-      clickCount: i + 1,
-    });
-    await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: clickX,
-      y: clickY,
-      button: btn,
-      clickCount: i + 1,
-    });
-  }
+    for (let i = 0; i < clickCount; i++) {
+      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: clickX,
+        y: clickY,
+        button: btn,
+        clickCount: i + 1,
+      });
+      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: clickX,
+        y: clickY,
+        button: btn,
+        clickCount: i + 1,
+      });
+    }
 
-  showActionCursor(tid, clickX, clickY);
-  // Brief delay to let download/file-chooser events propagate from CDP
-  await new Promise((r) => setTimeout(r, 300));
-  const dl = consumeRecentDownload(tid);
-  const result = { tabId: tid, element: selector || `(${clickX},${clickY})` };
-  if (dl)
-    result.download_triggered = {
-      url: dl.url,
-      filename: dl.suggestedFilename,
-      hint: "A file download was triggered. Use browser_download action=wait to capture it.",
-    };
-  // Check if a file chooser dialog was intercepted (only possible when intercept_file_chooser was set)
-  if (intercept_file_chooser && pendingFileChoosers.has(tid)) {
-    const fc = pendingFileChoosers.get(tid);
-    result.file_chooser_opened = {
-      mode: fc.mode,
-      hint: "A file chooser dialog was intercepted. Use browser_upload_file with file_id to provide the file. No selector needed.",
-    };
-  } else if (intercept_file_chooser) {
-    // No file chooser was triggered — disable interception to avoid interfering with future dialogs
-    await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    showActionCursor(tid, clickX, clickY);
+    // Brief delay to let download/file-chooser events propagate from CDP
+    await new Promise((r) => setTimeout(r, 300));
+    const dl = consumeRecentDownload(tid);
+    const result = { tabId: tid, element: selector || `(${clickX},${clickY})` };
+    if (dl)
+      result.download_triggered = {
+        url: dl.url,
+        filename: dl.suggestedFilename,
+        hint: "A file download was triggered. Use browser_download action=wait to capture it.",
+      };
+    // Check if a file chooser dialog was intercepted (only possible when intercept_file_chooser was set)
+    if (intercept_file_chooser && pendingFileChoosers.has(tid)) {
+      const fc = pendingFileChoosers.get(tid);
+      result.file_chooser_opened = {
+        mode: fc.mode,
+        hint: "A file chooser dialog was intercepted. Use browser_upload_file with file_id to provide the file. No selector needed.",
+      };
+    } else if (intercept_file_chooser) {
+      // No file chooser was triggered — disable interception to avoid interfering with future dialogs
+      await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    }
+    return result;
+  } catch (err) {
+    // Clean up interception state on error to prevent leaking
+    if (intercept_file_chooser) {
+      pendingFileChoosers.delete(tid);
+      await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    }
+    throw err;
   }
-  return result;
 }
 
 // --- Type ---
@@ -1043,6 +1052,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     for (const key of frameContexts.keys()) {
       if (key.startsWith(prefix)) frameContexts.delete(key);
     }
+    // Clear stale file chooser interception on navigation (interception is per-session, survives nav)
+    if (pendingFileChoosers.has(source.tabId)) {
+      pendingFileChoosers.delete(source.tabId);
+      sendDebuggerCommand(source.tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    }
   }
   // Track HTTP authentication requests (keyed by requestId to avoid blocking other requests)
   if (method === "Fetch.authRequired" && source.tabId) {
@@ -1144,8 +1158,8 @@ const SET_FILE_JS = `function(base64, fileName, mimeType) {
   const dt = new DataTransfer();
   dt.items.add(file);
   this.files = dt.files;
-  this.dispatchEvent(new Event('change', { bubbles: true }));
-  this.dispatchEvent(new Event('input', { bubbles: true }));
+  this.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  this.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
   return fileName;
 }`;
 
@@ -1158,41 +1172,62 @@ async function handleFileUpload({ selector, fileId, tabId }) {
   // Fetch file binary from chat server
   const { baseUrl, authToken } = await getServerBaseUrl();
   const fileUrl = `${baseUrl}/browser/files/${fileId}` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
-  const resp = await fetch(fileUrl);
-  if (!resp.ok) throw new Error(`File not found on server: ${fileId}`);
-  const blob = await resp.blob();
+  let resp;
+  try {
+    resp = await fetch(fileUrl);
+  } catch (err) {
+    throw new Error(`Failed to reach file server: ${err.message}`);
+  }
+  if (!resp.ok) throw new Error(`File server returned ${resp.status} for fileId: ${fileId}`);
+  let blob;
+  try {
+    blob = await resp.blob();
+  } catch (err) {
+    throw new Error(`Failed to download file data: ${err.message}`);
+  }
   const contentDisposition = resp.headers.get("Content-Disposition") || "";
   const nameMatch = contentDisposition.match(/filename="([^"]+)"/);
   const fileName = nameMatch ? nameMatch[1] : `upload_${fileId}`;
   const mimeType = blob.type || "application/octet-stream";
 
+  // Guard against large files that would OOM the service worker during base64 encoding
+  const MAX_INJECT_SIZE = 25 * 1024 * 1024; // 25 MiB practical limit for base64 injection
+  if (blob.size > MAX_INJECT_SIZE) {
+    throw new Error(
+      `File too large for browser upload (${(blob.size / 1024 / 1024).toFixed(1)} MiB). Max ${MAX_INJECT_SIZE / 1024 / 1024} MiB.`,
+    );
+  }
+
   // Convert to base64 for injection into page context (avoids chrome.downloads entirely)
   const arrayBuffer = await blob.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
-  let binary = "";
-  const chunkSize = 32768;
+  const parts = [];
+  const chunkSize = 32768; // 32KB — safe for String.fromCharCode.apply (V8 limit ~65K args)
   for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+    parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize)));
   }
-  const base64 = btoa(binary);
+  const base64 = btoa(parts.join(''));
 
   // If a file chooser dialog is pending (from a click with intercept_file_chooser), resolve its element
   const pendingFC = pendingFileChoosers.get(tid);
   if (pendingFC) {
     pendingFileChoosers.delete(tid);
-    // Resolve backendNodeId to a JS object reference
-    const resolved = await sendDebuggerCommand(tid, "DOM.resolveNode", {
-      backendNodeId: pendingFC.backendNodeId,
-    });
-    if (!resolved?.object?.objectId) throw new Error("Could not resolve file input element from file chooser");
-    await sendDebuggerCommand(tid, "Runtime.callFunctionOn", {
-      objectId: resolved.object.objectId,
-      functionDeclaration: SET_FILE_JS,
-      arguments: [{ value: base64 }, { value: fileName }, { value: mimeType }],
-      returnByValue: true,
-    });
-    // Disable interception now that the file has been provided
-    await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    try {
+      // Resolve backendNodeId to a JS object reference
+      const resolved = await sendDebuggerCommand(tid, "DOM.resolveNode", {
+        backendNodeId: pendingFC.backendNodeId,
+      });
+      if (!resolved?.object?.objectId) throw new Error("Could not resolve file input element from file chooser");
+      await sendDebuggerCommand(tid, "Runtime.callFunctionOn", {
+        objectId: resolved.object.objectId,
+        functionDeclaration: SET_FILE_JS,
+        arguments: [{ value: base64 }, { value: fileName }, { value: mimeType }],
+        returnByValue: true,
+      });
+    } finally {
+      // Always disable interception, even on error, to prevent leaking state
+      await sendDebuggerCommand(tid, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    }
   } else if (selector) {
     // Direct selector approach — find the input and set files via JS DataTransfer
     const doc = await sendDebuggerCommand(tid, "DOM.getDocument");

@@ -1150,13 +1150,6 @@ export class BrowserPlugin implements ToolPlugin {
   }
 
   private async handleUploadFile(args: Record<string, any>): Promise<ToolResult> {
-    if (!args.selector) {
-      return {
-        success: false,
-        output: "",
-        error: "selector is required (CSS selector for the <input type='file'> element)",
-      };
-    }
     if (!args.file_id) {
       return { success: false, output: "", error: "file_id is required (from chat server)" };
     }
@@ -1173,7 +1166,7 @@ export class BrowserPlugin implements ToolPlugin {
         output: JSON.stringify(
           {
             uploaded: true,
-            selector: args.selector,
+            selector: result.selector || args.selector || "(file chooser)",
             file_id: args.file_id,
             filename: result.fileName,
             tab_id: result.tabId,
