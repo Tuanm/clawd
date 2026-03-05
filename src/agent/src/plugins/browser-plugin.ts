@@ -40,7 +40,7 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_navigate",
         description:
-          "Navigate a browser tab to a URL. Creates a new tab if no tab_id is specified. Returns the page title, URL, and tab ID.",
+          "Navigate a browser tab to a URL. If a tab with the target URL is already open (check via browser_tabs list first), reuse it by passing its tab_id instead of opening a new tab. Creates a new tab if no tab_id is specified. Close tabs you no longer need via browser_tabs action=close.",
         parameters: {
           url: { type: "string", description: "URL to navigate to" },
           tab_id: {
@@ -160,11 +160,13 @@ export class BrowserPlugin implements ToolPlugin {
       },
       {
         name: "browser_tabs",
-        description: "List open browser tabs or manage them (close, activate). Returns tab IDs, titles, and URLs.",
+        description:
+          "List, close, or activate browser tabs. IMPORTANT: Before opening new tabs, check if a suitable tab is already open. Close tabs you no longer need to keep the browser tidy and reduce resource usage.",
         parameters: {
           action: {
             type: "string",
-            description: '"list" (default), "close", or "activate"',
+            description:
+              '"list" (default) — shows all tabs; "close" — close a tab; "activate" — bring a tab to foreground',
             enum: ["list", "close", "activate"],
           },
           tab_id: {
@@ -178,11 +180,25 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_execute",
         description:
-          "Execute JavaScript code in the browser tab context. Returns the expression result. Use for advanced DOM manipulation or page interaction.",
+          "Execute JavaScript in the browser tab. Supports running inline code OR a stored script by ID (saved via browser_store). " +
+          "When reusing a stored script, pass script_id (and optional script_args) instead of code — this avoids re-sending large scripts and enables reuse across sessions. " +
+          "If both code and script_id are provided, script_id takes priority.",
         parameters: {
           code: {
             type: "string",
-            description: "JavaScript code to execute in the page context",
+            description: "JavaScript code to execute in the page context (omit if using script_id)",
+          },
+          script_id: {
+            type: "string",
+            description:
+              "Key of a stored script (saved via browser_store with action=set). The script is loaded and wrapped in an async function — " +
+              "use 'return <expr>' to return values (unlike inline code, the last expression is NOT implicitly returned). Prefer this over re-sending code.",
+          },
+          script_args: {
+            type: "object",
+            description:
+              "Arguments object passed to the stored script as __args. Access via __args.key inside the script. " +
+              "Only used with script_id.",
           },
           tab_id: { type: "number", description: "Target tab ID (optional)" },
           frame_id: {
@@ -190,7 +206,7 @@ export class BrowserPlugin implements ToolPlugin {
             description: "Frame ID for frame-targeted execution (use browser_frames to list frames)",
           },
         },
-        required: ["code"],
+        required: [],
         handler: async (args) => this.handleExecute(args),
       },
       {
@@ -551,17 +567,27 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_store",
         description:
-          "Store and retrieve data per-website using the browser's localStorage. Useful for saving reusable scripts, selectors, or any data scoped to a specific website that persists across sessions. Data is stored under a namespaced key (__clawd_store__) in the page's localStorage — note that page scripts could theoretically access this data. Each origin has its own isolated storage.",
+          "Store and retrieve data/scripts per-website using the browser's localStorage. " +
+          "IMPORTANT: For any script you plan to run more than once, save it here first (action=set with a description), then run it via browser_execute with script_id instead of resending the code. " +
+          "Use action=list to see all stored items with their descriptions. " +
+          "Data is stored under a namespaced key (__clawd_store__) in the page's localStorage, scoped to the page origin. " +
+          "Use descriptive keys like 'scroll-to-bottom', 'extract-table', 'login-form' so scripts are easy to find and reuse.",
         parameters: {
           action: {
             type: "string",
-            description: '"set", "get", "list" (all keys), "delete" (one key), or "clear" (all data for this origin)',
+            description:
+              '"set", "get", "list" (all keys with descriptions), "delete" (one key), or "clear" (all data for this origin)',
             enum: ["set", "get", "list", "delete", "clear"],
           },
           key: { type: "string", description: "Storage key (required for set/get/delete)" },
           value: {
             type: "string",
-            description: "Value to store (required for set). For scripts, store as a string.",
+            description: "Value to store (required for set). For scripts, store the JS code as a string.",
+          },
+          description: {
+            type: "string",
+            description:
+              "Human-readable description of what this stored item does (recommended for set). Shown in list results to help select the right script.",
           },
           tab_id: { type: "number", description: "Target tab ID (optional)" },
         },
@@ -822,8 +848,57 @@ export class BrowserPlugin implements ToolPlugin {
   private async handleExecute(args: Record<string, any>): Promise<ToolResult> {
     const { sendBrowserCommand } = await this.getBridge();
     try {
+      let code = args.code;
+
+      // If script_id is provided, load the stored script first
+      if (args.script_id) {
+        const storeResult = await sendBrowserCommand("store", {
+          action: "get",
+          key: args.script_id,
+          tabId: args.tab_id,
+        });
+        const storedScript = storeResult?.value;
+        const found = storeResult?.found;
+        if (!found) {
+          return {
+            success: false,
+            output: "",
+            error: `Stored script '${String(args.script_id).slice(0, 100)}' not found. Use browser_store action=set to save it first, or use browser_store action=list to see available scripts.`,
+          };
+        }
+        if (typeof storedScript !== "string" || storedScript.length === 0) {
+          return {
+            success: false,
+            output: "",
+            error: `Stored item '${String(args.script_id).slice(0, 100)}' is not a valid script (type: ${typeof storedScript}). Store a non-empty JS code string.`,
+          };
+        }
+        // Serialize script_args safely
+        let argsJson: string;
+        try {
+          argsJson = JSON.stringify(args.script_args ?? {});
+        } catch {
+          return {
+            success: false,
+            output: "",
+            error:
+              "script_args is not JSON-serializable (check for BigInt, circular references, or other non-serializable values)",
+          };
+        }
+        // Wrap stored script as async IIFE with __args injected (async supports await in scripts)
+        code = `(async function(){const __args=${argsJson};${storedScript}})()`;
+      }
+
+      if (!code) {
+        return {
+          success: false,
+          output: "",
+          error: "Either 'code' or 'script_id' is required.",
+        };
+      }
+
       const result = await sendBrowserCommand("execute", {
-        code: args.code,
+        code,
         tabId: args.tab_id,
         frameId: args.frame_id,
       });
@@ -1216,6 +1291,7 @@ export class BrowserPlugin implements ToolPlugin {
         action: args.action,
         key: args.key,
         value: args.value,
+        description: args.description,
         tabId: args.tab_id,
       });
       return { success: true, output: JSON.stringify(result, null, 2) };

@@ -1528,7 +1528,7 @@ async function handlePermissions({ action, permissions, origin, tabId }) {
 
 // --- Agent Script Storage (per-origin via localStorage) ---
 
-async function handleStore({ action, key, value, tabId }) {
+async function handleStore({ action, key, value, description, tabId }) {
   const tid = tabId || (await getActiveTabId());
   // Guard against non-injectable pages (localStorage not available)
   const tab = await chrome.tabs.get(tid);
@@ -1536,22 +1536,32 @@ async function handleStore({ action, key, value, tabId }) {
     throw new Error(`Cannot use store on ${tab.url.split(":")[0]}:// pages. Navigate to an http/https page first.`);
   }
   const NS = "__clawd_store__";
+  const NS_META = "__clawd_store_meta__";
 
   if (action === "set") {
     if (!key) throw new Error("key is required for store set");
+    if (value === undefined || value === null) throw new Error("value is required for store set");
     const results = await chrome.scripting.executeScript({
       target: { tabId: tid },
-      func: (ns, k, v) => {
+      func: (ns, nsMeta, k, v, desc) => {
         try {
           const store = JSON.parse(localStorage.getItem(ns) || "{}");
           store[k] = v;
           localStorage.setItem(ns, JSON.stringify(store));
+          // Always sync metadata — clear stale description if none provided
+          const meta = JSON.parse(localStorage.getItem(nsMeta) || "{}");
+          if (desc) {
+            meta[k] = desc;
+          } else {
+            delete meta[k];
+          }
+          localStorage.setItem(nsMeta, JSON.stringify(meta));
           return { stored: true, key: k };
         } catch (e) {
           return { error: e.message };
         }
       },
-      args: [NS, key, value],
+      args: [NS, NS_META, key, value, description || null],
     });
     const r = results[0]?.result;
     if (r?.error) throw new Error(`Store set failed: ${r.error}`);
@@ -1580,15 +1590,27 @@ async function handleStore({ action, key, value, tabId }) {
   if (action === "list") {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tid },
-      func: (ns) => {
+      func: (ns, nsMeta) => {
         try {
           const store = JSON.parse(localStorage.getItem(ns) || "{}");
-          return { keys: Object.keys(store), count: Object.keys(store).length };
+          const meta = JSON.parse(localStorage.getItem(nsMeta) || "{}");
+          const keys = Object.keys(store);
+          const items = keys.map((k) => {
+            const val = store[k];
+            const isScript = typeof val === "string" && /[;{}()=]|return |function |=>/.test(val);
+            return {
+              key: k,
+              type: isScript ? "script" : typeof val,
+              description: meta[k] || null,
+              size: typeof val === "string" ? val.length : JSON.stringify(val).length,
+            };
+          });
+          return { items, count: keys.length };
         } catch (e) {
           return { error: e.message };
         }
       },
-      args: [NS],
+      args: [NS, NS_META],
     });
     const r = results[0]?.result;
     if (r?.error) throw new Error(`Store list failed: ${r.error}`);
@@ -1606,18 +1628,22 @@ async function handleStore({ action, key, value, tabId }) {
     if (!key) throw new Error("key is required for store delete");
     const results = await chrome.scripting.executeScript({
       target: { tabId: tid },
-      func: (ns, k) => {
+      func: (ns, nsMeta, k) => {
         try {
           const store = JSON.parse(localStorage.getItem(ns) || "{}");
           const existed = k in store;
           delete store[k];
           localStorage.setItem(ns, JSON.stringify(store));
+          // Also remove metadata
+          const meta = JSON.parse(localStorage.getItem(nsMeta) || "{}");
+          delete meta[k];
+          localStorage.setItem(nsMeta, JSON.stringify(meta));
           return { deleted: existed, key: k };
         } catch (e) {
           return { error: e.message };
         }
       },
-      args: [NS, key],
+      args: [NS, NS_META, key],
     });
     const r = results[0]?.result;
     if (r?.error) throw new Error(`Store delete failed: ${r.error}`);
@@ -1627,15 +1653,16 @@ async function handleStore({ action, key, value, tabId }) {
   if (action === "clear") {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tid },
-      func: (ns) => {
+      func: (ns, nsMeta) => {
         try {
           localStorage.removeItem(ns);
+          localStorage.removeItem(nsMeta);
           return { cleared: true };
         } catch (e) {
           return { error: e.message };
         }
       },
-      args: [NS],
+      args: [NS, NS_META],
     });
     const r = results[0]?.result;
     if (r?.error) throw new Error(`Store clear failed: ${r.error}`);
