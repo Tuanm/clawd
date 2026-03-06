@@ -82,6 +82,57 @@ function migrateSchedulerSchema(db: Database): void {
     db.exec("ALTER TABLE scheduled_jobs ADD COLUMN tool_name TEXT");
     db.exec("ALTER TABLE scheduled_jobs ADD COLUMN tool_args_json TEXT");
   }
+
+  // Migrate CHECK constraint to include 'tool_call' type.
+  // SQLite doesn't support ALTER CONSTRAINT, so we recreate the table.
+  const checkSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='scheduled_jobs'").get() as {
+    sql: string;
+  } | null;
+  if (checkSql && !checkSql.sql.includes("'tool_call'")) {
+    // Re-read columns after potential ALTER above
+    const currentCols = db.prepare("PRAGMA table_info(scheduled_jobs)").all() as { name: string }[];
+    const currentColNames = currentCols.map((c) => c.name);
+    const sharedCols = currentColNames.join(", ");
+
+    db.exec("BEGIN");
+    try {
+      db.exec(`
+        CREATE TABLE scheduled_jobs_new (
+          id TEXT PRIMARY KEY,
+          channel TEXT NOT NULL,
+          created_by_agent TEXT NOT NULL,
+          type TEXT NOT NULL CHECK(type IN ('once','interval','cron','reminder','tool_call')),
+          status TEXT NOT NULL DEFAULT 'active'
+            CHECK(status IN ('active','paused','completed','failed','cancelled')),
+          cron_expr TEXT,
+          interval_ms INTEGER,
+          run_at INTEGER,
+          next_run INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          timeout_seconds INTEGER DEFAULT 300,
+          max_runs INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          last_run_at INTEGER,
+          run_count INTEGER DEFAULT 0,
+          consecutive_errors INTEGER DEFAULT 0,
+          last_error TEXT,
+          tool_name TEXT,
+          tool_args_json TEXT
+        );
+        INSERT INTO scheduled_jobs_new (${sharedCols}) SELECT ${sharedCols} FROM scheduled_jobs;
+        DROP TABLE scheduled_jobs;
+        ALTER TABLE scheduled_jobs_new RENAME TO scheduled_jobs;
+        CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON scheduled_jobs(next_run) WHERE status = 'active';
+        CREATE INDEX IF NOT EXISTS idx_jobs_channel ON scheduled_jobs(channel);
+      `);
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+  }
 }
 
 // --- Types ---
