@@ -89,7 +89,10 @@ export function registerMcpServerRoutes(
         const existingCfg = existing[name];
 
         // Resolve transport/url/command from body OR stored config
-        const transport = body.transport || existingCfg?.transport || (existingCfg?.command ? "stdio" : existingCfg?.url ? "http" : undefined);
+        const transport =
+          body.transport ||
+          existingCfg?.transport ||
+          (existingCfg?.command ? "stdio" : existingCfg?.url ? "http" : undefined);
         const command = body.command || existingCfg?.command;
         const args = body.args || existingCfg?.args;
         const env = body.env || existingCfg?.env;
@@ -140,7 +143,8 @@ export function registerMcpServerRoutes(
               if (!oauthConfig.token_url) oauthConfig.token_url = discovered.token_endpoint;
               if (!oauthConfig.scopes?.length) oauthConfig.scopes = discovered.scopes_supported;
               if (!oauthConfig.client_secret) oauthConfig.client_secret = discovered.client_secret;
-              if (!oauthConfig.registration_endpoint) oauthConfig.registration_endpoint = discovered.registration_endpoint;
+              if (!oauthConfig.registration_endpoint)
+                oauthConfig.registration_endpoint = discovered.registration_endpoint;
             }
           }
 
@@ -149,12 +153,21 @@ export function registerMcpServerRoutes(
           }
 
           // Save/update config
-          const configToSave: MCPServerConfig = { transport: "http", url: serverUrl, oauth: oauthConfig as MCPServerConfig["oauth"] };
+          const configToSave: MCPServerConfig = {
+            transport: "http",
+            url: serverUrl,
+            oauth: oauthConfig as MCPServerConfig["oauth"],
+          };
           if (existingCfg?.logo) configToSave.logo = existingCfg.logo;
           saveChannelMCPServer(channel, name, configToSave);
 
           const { auth_url } = startOAuthFlow(channel, name, oauthConfig as any, callbackBaseUrl);
-          return json({ ok: true, needs_oauth: true, auth_url, server: { name, transport: "http", connected: false, tools: 0 } });
+          return json({
+            ok: true,
+            needs_oauth: true,
+            auth_url,
+            server: { name, transport: "http", connected: false, tools: 0 },
+          });
         }
 
         // Try connecting

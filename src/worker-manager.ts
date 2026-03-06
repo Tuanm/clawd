@@ -280,11 +280,15 @@ export class WorkerManager {
 
       for (const [name, config] of enabledEntries) {
         try {
-          // Load OAuth token for HTTP servers
+          // Skip HTTP+OAuth servers without a valid token (need browser OAuth flow)
           let token: string | undefined;
           if (config.oauth?.client_id) {
             const stored = loadOAuthToken(channel, name);
             token = stored?.access_token;
+            if (!token) {
+              console.log(`[WorkerManager] Skipping MCP server ${name} (no OAuth token — connect via UI)`);
+              continue;
+            }
           }
           await mcpManager.addServer({
             name,
@@ -297,7 +301,7 @@ export class WorkerManager {
           });
           console.log(`[WorkerManager] Connected MCP server: ${name} (channel: ${channel})`);
         } catch (err) {
-          console.error(`[WorkerManager] Failed to connect MCP server ${name} for channel ${channel}:`, err);
+          console.error(`[WorkerManager] Failed to connect MCP server ${name} for channel ${channel}: ${(err as any)?.message || err}`);
         }
       }
 
