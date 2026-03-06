@@ -1,0 +1,15 @@
+services:
+  clawd:
+    image: clawd-pilot/clawd:latest
+    build: .
+    ports:
+      - "3456:3456"
+    volumes:
+      - clawd-data:/home/clawd/.clawd
+    security_opt:
+      - apparmor=unconfined
+      - seccomp=unconfined
+    restart: unless-stopped
+
+volumes:
+  clawd-data:
