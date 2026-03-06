@@ -151,7 +151,7 @@ export function registerMcpServerRoutes(
                 authorize_url: discovered.authorization_endpoint,
                 token_url: discovered.token_endpoint,
                 registration_endpoint: discovered.registration_endpoint,
-                scopes: undefined, // Don't auto-request all supported scopes; let user/provider decide
+                scopes: discovered.scopes_supported, // Save discovered scopes for the OAuth flow
               },
             };
 
@@ -167,7 +167,7 @@ export function registerMcpServerRoutes(
                   authorize_url: discovered.authorization_endpoint,
                   token_url: discovered.token_endpoint,
                   registration_endpoint: discovered.registration_endpoint,
-                  scopes: storedCfg.oauth.scopes,
+                  scopes: storedCfg.oauth.scopes || discovered.scopes_supported,
                 };
                 configToSave.oauth = mergedOauth;
                 saveChannelMCPServer(channel, name, configToSave);

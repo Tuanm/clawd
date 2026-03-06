@@ -334,7 +334,11 @@ export function startOAuthFlow(
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
   });
-  if (oauth.scopes?.length) params.set("scope", oauth.scopes.join(" "));
+  if (oauth.scopes?.length) {
+    // Use comma separator for Slack-style scopes (containing colons), space for standard OAuth
+    const sep = oauth.scopes.some((s) => s.includes(":")) ? "," : " ";
+    params.set("scope", oauth.scopes.join(sep));
+  }
 
   const authUrl = `${oauth.authorize_url}?${params.toString()}`;
 
