@@ -1496,8 +1496,8 @@ SUMMARY:`;
       content: userMessage,
     });
 
-    // Get tools (including MCP)
-    const tools = this.getTools();
+    // Get tools (including MCP) - refreshed each iteration to pick up dynamic connections
+    let tools = this.getTools();
 
     // Check for interrupt periodically (from interruptChecker and plugins)
     // Returns true if new message was injected (should continue loop)
@@ -1605,6 +1605,9 @@ SUMMARY:`;
         if (this._cancelled) {
           break;
         }
+
+        // Refresh tools each iteration to pick up dynamically added MCP connections (e.g. remote workers)
+        tools = this.getTools();
 
         iterations++;
 
