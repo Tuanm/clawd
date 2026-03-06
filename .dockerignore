@@ -1,0 +1,11 @@
+node_modules/
+dist/
+packages/ui/node_modules/
+packages/ui/dist/
+packages/workspace-mcp/node_modules/
+packages/workspace-mcp/dist/
+.git/
+.github/
+*.log
+.DS_Store
+src/embedded-ui.ts
