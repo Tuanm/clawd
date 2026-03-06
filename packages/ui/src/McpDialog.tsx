@@ -75,6 +75,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
   const [newUrl, setNewUrl] = useState("");
   const [newEnv, setNewEnv] = useState("");
   const [newOAuthClientId, setNewOAuthClientId] = useState("");
+  const [newOAuthClientSecret, setNewOAuthClientSecret] = useState("");
   const [newOAuthScopes, setNewOAuthScopes] = useState("");
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
@@ -94,6 +95,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
       setNewUrl("");
       setNewEnv("");
       setNewOAuthClientId("");
+      setNewOAuthClientSecret("");
       setNewOAuthScopes("");
     }
   }, [isOpen]);
@@ -168,6 +170,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
         if (newOAuthClientId.trim()) {
           body.oauth = {
             client_id: newOAuthClientId.trim(),
+            client_secret: newOAuthClientSecret.trim() || undefined,
             scopes: newOAuthScopes.trim() ? newOAuthScopes.split(",").map((s) => s.trim()) : undefined,
           };
         }
@@ -193,6 +196,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
         setNewUrl("");
         setNewEnv("");
         setNewOAuthClientId("");
+        setNewOAuthClientSecret("");
         setNewOAuthScopes("");
         setShowAddForm(false);
         await loadServers();
@@ -220,6 +224,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
       setNewUrl("");
       setNewEnv("");
       setNewOAuthClientId("");
+      setNewOAuthClientSecret("");
       setNewOAuthScopes("");
       setShowAddForm(false);
       await loadServers();
@@ -238,6 +243,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
     newUrl,
     newEnv,
     newOAuthClientId,
+    newOAuthClientSecret,
     newOAuthScopes,
     loadServers,
   ]);
@@ -429,16 +435,28 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                     }}
                   />
                   {newOAuthClientId && (
-                    <input
-                      type="text"
-                      className="agent-field-input"
-                      placeholder="OAuth Scopes (comma-separated, optional)"
-                      value={newOAuthScopes}
-                      onChange={(e) => setNewOAuthScopes(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleAdd();
-                      }}
-                    />
+                    <>
+                      <input
+                        type="password"
+                        className="agent-field-input"
+                        placeholder="OAuth Client Secret (optional)"
+                        value={newOAuthClientSecret}
+                        onChange={(e) => setNewOAuthClientSecret(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleAdd();
+                        }}
+                      />
+                      <input
+                        type="text"
+                        className="agent-field-input"
+                        placeholder="OAuth Scopes (comma-separated, optional)"
+                        value={newOAuthScopes}
+                        onChange={(e) => setNewOAuthScopes(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleAdd();
+                        }}
+                      />
+                    </>
                   )}
                 </>
               )}
