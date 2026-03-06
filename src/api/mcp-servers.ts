@@ -78,7 +78,8 @@ export function registerMcpServerRoutes(
     if (path === "/api/app.mcp.add" && req.method === "POST") {
       return (async () => {
         const body = await parseBody(req);
-        const { channel, name, transport, command, args, env, url: serverUrl, oauth } = body;
+        const { channel, name, transport, command, args, env, url: serverUrl } = body;
+        let { oauth } = body;
 
         if (!channel || !name) return json({ ok: false, error: "channel and name required" }, 400);
         if (!transport) return json({ ok: false, error: "transport required (stdio or http)" }, 400);
@@ -86,14 +87,29 @@ export function registerMcpServerRoutes(
         if (transport === "stdio" && !command) return json({ ok: false, error: "command required for stdio" }, 400);
         if (transport === "http" && !serverUrl) return json({ ok: false, error: "url required for http" }, 400);
 
-        // Check for existing — allow re-submission for servers needing OAuth client_id
+        // Check for existing — allow re-submission for OAuth retry or HTTP reconnect
         const existing = getChannelMCPServers(channel);
-        if (existing[name]) {
+        const existingCfg = existing[name];
+        if (existingCfg) {
           const isOAuthRetry =
-            transport === "http" && oauth?.client_id && existing[name].oauth && existing[name].oauth?.client_id === "";
-          if (!isOAuthRetry) {
+            transport === "http" && oauth?.client_id && existingCfg.oauth && existingCfg.oauth?.client_id === "";
+          const isHttpReconnect = transport === "http" && existingCfg.transport === "http";
+          if (!isOAuthRetry && !isHttpReconnect) {
             return json({ ok: false, error: `Server "${name}" already exists in channel` }, 409);
           }
+        }
+
+        // For HTTP servers, merge stored OAuth credentials from config
+        // User-provided oauth fields take precedence over stored values
+        if (transport === "http" && existingCfg?.oauth?.client_id && !oauth?.client_id) {
+          // Use stored credentials automatically
+          oauth = {
+            client_id: existingCfg.oauth.client_id,
+            client_secret: existingCfg.oauth.client_secret,
+            authorize_url: existingCfg.oauth.authorize_url,
+            token_url: existingCfg.oauth.token_url,
+            scopes: existingCfg.oauth.scopes,
+          };
         }
 
         // For OAuth servers, load token if available
@@ -140,13 +156,38 @@ export function registerMcpServerRoutes(
             };
 
             if (!discovered.client_id) {
-              // Discovery succeeded but dynamic registration failed — need manual client_id
-              // Save partial config so endpoints are available for next attempt
+              // DCR failed — check if existing config has stored credentials
+              const storedCfg = existing[name];
+              if (storedCfg?.oauth?.client_id) {
+                // Use stored credentials + discovered endpoints
+                console.log(`[mcp-servers] Using stored OAuth credentials for ${name}`);
+                const mergedOauth = {
+                  client_id: storedCfg.oauth.client_id,
+                  client_secret: storedCfg.oauth.client_secret,
+                  authorize_url: discovered.authorization_endpoint,
+                  token_url: discovered.token_endpoint,
+                  registration_endpoint: discovered.registration_endpoint,
+                  scopes: storedCfg.oauth.scopes,
+                };
+                configToSave.oauth = mergedOauth;
+                saveChannelMCPServer(channel, name, configToSave);
+
+                const { auth_url } = startOAuthFlow(channel, name, mergedOauth, callbackBaseUrl);
+                return json({
+                  ok: true,
+                  needs_oauth: true,
+                  auth_url,
+                  server: { name, transport: "http", connected: false, tools: 0 },
+                });
+              }
+
+              // No stored credentials — save partial config and ask user
               configToSave.oauth!.client_id = "";
               saveChannelMCPServer(channel, name, configToSave);
               // Check if provider requires client_secret
               const authMethods = discovered.token_endpoint_auth_methods_supported || [];
-              const needsSecret = authMethods.includes("client_secret_post") || authMethods.includes("client_secret_basic");
+              const needsSecret =
+                authMethods.includes("client_secret_post") || authMethods.includes("client_secret_basic");
               const secretHint = needsSecret
                 ? " Client Secret is also required by this provider."
                 : " Client Secret is optional if your provider supports PKCE.";

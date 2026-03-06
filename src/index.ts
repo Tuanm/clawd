@@ -719,10 +719,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         } else if (msg.includes("invalid_code") || msg.includes("code_expired")) {
           hint = "<p><b>Hint:</b> The authorization code expired. Try the OAuth flow again.</p>";
         }
-        return new Response(
-          `<html><body><h2>OAuth Error</h2><p>${safeMsg}</p>${hint}</body></html>`,
-          { status: 500, headers: { "Content-Type": "text/html" } },
-        );
+        return new Response(`<html><body><h2>OAuth Error</h2><p>${safeMsg}</p>${hint}</body></html>`, {
+          status: 500,
+          headers: { "Content-Type": "text/html" },
+        });
       }
     }
 
