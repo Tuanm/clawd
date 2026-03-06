@@ -510,9 +510,6 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
             <div className="mcp-empty">
               <McpIcon size={32} />
               <p>No MCP servers configured for this channel.</p>
-              <button className="agent-action-btn agent-action-btn--accent" onClick={() => setShowAddForm(true)}>
-                Add MCP Server
-              </button>
             </div>
           )}
 
