@@ -145,28 +145,6 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
     [channel, loadServers],
   );
 
-  const handleRemove = useCallback(
-    async (name: string) => {
-      try {
-        const res = await fetch(`${API_URL}/api/app.mcp.remove`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ channel, name }),
-        });
-        const data = await res.json();
-        if (!data.ok) {
-          setError(data.error || "Failed to remove server");
-          return;
-        }
-        setSelectedName(null);
-        await loadServers();
-      } catch (e: any) {
-        setError(e.message || "Failed to remove server");
-      }
-    },
-    [channel, loadServers],
-  );
-
   const selectedServer = servers.find((s) => s.name === selectedName);
 
   if (!isOpen) return null;
@@ -274,12 +252,6 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                     {connecting ? "Connecting..." : "Connect"}
                   </button>
                 )}
-                <button
-                  className="agent-action-btn agent-action-btn--danger"
-                  onClick={() => handleRemove(selectedServer.name)}
-                >
-                  Remove
-                </button>
               </div>
             </div>
           )}

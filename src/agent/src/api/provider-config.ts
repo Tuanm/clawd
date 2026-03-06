@@ -405,7 +405,9 @@ export function saveChannelMCPServer(channel: string, name: string, serverConfig
   const config = loadConfig();
   if (!config.mcp_servers) config.mcp_servers = {};
   if (!config.mcp_servers[channel]) config.mcp_servers[channel] = {};
-  config.mcp_servers[channel][name] = serverConfig;
+  // Merge with existing config to preserve fields like logo, enabled, etc.
+  const existing = config.mcp_servers[channel][name] || {};
+  config.mcp_servers[channel][name] = { ...existing, ...serverConfig };
   writeConfigToDisk(config);
 }
 
