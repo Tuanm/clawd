@@ -1943,9 +1943,11 @@ export default function App({ channel: initialChannel }: Props) {
           </button>
         }
         mcpButton={
-          <button className="mcp-btn" onClick={() => setShowMcpDialog(true)} title="MCP Servers">
-            <McpIcon size={16} />
-          </button>
+          !isSpaceChannel ? (
+            <button className="mcp-btn" onClick={() => setShowMcpDialog(true)} title="MCP Servers">
+              <McpIcon size={16} />
+            </button>
+          ) : undefined
         }
       />
       <StreamOutputDialog

@@ -429,4 +429,9 @@ export class WorkerManager {
     if (!mgr) return [];
     return mgr.getServerStatuses();
   }
+
+  /** Get the shared MCPManager for a channel (if any) */
+  getChannelMcpManager(channel: string): MCPManager | undefined {
+    return this.channelMcp.get(channel);
+  }
 }

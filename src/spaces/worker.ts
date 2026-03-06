@@ -2,6 +2,7 @@ import { WorkerLoop } from "../worker-loop";
 import type { SpaceManager } from "./manager";
 import type { Space } from "./db";
 import { createSpaceToolPlugin } from "./plugin";
+import type { MCPManager } from "../agent/src/mcp/client";
 
 const MAX_SPACE_WORKERS = 5;
 
@@ -21,11 +22,18 @@ interface AgentConfig {
 
 export class SpaceWorkerManager {
   private workers = new Map<string, SpaceWorkerEntry>();
+  /** Callback to retrieve the parent channel's shared MCPManager */
+  private getChannelMcp?: (channel: string) => MCPManager | undefined;
 
   constructor(
     private config: { chatApiUrl: string; projectRoot: string; debug: boolean; yolo: boolean },
     private spaceManager: SpaceManager,
   ) {}
+
+  /** Set the callback used to look up a channel's shared MCPManager */
+  setChannelMcpLookup(fn: (channel: string) => MCPManager | undefined): void {
+    this.getChannelMcp = fn;
+  }
 
   startSpaceWorker(space: Space, agentConfig: AgentConfig): Promise<string> {
     if (this.workers.size >= MAX_SPACE_WORKERS) {
@@ -81,6 +89,7 @@ export class SpaceWorkerManager {
         yolo: this.config.yolo,
         contextMode: true,
         isSpaceAgent: true,
+        channelMcpManager: this.getChannelMcp?.(space.channel),
         onLoopExit: () => {
           // If the loop exits without the promise being settled, reject it
           if (!entry.settled) {

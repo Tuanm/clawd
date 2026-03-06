@@ -285,6 +285,9 @@ initRunner({
 const workerManager = new WorkerManager(config, scheduler);
 workerManager.setSpaceInfra(spaceManager, spaceWorkerManager);
 
+// Wire channel MCP lookup so sub-agents inherit parent channel's MCP servers
+spaceWorkerManager.setChannelMcpLookup((channel) => workerManager.getChannelMcpManager(channel));
+
 // Register agent management API routes
 const handleAgentRoute = registerAgentRoutes(db, workerManager);
 
