@@ -200,6 +200,12 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
         return;
       }
 
+      // Discovery succeeded but needs manual client_id — keep form open
+      if (data.needs_client_id) {
+        setError(data.error || "Please provide your OAuth Client ID.");
+        return;
+      }
+
       if (!data.ok) {
         setError(data.error || "Failed to add server");
         return;

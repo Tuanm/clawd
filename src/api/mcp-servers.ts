@@ -86,9 +86,15 @@ export function registerMcpServerRoutes(
         if (transport === "stdio" && !command) return json({ ok: false, error: "command required for stdio" }, 400);
         if (transport === "http" && !serverUrl) return json({ ok: false, error: "url required for http" }, 400);
 
-        // Check for existing
+        // Check for existing — allow re-submission for servers needing OAuth client_id
         const existing = getChannelMCPServers(channel);
-        if (existing[name]) return json({ ok: false, error: `Server "${name}" already exists in channel` }, 409);
+        if (existing[name]) {
+          const isOAuthRetry =
+            transport === "http" && oauth?.client_id && existing[name].oauth && existing[name].oauth?.client_id === "";
+          if (!isOAuthRetry) {
+            return json({ ok: false, error: `Server "${name}" already exists in channel` }, 409);
+          }
+        }
 
         // For OAuth servers, load token if available
         let token: string | undefined;
@@ -135,11 +141,14 @@ export function registerMcpServerRoutes(
 
             if (!discovered.client_id) {
               // Discovery succeeded but dynamic registration failed — need manual client_id
+              // Save partial config so endpoints are available for next attempt
+              configToSave.oauth!.client_id = "";
+              saveChannelMCPServer(channel, name, configToSave);
               return json(
                 {
                   ok: false,
-                  error: "OAuth discovered but dynamic client registration not available. Please provide a client_id.",
-                  needs_oauth: true,
+                  error: "OAuth server discovered. Please provide your OAuth Client ID.",
+                  needs_client_id: true,
                   discovered: {
                     authorization_endpoint: discovered.authorization_endpoint,
                     token_endpoint: discovered.token_endpoint,
@@ -176,6 +185,58 @@ export function registerMcpServerRoutes(
 
           // No discovery available — return original connection error
           return json({ ok: false, error: `Connection failed: ${result.error}` }, 502);
+        }
+
+        // If HTTP connection failed and user provided OAuth client_id, start OAuth flow
+        if (!result.success && transport === "http" && oauth?.client_id) {
+          const callbackBaseUrl = getPublicOrigin(req, url);
+
+          // Check if we have saved config with discovered endpoints (from previous attempt)
+          const existingConfigs = getChannelMCPServers(channel);
+          const existingConfig = existingConfigs[name];
+          const oauthConfig: Record<string, any> = {
+            client_id: oauth.client_id,
+            client_secret: oauth.client_secret || existingConfig?.oauth?.client_secret,
+            authorize_url: oauth.authorize_url || existingConfig?.oauth?.authorize_url,
+            token_url: oauth.token_url || existingConfig?.oauth?.token_url,
+            scopes: oauth.scopes || existingConfig?.oauth?.scopes,
+            registration_endpoint: existingConfig?.oauth?.registration_endpoint,
+          };
+
+          // If we still don't have endpoints, try discovery
+          if (!oauthConfig.authorize_url || !oauthConfig.token_url) {
+            const callbackUrl = `${callbackBaseUrl}/api/mcp/oauth/callback`;
+            const discovered = await discoverOAuthMetadata(serverUrl, callbackUrl);
+            if (discovered) {
+              oauthConfig.authorize_url = discovered.authorization_endpoint;
+              oauthConfig.token_url = discovered.token_endpoint;
+              if (!oauthConfig.scopes) oauthConfig.scopes = discovered.scopes_supported;
+              if (!oauthConfig.client_secret) oauthConfig.client_secret = discovered.client_secret;
+              if (!oauthConfig.registration_endpoint)
+                oauthConfig.registration_endpoint = discovered.registration_endpoint;
+            }
+          }
+
+          if (!oauthConfig.authorize_url || !oauthConfig.token_url) {
+            return json({ ok: false, error: "OAuth authorize_url and token_url are required" }, 400);
+          }
+
+          // Save/update config with user's client_id + discovered endpoints
+          const configToSave: MCPServerConfig = {
+            transport: "http",
+            url: serverUrl,
+            oauth: oauthConfig,
+          };
+          saveChannelMCPServer(channel, name, configToSave);
+
+          const { auth_url } = startOAuthFlow(channel, name, oauthConfig, callbackBaseUrl);
+
+          return json({
+            ok: true,
+            needs_oauth: true,
+            auth_url,
+            server: { name, transport: "http", connected: false, tools: 0 },
+          });
         }
 
         if (!result.success) {
