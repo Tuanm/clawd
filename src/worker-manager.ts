@@ -216,9 +216,9 @@ export class WorkerManager {
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 10000);
-      const res = await fetch(`${this.config.chatApiUrl}/api/app.agents.list`, { signal: ctrl.signal }).finally(() =>
-        clearTimeout(timer),
-      );
+      const res = await fetch(`${this.config.chatApiUrl}/api/app.agents.list?internal=1`, {
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
       const data = (await res.json()) as any;
 
       if (data.ok && Array.isArray(data.agents)) {

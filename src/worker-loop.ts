@@ -638,6 +638,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
 
             // Create remote worker bridge if agent has a worker token
             if (this.config.workerToken) {
+              this.log(`Creating RemoteWorkerBridge (token: ${this.config.workerToken.slice(0, 4)}***)`);
               remoteWorkerBridge = new RemoteWorkerBridge(agent.getMcpManager(), channel, this.config.workerToken);
               await remoteWorkerBridge.init();
             }

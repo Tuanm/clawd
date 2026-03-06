@@ -396,12 +396,18 @@ export function registerAgentRoutes(
       }
 
       // Enrich with running status
+      // Internal callers (e.g. WorkerManager) need unmasked tokens for remote worker binding
+      const internal = url.searchParams.get("internal") === "1";
       const enriched = agents.map((a: any) => ({
         ...a,
         active: a.active === 1,
         sleeping: a.sleeping === 1,
         running: workerManager.isAgentRunning(a.channel, a.agent_id),
-        worker_token: a.worker_token ? `${a.worker_token.slice(0, 4)}***${a.worker_token.slice(-3)}` : null,
+        worker_token: a.worker_token
+          ? internal
+            ? a.worker_token
+            : `${a.worker_token.slice(0, 4)}***${a.worker_token.slice(-3)}`
+          : null,
       }));
 
       return json({ ok: true, agents: enriched });

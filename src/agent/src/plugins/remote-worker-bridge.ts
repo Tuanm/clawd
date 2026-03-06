@@ -50,7 +50,7 @@ export class RemoteWorkerBridge {
         projectRoot: worker.projectRoot,
         platform: worker.platform,
         tools: worker.tools,
-        channels: getTokenChannels(worker.tokenHash),
+        channels: getTokenChannels(this.agentWorkerToken!),
       });
     }
   }
@@ -83,6 +83,11 @@ export class RemoteWorkerBridge {
     tools: Array<{ name: string; inputSchema: any; description: string }>;
     channels: string[] | "all";
   }) {
+    if (info.tokenHash === this.agentTokenHash) {
+      console.log(
+        `[RemoteWorkerBridge] Worker registered: ${info.name} (${info.tools.length} tools) for channel ${this.channel}`,
+      );
+    }
     this.addWorkerConnection(info).catch(console.error);
   }
 
