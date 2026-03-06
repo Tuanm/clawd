@@ -33,6 +33,7 @@ export interface OAuthDiscoveryResult {
   registration_endpoint?: string;
   scopes_supported?: string[];
   code_challenge_methods_supported?: string[];
+  token_endpoint_auth_methods_supported?: string[];
   // After dynamic client registration:
   client_id?: string;
   client_secret?: string;
@@ -146,6 +147,7 @@ export async function discoverOAuthMetadata(
     registration_endpoint: asMeta.registration_endpoint,
     scopes_supported: asMeta.scopes_supported,
     code_challenge_methods_supported: asMeta.code_challenge_methods_supported,
+    token_endpoint_auth_methods_supported: asMeta.token_endpoint_auth_methods_supported,
   };
 
   // Step 3: Client registration — try multiple strategies per MCP SDK behavior:

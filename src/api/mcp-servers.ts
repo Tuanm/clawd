@@ -144,11 +144,16 @@ export function registerMcpServerRoutes(
               // Save partial config so endpoints are available for next attempt
               configToSave.oauth!.client_id = "";
               saveChannelMCPServer(channel, name, configToSave);
+              // Check if provider requires client_secret
+              const authMethods = discovered.token_endpoint_auth_methods_supported || [];
+              const needsSecret = authMethods.includes("client_secret_post") || authMethods.includes("client_secret_basic");
+              const secretHint = needsSecret
+                ? " Client Secret is also required by this provider."
+                : " Client Secret is optional if your provider supports PKCE.";
               return json(
                 {
                   ok: false,
-                  error:
-                    "OAuth server discovered but auto-registration not available. Please provide your OAuth Client ID. Client Secret is optional if your provider supports PKCE.",
+                  error: `OAuth server discovered but auto-registration not available. Please provide your OAuth Client ID.${secretHint}`,
                   needs_client_id: true,
                   discovered: {
                     authorization_endpoint: discovered.authorization_endpoint,

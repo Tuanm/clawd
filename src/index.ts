@@ -709,10 +709,20 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           { headers: { "Content-Type": "text/html" } },
         );
       } catch (err: any) {
-        return new Response(`OAuth error: ${escapeHtml(err.message || "Unknown error")}`, {
-          status: 500,
-          headers: { "Content-Type": "text/plain" },
-        });
+        const msg = err.message || "Unknown error";
+        const safeMsg = escapeHtml(msg);
+        // Provide actionable guidance for common errors
+        let hint = "";
+        if (msg.includes("bad_client_secret") || msg.includes("invalid_client")) {
+          hint =
+            "<p><b>Hint:</b> This provider requires a Client Secret. Remove the server in the MCP dialog, re-add it with both Client ID and Client Secret from your app settings.</p>";
+        } else if (msg.includes("invalid_code") || msg.includes("code_expired")) {
+          hint = "<p><b>Hint:</b> The authorization code expired. Try the OAuth flow again.</p>";
+        }
+        return new Response(
+          `<html><body><h2>OAuth Error</h2><p>${safeMsg}</p>${hint}</body></html>`,
+          { status: 500, headers: { "Content-Type": "text/html" } },
+        );
       }
     }
 

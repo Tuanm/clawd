@@ -250,7 +250,6 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
 
   const handleRemove = useCallback(
     async (name: string) => {
-      if (!confirm(`Remove MCP server "${name}"?`)) return;
       try {
         const res = await fetch(`${API_URL}/api/app.mcp.remove`, {
           method: "POST",
