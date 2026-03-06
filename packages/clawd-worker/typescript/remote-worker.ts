@@ -5,15 +5,7 @@
  * Runs with Bun or Node.js 22.4+. ZERO external dependencies.
  */
 
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  realpathSync,
-  statSync,
-  readdirSync,
-  lstatSync,
-} from "node:fs";
+import { readFileSync, writeFileSync, existsSync, realpathSync, statSync, readdirSync, lstatSync } from "node:fs";
 import { join, dirname, basename, resolve as pathResolve, delimiter, sep } from "node:path";
 import { execSync, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -87,7 +79,7 @@ function printUsage(): never {
   console.error(`Usage: remote-worker --server <url> --token <token> [options]
 
 Required:
-  --server <url>         WebSocket server URL (wss://...)
+  --server <url>         Claw'd server (e.g. clawd.example.com or localhost:3456)
   --token <token>        Auth token (or CLAWD_WORKER_TOKEN env var)
 
 Options:
@@ -101,6 +93,23 @@ Options:
   --max-concurrent <n>   Max concurrent tool calls (default: 4)
 `);
   process.exit(1);
+}
+
+/** Normalize server input: bare domain/host:port → full WebSocket URL */
+function normalizeServerUrl(input: string): string {
+  let url = input.trim().replace(/\/+$/, "");
+  // Strip trailing path if user included it
+  url = url.replace(/\/ws\/remote-worker\/?$/, "");
+  // Add scheme if missing
+  if (!/^wss?:\/\//i.test(url)) {
+    if (/^https?:\/\//i.test(url)) {
+      url = url.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
+    } else {
+      const isLocal = /^(localhost|127\.|0\.0\.0\.|::1|\[::1\])(:|$)/i.test(url);
+      url = (isLocal ? "ws://" : "wss://") + url;
+    }
+  }
+  return url;
 }
 
 function parseArgs(): WorkerConfig {
@@ -159,6 +168,9 @@ function parseArgs(): WorkerConfig {
     console.error("Error: --server is required");
     printUsage();
   }
+  // Normalize server URL: accept bare domain/host:port, auto-add scheme and path
+  server = normalizeServerUrl(server);
+
   if (!token) {
     console.error("Error: --token or CLAWD_WORKER_TOKEN is required");
     printUsage();
@@ -484,7 +496,11 @@ async function handleEdit(args: { path: string; old_str: string; new_str: string
     // Check uniqueness
     const secondIdx = content.indexOf(effectiveOld, idx + 1);
     if (secondIdx !== -1) {
-      return { success: false, output: "", error: "old_str matches multiple locations — add more context to make it unique" };
+      return {
+        success: false,
+        output: "",
+        error: "old_str matches multiple locations — add more context to make it unique",
+      };
     }
 
     // Step 4: Preserve matched region's line ending style in new_str
@@ -559,8 +575,7 @@ async function handleGrep(args: {
   const rgResult = await runCommand("rg", rgArgs);
 
   // C2: runCommand resolves (never rejects) on spawn error — check error text
-  const rgMissing =
-    rgResult.error?.includes("ENOENT") || rgResult.error?.includes("not found");
+  const rgMissing = rgResult.error?.includes("ENOENT") || rgResult.error?.includes("not found");
 
   if (!rgMissing) {
     return rgResult;

@@ -1419,11 +1419,28 @@ class RemoteWorker:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def normalize_server_url(raw):  # type: (str) -> str
+    """Normalize bare domain/host:port into a full WebSocket URL."""
+    url = raw.strip().rstrip("/")
+    # Strip trailing path if user included it
+    if url.endswith("/ws/remote-worker"):
+        url = url[: -len("/ws/remote-worker")]
+    # Add scheme if missing
+    if not re.match(r"^wss?://", url, re.IGNORECASE):
+        if re.match(r"^https?://", url, re.IGNORECASE):
+            url = re.sub(r"^http:", "ws:", url, flags=re.IGNORECASE)
+            url = re.sub(r"^https:", "wss:", url, flags=re.IGNORECASE)
+        else:
+            is_local = bool(re.match(r"^(localhost|127\.|0\.0\.0\.|::1|\[::1\])(:|$)", url, re.IGNORECASE))
+            url = ("ws://" if is_local else "wss://") + url
+    return url
+
+
 def main():  # type: () -> None
     parser = argparse.ArgumentParser(
         description="Claw'd Remote Worker — connect to a Claw'd server and execute file tools remotely",
     )
-    parser.add_argument("--server", required=True, help="Claw'd server URL (ws:// or wss://)")
+    parser.add_argument("--server", required=True, help="Claw'd server (e.g. clawd.example.com or localhost:3456)")
     parser.add_argument(
         "--token",
         default=os.environ.get("CLAWD_WORKER_TOKEN"),
@@ -1478,6 +1495,8 @@ def main():  # type: () -> None
     elif args.ca_cert:
         ssl_ctx = ssl.create_default_context(cafile=args.ca_cert)
 
+    server_url = normalize_server_url(args.server)
+
     # Startup diagnostics
     log(f"Platform: {sys.platform} ({platform.machine()})")
     if IS_WSL2:
@@ -1486,12 +1505,12 @@ def main():  # type: () -> None
         log("macOS (case-insensitive comparison active)")
     project_root = os.path.realpath(args.project_root)
     log(f"Project root: {project_root}")
-    log(f"Server: {args.server}")
+    log(f"Server: {server_url}")
     if args.read_only:
         log("Read-only mode enabled")
 
     config = type("Config", (), {
-        "server": args.server,
+        "server": server_url,
         "token": args.token,
         "project_root": project_root,
         "name": args.name,
