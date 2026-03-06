@@ -32,7 +32,7 @@ export class RemoteWorkerMCPConnection extends EventEmitter implements IMCPConne
     this.name = `remote-worker-${workerName}`;
 
     this.tools = registeredTools.map((t) => ({
-      name: `remote:${workerName}:${t.name}`,
+      name: `remote_${workerName}_${t.name}`,
       description: `[Remote ${workerName}] ${t.description}`,
       inputSchema: t.inputSchema,
     }));
@@ -59,9 +59,10 @@ export class RemoteWorkerMCPConnection extends EventEmitter implements IMCPConne
   }
 
   async callTool(prefixedName: string, args: Record<string, any>): Promise<any> {
-    // Strip prefix: "remote:dev-server:view" → "view"
-    const parts = prefixedName.split(":");
-    const toolName = parts.length >= 3 ? parts.slice(2).join(":") : prefixedName;
+    // Strip prefix: "remote_dev-server_view" → "view"
+    // Format: remote_{workerName}_{toolName}
+    const match = prefixedName.match(/^remote_(.+?)_([^_]+)$/);
+    const toolName = match ? match[2] : prefixedName;
 
     const result = await callRemoteWorkerTool(this.tokenHash, toolName, args);
     return [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }];
