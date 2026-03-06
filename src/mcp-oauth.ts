@@ -63,6 +63,7 @@ export function loadOAuthToken(channel: string, serverName: string): OAuthToken 
   const token = store[`${channel}:${serverName}`] || null;
   if (token?.expires_at && token.expires_at < Date.now()) {
     console.warn(`[mcp-oauth] Token for ${channel}:${serverName} has expired`);
+    return null;
   }
   return token;
 }
@@ -123,7 +124,12 @@ export async function discoverOAuthMetadata(
     authUrl.pathname === "/" ? authUrl.origin : `${authUrl.origin}${authUrl.pathname.replace(/\/+$/, "")}`;
   let asMeta: any;
   try {
-    asMeta = await fetchJson(`${authBase}/.well-known/oauth-authorization-server`);
+    // RFC 8414 §3: for path-based issuers, insert .well-known between host and path
+    const wellKnownUrl =
+      authUrl.pathname === "/"
+        ? `${authUrl.origin}/.well-known/oauth-authorization-server`
+        : `${authUrl.origin}/.well-known/oauth-authorization-server${authUrl.pathname}`;
+    asMeta = await fetchJson(wellKnownUrl);
   } catch (err: any) {
     console.warn(`[mcp-oauth] Failed to fetch auth server metadata from ${authBase}: ${err.message}`);
     return null;
@@ -175,7 +181,7 @@ export async function discoverOAuthMetadata(
 
   // 3c: DCR at /register fallback on auth server (MCP SDK convention)
   if (!result.client_id) {
-    const fallbackUrl = `${authUrl.origin}/register`;
+    const fallbackUrl = `${authBase}/register`;
     if (fallbackUrl !== asMeta.registration_endpoint) {
       console.log(`[mcp-oauth] Trying DCR fallback at ${fallbackUrl}`);
       const regResult = await tryDynamicRegistration(fallbackUrl, regPayload);
@@ -265,6 +271,7 @@ interface PendingFlow {
   client_id: string;
   client_secret?: string;
   token_endpoint: string;
+  redirect_uri: string;
   timeout: ReturnType<typeof setTimeout>;
 }
 
@@ -338,6 +345,7 @@ export function startOAuthFlow(
     client_id: oauth.client_id,
     client_secret: oauth.client_secret,
     token_endpoint: oauth.token_url,
+    redirect_uri: callbackUrl,
     timeout,
   });
 
@@ -382,11 +390,21 @@ export async function exchangeOAuthCode(
   }
 
   const data = (await res.json()) as any;
+
+  // Handle providers that return HTTP 200 with error payloads (e.g., Slack)
+  if (data.ok === false && data.error) {
+    throw new Error(`Token endpoint error: ${data.error}`);
+  }
+  if (!data.access_token) {
+    throw new Error("Token response missing access_token");
+  }
+
   const token: OAuthToken = {
     access_token: data.access_token,
     refresh_token: data.refresh_token,
     token_type: data.token_type || "Bearer",
-    scopes: data.scope ? data.scope.split(" ") : undefined,
+    // Split on both space and comma to handle standard OAuth and Slack-style scopes
+    scopes: data.scope ? data.scope.split(/[\s,]+/).filter(Boolean) : undefined,
   };
   if (data.expires_in) {
     token.expires_at = Date.now() + data.expires_in * 1000;

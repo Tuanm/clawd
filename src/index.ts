@@ -615,8 +615,8 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     // CIMD: Serve client metadata document for MCP OAuth (SEP-991)
     if (path === "/.well-known/oauth-client.json") {
-      const proto = req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "");
-      const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || url.host;
+      const proto = (req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "")).replace(":", "");
+      const host = (req.headers.get("x-forwarded-host") || req.headers.get("host") || url.host).split(",")[0].trim();
       const publicOrigin = `${proto}://${host}`;
       return new Response(
         JSON.stringify({
@@ -627,7 +627,15 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           response_types: ["code"],
           token_endpoint_auth_method: "none",
         }),
-        { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=3600" } },
+        {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "private, no-store",
+            Vary: "Host, X-Forwarded-Host, X-Forwarded-Proto",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET",
+          },
+        },
       );
     }
 
@@ -650,7 +658,15 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
             headers: { "Content-Type": "text/plain" },
           });
         }
-        const { channel, server: serverName, code_verifier, client_id, client_secret, token_endpoint } = flow;
+        const {
+          channel,
+          server: serverName,
+          code_verifier,
+          client_id,
+          client_secret,
+          token_endpoint,
+          redirect_uri: flowRedirectUri,
+        } = flow;
         // Look up the OAuth config for this server
         const { getChannelMCPServers } = await import("./agent/src/api/provider-config");
         const configs = getChannelMCPServers(channel);
@@ -667,11 +683,8 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           });
         }
         const effectiveClientId = client_id || serverConfig.oauth.client_id;
-        // Use public-facing origin for redirect_uri (must match what was sent to auth server)
-        const proto = req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "");
-        const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || url.host;
-        const publicOrigin = `${proto}://${host}`;
-        const redirectUri = `${publicOrigin}/api/mcp/oauth/callback`;
+        // Use redirect_uri stored in the pending flow (must match what was sent to auth server)
+        const redirectUri = flowRedirectUri;
         const token = await exchangeOAuthCode(
           code,
           tokenUrl,

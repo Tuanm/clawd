@@ -135,7 +135,7 @@ export function registerMcpServerRoutes(
                 authorize_url: discovered.authorization_endpoint,
                 token_url: discovered.token_endpoint,
                 registration_endpoint: discovered.registration_endpoint,
-                scopes: discovered.scopes_supported,
+                scopes: undefined, // Don't auto-request all supported scopes; let user/provider decide
               },
             };
 
@@ -148,12 +148,12 @@ export function registerMcpServerRoutes(
                 {
                   ok: false,
                   error:
-                    "OAuth server discovered but auto-registration not available. Please provide your OAuth Client ID (no Client Secret needed for PKCE).",
+                    "OAuth server discovered but auto-registration not available. Please provide your OAuth Client ID. Client Secret is optional if your provider supports PKCE.",
                   needs_client_id: true,
                   discovered: {
                     authorization_endpoint: discovered.authorization_endpoint,
                     token_endpoint: discovered.token_endpoint,
-                    scopes_supported: discovered.scopes_supported,
+                    scopes_available: discovered.scopes_supported,
                   },
                 },
                 401,
@@ -233,7 +233,13 @@ export function registerMcpServerRoutes(
           const { auth_url } = startOAuthFlow(
             channel,
             name,
-            oauthConfig as { client_id: string; client_secret?: string; authorize_url?: string; token_url?: string; scopes?: string[] },
+            oauthConfig as {
+              client_id: string;
+              client_secret?: string;
+              authorize_url?: string;
+              token_url?: string;
+              scopes?: string[];
+            },
             callbackBaseUrl,
           );
 
