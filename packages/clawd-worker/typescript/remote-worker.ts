@@ -99,7 +99,7 @@ Options:
 function normalizeServerUrl(input: string): string {
   let url = input.trim().replace(/\/+$/, "");
   // Strip trailing path if user included it
-  url = url.replace(/\/ws\/remote-worker\/?$/, "");
+  url = url.replace(/\/worker\/ws\/?$/, "");
   // Add scheme if missing
   if (!/^wss?:\/\//i.test(url)) {
     if (/^https?:\/\//i.test(url)) {
@@ -914,7 +914,7 @@ function wsSend(msg: any): void {
 }
 
 function connect(): void {
-  const wsUrl = `${config.server}/ws/remote-worker?name=${encodeURIComponent(config.name)}`;
+  const wsUrl = `${config.server}/worker/ws?name=${encodeURIComponent(config.name)}`;
 
   // H5: WHATWG WebSocket doesn't accept `ca` option.
   // Use NODE_EXTRA_CA_CERTS env var instead (must be set before first TLS handshake).

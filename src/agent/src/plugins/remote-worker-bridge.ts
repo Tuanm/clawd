@@ -25,9 +25,7 @@ export class RemoteWorkerBridge {
     this.mcpManager = mcpManager;
     this.channel = channel;
     this.agentWorkerToken = workerToken;
-    this.agentTokenHash = workerToken
-      ? createHash("sha256").update(workerToken).digest("hex")
-      : undefined;
+    this.agentTokenHash = workerToken ? createHash("sha256").update(workerToken).digest("hex") : undefined;
 
     this.onRegisteredHandler = (info) => this.onWorkerRegistered(info);
     this.onDisconnectedHandler = (info) => this.onWorkerDisconnected(info);

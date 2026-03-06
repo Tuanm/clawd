@@ -650,7 +650,9 @@ export class MCPManager extends EventEmitter {
   async addConnection(connection: IMCPConnection): Promise<void> {
     const existing = this.connections.get(connection.name);
     if (existing) {
-      try { await existing.disconnect(); } catch {}
+      try {
+        await existing.disconnect();
+      } catch {}
       this.connections.delete(connection.name);
     }
     connection.on("error", (error) => this.emit("server:error", connection.name, error));
@@ -667,7 +669,9 @@ export class MCPManager extends EventEmitter {
   async removeConnection(name: string): Promise<void> {
     const conn = this.connections.get(name);
     if (conn) {
-      try { await conn.disconnect(); } catch {}
+      try {
+        await conn.disconnect();
+      } catch {}
       this.connections.delete(name);
     }
   }

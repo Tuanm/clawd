@@ -1241,7 +1241,7 @@ class RemoteWorker:
     def connect(self):  # type: () -> None
         server = self.config.server.rstrip("/")
         name_encoded = urllib.parse.quote(self.config.name)
-        url = f"{server}/ws/remote-worker?name={name_encoded}"
+        url = f"{server}/worker/ws?name={name_encoded}"
         headers = {"Authorization": f"Bearer {self.config.token}"}
         self.ws = StdlibWebSocket(
             url, headers=headers, ssl_context=self.config.ssl_context
@@ -1423,8 +1423,8 @@ def normalize_server_url(raw):  # type: (str) -> str
     """Normalize bare domain/host:port into a full WebSocket URL."""
     url = raw.strip().rstrip("/")
     # Strip trailing path if user included it
-    if url.endswith("/ws/remote-worker"):
-        url = url[: -len("/ws/remote-worker")]
+    if url.endswith("/worker/ws"):
+        url = url[: -len("/worker/ws")]
     # Add scheme if missing
     if not re.match(r"^wss?://", url, re.IGNORECASE):
         if re.match(r"^https?://", url, re.IGNORECASE):

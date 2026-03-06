@@ -638,11 +638,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
 
             // Create remote worker bridge if agent has a worker token
             if (this.config.workerToken) {
-              remoteWorkerBridge = new RemoteWorkerBridge(
-                agent.getMcpManager(),
-                channel,
-                this.config.workerToken,
-              );
+              remoteWorkerBridge = new RemoteWorkerBridge(agent.getMcpManager(), channel, this.config.workerToken);
             }
 
             // Run the agent with the prompt (wrapped in call context for analytics)

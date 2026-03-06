@@ -175,10 +175,7 @@ export function handleRemoteWorkerWsOpen(ws: ServerWebSocket<RemoteWorkerWsData>
   }
 }
 
-export function handleRemoteWorkerWsMessage(
-  ws: ServerWebSocket<RemoteWorkerWsData>,
-  message: string | Buffer,
-) {
+export function handleRemoteWorkerWsMessage(ws: ServerWebSocket<RemoteWorkerWsData>, message: string | Buffer) {
   const raw = typeof message === "string" ? message : message.toString();
 
   if (raw.length > 1_000_000) {
@@ -227,11 +224,7 @@ export function handleRemoteWorkerWsMessage(
   }
 }
 
-function handleRegister(
-  ws: ServerWebSocket<RemoteWorkerWsData>,
-  tokenHash: string,
-  parsed: any,
-) {
+function handleRegister(ws: ServerWebSocket<RemoteWorkerWsData>, tokenHash: string, parsed: any) {
   const {
     name = "unnamed",
     projectRoot = "",
@@ -420,7 +413,7 @@ export function callRemoteWorkerTool(
     }
 
     const id = `rw_${++requestCounter}_${randomBytes(4).toString("hex")}`;
-    const timeout = toolName === "bash" ? BASH_TIMEOUT_MS : (options?.timeout || CALL_TIMEOUT_MS);
+    const timeout = toolName === "bash" ? BASH_TIMEOUT_MS : options?.timeout || CALL_TIMEOUT_MS;
 
     const timer = setTimeout(() => {
       cleanupCall(worker, id);

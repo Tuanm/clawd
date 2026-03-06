@@ -556,7 +556,7 @@ const server = Bun.serve({
     }
 
     // Remote worker WebSocket upgrade
-    if (path === "/ws/remote-worker") {
+    if (path === "/worker/ws") {
       return upgradeRemoteWorkerWs(req, server);
     }
 

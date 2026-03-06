@@ -401,9 +401,7 @@ export function registerAgentRoutes(
         active: a.active === 1,
         sleeping: a.sleeping === 1,
         running: workerManager.isAgentRunning(a.channel, a.agent_id),
-        worker_token: a.worker_token
-          ? `${a.worker_token.slice(0, 4)}***${a.worker_token.slice(-3)}`
-          : null,
+        worker_token: a.worker_token ? `${a.worker_token.slice(0, 4)}***${a.worker_token.slice(-3)}` : null,
       }));
 
       return json({ ok: true, agents: enriched });
@@ -575,7 +573,13 @@ export function registerAgentRoutes(
         }
 
         // Restart worker if model, provider, project, or worker_token changed, or active state changed
-        if (model !== undefined || provider !== undefined || active !== undefined || project !== undefined || worker_token !== undefined) {
+        if (
+          model !== undefined ||
+          provider !== undefined ||
+          active !== undefined ||
+          project !== undefined ||
+          worker_token !== undefined
+        ) {
           if (agent.active === 1) {
             await workerManager.restartAgent({
               channel,
