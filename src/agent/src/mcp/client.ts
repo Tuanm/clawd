@@ -352,6 +352,7 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
   private url: string;
   private token?: string;
   private requestId = 0;
+  private sessionId?: string; // Mcp-Session-Id from server
 
   tools: MCPTool[] = [];
   resources: MCPResource[] = [];
@@ -370,8 +371,11 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     if (isDebugEnabled()) {
       console.log(`[MCP] Connecting to HTTP server: ${this.url}`);
     }
-    // For HTTP, we just fetch tools/list to verify connectivity
     try {
+      // MCP Streamable HTTP: initialize handshake is required first
+      await this.initialize();
+
+      // Then fetch capabilities
       await this.refreshCapabilities();
       this.connected = true;
       if (isDebugEnabled()) {
@@ -383,6 +387,31 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
       this.emit("error", err);
       throw err;
     }
+  }
+
+  /** MCP initialize handshake: initialize → notifications/initialized */
+  private async initialize(): Promise<void> {
+    const result = await this.request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {
+        tools: {},
+        prompts: {},
+        resources: {},
+      },
+      clientInfo: {
+        name: "clawd",
+        version: "1.0.0",
+      },
+    });
+
+    if (isDebugEnabled()) {
+      console.log(
+        `[MCP] ${this.name}: Initialized (protocol: ${result?.protocolVersion}, session: ${this.sessionId || "none"})`,
+      );
+    }
+
+    // Send initialized notification (no response expected)
+    await this.notify("notifications/initialized", {});
   }
 
   private async refreshCapabilities(): Promise<void> {
@@ -398,7 +427,6 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
       const result = await this.request("resources/list", {});
       this.resources = result.resources || [];
     } catch (err: any) {
-      // Resources are optional - only log in debug mode
       if (isDebugEnabled()) {
         console.log(`[MCP] ${this.name}: No resources (optional): ${err.message}`);
       }
@@ -410,7 +438,6 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
       const result = await this.request("prompts/list", {});
       this.prompts = result.prompts || [];
     } catch (err: any) {
-      // Prompts are optional - only log in debug mode
       if (isDebugEnabled()) {
         console.log(`[MCP] ${this.name}: No prompts (optional): ${err.message}`);
       }
@@ -418,6 +445,7 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     }
   }
 
+  /** Send a JSON-RPC request and return the result */
   async request(method: string, params?: any): Promise<any> {
     const id = ++this.requestId;
     const request: MCPRequest = {
@@ -431,8 +459,13 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     const timer = setTimeout(() => ctrl.abort(), 30000);
     let response: Response;
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      };
       if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+      if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
+
       response = await fetch(this.url, {
         method: "POST",
         headers,
@@ -447,6 +480,21 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
       throw new Error(`HTTP error: ${response.status}`);
     }
 
+    // Track session ID from server
+    const newSessionId = response.headers.get("mcp-session-id");
+    if (newSessionId) {
+      this.sessionId = newSessionId;
+    }
+
+    // Handle response based on Content-Type
+    const contentType = response.headers.get("content-type") || "";
+
+    if (contentType.includes("text/event-stream")) {
+      // SSE response — parse events to extract JSON-RPC response
+      return await this.parseSSEResponse(response, id);
+    }
+
+    // Standard JSON response
     const data = (await response.json()) as MCPResponse;
 
     if (data.error) {
@@ -456,13 +504,91 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     return data.result;
   }
 
+  /** Send a JSON-RPC notification (no response expected) */
+  private async notify(method: string, params?: any): Promise<void> {
+    const notification = {
+      jsonrpc: "2.0",
+      method,
+      params,
+    };
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+    };
+    if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+    if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+    try {
+      const response = await fetch(this.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(notification),
+        signal: ctrl.signal,
+      });
+      // Notifications expect 202 Accepted (no body) or similar success
+      const newSessionId = response.headers.get("mcp-session-id");
+      if (newSessionId) this.sessionId = newSessionId;
+    } catch (err: any) {
+      if (isDebugEnabled()) {
+        console.log(`[MCP] ${this.name}: Notification ${method} failed: ${err.message}`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Parse an SSE stream to extract the JSON-RPC response matching our request ID */
+  private async parseSSEResponse(response: Response, requestId: number): Promise<any> {
+    const text = await response.text();
+    // SSE format: lines starting with "data: " contain the JSON payload
+    // Events are separated by blank lines
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const jsonStr = trimmed.slice(5).trim();
+      if (!jsonStr) continue;
+      try {
+        const msg = JSON.parse(jsonStr) as MCPResponse;
+        // Server may send notifications/requests before the response
+        if (msg.id === requestId) {
+          if (msg.error) throw new Error(msg.error.message);
+          return msg.result;
+        }
+        // Handle server-initiated notifications
+        if (msg.id === undefined) {
+          this.emit("notification", msg);
+        }
+      } catch (err: any) {
+        if (err.message && !err.message.includes("JSON")) throw err;
+        // Skip malformed SSE lines
+      }
+    }
+    throw new Error(`No response received for request ${requestId} in SSE stream`);
+  }
+
   async callTool(name: string, args: Record<string, any>): Promise<any> {
     const result = await this.request("tools/call", { name, arguments: args });
     return result.content;
   }
 
   async disconnect(): Promise<void> {
+    // Send session termination if we have a session
+    if (this.sessionId) {
+      try {
+        const headers: Record<string, string> = {
+          "Mcp-Session-Id": this.sessionId,
+        };
+        if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+        await fetch(this.url, { method: "DELETE", headers });
+      } catch {
+        // Best-effort session cleanup
+      }
+    }
     this.connected = false;
+    this.sessionId = undefined;
     this.emit("disconnected");
   }
 }

@@ -301,6 +301,9 @@ export function registerMcpServerRoutes(
             if (oauth) configToSave.oauth = oauth;
           }
           saveChannelMCPServer(channel, name, configToSave);
+        } else if (existingCfg.enabled === false) {
+          // Re-enable the server if it was disabled
+          setChannelMCPServerEnabled(channel, name, true);
         }
 
         return json({ ok: true, server: { name, transport, connected: true, tools: result.tools } });

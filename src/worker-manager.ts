@@ -301,7 +301,9 @@ export class WorkerManager {
           });
           console.log(`[WorkerManager] Connected MCP server: ${name} (channel: ${channel})`);
         } catch (err) {
-          console.error(`[WorkerManager] Failed to connect MCP server ${name} for channel ${channel}: ${(err as any)?.message || err}`);
+          console.error(
+            `[WorkerManager] Failed to connect MCP server ${name} for channel ${channel}: ${(err as any)?.message || err}`,
+          );
         }
       }
 
