@@ -644,15 +644,17 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const code = url.searchParams.get("code");
       const stateParam = url.searchParams.get("state");
       const errorParam = url.searchParams.get("error");
-      console.log(`[OAuth callback] code=${code ? code.slice(0, 12) + "..." : "null"}, state=${stateParam ? "present" : "null"}, error=${errorParam || "none"}, full_url=${url.pathname}?${url.search}`);
+      console.log(
+        `[OAuth callback] code=${code ? code.slice(0, 12) + "..." : "null"}, state=${stateParam ? "present" : "null"}, error=${errorParam || "none"}, full_url=${url.pathname}?${url.search}`,
+      );
 
       if (errorParam) {
         const errorDesc = url.searchParams.get("error_description") || errorParam;
         console.error(`[OAuth callback] Provider returned error: ${errorParam} — ${errorDesc}`);
-        return new Response(
-          `<html><body><h2>OAuth Error</h2><p>${escapeHtml(errorDesc)}</p></body></html>`,
-          { status: 400, headers: { "Content-Type": "text/html" } },
-        );
+        return new Response(`<html><body><h2>OAuth Error</h2><p>${escapeHtml(errorDesc)}</p></body></html>`, {
+          status: 400,
+          headers: { "Content-Type": "text/html" },
+        });
       }
 
       if (!code || !stateParam) {
@@ -665,11 +667,13 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         // Validate nonce against pending flows (CSRF protection)
         const flow = validateOAuthState(stateParam);
         if (!flow) {
-          console.error(`[OAuth callback] Invalid/expired state. stateParam=${stateParam}`);
-          return new Response("Invalid or expired OAuth state", {
-            status: 403,
-            headers: { "Content-Type": "text/plain" },
-          });
+          console.warn(`[OAuth callback] Invalid/expired state (duplicate request?). stateParam=${stateParam}`);
+          return new Response(
+            `<html><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+            <div style="text-align:center"><h2>Already processed</h2><p>This OAuth callback was already handled. You can close this tab.</p></div>
+            </body></html>`,
+            { status: 200, headers: { "Content-Type": "text/html" } },
+          );
         }
         const {
           channel,
@@ -680,7 +684,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           token_endpoint,
           redirect_uri: flowRedirectUri,
         } = flow;
-        console.log(`[OAuth callback] Flow matched: channel=${channel}, server=${serverName}, token_endpoint=${token_endpoint}, redirect_uri=${flowRedirectUri}, has_secret=${!!client_secret}, has_verifier=${!!code_verifier}`);
+        console.log(
+          `[OAuth callback] Flow matched: channel=${channel}, server=${serverName}, token_endpoint=${token_endpoint}, redirect_uri=${flowRedirectUri}, has_secret=${!!client_secret}, has_verifier=${!!code_verifier}`,
+        );
 
         // Look up the OAuth config for this server
         const { getChannelMCPServers } = await import("./agent/src/api/provider-config");
@@ -700,7 +706,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         }
         const effectiveClientId = client_id || serverConfig.oauth.client_id;
         const redirectUri = flowRedirectUri;
-        console.log(`[OAuth callback] Exchanging code: tokenUrl=${tokenUrl}, clientId=${effectiveClientId}, redirectUri=${redirectUri}`);
+        console.log(
+          `[OAuth callback] Exchanging code: tokenUrl=${tokenUrl}, clientId=${effectiveClientId}, redirectUri=${redirectUri}`,
+        );
 
         const token = await exchangeOAuthCode(
           code,
@@ -710,7 +718,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           code_verifier,
           client_secret,
         );
-        console.log(`[OAuth callback] Token received: type=${token.token_type}, scopes=${token.scopes?.join(",")}, expires_at=${token.expires_at}, has_refresh=${!!token.refresh_token}`);
+        console.log(
+          `[OAuth callback] Token received: type=${token.token_type}, scopes=${token.scopes?.join(",")}, expires_at=${token.expires_at}, has_refresh=${!!token.refresh_token}`,
+        );
         saveOAuthToken(channel, serverName, token);
 
         // Try reconnecting the MCP server with the new token
@@ -721,12 +731,19 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           token: token.access_token,
         };
         const connectResult = await workerManager.addChannelMcpServer(channel, serverName, connectConfig);
-        console.log(`[OAuth callback] Connect result: success=${connectResult.success}, tools=${connectResult.tools}, error=${connectResult.error || "none"}`);
+        console.log(
+          `[OAuth callback] Connect result: success=${connectResult.success}, tools=${connectResult.tools}, error=${connectResult.error || "none"}`,
+        );
 
         if (!connectResult.success) {
           const safeErr = escapeHtml(connectResult.error || "Connection failed after OAuth");
           return new Response(
-            `<html><body><h2>OAuth Succeeded, Connection Failed</h2><p>Token was obtained but MCP connection failed: ${safeErr}</p></body></html>`,
+            `<html><body style="font-family:system-ui;max-width:600px;margin:60px auto;padding:0 20px">
+            <h2>⚠️ OAuth Succeeded, Connection Failed</h2>
+            <p>Token was obtained successfully, but MCP server connection failed:</p>
+            <pre style="background:#f5f5f5;padding:12px;border-radius:6px;overflow-x:auto">${safeErr}</pre>
+            <p>The token has been saved. Once the issue is resolved, click Connect again in the UI.</p>
+            </body></html>`,
             { status: 502, headers: { "Content-Type": "text/html" } },
           );
         }

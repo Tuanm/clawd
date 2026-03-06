@@ -484,7 +484,9 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
         const parsed = JSON.parse(text);
         if (parsed?.error?.message) detail = `: ${parsed.error.message}`;
         else if (text.length < 300) detail = `: ${text}`;
-      } catch { /* ignore parse errors */ }
+      } catch {
+        /* ignore parse errors */
+      }
       throw new Error(`HTTP error: ${response.status}${detail}`);
     }
 

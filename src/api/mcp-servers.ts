@@ -120,7 +120,9 @@ export function registerMcpServerRoutes(
         if (oauth?.client_id) {
           const stored = loadOAuthToken(channel, name);
           token = stored?.access_token;
-          console.log(`[mcp-servers] OAuth creds: client_id=${oauth.client_id.slice(0, 15)}..., has_secret=${!!oauth.client_secret}, stored_token=${token ? "yes" : "no"}`);
+          console.log(
+            `[mcp-servers] OAuth creds: client_id=${oauth.client_id.slice(0, 15)}..., has_secret=${!!oauth.client_secret}, stored_token=${token ? "yes" : "no"}`,
+          );
         }
 
         // For HTTP+OAuth servers with no valid token, skip connection attempt
