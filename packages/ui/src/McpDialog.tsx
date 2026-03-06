@@ -179,12 +179,34 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
         body: JSON.stringify(body),
       });
       const data = await res.json();
+
+      // OAuth auto-discovery: server needs authentication
+      if (data.needs_oauth && data.auth_url) {
+        window.open(data.auth_url, "_blank");
+        setError(null);
+        // Reset form state
+        const savedName = newName.trim();
+        setNewName("");
+        setNewTransport("stdio");
+        setNewCommand("");
+        setNewArgs("");
+        setNewUrl("");
+        setNewEnv("");
+        setNewOAuthClientId("");
+        setNewOAuthScopes("");
+        setShowAddForm(false);
+        await loadServers();
+        setSelectedName(savedName);
+        return;
+      }
+
       if (!data.ok) {
         setError(data.error || "Failed to add server");
         return;
       }
 
       // Success — reset form and reload
+      const savedName = newName.trim();
       setNewName("");
       setNewTransport("stdio");
       setNewCommand("");
@@ -195,7 +217,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
       setNewOAuthScopes("");
       setShowAddForm(false);
       await loadServers();
-      setSelectedName(newName.trim());
+      setSelectedName(savedName);
     } catch (e: any) {
       setError(e.message || "Network error");
     } finally {

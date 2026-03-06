@@ -632,7 +632,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
             headers: { "Content-Type": "text/plain" },
           });
         }
-        const { channel, server: serverName } = flow;
+        const { channel, server: serverName, code_verifier, client_id, client_secret, token_endpoint } = flow;
         // Look up the OAuth config for this server
         const { getChannelMCPServers } = await import("./agent/src/api/provider-config");
         const configs = getChannelMCPServers(channel);
@@ -640,15 +640,28 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         if (!serverConfig?.oauth) {
           return new Response("Unknown OAuth server", { status: 404, headers: { "Content-Type": "text/plain" } });
         }
-        const tokenUrl = serverConfig.oauth.token_url || serverConfig.url?.replace(/\/mcp$/, "/oauth/token") || "";
+        // Use token_endpoint from flow (most reliable), fall back to config
+        const tokenUrl = token_endpoint || serverConfig.oauth.token_url || "";
         if (!tokenUrl) {
           return new Response("OAuth token URL not configured", {
             status: 500,
             headers: { "Content-Type": "text/plain" },
           });
         }
-        const redirectUri = `${url.origin}/api/mcp/oauth/callback`;
-        const token = await exchangeOAuthCode(code, tokenUrl, serverConfig.oauth.client_id, redirectUri);
+        const effectiveClientId = client_id || serverConfig.oauth.client_id;
+        // Use public-facing origin for redirect_uri (must match what was sent to auth server)
+        const proto = req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "");
+        const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || url.host;
+        const publicOrigin = `${proto}://${host}`;
+        const redirectUri = `${publicOrigin}/api/mcp/oauth/callback`;
+        const token = await exchangeOAuthCode(
+          code,
+          tokenUrl,
+          effectiveClientId,
+          redirectUri,
+          code_verifier,
+          client_secret,
+        );
         saveOAuthToken(channel, serverName, token);
 
         // Try reconnecting the MCP server with the new token

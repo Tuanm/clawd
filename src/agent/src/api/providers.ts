@@ -164,8 +164,10 @@ export interface MCPServerConfig {
   enabled?: boolean; // false = temporarily disconnected
   oauth?: {
     client_id: string;
+    client_secret?: string;
     authorize_url?: string; // OAuth authorization endpoint
     token_url?: string; // OAuth token exchange endpoint
+    registration_endpoint?: string; // Dynamic client registration endpoint
     scopes?: string[];
   };
 }

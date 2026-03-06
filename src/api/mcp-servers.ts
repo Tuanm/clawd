@@ -13,13 +13,20 @@ import {
   setChannelMCPServerEnabled,
 } from "../agent/src/api/provider-config";
 import type { MCPServerConfig } from "../agent/src/api/providers";
-import { loadOAuthToken, removeOAuthToken, startOAuthFlow } from "../mcp-oauth";
+import { loadOAuthToken, removeOAuthToken, startOAuthFlow, discoverOAuthMetadata } from "../mcp-oauth";
 
 function json(data: any, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/** Resolve public-facing origin, respecting reverse proxy headers. */
+function getPublicOrigin(req: Request, url: URL): string {
+  const proto = req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "");
+  const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || url.host;
+  return `${proto}://${host}`;
 }
 
 async function parseBody(req: Request): Promise<any> {
@@ -90,7 +97,7 @@ export function registerMcpServerRoutes(
           token = stored?.access_token;
         }
 
-        // Try connecting first
+        // Try connecting
         const connectConfig: any = { transport };
         if (transport === "stdio") {
           connectConfig.command = command;
@@ -102,6 +109,75 @@ export function registerMcpServerRoutes(
         }
 
         const result = await workerManager.addChannelMcpServer(channel, name, connectConfig);
+
+        // If HTTP connection failed, try OAuth auto-discovery
+        if (!result.success && transport === "http" && !oauth?.client_id) {
+          const callbackBaseUrl = getPublicOrigin(req, url);
+          const callbackUrl = `${callbackBaseUrl}/api/mcp/oauth/callback`;
+
+          console.log(`[mcp-servers] Connection failed for ${name}, attempting OAuth auto-discovery...`);
+          const discovered = await discoverOAuthMetadata(serverUrl, callbackUrl);
+
+          if (discovered) {
+            // Save config with discovered OAuth metadata (including client_secret for re-auth)
+            const configToSave: MCPServerConfig = {
+              transport: "http",
+              url: serverUrl,
+              oauth: {
+                client_id: discovered.client_id || "",
+                client_secret: discovered.client_secret,
+                authorize_url: discovered.authorization_endpoint,
+                token_url: discovered.token_endpoint,
+                registration_endpoint: discovered.registration_endpoint,
+                scopes: discovered.scopes_supported,
+              },
+            };
+
+            if (!discovered.client_id) {
+              // Discovery succeeded but dynamic registration failed — need manual client_id
+              return json(
+                {
+                  ok: false,
+                  error: "OAuth discovered but dynamic client registration not available. Please provide a client_id.",
+                  needs_oauth: true,
+                  discovered: {
+                    authorization_endpoint: discovered.authorization_endpoint,
+                    token_endpoint: discovered.token_endpoint,
+                    scopes_supported: discovered.scopes_supported,
+                  },
+                },
+                401,
+              );
+            }
+
+            // Save config and start OAuth flow
+            saveChannelMCPServer(channel, name, configToSave);
+
+            const { auth_url } = startOAuthFlow(
+              channel,
+              name,
+              {
+                client_id: discovered.client_id,
+                client_secret: discovered.client_secret,
+                authorize_url: discovered.authorization_endpoint,
+                token_url: discovered.token_endpoint,
+                scopes: discovered.scopes_supported,
+              },
+              callbackBaseUrl,
+            );
+
+            return json({
+              ok: true,
+              needs_oauth: true,
+              auth_url,
+              server: { name, transport: "http", connected: false, tools: 0 },
+            });
+          }
+
+          // No discovery available — return original connection error
+          return json({ ok: false, error: `Connection failed: ${result.error}` }, 502);
+        }
+
         if (!result.success) {
           return json({ ok: false, error: `Connection failed: ${result.error}` }, 502);
         }
@@ -204,13 +280,21 @@ export function registerMcpServerRoutes(
         const config = configs[name];
         if (!config?.oauth) return json({ ok: false, error: `Server "${name}" has no OAuth config` }, 400);
         if (!config.oauth.authorize_url) return json({ ok: false, error: "authorize_url is required" }, 400);
+        if (!config.oauth.token_url) return json({ ok: false, error: "token_url is required" }, 400);
 
         try {
+          const callbackBaseUrl = getPublicOrigin(req, url);
           const { auth_url } = startOAuthFlow(
             channel,
             name,
-            config.oauth,
-            body.callback_base_url || `http://localhost:${process.env.PORT || 3117}`,
+            {
+              client_id: config.oauth.client_id,
+              client_secret: config.oauth.client_secret,
+              authorize_url: config.oauth.authorize_url,
+              token_url: config.oauth.token_url,
+              scopes: config.oauth.scopes,
+            },
+            callbackBaseUrl,
           );
           return json({ ok: true, auth_url });
         } catch (err: any) {
