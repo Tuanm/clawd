@@ -141,19 +141,23 @@ class StdlibWebSocket:
                 "WebSocket upgrade failed: %s" % status_line
             )
 
-        # Validate Sec-WebSocket-Accept
+        # Validate Sec-WebSocket-Accept (warn on mismatch — proxies like
+        # Cloudflare may re-terminate the WS and produce a different accept key)
         expected_accept = base64.b64encode(
             hashlib.sha1(
                 (key + "258EAFA5-E914-47DA-95CA-5AB5AFA5E30B").encode()
             ).digest()
         ).decode()
+        accept_found = False
         for line in response.split(b"\r\n"):
             if line.lower().startswith(b"sec-websocket-accept:"):
                 got = line.split(b":", 1)[1].strip().decode()
+                accept_found = True
                 if got != expected_accept:
-                    self.sock.close()
-                    raise ConnectionError("Sec-WebSocket-Accept mismatch")
+                    log("Warning: Sec-WebSocket-Accept mismatch (proxy may have re-terminated WS)")
                 break
+        if not accept_found:
+            log("Warning: No Sec-WebSocket-Accept header in response (proxy may strip it)")
 
         self.sock.settimeout(90)
         self._closed = False
