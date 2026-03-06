@@ -101,6 +101,12 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const [newWorkerToken, setNewWorkerToken] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // Identity state
+  const [identity, setIdentity] = useState("");
+  const [savedIdentity, setSavedIdentity] = useState("");
+  const [identityDirty, setIdentityDirty] = useState(false);
+  const [identitySaving, setIdentitySaving] = useState(false);
+
   // Providers list state
   const [providers, setProviders] = useState<ProviderOption[]>([]);
 
@@ -165,8 +171,38 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setNewModel("default");
       setNewProject("");
       setShowFolderBrowser(false);
+      setIdentity("");
+      setSavedIdentity("");
+      setIdentityDirty(false);
     }
   }, [isOpen]);
+
+  // Load identity when agent is selected
+  useEffect(() => {
+    if (!selectedAgentId || showAddForm) {
+      setIdentity("");
+      setSavedIdentity("");
+      setIdentityDirty(false);
+      return;
+    }
+    const controller = new AbortController();
+    fetch(
+      `${API_URL}/api/app.agents.identity?channel=${encodeURIComponent(channel)}&agent_id=${encodeURIComponent(selectedAgentId)}`,
+      { signal: controller.signal },
+    )
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok) {
+          setIdentity(data.identity || "");
+          setSavedIdentity(data.identity || "");
+          setIdentityDirty(false);
+        }
+      })
+      .catch((err) => {
+        if (err.name !== "AbortError") console.error(err);
+      });
+    return () => controller.abort();
+  }, [selectedAgentId, showAddForm, channel]);
 
   // Update project default when channel changes
   useEffect(() => {
@@ -280,6 +316,32 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     [channel, loadAgents],
   );
 
+  const handleSaveIdentity = useCallback(
+    async (agentId: string) => {
+      setIdentitySaving(true);
+      setError(null);
+      try {
+        const res = await fetch(`${API_URL}/api/app.agents.identity`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel, agent_id: agentId, identity }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          setSavedIdentity(identity);
+          setIdentityDirty(false);
+        } else {
+          setError(data.error || "Failed to save identity");
+        }
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setIdentitySaving(false);
+      }
+    },
+    [channel, identity],
+  );
+
   const loadFolders = useCallback(async (path: string) => {
     setFolderLoading(true);
     try {
@@ -335,8 +397,8 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 title={agent.agent_id}
               >
                 <span className="stream-agent-avatar-wrap">
-                  <ClawdAvatar color={color} standing={agent.running} />
-                  {agent.running && <span className="stream-agent-avatar-dot" />}
+                  <ClawdAvatar color={color} standing={agent.running && !agent.sleeping} sleeping={agent.sleeping} />
+                  {agent.running && !agent.sleeping && <span className="stream-agent-avatar-dot" />}
                 </span>
                 <span className="stream-agent-avatar-name">{agent.agent_id}</span>
               </button>
@@ -405,7 +467,25 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 value={selectedAgent.project || ""}
                 readOnly
               />
+              <textarea
+                className="agent-field-input agent-identity-input"
+                placeholder="Identity — describe this agent's role, personality, and responsibilities"
+                value={identity}
+                onChange={(e) => {
+                  setIdentity(e.target.value);
+                  setIdentityDirty(e.target.value !== savedIdentity);
+                }}
+              />
               <div className="agent-buttons">
+                {identityDirty && (
+                  <button
+                    className="agent-action-btn agent-action-btn--accent"
+                    onClick={() => handleSaveIdentity(selectedAgent.agent_id)}
+                    disabled={identitySaving}
+                  >
+                    {identitySaving ? "Applying..." : "Apply"}
+                  </button>
+                )}
                 <button
                   className={`agent-action-btn ${selectedAgent.sleeping ? "agent-action-btn--accent" : "agent-action-btn--warning"}`}
                   onClick={() => handleToggleSleep(selectedAgent.agent_id, selectedAgent.sleeping)}

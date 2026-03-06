@@ -779,6 +779,17 @@ body {
   border-color: hsl(var(--text) / 12%);
 }
 
+/* Identity textarea — expandable like the input area */
+.agent-identity-input {
+  min-height: 60px;
+  max-height: 200px;
+  resize: vertical;
+  line-height: 1.5;
+  font-size: 13px;
+  white-space: pre-wrap;
+  field-sizing: content;
+}
+
 /* Browse row: input + browse button */
 .agent-field-browse {
   display: flex;

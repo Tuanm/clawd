@@ -618,6 +618,71 @@ export function registerAgentRoutes(
       });
     }
 
+    // Get agent identity (role file content)
+    if (path === "/api/app.agents.identity" && req.method === "GET") {
+      const channel = url.searchParams.get("channel");
+      const agent_id = url.searchParams.get("agent_id");
+      if (!channel || !agent_id) return json({ ok: false, error: "channel and agent_id required" }, 400);
+
+      const agent = db
+        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .get(channel, agent_id) as any;
+      if (!agent?.project) return json({ ok: true, identity: "" });
+
+      const rolePath = join(agent.project, ".clawd", "roles", `${agent_id}.md`);
+      let identity = "";
+      if (existsSync(rolePath)) {
+        try {
+          identity = readFileSync(rolePath, "utf-8");
+        } catch {}
+      }
+      return json({ ok: true, identity });
+    }
+
+    // Save agent identity (role file + agents.json upsert)
+    if (path === "/api/app.agents.identity" && req.method === "POST") {
+      return handleAsync(async () => {
+        const body = await parseBody(req);
+        const { channel, agent_id, identity } = body;
+        if (!channel || !agent_id) return json({ ok: false, error: "channel and agent_id required" }, 400);
+        if (typeof identity !== "string") return json({ ok: false, error: "identity must be a string" }, 400);
+
+        const agent = db
+          .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+          .get(channel, agent_id) as any;
+        if (!agent?.project) return json({ ok: false, error: "Agent has no project root" }, 400);
+
+        const { mkdirSync, writeFileSync } = await import("node:fs");
+        const rolesDir = join(agent.project, ".clawd", "roles");
+        mkdirSync(rolesDir, { recursive: true });
+
+        // Write role file
+        const rolePath = join(rolesDir, `${agent_id}.md`);
+        writeFileSync(rolePath, identity, "utf-8");
+
+        // Upsert role in agents.json
+        const agentsJsonPath = join(agent.project, ".clawd", "agents.json");
+        let agentsConfig: Record<string, any> = {};
+        if (existsSync(agentsJsonPath)) {
+          try {
+            agentsConfig = JSON.parse(readFileSync(agentsJsonPath, "utf-8"));
+          } catch {}
+        }
+        if (!agentsConfig[agent_id]) agentsConfig[agent_id] = {};
+        const roles: string[] = agentsConfig[agent_id].roles || [];
+        if (!roles.includes(agent_id)) {
+          roles.push(agent_id);
+          agentsConfig[agent_id].roles = roles;
+        }
+        writeFileSync(agentsJsonPath, JSON.stringify(agentsConfig, null, 2), "utf-8");
+
+        // Identity is hot-reloaded: loadClawdInstructions() reads from disk
+        // on every iteration, so no agent restart is needed.
+
+        return json({ ok: true });
+      });
+    }
+
     // Get worker status
     if (path === "/api/app.agents.status") {
       const status = workerManager.getStatus();
