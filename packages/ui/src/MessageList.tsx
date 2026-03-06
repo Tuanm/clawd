@@ -65,6 +65,15 @@ interface Message {
     description?: string;
     status: "running" | "waiting" | "completed";
   };
+  tool_result?: {
+    tool_name: string;
+    description: string;
+    status: "running" | "succeeded" | "failed";
+    args: Record<string, any>;
+    result?: any;
+    error?: string;
+    job_id?: string;
+  };
 }
 
 // Pending message type
@@ -603,6 +612,69 @@ function HtmlPreview({ html }: { html: string }) {
         sandbox="allow-scripts"
         title="HTML Preview"
       />
+    </div>
+  );
+}
+
+// Tool Result Card — expandable preview card for scheduled tool call results
+function ToolResultCard({
+  toolResult,
+}: {
+  toolResult: {
+    tool_name: string;
+    description: string;
+    status: "running" | "succeeded" | "failed";
+    args: Record<string, any>;
+    result?: any;
+    error?: string;
+    job_id?: string;
+  };
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const statusClass =
+    toolResult.status === "succeeded"
+      ? "tool-result-card-succeeded"
+      : toolResult.status === "failed"
+        ? "tool-result-card-failed"
+        : "tool-result-card-running";
+
+  return (
+    <div
+      className={`message-tool-result-card ${statusClass}`}
+      onClick={() => setExpanded(!expanded)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setExpanded(!expanded)}
+    >
+      <div className="tool-result-card-header">
+        <div className="tool-result-card-content">
+          <div className="tool-result-card-title">{toolResult.tool_name}</div>
+          <div className="tool-result-card-description">{toolResult.description}</div>
+        </div>
+        <div className="tool-result-card-chevron">{expanded ? "▼" : "▶"}</div>
+      </div>
+      {expanded && (
+        <div className="tool-result-card-details">
+          <div className="tool-result-card-section">
+            <div className="tool-result-card-section-label">Arguments</div>
+            <pre className="tool-result-card-json">{JSON.stringify(toolResult.args, null, 2)}</pre>
+          </div>
+          <div className="tool-result-card-section">
+            <div className="tool-result-card-section-label">{toolResult.status === "failed" ? "Error" : "Result"}</div>
+            <pre className="tool-result-card-json">
+              {toolResult.error
+                ? toolResult.error
+                : toolResult.result
+                  ? typeof toolResult.result === "string"
+                    ? toolResult.result
+                    : JSON.stringify(toolResult.result, null, 2)
+                  : toolResult.status === "running"
+                    ? "Running..."
+                    : "No output"}
+            </pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2007,6 +2079,7 @@ export default function MessageList({
                       </div>
                     );
                   })()}
+                {msg.tool_result && <ToolResultCard toolResult={msg.tool_result} />}
                 {msg.files && msg.files.length > 0 && (
                   <div className="message-files">
                     {msg.files.map((file) =>

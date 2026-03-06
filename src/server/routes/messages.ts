@@ -43,12 +43,14 @@ export interface PostMessageRequest {
   article_json?: string;
   subspace_json?: string;
   workspace_json?: string;
+  tool_result_json?: string;
 }
 
 export interface UpdateMessageRequest {
   channel: string;
   ts: string;
   text: string;
+  tool_result_json?: string;
 }
 
 export interface ReactionsRequest {
@@ -133,6 +135,7 @@ export function postMessage(req: PostMessageRequest) {
     mentionsJson,
     req.subspace_json || null,
     req.workspace_json || null,
+    req.tool_result_json || null,
   );
 
   const msg = preparedStatements.getMessageByTs.get(ts);
@@ -171,6 +174,15 @@ export function updateMessage(req: UpdateMessageRequest) {
   const text = req.text;
 
   preparedStatements.updateMessage.run(text, now, req.ts, req.channel);
+
+  // Update tool_result_json if provided (for scheduled tool call status updates)
+  if (req.tool_result_json) {
+    db.run(`UPDATE messages SET tool_result_json = ? WHERE ts = ? AND channel = ?`, [
+      req.tool_result_json,
+      req.ts,
+      req.channel,
+    ]);
+  }
 
   const msg = preparedStatements.getMessageByTs.get(req.ts);
 

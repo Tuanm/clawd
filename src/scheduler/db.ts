@@ -28,7 +28,7 @@ function initSchema(db: Database): void {
       id TEXT PRIMARY KEY,
       channel TEXT NOT NULL,
       created_by_agent TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('once','interval','cron','reminder')),
+      type TEXT NOT NULL CHECK(type IN ('once','interval','cron','reminder','tool_call')),
       status TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active','paused','completed','failed','cancelled')),
       cron_expr TEXT,
@@ -44,7 +44,9 @@ function initSchema(db: Database): void {
       last_run_at INTEGER,
       run_count INTEGER DEFAULT 0,
       consecutive_errors INTEGER DEFAULT 0,
-      last_error TEXT
+      last_error TEXT,
+      tool_name TEXT,
+      tool_args_json TEXT
     );
 
     CREATE TABLE IF NOT EXISTS job_runs (
@@ -64,6 +66,22 @@ function initSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_runs_job
       ON job_runs(job_id, started_at);
   `);
+
+  // Migrations for existing databases
+  migrateSchedulerSchema(db);
+}
+
+// --- Migrations ---
+
+function migrateSchedulerSchema(db: Database): void {
+  // Check if tool_name column exists
+  const cols = db.prepare("PRAGMA table_info(scheduled_jobs)").all() as { name: string }[];
+  const colNames = new Set(cols.map((c) => c.name));
+
+  if (!colNames.has("tool_name")) {
+    db.exec("ALTER TABLE scheduled_jobs ADD COLUMN tool_name TEXT");
+    db.exec("ALTER TABLE scheduled_jobs ADD COLUMN tool_args_json TEXT");
+  }
 }
 
 // --- Types ---
@@ -72,7 +90,7 @@ export interface ScheduledJob {
   id: string;
   channel: string;
   created_by_agent: string;
-  type: "once" | "interval" | "cron" | "reminder";
+  type: "once" | "interval" | "cron" | "reminder" | "tool_call";
   status: "active" | "paused" | "completed" | "failed" | "cancelled";
   cron_expr: string | null;
   interval_ms: number | null;
@@ -88,6 +106,8 @@ export interface ScheduledJob {
   run_count: number;
   consecutive_errors: number;
   last_error: string | null;
+  tool_name: string | null;
+  tool_args_json: string | null;
 }
 
 export interface JobRun {
@@ -112,8 +132,8 @@ function stmts() {
 function prepareStatements(db: Database) {
   return {
     insertJob: db.prepare(`
-      INSERT INTO scheduled_jobs (id, channel, created_by_agent, type, status, cron_expr, interval_ms, run_at, next_run, title, prompt, timeout_seconds, max_runs, created_at, updated_at)
-      VALUES ($id, $channel, $created_by_agent, $type, 'active', $cron_expr, $interval_ms, $run_at, $next_run, $title, $prompt, $timeout_seconds, $max_runs, $now, $now)
+      INSERT INTO scheduled_jobs (id, channel, created_by_agent, type, status, cron_expr, interval_ms, run_at, next_run, title, prompt, timeout_seconds, max_runs, created_at, updated_at, tool_name, tool_args_json)
+      VALUES ($id, $channel, $created_by_agent, $type, 'active', $cron_expr, $interval_ms, $run_at, $next_run, $title, $prompt, $timeout_seconds, $max_runs, $now, $now, $tool_name, $tool_args_json)
     `),
     getJob: db.prepare<ScheduledJob, [string]>("SELECT * FROM scheduled_jobs WHERE id = ?"),
     listByChannel: db.prepare<ScheduledJob, [string]>(
@@ -161,7 +181,7 @@ export interface CreateJobParams {
   id: string;
   channel: string;
   created_by_agent: string;
-  type: "once" | "interval" | "cron" | "reminder";
+  type: "once" | "interval" | "cron" | "reminder" | "tool_call";
   cron_expr?: string;
   interval_ms?: number;
   run_at?: number;
@@ -170,6 +190,8 @@ export interface CreateJobParams {
   prompt: string;
   timeout_seconds?: number;
   max_runs?: number;
+  tool_name?: string;
+  tool_args_json?: string;
 }
 
 export function createJob(params: CreateJobParams): ScheduledJob {
@@ -188,6 +210,8 @@ export function createJob(params: CreateJobParams): ScheduledJob {
     timeout_seconds: params.timeout_seconds ?? 300,
     max_runs: params.max_runs ?? null,
     now: now,
+    tool_name: params.tool_name ?? null,
+    tool_args_json: params.tool_args_json ?? null,
   });
   return stmts().getJob.get(params.id)!;
 }

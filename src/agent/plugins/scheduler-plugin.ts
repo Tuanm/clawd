@@ -118,6 +118,69 @@ export function createSchedulerToolPlugin(config: SchedulerPluginConfig): ToolPl
           },
         },
         {
+          name: "schedule_tool",
+          description:
+            "Schedule a tool call to run at a specific time or recurring interval. The tool is executed directly by the scheduler (no agent spawned). " +
+            "Results appear as a status card in the channel. " +
+            'Schedule formats: "in 5 minutes", "every 2 hours", cron "0 9 * * *" (UTC), ISO 8601 "2024-12-25T10:00:00Z".',
+          parameters: {
+            tool_name: { type: "string", description: "Name of the tool to execute (e.g. exec_command, read_file)" },
+            tool_args: {
+              type: "object",
+              description: "Arguments to pass to the tool (JSON object)",
+            },
+            description: {
+              type: "string",
+              description: "Short description of what this scheduled tool call does (max 200 chars)",
+            },
+            schedule: {
+              type: "string",
+              description: 'When to run: "in 5 minutes", "every 2 hours", cron "0 9 * * *", or ISO 8601',
+            },
+            max_runs: {
+              type: "number",
+              description: "Maximum number of runs before auto-completing (optional, for recurring tool calls)",
+            },
+            timeout_seconds: {
+              type: "number",
+              description: "Max execution time per run in seconds (default: 300, max: 3600)",
+            },
+          },
+          required: ["tool_name", "tool_args", "description", "schedule"],
+          handler: async (args) => {
+            const { tool_name, tool_args, description, schedule, max_runs, timeout_seconds } = args;
+            const parsedMaxRuns = max_runs !== undefined ? Number(max_runs) : undefined;
+            const parsedTimeout = timeout_seconds !== undefined ? Number(timeout_seconds) : undefined;
+            if (
+              parsedMaxRuns !== undefined &&
+              (!Number.isFinite(parsedMaxRuns) || parsedMaxRuns <= 0 || !Number.isInteger(parsedMaxRuns))
+            ) {
+              return { success: false, output: "", error: "max_runs must be a positive integer" };
+            }
+            if (parsedTimeout !== undefined && (!Number.isFinite(parsedTimeout) || parsedTimeout <= 0)) {
+              return { success: false, output: "", error: "timeout_seconds must be a positive number" };
+            }
+            const result = scheduler.createJobFromTool({
+              channel,
+              agentId,
+              title: String(description).slice(0, 200),
+              prompt: String(description),
+              schedule: String(schedule),
+              maxRuns: parsedMaxRuns,
+              timeoutSeconds: parsedTimeout,
+              isToolCall: true,
+              toolName: String(tool_name),
+              toolArgs: typeof tool_args === "object" ? tool_args : {},
+            });
+            if (!result.success) return { success: false, output: "", error: result.error! };
+            const job = result.job!;
+            return {
+              success: true,
+              output: `🔧 Scheduled tool call "${job.title}" (ID: ${job.id})\nTool: ${tool_name}\nNext run: ${new Date(job.next_run).toISOString()}${job.max_runs ? `\nMax runs: ${job.max_runs}` : ""}`,
+            };
+          },
+        },
+        {
           name: "list_schedules",
           description:
             "List scheduled jobs and reminders in this channel. Filter by status: active, paused, completed, failed, cancelled.",

@@ -202,6 +202,8 @@ import REMOTE_WORKER_TS from "../packages/clawd-worker/typescript/remote-worker.
 import REMOTE_WORKER_JAVA from "../packages/clawd-worker/java/RemoteWorker.java" with { type: "text" };
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
+import { tools as builtinTools } from "./agent/src/tools/tools";
+import type { ToolResult } from "./agent/src/tools/tools";
 
 // ============================================================================
 // Initialize
@@ -278,6 +280,15 @@ initRunner({
       }
     } catch {}
     return null;
+  },
+  executeToolFn: async (toolName: string, args: Record<string, any>): Promise<ToolResult> => {
+    const handler = builtinTools.get(toolName);
+    if (!handler) return { success: false, output: "", error: `Tool "${toolName}" not found` };
+    try {
+      return await handler(args);
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message || String(err) };
+    }
   },
 });
 
@@ -1062,7 +1073,12 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     // Update message
     if (path === "/api/chat.update" && req.method === "POST") {
       const body = await parseBody(req);
-      const result = updateMessage({ channel: body.channel || "general", ts: body.ts, text: body.text });
+      const result = updateMessage({
+        channel: body.channel || "general",
+        ts: body.ts,
+        text: body.text,
+        tool_result_json: body.tool_result_json,
+      });
       if (result.ok) {
         const msg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(body.ts);
         if (msg) broadcastUpdate(body.channel || "general", msg);

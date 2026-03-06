@@ -45,6 +45,11 @@ export type JobExecutor = (
   controller: AbortController,
 ) => Promise<string | undefined>;
 export type ReminderExecutor = (job: ScheduledJob) => Promise<void>;
+export type ToolCallExecutor = (
+  job: ScheduledJob,
+  runId: string,
+  controller: AbortController,
+) => Promise<string | undefined>;
 export type BroadcastFn = (channel: string, event: object) => void;
 
 export class SchedulerManager {
@@ -55,6 +60,7 @@ export class SchedulerManager {
 
   private jobExecutor: JobExecutor | null = null;
   private reminderExecutor: ReminderExecutor | null = null;
+  private toolCallExecutor: ToolCallExecutor | null = null;
 
   constructor(
     private config: AppConfig,
@@ -69,6 +75,11 @@ export class SchedulerManager {
   /** Set the reminder execution handler */
   setReminderExecutor(executor: ReminderExecutor): void {
     this.reminderExecutor = executor;
+  }
+
+  /** Set the tool call execution handler */
+  setToolCallExecutor(executor: ToolCallExecutor): void {
+    this.toolCallExecutor = executor;
   }
 
   /** Start the scheduler: recover from startup, begin tick loop */
@@ -138,6 +149,9 @@ export class SchedulerManager {
     maxRuns?: number;
     timeoutSeconds?: number;
     isReminder?: boolean;
+    isToolCall?: boolean;
+    toolName?: string;
+    toolArgs?: Record<string, any>;
   }): { success: boolean; job?: ScheduledJob; error?: string } {
     // Validate limits
     const sanitizedTitle = params.title.replace(/[\n\r]/g, " ").trim();
@@ -168,19 +182,21 @@ export class SchedulerManager {
     // Validate timeout
     const timeout = Math.min(params.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS);
 
-    const type = params.isReminder ? "reminder" : parsed.schedule.type;
+    const type = params.isToolCall ? "tool_call" : params.isReminder ? "reminder" : parsed.schedule.type;
     const id = crypto.randomUUID();
 
     const jobParams: CreateJobParams = {
       id,
       channel: params.channel,
       created_by_agent: params.agentId,
-      type: type as "once" | "interval" | "cron" | "reminder",
+      type: type as "once" | "interval" | "cron" | "reminder" | "tool_call",
       title: sanitizedTitle,
       prompt: params.prompt,
       next_run: parsed.schedule.next_run,
       timeout_seconds: timeout,
       max_runs: params.maxRuns,
+      tool_name: params.toolName,
+      tool_args_json: params.toolArgs ? JSON.stringify(params.toolArgs) : undefined,
     };
 
     if (parsed.schedule.type === "once") {
@@ -302,6 +318,8 @@ export class SchedulerManager {
         if (job.type === "reminder") {
           // Error handling is inside executeReminder — no outer .catch() needed (prevents double counting)
           this.executeReminder(job).finally(() => this.runningJobs.delete(job.id));
+        } else if (job.type === "tool_call") {
+          this.executeToolCall(job, controller).catch((e) => this.handleJobError(job, e));
         } else {
           this.executeJob(job, controller).catch((e) => this.handleJobError(job, e));
         }
@@ -371,6 +389,43 @@ export class SchedulerManager {
     }
   }
 
+  private async executeToolCall(job: ScheduledJob, controller: AbortController): Promise<void> {
+    if (!this.toolCallExecutor) {
+      console.warn("[Scheduler] No tool call executor set, skipping:", job.id);
+      this.runningJobs.delete(job.id);
+      return;
+    }
+
+    const runId = crypto.randomUUID();
+    insertRun(runId, job.id);
+
+    const timeout = setTimeout(
+      () => {
+        controller.abort("timeout");
+      },
+      (job.timeout_seconds || DEFAULT_TIMEOUT_SECONDS) * 1000,
+    );
+
+    try {
+      const output = await this.toolCallExecutor(job, runId, controller);
+
+      completeRun(runId, "success", undefined, output?.slice(0, 500));
+      incrementRunCount(job.id);
+      resetErrors(job.id);
+      this.checkCompletion(job);
+      purgeOldRuns(job.id);
+    } catch (err: any) {
+      const wasAborted = controller.signal.aborted;
+      const errMsg = err.message || String(err);
+      const status = wasAborted && controller.signal.reason === "timeout" ? "timeout" : "error";
+      completeRun(runId, status, errMsg);
+      this.handleJobError(job, err, wasAborted);
+    } finally {
+      clearTimeout(timeout);
+      this.runningJobs.delete(job.id);
+    }
+  }
+
   private handleJobError(job: ScheduledJob, err: any, wasAborted = false): void {
     if (wasAborted) return; // Don't increment error counters for aborted jobs
     const errMsg = err.message || String(err);
@@ -401,8 +456,12 @@ export class SchedulerManager {
     const updated = getJob(job.id);
     if (!updated) return;
 
-    // Once jobs and single-fire reminders complete after one run
-    if (job.type === "once" || (job.type === "reminder" && !job.interval_ms && !job.cron_expr)) {
+    // Once jobs, single-fire reminders, and one-shot tool calls complete after one run
+    const isOneShot =
+      job.type === "once" ||
+      (job.type === "reminder" && !job.interval_ms && !job.cron_expr) ||
+      (job.type === "tool_call" && !job.interval_ms && !job.cron_expr);
+    if (isOneShot) {
       updateJobStatus(job.id, "completed");
       return;
     }
@@ -443,6 +502,12 @@ export class SchedulerManager {
         if (!job.cron_expr) return null;
         return calculateNextCronRun(job.cron_expr.split(/\s+/));
 
+      case "tool_call":
+        // Tool calls follow interval/cron if set, otherwise one-shot
+        if (job.interval_ms) return now + job.interval_ms;
+        if (job.cron_expr) return calculateNextCronRun(job.cron_expr.split(/\s+/));
+        return now + 365 * 24 * 60 * 60 * 1000;
+
       default:
         return null;
     }
@@ -467,8 +532,11 @@ export class SchedulerManager {
     let missedOnceCount = 0;
 
     for (const job of dueJobs) {
-      // Recurring reminders (with interval or cron) should be rescheduled, not treated as one-shot
-      const isOneShot = job.type === "once" || (job.type === "reminder" && !job.interval_ms && !job.cron_expr);
+      // Recurring reminders/tool_calls (with interval or cron) should be rescheduled, not treated as one-shot
+      const isOneShot =
+        job.type === "once" ||
+        (job.type === "reminder" && !job.interval_ms && !job.cron_expr) ||
+        (job.type === "tool_call" && !job.interval_ms && !job.cron_expr);
       if (isOneShot) {
         const overdue = now - job.next_run;
         if (overdue < STARTUP_MISSED_WINDOW_MS && missedOnceCount < STARTUP_MAX_MISSED_ONCE) {

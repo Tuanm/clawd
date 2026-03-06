@@ -41,8 +41,8 @@ initDatabase();
 export const preparedStatements = {
   // Insert message
   insertMessage: db.prepare(
-    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json, subspace_json, workspace_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json, subspace_json, workspace_json, tool_result_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ),
 
   // Get message by ts
@@ -333,6 +333,13 @@ export function initDatabase() {
     /* Column already exists */
   }
 
+  // Add tool_result_json column to messages for scheduled tool call result cards
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN tool_result_json TEXT`);
+  } catch {
+    /* Column already exists */
+  }
+
   // Create spaces table for sub-agent chat sessions
   db.exec(`
     CREATE TABLE IF NOT EXISTS spaces (
@@ -569,6 +576,7 @@ export interface Message {
   article_json: string | null;
   subspace_json: string | null;
   workspace_json: string | null;
+  tool_result_json: string | null;
   created_at: number;
 }
 
@@ -607,6 +615,7 @@ export interface SlackMessage {
   };
   subspace?: SubspacePreview;
   workspace?: WorkspacePreview;
+  tool_result?: ToolResultPreview;
 }
 
 export interface WorkspacePreview {
@@ -624,6 +633,16 @@ export interface SubspacePreview {
   agent_color: string;
   status: "active" | "completed" | "failed" | "timed_out";
   channel: string;
+}
+
+export interface ToolResultPreview {
+  tool_name: string;
+  description: string;
+  status: "running" | "succeeded" | "failed";
+  args: Record<string, any>;
+  result?: any;
+  error?: string;
+  job_id?: string;
 }
 
 export interface SlackFile {
@@ -725,6 +744,18 @@ export function toSlackMessage(msg: Message): SlackMessage {
       // Validate workspace_id is a safe hex string before trusting it in client URLs
       if (workspace && typeof workspace.workspace_id === "string" && /^[a-f0-9]{16}$/.test(workspace.workspace_id)) {
         result.workspace = workspace;
+      }
+    } catch {
+      /* Invalid JSON */
+    }
+  }
+
+  // Parse and include tool result preview
+  if (msg.tool_result_json) {
+    try {
+      const toolResult = JSON.parse(msg.tool_result_json);
+      if (toolResult && toolResult.tool_name) {
+        result.tool_result = toolResult;
       }
     } catch {
       /* Invalid JSON */
