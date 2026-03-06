@@ -388,7 +388,7 @@ export class WorkerManager {
       console.log(`[WorkerManager] Added MCP server: ${name} (channel: ${channel}, ${tools} tools)`);
       return { success: true, tools };
     } catch (err: any) {
-      console.error(`[WorkerManager] Failed to add MCP server ${name} for channel ${channel}:`, err);
+      console.error(`[WorkerManager] Failed to add MCP server ${name} for channel ${channel}: ${err.message}`);
       return { success: false, tools: 0, error: err.message };
     }
   }

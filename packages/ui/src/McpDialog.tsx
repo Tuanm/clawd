@@ -49,7 +49,9 @@ function ServerLogo({ logo, size = 20 }: { logo?: string; size?: number }) {
   if (!logo) return <McpIcon size={size} />;
   // SVG code (starts with < or <svg)
   if (logo.trimStart().startsWith("<")) {
-    return <span dangerouslySetInnerHTML={{ __html: logo }} style={{ width: size, height: size, display: "inline-flex" }} />;
+    return (
+      <span dangerouslySetInnerHTML={{ __html: logo }} style={{ width: size, height: size, display: "inline-flex" }} />
+    );
   }
   // URL or base64
   return <img src={logo} alt="" width={size} height={size} style={{ borderRadius: 4, objectFit: "contain" }} />;
@@ -91,25 +93,11 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
       setConnecting(true);
       setError(null);
       try {
-        const server = servers.find((s) => s.name === name);
-        if (!server) return;
-        // Send add request — backend auto-uses stored config credentials
-        const body: any = {
-          channel,
-          name,
-          transport: server.transport,
-        };
-        if (server.transport === "stdio") {
-          body.command = server.command;
-          body.args = server.args;
-        } else {
-          body.url = server.url;
-        }
-
+        // Pre-configured servers: backend looks up config by channel + name
         const res = await fetch(`${API_URL}/api/app.mcp.add`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ channel, name }),
         });
         const data = await res.json();
 
@@ -133,7 +121,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
         setConnecting(false);
       }
     },
-    [channel, servers, loadServers],
+    [channel, loadServers],
   );
 
   const handleDisconnect = useCallback(
@@ -229,8 +217,20 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
           {/* Selected server detail */}
           {selectedServer && (
             <div className="agent-fields">
-              <input type="text" className="agent-field-input" placeholder="Name" value={selectedServer.name} readOnly />
-              <input type="text" className="agent-field-input" placeholder="Type" value={selectedServer.transport} readOnly />
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Name"
+                value={selectedServer.name}
+                readOnly
+              />
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Type"
+                value={selectedServer.transport}
+                readOnly
+              />
               {selectedServer.command && (
                 <input
                   type="text"
@@ -241,7 +241,13 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 />
               )}
               {selectedServer.url && (
-                <input type="text" className="agent-field-input" placeholder="URL" value={selectedServer.url} readOnly />
+                <input
+                  type="text"
+                  className="agent-field-input"
+                  placeholder="URL"
+                  value={selectedServer.url}
+                  readOnly
+                />
               )}
               <input
                 type="text"
@@ -268,7 +274,10 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                     {connecting ? "Connecting..." : "Connect"}
                   </button>
                 )}
-                <button className="agent-action-btn agent-action-btn--danger" onClick={() => handleRemove(selectedServer.name)}>
+                <button
+                  className="agent-action-btn agent-action-btn--danger"
+                  onClick={() => handleRemove(selectedServer.name)}
+                >
                   Remove
                 </button>
               </div>
