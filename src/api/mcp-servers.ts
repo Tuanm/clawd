@@ -250,14 +250,14 @@ export function registerMcpServerRoutes(
             registration_endpoint: existingConfig?.oauth?.registration_endpoint,
           };
 
-          // If we still don't have endpoints, try discovery
-          if (!oauthConfig.authorize_url || !oauthConfig.token_url) {
+          // If we still don't have endpoints or scopes, try discovery
+          if (!oauthConfig.authorize_url || !oauthConfig.token_url || !oauthConfig.scopes?.length) {
             const callbackUrl = `${callbackBaseUrl}/api/mcp/oauth/callback`;
             const discovered = await discoverOAuthMetadata(serverUrl, callbackUrl);
             if (discovered) {
-              oauthConfig.authorize_url = discovered.authorization_endpoint;
-              oauthConfig.token_url = discovered.token_endpoint;
-              if (!oauthConfig.scopes) oauthConfig.scopes = discovered.scopes_supported;
+              if (!oauthConfig.authorize_url) oauthConfig.authorize_url = discovered.authorization_endpoint;
+              if (!oauthConfig.token_url) oauthConfig.token_url = discovered.token_endpoint;
+              if (!oauthConfig.scopes?.length) oauthConfig.scopes = discovered.scopes_supported;
               if (!oauthConfig.client_secret) oauthConfig.client_secret = discovered.client_secret;
               if (!oauthConfig.registration_endpoint)
                 oauthConfig.registration_endpoint = discovered.registration_endpoint;
