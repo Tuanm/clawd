@@ -17,6 +17,7 @@ export interface MCPServerConfig {
   args?: string[];
   env?: Record<string, string>;
   url?: string; // For HTTP transport
+  headers?: Record<string, string>; // Custom headers for HTTP transport
   transport?: "stdio" | "http";
   token?: string; // Bearer auth token for HTTP transport
 }
@@ -351,6 +352,7 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
   readonly name: string;
   private url: string;
   private token?: string;
+  private customHeaders: Record<string, string>;
   private requestId = 0;
   private sessionId?: string; // Mcp-Session-Id from server
 
@@ -365,6 +367,7 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     this.name = config.name;
     this.url = config.url || "";
     this.token = config.token;
+    this.customHeaders = config.headers || {};
   }
 
   async connect(): Promise<void> {
@@ -462,8 +465,9 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
         Accept: "application/json, text/event-stream",
+        ...this.customHeaders,
       };
-      if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+      if (this.token && !headers["Authorization"]) headers["Authorization"] = `Bearer ${this.token}`;
       if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
 
       response = await fetch(this.url, {
@@ -525,8 +529,9 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
+      ...this.customHeaders,
     };
-    if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+    if (this.token && !headers["Authorization"]) headers["Authorization"] = `Bearer ${this.token}`;
     if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
 
     const ctrl = new AbortController();
@@ -590,8 +595,9 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
       try {
         const headers: Record<string, string> = {
           "Mcp-Session-Id": this.sessionId,
+          ...this.customHeaders,
         };
-        if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+        if (this.token && !headers["Authorization"]) headers["Authorization"] = `Bearer ${this.token}`;
         await fetch(this.url, { method: "DELETE", headers });
       } catch {
         // Best-effort session cleanup

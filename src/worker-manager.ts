@@ -301,6 +301,7 @@ export class WorkerManager {
             env: config.env,
             url: config.url,
             transport: config.transport,
+            headers: config.headers,
             token,
           });
           console.log(`[WorkerManager] Connected MCP server: ${name} (channel: ${channel})`);
@@ -374,6 +375,7 @@ export class WorkerManager {
       env?: Record<string, string>;
       url?: string;
       transport?: "stdio" | "http";
+      headers?: Record<string, string>;
       token?: string;
     },
   ): Promise<{ success: boolean; tools: number; error?: string }> {
@@ -392,6 +394,7 @@ export class WorkerManager {
         env: config.env,
         url: config.url,
         transport: config.transport,
+        headers: config.headers,
         token: config.token,
       });
       const tools = mgr.getAllTools().filter((t) => t.server === name).length;

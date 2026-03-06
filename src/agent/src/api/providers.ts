@@ -160,6 +160,7 @@ export interface MCPServerConfig {
   args?: string[];
   env?: Record<string, string>;
   url?: string; // For HTTP transport
+  headers?: Record<string, string>; // Custom headers for HTTP transport
   transport?: "stdio" | "http";
   enabled?: boolean; // false = temporarily disconnected
   logo?: string; // URL, base64 image, or SVG code

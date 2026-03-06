@@ -99,6 +99,7 @@ export function registerMcpServerRoutes(
         const args = body.args || existingCfg?.args;
         const env = body.env || existingCfg?.env;
         const serverUrl = body.url || existingCfg?.url;
+        const customHeaders = body.headers || existingCfg?.headers;
 
         if (!transport) return json({ ok: false, error: "transport required (stdio or http)" }, 400);
         if (transport === "stdio" && !command) return json({ ok: false, error: "command required for stdio" }, 400);
@@ -184,6 +185,7 @@ export function registerMcpServerRoutes(
         } else {
           connectConfig.url = serverUrl;
           if (token) connectConfig.token = token;
+          if (customHeaders) connectConfig.headers = customHeaders;
         }
 
         const result = await workerManager.addChannelMcpServer(channel, name, connectConfig);
@@ -304,6 +306,7 @@ export function registerMcpServerRoutes(
           } else {
             configToSave.url = serverUrl;
             if (oauth) configToSave.oauth = oauth;
+            if (customHeaders) configToSave.headers = customHeaders;
           }
           saveChannelMCPServer(channel, name, configToSave);
         } else if (existingCfg.enabled === false) {
@@ -366,6 +369,7 @@ export function registerMcpServerRoutes(
             args: config.args,
             env: config.env,
             url: config.url,
+            headers: config.headers,
             token,
           };
           const result = await workerManager.addChannelMcpServer(channel, name, connectConfig);
