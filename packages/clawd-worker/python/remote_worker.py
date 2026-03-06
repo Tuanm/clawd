@@ -118,13 +118,17 @@ class StdlibWebSocket:
 
         # --- HTTP upgrade handshake ---
         key = base64.b64encode(os.urandom(16)).decode()
+        origin = f"{'https' if is_secure else 'http'}://{host}" if port in (80, 443) else f"{'https' if is_secure else 'http'}://{host}:{port}"
+        host_hdr = host if port in (80, 443) else f"{host}:{port}"
         handshake_lines = [
             f"GET {path} HTTP/1.1",
-            f"Host: {host}:{port}",
+            f"Host: {host_hdr}",
             "Upgrade: websocket",
             "Connection: Upgrade",
             f"Sec-WebSocket-Key: {key}",
             "Sec-WebSocket-Version: 13",
+            f"Origin: {origin}",
+            "User-Agent: Clawd-RemoteWorker/0.1",
         ]
         for hdr_name, hdr_val in self.headers.items():
             handshake_lines.append(f"{hdr_name}: {hdr_val}")
@@ -137,8 +141,11 @@ class StdlibWebSocket:
         if b"101" not in response.split(b"\r\n")[0]:
             self.sock.close()
             status_line = response.split(b"\r\n")[0].decode(errors="replace")
+            # Print full response headers for debugging
+            resp_text = response.decode(errors="replace").strip()
             raise ConnectionError(
-                "WebSocket upgrade failed: %s" % status_line
+                "WebSocket upgrade failed: %s\n  Response headers:\n  %s"
+                % (status_line, "\n  ".join(resp_text.split("\r\n")))
             )
 
         # Validate Sec-WebSocket-Accept (warn on mismatch — proxies like
@@ -1247,6 +1254,12 @@ class RemoteWorker:
         name_encoded = urllib.parse.quote(self.config.name)
         url = f"{server}/worker/ws?name={name_encoded}"
         headers = {"Authorization": f"Bearer {self.config.token}"}
+        # Cloudflare Access service token
+        cf_id = getattr(self.config, "cf_client_id", None)
+        cf_secret = getattr(self.config, "cf_client_secret", None)
+        if cf_id and cf_secret:
+            headers["CF-Access-Client-Id"] = cf_id
+            headers["CF-Access-Client-Secret"] = cf_secret
         self.ws = StdlibWebSocket(
             url, headers=headers, ssl_context=self.config.ssl_context
         )
@@ -1483,6 +1496,16 @@ def main():  # type: () -> None
         default=4,
         help="Max concurrent tool calls (default: 4)",
     )
+    parser.add_argument(
+        "--cf-client-id",
+        default=os.environ.get("CF_ACCESS_CLIENT_ID"),
+        help="Cloudflare Access service token client ID (or set CF_ACCESS_CLIENT_ID)",
+    )
+    parser.add_argument(
+        "--cf-client-secret",
+        default=os.environ.get("CF_ACCESS_CLIENT_SECRET"),
+        help="Cloudflare Access service token secret (or set CF_ACCESS_CLIENT_SECRET)",
+    )
 
     args = parser.parse_args()
 
@@ -1503,10 +1526,13 @@ def main():  # type: () -> None
 
     # Startup diagnostics
     log(f"Platform: {sys.platform} ({platform.machine()})")
+    log(f"Python: {sys.version.split()[0]}")
     if IS_WSL2:
         log("Running inside WSL2")
     if IS_MACOS:
         log("macOS (case-insensitive comparison active)")
+    if args.cf_client_id:
+        log("Cloudflare Access service token configured")
     project_root = os.path.realpath(args.project_root)
     log(f"Project root: {project_root}")
     log(f"Server: {server_url}")
@@ -1522,6 +1548,8 @@ def main():  # type: () -> None
         "reconnect_max": args.reconnect_max,
         "ssl_context": ssl_ctx,
         "max_concurrent": args.max_concurrent,
+        "cf_client_id": args.cf_client_id,
+        "cf_client_secret": args.cf_client_secret,
     })()
 
     worker = RemoteWorker(config)

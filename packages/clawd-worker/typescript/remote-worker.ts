@@ -73,6 +73,8 @@ interface WorkerConfig {
   insecure: boolean;
   caCert: string | null;
   maxConcurrent: number;
+  cfClientId: string | null;
+  cfClientSecret: string | null;
 }
 
 function printUsage(): never {
@@ -91,6 +93,8 @@ Options:
   --insecure             Disable TLS certificate verification
   --ca-cert <path>       Custom CA certificate file path
   --max-concurrent <n>   Max concurrent tool calls (default: 4)
+  --cf-client-id <id>    Cloudflare Access service token client ID (or CF_ACCESS_CLIENT_ID env)
+  --cf-client-secret <s> Cloudflare Access service token secret (or CF_ACCESS_CLIENT_SECRET env)
 `);
   process.exit(1);
 }
@@ -124,6 +128,8 @@ function parseArgs(): WorkerConfig {
   let insecure = false;
   let caCert: string | null = null;
   let maxConcurrent = 4;
+  let cfClientId: string | null = process.env.CF_ACCESS_CLIENT_ID || null;
+  let cfClientSecret: string | null = process.env.CF_ACCESS_CLIENT_SECRET || null;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -158,6 +164,12 @@ function parseArgs(): WorkerConfig {
       case "--max-concurrent":
         maxConcurrent = parseInt(argv[++i], 10) || 4;
         break;
+      case "--cf-client-id":
+        cfClientId = argv[++i] || null;
+        break;
+      case "--cf-client-secret":
+        cfClientSecret = argv[++i] || null;
+        break;
       default:
         console.error(`Unknown argument: ${arg}`);
         printUsage();
@@ -183,7 +195,20 @@ function parseArgs(): WorkerConfig {
     process.exit(1);
   }
 
-  return { server, token, projectRoot, name, readOnly, timeout, reconnectMax, insecure, caCert, maxConcurrent };
+  return {
+    server,
+    token,
+    projectRoot,
+    name,
+    readOnly,
+    timeout,
+    reconnectMax,
+    insecure,
+    caCert,
+    maxConcurrent,
+    cfClientId,
+    cfClientSecret,
+  };
 }
 
 const config = parseArgs();
@@ -914,7 +939,7 @@ function wsSend(msg: any): void {
 }
 
 function connect(): void {
-  const wsUrl = `${config.server}/worker/ws?name=${encodeURIComponent(config.name)}`;
+  const wsUrl = `${config.server}/worker/ws?name=${encodeURIComponent(config.name)}&token=${encodeURIComponent(config.token)}`;
 
   // H5: WHATWG WebSocket doesn't accept `ca` option.
   // Use NODE_EXTRA_CA_CERTS env var instead (must be set before first TLS handshake).
@@ -926,6 +951,21 @@ function connect(): void {
     } catch (e: any) {
       console.error(`[worker] Failed to read CA cert: ${e.message}`);
     }
+  }
+
+  // WHATWG WebSocket supports protocols as 2nd arg but not headers.
+  // Bun's WebSocket supports a headers option; Node's does not.
+  const wsOpts: any = {};
+  const extraHeaders: Record<string, string> = {
+    "User-Agent": "Clawd-RemoteWorker/0.1",
+  };
+  if (config.cfClientId && config.cfClientSecret) {
+    extraHeaders["CF-Access-Client-Id"] = config.cfClientId;
+    extraHeaders["CF-Access-Client-Secret"] = config.cfClientSecret;
+  }
+  // Bun supports headers in WebSocket constructor options
+  if (typeof Bun !== "undefined") {
+    wsOpts.headers = extraHeaders;
   }
 
   ws = new WebSocket(wsUrl);

@@ -118,8 +118,9 @@ export function getConnectedWorker(tokenHash: string): WorkerState | undefined {
 
 export function upgradeRemoteWorkerWs(req: Request, server: any): Response | undefined {
   const authHeader = req.headers.get("Authorization") || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
   const url = new URL(req.url);
+  // Accept token from Authorization header or query param (WHATWG WebSocket can't send headers)
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : url.searchParams.get("token") || "";
   const name = url.searchParams.get("name") || "unnamed";
 
   if (!token || !isTokenAllowed(token)) {

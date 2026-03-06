@@ -199,6 +199,7 @@ import {
 import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import REMOTE_WORKER_PY from "../packages/clawd-worker/python/remote_worker.py" with { type: "text" };
 import REMOTE_WORKER_TS from "../packages/clawd-worker/typescript/remote-worker.ts" with { type: "text" };
+import REMOTE_WORKER_JAVA from "../packages/clawd-worker/java/RemoteWorker.java" with { type: "text" };
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
 
@@ -563,7 +564,7 @@ const server = Bun.serve({
     }
 
     // Remote worker script download
-    const scriptMatch = path.match(/^\/worker\/remote-script\/(python|typescript|ts|py)$/);
+    const scriptMatch = path.match(/^\/worker\/remote-script\/(python|typescript|ts|py|java)$/);
     if (scriptMatch) {
       const lang = scriptMatch[1];
       const scriptMap: Record<string, { content: string; name: string; ct: string }> = {
@@ -571,6 +572,7 @@ const server = Bun.serve({
         py: { content: REMOTE_WORKER_PY, name: "remote_worker.py", ct: "text/x-python" },
         typescript: { content: REMOTE_WORKER_TS, name: "remote-worker.ts", ct: "text/typescript" },
         ts: { content: REMOTE_WORKER_TS, name: "remote-worker.ts", ct: "text/typescript" },
+        java: { content: REMOTE_WORKER_JAVA, name: "RemoteWorker.java", ct: "text/x-java-source" },
       };
       const info = scriptMap[lang];
       return new Response(info.content, {
