@@ -136,8 +136,9 @@ class StdlibWebSocket:
         response = self._recv_until(b"\r\n\r\n")
         if b"101" not in response.split(b"\r\n")[0]:
             self.sock.close()
+            status_line = response.split(b"\r\n")[0].decode(errors="replace")
             raise ConnectionError(
-                f"WebSocket upgrade failed: {response.split(b'\r\n')[0].decode(errors='replace')}"
+                "WebSocket upgrade failed: %s" % status_line
             )
 
         # Validate Sec-WebSocket-Accept
