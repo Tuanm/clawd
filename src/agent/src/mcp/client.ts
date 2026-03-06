@@ -477,7 +477,15 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     }
 
     if (!response.ok) {
-      throw new Error(`HTTP error: ${response.status}`);
+      // Try to extract a meaningful error message from the response body
+      let detail = "";
+      try {
+        const text = await response.text();
+        const parsed = JSON.parse(text);
+        if (parsed?.error?.message) detail = `: ${parsed.error.message}`;
+        else if (text.length < 300) detail = `: ${text}`;
+      } catch { /* ignore parse errors */ }
+      throw new Error(`HTTP error: ${response.status}${detail}`);
     }
 
     // Track session ID from server

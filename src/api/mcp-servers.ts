@@ -84,6 +84,8 @@ export function registerMcpServerRoutes(
 
         if (!channel || !name) return json({ ok: false, error: "channel and name required" }, 400);
 
+        console.log(`[mcp-servers] Add: channel=${channel}, name=${name}, body_transport=${body.transport || "none"}`);
+
         // Look up pre-configured server from config
         const existing = getChannelMCPServers(channel);
         const existingCfg = existing[name];
@@ -118,6 +120,7 @@ export function registerMcpServerRoutes(
         if (oauth?.client_id) {
           const stored = loadOAuthToken(channel, name);
           token = stored?.access_token;
+          console.log(`[mcp-servers] OAuth creds: client_id=${oauth.client_id.slice(0, 15)}..., has_secret=${!!oauth.client_secret}, stored_token=${token ? "yes" : "no"}`);
         }
 
         // For HTTP+OAuth servers with no valid token, skip connection attempt

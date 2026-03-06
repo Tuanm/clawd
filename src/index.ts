@@ -643,6 +643,18 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     if (path === "/api/mcp/oauth/callback" && req.method === "GET") {
       const code = url.searchParams.get("code");
       const stateParam = url.searchParams.get("state");
+      const errorParam = url.searchParams.get("error");
+      console.log(`[OAuth callback] code=${code ? code.slice(0, 12) + "..." : "null"}, state=${stateParam ? "present" : "null"}, error=${errorParam || "none"}, full_url=${url.pathname}?${url.search}`);
+
+      if (errorParam) {
+        const errorDesc = url.searchParams.get("error_description") || errorParam;
+        console.error(`[OAuth callback] Provider returned error: ${errorParam} — ${errorDesc}`);
+        return new Response(
+          `<html><body><h2>OAuth Error</h2><p>${escapeHtml(errorDesc)}</p></body></html>`,
+          { status: 400, headers: { "Content-Type": "text/html" } },
+        );
+      }
+
       if (!code || !stateParam) {
         return new Response("Missing code or state parameter", {
           status: 400,
@@ -653,6 +665,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         // Validate nonce against pending flows (CSRF protection)
         const flow = validateOAuthState(stateParam);
         if (!flow) {
+          console.error(`[OAuth callback] Invalid/expired state. stateParam=${stateParam}`);
           return new Response("Invalid or expired OAuth state", {
             status: 403,
             headers: { "Content-Type": "text/plain" },
@@ -667,11 +680,14 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           token_endpoint,
           redirect_uri: flowRedirectUri,
         } = flow;
+        console.log(`[OAuth callback] Flow matched: channel=${channel}, server=${serverName}, token_endpoint=${token_endpoint}, redirect_uri=${flowRedirectUri}, has_secret=${!!client_secret}, has_verifier=${!!code_verifier}`);
+
         // Look up the OAuth config for this server
         const { getChannelMCPServers } = await import("./agent/src/api/provider-config");
         const configs = getChannelMCPServers(channel);
         const serverConfig = configs[serverName];
         if (!serverConfig?.oauth) {
+          console.error(`[OAuth callback] No OAuth config found for ${channel}:${serverName}`);
           return new Response("Unknown OAuth server", { status: 404, headers: { "Content-Type": "text/plain" } });
         }
         // Use token_endpoint from flow (most reliable), fall back to config
@@ -683,8 +699,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           });
         }
         const effectiveClientId = client_id || serverConfig.oauth.client_id;
-        // Use redirect_uri stored in the pending flow (must match what was sent to auth server)
         const redirectUri = flowRedirectUri;
+        console.log(`[OAuth callback] Exchanging code: tokenUrl=${tokenUrl}, clientId=${effectiveClientId}, redirectUri=${redirectUri}`);
+
         const token = await exchangeOAuthCode(
           code,
           tokenUrl,
@@ -693,29 +710,40 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           code_verifier,
           client_secret,
         );
+        console.log(`[OAuth callback] Token received: type=${token.token_type}, scopes=${token.scopes?.join(",")}, expires_at=${token.expires_at}, has_refresh=${!!token.refresh_token}`);
         saveOAuthToken(channel, serverName, token);
 
         // Try reconnecting the MCP server with the new token
+        console.log(`[OAuth callback] Connecting MCP server ${serverName} with new token...`);
         const connectConfig: any = {
           transport: "http",
           url: serverConfig.url,
           token: token.access_token,
         };
-        await workerManager.addChannelMcpServer(channel, serverName, connectConfig);
+        const connectResult = await workerManager.addChannelMcpServer(channel, serverName, connectConfig);
+        console.log(`[OAuth callback] Connect result: success=${connectResult.success}, tools=${connectResult.tools}, error=${connectResult.error || "none"}`);
+
+        if (!connectResult.success) {
+          const safeErr = escapeHtml(connectResult.error || "Connection failed after OAuth");
+          return new Response(
+            `<html><body><h2>OAuth Succeeded, Connection Failed</h2><p>Token was obtained but MCP connection failed: ${safeErr}</p></body></html>`,
+            { status: 502, headers: { "Content-Type": "text/html" } },
+          );
+        }
 
         const safeName = escapeHtml(serverName);
         return new Response(
-          `<html><body><h2>MCP Connected!</h2><p>Server <b>${safeName}</b> authenticated successfully. You can close this tab.</p><script>window.close()</script></body></html>`,
+          `<html><body><h2>MCP Connected!</h2><p>Server <b>${safeName}</b> authenticated successfully (${connectResult.tools} tools). You can close this tab.</p><script>window.close()</script></body></html>`,
           { headers: { "Content-Type": "text/html" } },
         );
       } catch (err: any) {
         const msg = err.message || "Unknown error";
+        console.error(`[OAuth callback] Error: ${msg}`);
         const safeMsg = escapeHtml(msg);
-        // Provide actionable guidance for common errors
         let hint = "";
         if (msg.includes("bad_client_secret") || msg.includes("invalid_client")) {
           hint =
-            "<p><b>Hint:</b> This provider requires a Client Secret. Remove the server in the MCP dialog, re-add it with both Client ID and Client Secret from your app settings.</p>";
+            "<p><b>Hint:</b> This provider requires a Client Secret. Check your OAuth credentials in ~/.clawd/config.json.</p>";
         } else if (msg.includes("invalid_code") || msg.includes("code_expired")) {
           hint = "<p><b>Hint:</b> The authorization code expired. Try the OAuth flow again.</p>";
         }
