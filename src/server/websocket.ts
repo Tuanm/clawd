@@ -13,6 +13,12 @@ import {
   handleBrowserWsClose,
   type BrowserWsData,
 } from "./browser-bridge";
+import {
+  handleRemoteWorkerWsOpen,
+  handleRemoteWorkerWsMessage,
+  handleRemoteWorkerWsClose,
+  type RemoteWorkerWsData,
+} from "./remote-worker";
 
 /** Chat WebSocket data (regular connections) */
 interface ChatWebSocketData {
@@ -21,7 +27,7 @@ interface ChatWebSocketData {
   channel?: string;
 }
 
-export type WebSocketData = ChatWebSocketData | WorkspaceWsData | BrowserWsData;
+export type WebSocketData = ChatWebSocketData | WorkspaceWsData | BrowserWsData | RemoteWorkerWsData;
 
 const clients = new Set<ServerWebSocket<ChatWebSocketData>>();
 // Track multi-channel subscriptions per client (ws.data can only hold simple types)
@@ -41,6 +47,10 @@ export function handleWebSocketOpen(ws: ServerWebSocket<WebSocketData>) {
     handleBrowserWsOpen(ws as ServerWebSocket<BrowserWsData>);
     return;
   }
+  if (ws.data.type === "remote-worker") {
+    handleRemoteWorkerWsOpen(ws as ServerWebSocket<RemoteWorkerWsData>);
+    return;
+  }
   const chatWs = ws as ServerWebSocket<ChatWebSocketData>;
   clients.add(chatWs);
   clientChannels.set(chatWs, new Set());
@@ -54,6 +64,10 @@ export function handleWebSocketClose(ws: ServerWebSocket<WebSocketData>) {
   }
   if (ws.data.type === "browser-extension") {
     handleBrowserWsClose(ws as ServerWebSocket<BrowserWsData>);
+    return;
+  }
+  if (ws.data.type === "remote-worker") {
+    handleRemoteWorkerWsClose(ws as ServerWebSocket<RemoteWorkerWsData>);
     return;
   }
   const chatWs = ws as ServerWebSocket<ChatWebSocketData>;
@@ -79,6 +93,10 @@ export function handleWebSocketMessage(ws: ServerWebSocket<WebSocketData>, messa
   }
   if (ws.data.type === "browser-extension") {
     handleBrowserWsMessage(ws as ServerWebSocket<BrowserWsData>, message);
+    return;
+  }
+  if (ws.data.type === "remote-worker") {
+    handleRemoteWorkerWsMessage(ws as ServerWebSocket<RemoteWorkerWsData>, message);
     return;
   }
   const chatWs = ws as ServerWebSocket<ChatWebSocketData>;

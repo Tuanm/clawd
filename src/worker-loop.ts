@@ -18,6 +18,7 @@ import { setDebug } from "./agent/src/utils/debug";
 import { smartTruncate } from "./agent/src/utils/smart-truncation";
 import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
+import { RemoteWorkerBridge } from "./agent/src/plugins/remote-worker-bridge";
 import type { TrackedSpace } from "./spaces/spawn-plugin";
 
 // Session size limits (in estimated tokens) - tuned for 128k context
@@ -72,6 +73,7 @@ export interface WorkerLoopConfig {
   isSpaceAgent?: boolean;
   spaceManager?: import("./spaces/manager").SpaceManager;
   spaceWorkerManager?: import("./spaces/worker").SpaceWorkerManager;
+  workerToken?: string;
   onLoopExit?: () => void;
   additionalPlugins?: Array<{
     plugin?: import("./agent/src/plugins/manager").Plugin;
@@ -550,6 +552,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
 
           // Create agent
           let agent: Agent | null = null;
+          let remoteWorkerBridge: RemoteWorkerBridge | undefined;
           try {
             const llmProvider = createProvider(provider, model);
             agent = new Agent(llmProvider, agentConfig);
@@ -633,6 +636,15 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               });
             }
 
+            // Create remote worker bridge if agent has a worker token
+            if (this.config.workerToken) {
+              remoteWorkerBridge = new RemoteWorkerBridge(
+                agent.getMcpManager(),
+                channel,
+                this.config.workerToken,
+              );
+            }
+
             // Run the agent with the prompt (wrapped in call context for analytics)
             // NOTE: channel and agentId are already destructured from this.config at line 496;
             // do NOT re-declare them here — a redundant const { channel, agentId } inside
@@ -644,12 +656,17 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
             this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
 
             await agent.close();
+            if (remoteWorkerBridge) remoteWorkerBridge.destroy();
             agent = null; // Prevent double-close in finally
 
             return { success: true, output: result.content };
           } finally {
             // Ensure agent is always cleaned up, even on error
             this.activeAgent = null;
+            if (remoteWorkerBridge) {
+              remoteWorkerBridge.destroy();
+              remoteWorkerBridge = undefined;
+            }
             if (agent) {
               try {
                 await agent.close();

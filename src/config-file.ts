@@ -36,6 +36,12 @@ export interface ConfigFile {
    */
   workspaces?: boolean | string[];
   /**
+   * Remote worker configuration.
+   * - `true` → allow all workers on all channels (prints startup warning)
+   * - `{ "channel-1": ["token-1", "token-2"] }` → channel-specific tokens
+   */
+  worker?: boolean | Record<string, string[]>;
+  /**
    * Vision / image processing configuration.
    * Per-operation keys take precedence over top-level defaults.
    *

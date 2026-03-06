@@ -196,6 +196,7 @@ import {
   handleWebSocketOpen,
 } from "./server/websocket";
 // Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
+import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
 
@@ -552,6 +553,11 @@ const server = Bun.serve({
         return new Response("Browser features not enabled", { status: 403 });
       }
       return handleBrowserFileRequest(req, url, path);
+    }
+
+    // Remote worker WebSocket upgrade
+    if (path === "/ws/remote-worker") {
+      return upgradeRemoteWorkerWs(req, server);
     }
 
     // Workspace noVNC WebSocket proxy (only when workspaces enabled)

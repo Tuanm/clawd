@@ -244,6 +244,11 @@ export class Agent {
   private plugins: PluginManager | null = null;
   private toolPluginManager: ToolPluginManager = new ToolPluginManager();
   private mcpManager: MCPManager = new MCPManager();
+
+  /** Expose MCPManager for external bridges (e.g., RemoteWorkerBridge) */
+  getMcpManager(): MCPManager {
+    return this.mcpManager;
+  }
   private agentId: string;
   private tokenLimitWarning: number;
   private tokenLimitCritical: number;

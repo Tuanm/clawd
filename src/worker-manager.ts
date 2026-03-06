@@ -31,6 +31,8 @@ export interface AgentConfig {
   project?: string;
   /** Whether the agent is sleeping (paused) */
   sleeping?: boolean;
+  /** Worker token for remote worker binding */
+  workerToken?: string;
 }
 
 export class WorkerManager {
@@ -120,6 +122,7 @@ export class WorkerManager {
       spaceManager: this.spaceManager,
       spaceWorkerManager: this.spaceWorkerManager,
       channelMcpManager: channelMcpManager || undefined,
+      workerToken: agent.workerToken,
     };
 
     const loop = new WorkerLoop(loopConfig);
@@ -227,6 +230,7 @@ export class WorkerManager {
           active: a.active !== false,
           project: a.project || "",
           sleeping: a.sleeping === true,
+          workerToken: a.worker_token || undefined,
         }));
       }
     } catch (error) {

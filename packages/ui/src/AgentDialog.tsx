@@ -98,6 +98,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const [newProvider, setNewProvider] = useState("copilot");
   const [newModel, setNewModel] = useState("default");
   const [newProject, setNewProject] = useState("");
+  const [newWorkerToken, setNewWorkerToken] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Providers list state
@@ -207,6 +208,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           provider: newProvider.trim().toLowerCase(),
           model: newModel.trim() || "default",
           project: newProject.trim(),
+          worker_token: newWorkerToken.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -219,6 +221,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
         });
         setNewModel("default");
         setNewProject(`/tmp/clawd/spaces/${channel}`);
+        setNewWorkerToken("");
         setShowAddForm(false);
         setSelectedAgentId(newName.trim());
         await loadAgents();
@@ -230,7 +233,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [channel, newName, newProvider, newModel, newProject, loadAgents]);
+  }, [channel, newName, newProvider, newModel, newProject, newWorkerToken, loadAgents]);
 
   const handleRemoveAgent = useCallback(
     async (agentId: string) => {
@@ -524,6 +527,16 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   </div>
                 </div>
               )}
+              <input
+                className="agent-field-input"
+                type="password"
+                placeholder="Worker token (optional)"
+                value={newWorkerToken}
+                onChange={(e) => setNewWorkerToken(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAddAgent();
+                }}
+              />
               <button
                 className="agent-action-btn agent-action-btn--accent"
                 onClick={handleAddAgent}
