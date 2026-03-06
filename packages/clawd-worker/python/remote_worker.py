@@ -383,6 +383,11 @@ def validate_path(target, root):  # type: (str, str) -> Dict[str, Any]
     # Normalise on Windows
     target = os.path.expanduser(target)
     if IS_WINDOWS:
+        # Convert MSYS/Git Bash paths like /d/foo → D:\foo before slash replacement
+        import re as _re
+        m = _re.match(r'^/([a-zA-Z])(/.*)?$', target)
+        if m:
+            target = m.group(1).upper() + ":" + (m.group(2) or "\\")
         target = target.replace("/", "\\")
 
     # Resolve
@@ -1533,7 +1538,14 @@ def main():  # type: () -> None
         log("macOS (case-insensitive comparison active)")
     if args.cf_client_id:
         log("Cloudflare Access service token configured")
-    project_root = os.path.realpath(args.project_root)
+    project_root = args.project_root
+    # Convert MSYS/Git Bash paths like /d/foo → D:\foo on Windows
+    if IS_WINDOWS:
+        import re as _re
+        m = _re.match(r'^/([a-zA-Z])(/.*)?$', project_root)
+        if m:
+            project_root = m.group(1).upper() + ":" + (m.group(2) or "\\")
+    project_root = os.path.realpath(project_root)
     log(f"Project root: {project_root}")
     log(f"Server: {server_url}")
     if args.read_only:

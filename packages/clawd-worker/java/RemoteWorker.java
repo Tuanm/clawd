@@ -422,7 +422,15 @@ public class RemoteWorker {
 
         if (token.isEmpty()) { System.err.println("Error: --token or CLAWD_WORKER_TOKEN is required"); printUsage(); }
 
-        // Resolve project root
+        // Resolve project root — convert MSYS paths first
+        if (IS_WINDOWS && projectRoot.length() >= 2 && projectRoot.charAt(0) == '/'
+                && Character.isLetter(projectRoot.charAt(1))
+                && (projectRoot.length() == 2 || projectRoot.charAt(2) == '/')) {
+            projectRoot = Character.toUpperCase(projectRoot.charAt(1)) + ":"
+                    + (projectRoot.length() > 2 ? projectRoot.substring(2).replace('/', '\\') : "\\");
+        } else if (IS_WINDOWS) {
+            projectRoot = projectRoot.replace('/', '\\');
+        }
         try { projectRoot = Path.of(projectRoot).toRealPath().toString(); }
         catch (IOException e) {
             try { projectRoot = Path.of(projectRoot).toAbsolutePath().normalize().toString(); }
@@ -481,6 +489,13 @@ public class RemoteWorker {
             target = System.getProperty("user.home") + target.substring(1);
         }
         if (IS_WINDOWS) {
+            // Convert MSYS/Git Bash paths like /d/foo → D:\foo before slash replacement
+            if (target.length() >= 2 && target.charAt(0) == '/'
+                    && Character.isLetter(target.charAt(1))
+                    && (target.length() == 2 || target.charAt(2) == '/')) {
+                target = Character.toUpperCase(target.charAt(1)) + ":"
+                        + (target.length() > 2 ? target.substring(2) : "\\");
+            }
             target = target.replace('/', '\\');
         }
 
