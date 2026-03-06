@@ -47,6 +47,15 @@ interface Message {
   thread_ts?: string;
   agent_id?: string;
   files?: { id: string; name: string; url_private: string }[];
+  tool_result?: {
+    tool_name: string;
+    description: string;
+    status: "running" | "succeeded" | "failed";
+    args: Record<string, any>;
+    result?: any;
+    error?: string;
+    job_id?: string;
+  };
 }
 
 interface PollResult {
@@ -381,7 +390,7 @@ export class WorkerLoop {
             : m.user?.startsWith("UWORKER-")
               ? `[Sub-agent: ${m.agent_id || "unknown"}]`
               : m.agent_id || m.user || "unknown";
-        const text = this.truncateText(m.text);
+        const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
         return `[ts:${m.ts}] ${author}: ${text}${fileInfo}`;
       })
       .join("\n\n---\n\n");
@@ -471,7 +480,7 @@ If you skip this step, the main agent will never receive your work.`
     const messageContext = unprocessedMessages
       .map(
         (m) =>
-          `[ts:${m.ts}] ${m.user === "UHUMAN" ? "human" : m.user?.startsWith("UWORKER-") ? `[Sub-agent: ${m.agent_id || "unknown"}]` : m.agent_id || "bot"}: ${this.truncateText(m.text)}`,
+          `[ts:${m.ts}] ${m.user === "UHUMAN" ? "human" : m.user?.startsWith("UWORKER-") ? `[Sub-agent: ${m.agent_id || "unknown"}]` : m.agent_id || "bot"}: ${this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text)}`,
       )
       .join("\n\n---\n\n");
 
@@ -813,4 +822,20 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
   private log(msg: string): void {
     console.log(`[Worker ${this.config.channel}:${this.config.agentId}] ${msg}`);
   }
+}
+
+/** Format a tool_result preview into readable text for the agent prompt */
+function formatToolResult(tr: NonNullable<Message["tool_result"]>): string {
+  const status = tr.status === "succeeded" ? "✅ succeeded" : tr.status === "failed" ? "❌ failed" : "⏳ running";
+  const lines = [`[Scheduled Tool Call: ${tr.tool_name}] (${status})`, `Description: ${tr.description}`];
+  if (tr.args && Object.keys(tr.args).length > 0) {
+    lines.push(`Arguments: ${JSON.stringify(tr.args)}`);
+  }
+  if (tr.error) {
+    lines.push(`Error: ${tr.error}`);
+  } else if (tr.result != null) {
+    const resultStr = typeof tr.result === "string" ? tr.result : JSON.stringify(tr.result);
+    lines.push(`Result: ${resultStr}`);
+  }
+  return lines.join("\n");
 }
