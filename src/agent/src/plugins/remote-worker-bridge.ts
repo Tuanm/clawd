@@ -32,17 +32,19 @@ export class RemoteWorkerBridge {
 
     workerEvents.on("worker:registered", this.onRegisteredHandler);
     workerEvents.on("worker:disconnected", this.onDisconnectedHandler);
+  }
 
-    // Check for already-connected workers (handles worker-before-agent race)
+  /** Check for already-connected workers and register them. Must be awaited before agent.run(). */
+  async init(): Promise<void> {
     if (this.agentTokenHash) {
-      this.checkExistingWorkers();
+      await this.checkExistingWorkers();
     }
   }
 
-  private checkExistingWorkers() {
+  private async checkExistingWorkers() {
     const worker = getConnectedWorker(this.agentTokenHash!);
     if (worker && worker.status === "connected" && worker.tools?.length) {
-      this.onWorkerRegistered({
+      await this.addWorkerConnection({
         tokenHash: this.agentTokenHash!,
         name: worker.name,
         projectRoot: worker.projectRoot,
@@ -53,7 +55,7 @@ export class RemoteWorkerBridge {
     }
   }
 
-  private onWorkerRegistered(info: {
+  private async addWorkerConnection(info: {
     tokenHash: string;
     name: string;
     projectRoot: string;
@@ -69,7 +71,19 @@ export class RemoteWorkerBridge {
     if (info.channels !== "all" && !info.channels.includes(this.channel)) return;
 
     const conn = new RemoteWorkerMCPConnection(info.tokenHash, info.name, info.tools);
-    this.mcpManager.addConnection(conn).catch(console.error);
+    console.log(`[RemoteWorkerBridge] Adding ${conn.name} with ${info.tools.length} tools`);
+    await this.mcpManager.addConnection(conn);
+  }
+
+  private onWorkerRegistered(info: {
+    tokenHash: string;
+    name: string;
+    projectRoot: string;
+    platform: string;
+    tools: Array<{ name: string; inputSchema: any; description: string }>;
+    channels: string[] | "all";
+  }) {
+    this.addWorkerConnection(info).catch(console.error);
   }
 
   private onWorkerDisconnected(info: { tokenHash: string; name: string }) {
