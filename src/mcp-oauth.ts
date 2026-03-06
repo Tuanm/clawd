@@ -142,38 +142,89 @@ export async function discoverOAuthMetadata(
     code_challenge_methods_supported: asMeta.code_challenge_methods_supported,
   };
 
-  // Step 3: Dynamic Client Registration (RFC 7591), if available
-  if (asMeta.registration_endpoint) {
-    try {
-      const regResponse = await fetch(asMeta.registration_endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_name: clientName,
-          redirect_uris: [callbackUrl],
-          token_endpoint_auth_method: "none",
-          grant_types: ["authorization_code"],
-          response_types: ["code"],
-          // PKCE enforced — public client with code_challenge is standard OAuth 2.1
-        }),
-      });
+  // Step 3: Client registration — try multiple strategies per MCP SDK behavior:
+  // 3a. CIMD (SEP-991): Use URL-based client_id if server supports it
+  // 3b. DCR at advertised registration_endpoint (RFC 7591)
+  // 3c. DCR at /register fallback path on auth server
+  const regPayload = {
+    client_name: clientName,
+    redirect_uris: [callbackUrl],
+    token_endpoint_auth_method: "none",
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+  };
 
-      if (regResponse.ok) {
-        const regData = (await regResponse.json()) as any;
-        result.client_id = regData.client_id;
-        result.client_secret = regData.client_secret || undefined;
-        console.log(`[mcp-oauth] Dynamic client registration successful: ${result.client_id}`);
-      } else {
-        console.warn(
-          `[mcp-oauth] Dynamic registration failed (${regResponse.status}), client_id may need manual config`,
-        );
+  // 3a: Check for CIMD support (SEP-991 URL-based Client IDs)
+  if (asMeta.client_id_metadata_document_supported && callbackUrl) {
+    // Server supports URL-based client_id — we can use our callback origin as client_id
+    const clientMetadataUrl = new URL(callbackUrl).origin + "/.well-known/oauth-client.json";
+    result.client_id = clientMetadataUrl;
+    console.log(`[mcp-oauth] Using URL-based client_id (CIMD): ${clientMetadataUrl}`);
+    return result;
+  }
+
+  // 3b: DCR at advertised registration_endpoint
+  if (asMeta.registration_endpoint) {
+    const regResult = await tryDynamicRegistration(asMeta.registration_endpoint, regPayload);
+    if (regResult) {
+      result.client_id = regResult.client_id;
+      result.client_secret = regResult.client_secret;
+      return result;
+    }
+  }
+
+  // 3c: DCR at /register fallback on auth server (MCP SDK convention)
+  if (!result.client_id) {
+    const fallbackUrl = `${authUrl.origin}/register`;
+    if (fallbackUrl !== asMeta.registration_endpoint) {
+      console.log(`[mcp-oauth] Trying DCR fallback at ${fallbackUrl}`);
+      const regResult = await tryDynamicRegistration(fallbackUrl, regPayload);
+      if (regResult) {
+        result.client_id = regResult.client_id;
+        result.client_secret = regResult.client_secret;
+        result.registration_endpoint = fallbackUrl;
       }
-    } catch (err: any) {
-      console.warn(`[mcp-oauth] Dynamic registration error: ${err.message}`);
     }
   }
 
   return result;
+}
+
+/** Attempt Dynamic Client Registration at a given endpoint. Returns null on failure. */
+async function tryDynamicRegistration(
+  endpoint: string,
+  payload: Record<string, any>,
+): Promise<{ client_id: string; client_secret?: string } | null> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+    const regResponse = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+      redirect: "error", // Don't follow redirects (HTML login pages)
+    });
+    clearTimeout(timer);
+
+    if (regResponse.ok) {
+      const contentType = regResponse.headers.get("content-type") || "";
+      if (!contentType.includes("json")) {
+        console.warn(`[mcp-oauth] DCR at ${endpoint} returned non-JSON response`);
+        return null;
+      }
+      const regData = (await regResponse.json()) as any;
+      if (regData.client_id) {
+        console.log(`[mcp-oauth] Dynamic client registration successful at ${endpoint}: ${regData.client_id}`);
+        return { client_id: regData.client_id, client_secret: regData.client_secret || undefined };
+      }
+    } else {
+      console.warn(`[mcp-oauth] DCR at ${endpoint} failed (${regResponse.status})`);
+    }
+  } catch (err: any) {
+    console.warn(`[mcp-oauth] DCR at ${endpoint} error: ${err.message}`);
+  }
+  return null;
 }
 
 async function fetchJson(url: string): Promise<any> {

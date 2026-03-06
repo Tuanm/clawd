@@ -613,6 +613,24 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     const mcpResponse = handleMcpServerRoute(req, url, path);
     if (mcpResponse) return mcpResponse;
 
+    // CIMD: Serve client metadata document for MCP OAuth (SEP-991)
+    if (path === "/.well-known/oauth-client.json") {
+      const proto = req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "");
+      const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || url.host;
+      const publicOrigin = `${proto}://${host}`;
+      return new Response(
+        JSON.stringify({
+          client_id: `${publicOrigin}/.well-known/oauth-client.json`,
+          client_name: "Clawd",
+          redirect_uris: [`${publicOrigin}/api/mcp/oauth/callback`],
+          grant_types: ["authorization_code"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        }),
+        { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=3600" } },
+      );
+    }
+
     // MCP OAuth callback route
     if (path === "/api/mcp/oauth/callback" && req.method === "GET") {
       const code = url.searchParams.get("code");
