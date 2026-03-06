@@ -69,7 +69,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
 
   // Add form state
   const [newName, setNewName] = useState("");
-  const [newTransport, setNewTransport] = useState<"stdio" | "http">("stdio");
+  const [newTransport, setNewTransport] = useState("stdio");
   const [newCommand, setNewCommand] = useState("");
   const [newArgs, setNewArgs] = useState("");
   const [newUrl, setNewUrl] = useState("");
@@ -124,11 +124,12 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
       setError("Name is required");
       return;
     }
-    if (newTransport === "stdio" && !newCommand.trim()) {
+    const effectiveTransport = newTransport.trim().toLowerCase() === "http" ? "http" : "stdio";
+    if (effectiveTransport === "stdio" && !newCommand.trim()) {
       setError("Command is required for stdio");
       return;
     }
-    if (newTransport === "http" && !newUrl.trim()) {
+    if (effectiveTransport === "http" && !newUrl.trim()) {
       setError("URL is required for http");
       return;
     }
@@ -156,9 +157,9 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
       const body: any = {
         channel,
         name: newName.trim(),
-        transport: newTransport,
+        transport: effectiveTransport,
       };
-      if (newTransport === "stdio") {
+      if (effectiveTransport === "stdio") {
         body.command = newCommand.trim();
         if (args) body.args = args;
         if (env) body.env = env;
@@ -340,12 +341,9 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
               <input
                 type="text"
                 className="agent-field-input"
-                placeholder="Type (stdio or http)"
+                placeholder="Type (stdio/http)"
                 value={newTransport}
-                onChange={(e) => {
-                  const v = e.target.value.trim().toLowerCase();
-                  setNewTransport(v === "http" ? "http" : "stdio");
-                }}
+                onChange={(e) => setNewTransport(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleAdd();
                   if (e.key === "Escape") {
@@ -355,7 +353,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 }}
               />
 
-              {newTransport === "stdio" && (
+              {newTransport.trim().toLowerCase() !== "http" && (
                 <>
                   <input
                     type="text"
@@ -380,7 +378,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 </>
               )}
 
-              {newTransport === "http" && (
+              {newTransport.trim().toLowerCase() === "http" && (
                 <>
                   <input
                     type="text"
