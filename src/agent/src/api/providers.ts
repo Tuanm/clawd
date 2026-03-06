@@ -162,6 +162,7 @@ export interface MCPServerConfig {
   url?: string; // For HTTP transport
   transport?: "stdio" | "http";
   enabled?: boolean; // false = temporarily disconnected
+  logo?: string; // URL, base64 image, or SVG code
   oauth?: {
     client_id: string;
     client_secret?: string;

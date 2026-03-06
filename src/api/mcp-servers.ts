@@ -63,6 +63,7 @@ export function registerMcpServerRoutes(
           env: config.env ? Object.fromEntries(Object.entries(config.env).map(([k]) => [k, "••••"])) : undefined,
           url: config.url,
           enabled: config.enabled !== false,
+          logo: config.logo,
           oauth: config.oauth ? { client_id: config.oauth.client_id, scopes: config.oauth.scopes } : undefined,
           connected: runtime?.connected || false,
           tools: runtime?.tools || 0,

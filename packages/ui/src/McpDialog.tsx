@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 const API_URL = "";
@@ -8,9 +8,9 @@ interface McpServer {
   transport: "stdio" | "http";
   command?: string;
   args?: string[];
-  env?: Record<string, string>;
   url?: string;
   enabled: boolean;
+  logo?: string;
   oauth?: { client_id: string; scopes?: string[] };
   connected: boolean;
   tools: number;
@@ -20,23 +20,6 @@ interface Props {
   channel: string;
   isOpen: boolean;
   onClose: () => void;
-}
-
-function PlusIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-    >
-      <line x1="12" y1="5" x2="12" y2="19" />
-      <line x1="5" y1="12" x2="19" y2="12" />
-    </svg>
-  );
 }
 
 /** MCP protocol icon */
@@ -61,42 +44,29 @@ export function McpIcon({ size = 16 }: { size?: number }) {
   );
 }
 
+/** Render a server logo: URL, base64, SVG code, or fallback to McpIcon */
+function ServerLogo({ logo, size = 20 }: { logo?: string; size?: number }) {
+  if (!logo) return <McpIcon size={size} />;
+  // SVG code (starts with < or <svg)
+  if (logo.trimStart().startsWith("<")) {
+    return <span dangerouslySetInnerHTML={{ __html: logo }} style={{ width: size, height: size, display: "inline-flex" }} />;
+  }
+  // URL or base64
+  return <img src={logo} alt="" width={size} height={size} style={{ borderRadius: 4, objectFit: "contain" }} />;
+}
+
 export default function McpDialog({ channel, isOpen, onClose }: Props) {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [selectedName, setSelectedName] = useState<string | null>(null);
-  const [showAddForm, setShowAddForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Add form state
-  const [newName, setNewName] = useState("");
-  const [newTransport, setNewTransport] = useState("stdio");
-  const [newCommand, setNewCommand] = useState("");
-  const [newArgs, setNewArgs] = useState("");
-  const [newUrl, setNewUrl] = useState("");
-  const [newEnv, setNewEnv] = useState("");
-  const [newOAuthClientId, setNewOAuthClientId] = useState("");
-  const [newOAuthClientSecret, setNewOAuthClientSecret] = useState("");
-  const [newOAuthScopes, setNewOAuthScopes] = useState("");
-  const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
-
-  const nameInputRef = useRef<HTMLInputElement>(null);
+  const [connecting, setConnecting] = useState(false);
 
   // Reset state on dialog close
   useEffect(() => {
     if (!isOpen) {
       setSelectedName(null);
-      setShowAddForm(false);
       setError(null);
-      setNewName("");
-      setNewTransport("stdio");
-      setNewCommand("");
-      setNewArgs("");
-      setNewUrl("");
-      setNewEnv("");
-      setNewOAuthClientId("");
-      setNewOAuthClientSecret("");
-      setNewOAuthScopes("");
     }
   }, [isOpen]);
 
@@ -108,11 +78,6 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
     return () => clearInterval(interval);
   }, [isOpen, channel]);
 
-  // Focus name input when add form shows
-  useEffect(() => {
-    if (showAddForm) setTimeout(() => nameInputRef.current?.focus(), 100);
-  }, [showAddForm]);
-
   const loadServers = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/api/app.mcp.list?channel=${encodeURIComponent(channel)}`);
@@ -121,132 +86,76 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
     } catch {}
   }, [channel]);
 
-  const handleAdd = useCallback(async () => {
-    if (!newName.trim()) {
-      setError("Name is required");
-      return;
-    }
-    const effectiveTransport = newTransport.trim().toLowerCase() === "http" ? "http" : "stdio";
-    if (effectiveTransport === "stdio" && !newCommand.trim()) {
-      setError("Command is required for stdio");
-      return;
-    }
-    if (effectiveTransport === "http" && !newUrl.trim()) {
-      setError("URL is required for http");
-      return;
-    }
-
-    setSaving(true);
-    setError(null);
-    try {
-      // Parse env vars (KEY=VALUE per line)
-      let env: Record<string, string> | undefined;
-      if (newEnv.trim()) {
-        env = {};
-        // Parse env vars (KEY=val pairs, space or newline separated)
-        for (const pair of newEnv.split(/[\s]+/)) {
-          const eq = pair.indexOf("=");
-          if (eq > 0) env[pair.slice(0, eq)] = pair.slice(eq + 1);
+  const handleConnect = useCallback(
+    async (name: string) => {
+      setConnecting(true);
+      setError(null);
+      try {
+        const server = servers.find((s) => s.name === name);
+        if (!server) return;
+        // Send add request — backend auto-uses stored config credentials
+        const body: any = {
+          channel,
+          name,
+          transport: server.transport,
+        };
+        if (server.transport === "stdio") {
+          body.command = server.command;
+          body.args = server.args;
+        } else {
+          body.url = server.url;
         }
-      }
 
-      // Parse args (space-separated, respecting quotes)
-      let args: string[] | undefined;
-      if (newArgs.trim()) {
-        args = newArgs.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((a) => a.replace(/^"|"$/g, ""));
-      }
+        const res = await fetch(`${API_URL}/api/app.mcp.add`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
 
-      const body: any = {
-        channel,
-        name: newName.trim(),
-        transport: effectiveTransport,
-      };
-      if (effectiveTransport === "stdio") {
-        body.command = newCommand.trim();
-        if (args) body.args = args;
-        if (env) body.env = env;
-      } else {
-        body.url = newUrl.trim();
-        if (newOAuthClientId.trim()) {
-          body.oauth = {
-            client_id: newOAuthClientId.trim(),
-            client_secret: newOAuthClientSecret.trim() || undefined,
-            scopes: newOAuthScopes.trim() ? newOAuthScopes.split(",").map((s) => s.trim()) : undefined,
-          };
+        if (data.needs_oauth && data.auth_url) {
+          window.open(data.auth_url, "_blank");
+          await loadServers();
+          return;
         }
-      }
-
-      const res = await fetch(`${API_URL}/api/app.mcp.add`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-
-      // OAuth auto-discovery: server needs authentication
-      if (data.needs_oauth && data.auth_url) {
-        window.open(data.auth_url, "_blank");
-        setError(null);
-        // Reset form state
-        const savedName = newName.trim();
-        setNewName("");
-        setNewTransport("stdio");
-        setNewCommand("");
-        setNewArgs("");
-        setNewUrl("");
-        setNewEnv("");
-        setNewOAuthClientId("");
-        setNewOAuthClientSecret("");
-        setNewOAuthScopes("");
-        setShowAddForm(false);
+        if (data.needs_client_id) {
+          setError(data.error || "Please configure OAuth Client ID in config.");
+          return;
+        }
+        if (!data.ok) {
+          setError(data.error || "Connection failed");
+          return;
+        }
         await loadServers();
-        setSelectedName(savedName);
-        return;
+      } catch (e: any) {
+        setError(e.message || "Network error");
+      } finally {
+        setConnecting(false);
       }
+    },
+    [channel, servers, loadServers],
+  );
 
-      // Discovery succeeded but needs manual client_id — keep form open
-      if (data.needs_client_id) {
-        setError(data.error || "Please provide your OAuth Client ID.");
-        return;
+  const handleDisconnect = useCallback(
+    async (name: string) => {
+      setToggling(true);
+      try {
+        const res = await fetch(`${API_URL}/api/app.mcp.toggle`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel, name, enabled: false }),
+        });
+        const data = await res.json();
+        if (!data.ok) setError(data.error || "Disconnect failed");
+        await loadServers();
+      } catch {
+        setError("Network error");
+      } finally {
+        setToggling(false);
       }
-
-      if (!data.ok) {
-        setError(data.error || "Failed to add server");
-        return;
-      }
-
-      // Success — reset form and reload
-      const savedName = newName.trim();
-      setNewName("");
-      setNewTransport("stdio");
-      setNewCommand("");
-      setNewArgs("");
-      setNewUrl("");
-      setNewEnv("");
-      setNewOAuthClientId("");
-      setNewOAuthClientSecret("");
-      setNewOAuthScopes("");
-      setShowAddForm(false);
-      await loadServers();
-      setSelectedName(savedName);
-    } catch (e: any) {
-      setError(e.message || "Network error");
-    } finally {
-      setSaving(false);
-    }
-  }, [
-    channel,
-    newName,
-    newTransport,
-    newCommand,
-    newArgs,
-    newUrl,
-    newEnv,
-    newOAuthClientId,
-    newOAuthClientSecret,
-    newOAuthScopes,
-    loadServers,
-  ]);
+    },
+    [channel, loadServers],
+  );
 
   const handleRemove = useCallback(
     async (name: string) => {
@@ -265,27 +174,6 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
         await loadServers();
       } catch (e: any) {
         setError(e.message || "Failed to remove server");
-      }
-    },
-    [channel, loadServers],
-  );
-
-  const handleToggle = useCallback(
-    async (name: string, enabled: boolean) => {
-      setToggling(true);
-      try {
-        const res = await fetch(`${API_URL}/api/app.mcp.toggle`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ channel, name, enabled }),
-        });
-        const data = await res.json();
-        if (!data.ok) setError(data.error || "Toggle failed");
-        await loadServers();
-      } catch {
-        setError("Network error");
-      } finally {
-        setToggling(false);
       }
     },
     [channel, loadServers],
@@ -311,21 +199,20 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
         {/* Server bar */}
         <div className="stream-agent-bar">
           {servers.map((server) => {
-            const isActive = selectedName === server.name && !showAddForm;
+            const isActive = selectedName === server.name;
             return (
               <button
                 key={server.name}
                 className={`stream-agent-avatar-btn ${isActive ? "active" : ""}`}
                 onClick={() => {
                   setSelectedName(server.name);
-                  setShowAddForm(false);
                   setError(null);
                 }}
                 title={`${server.name} (${server.transport})`}
               >
                 <span className="stream-agent-avatar-wrap">
                   <span className={`mcp-server-icon ${server.connected ? "connected" : "disconnected"}`}>
-                    <McpIcon size={20} />
+                    <ServerLogo logo={server.logo} size={20} />
                   </span>
                   {server.connected && <span className="stream-agent-avatar-dot" />}
                 </span>
@@ -333,171 +220,17 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
               </button>
             );
           })}
-          <button
-            className={`stream-agent-avatar-btn agent-add-btn ${showAddForm ? "active" : ""}`}
-            onClick={() => {
-              setShowAddForm(true);
-              setSelectedName(null);
-              setError(null);
-            }}
-            title="Add MCP server"
-          >
-            <span className="agent-add-icon">
-              <PlusIcon />
-            </span>
-            <span className="stream-agent-avatar-name">Add</span>
-          </button>
         </div>
 
         {/* Body */}
         <div className="agent-dialog-body">
           {error && <div className="mcp-error">{error}</div>}
 
-          {/* Add form */}
-          {showAddForm && (
-            <div className="agent-fields">
-              <input
-                ref={nameInputRef}
-                type="text"
-                className="agent-field-input"
-                placeholder="Name"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAdd();
-                  if (e.key === "Escape") {
-                    setShowAddForm(false);
-                    setError(null);
-                  }
-                }}
-              />
-              <input
-                type="text"
-                className="agent-field-input"
-                placeholder="Type (stdio/http)"
-                value={newTransport}
-                onChange={(e) => setNewTransport(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAdd();
-                  if (e.key === "Escape") {
-                    setShowAddForm(false);
-                    setError(null);
-                  }
-                }}
-              />
-
-              {newTransport.trim().toLowerCase() !== "http" && (
-                <>
-                  <input
-                    type="text"
-                    className="agent-field-input"
-                    placeholder="Command (e.g. npx, bunx, uvx)"
-                    value={newCommand}
-                    onChange={(e) => setNewCommand(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAdd();
-                    }}
-                  />
-                  <input
-                    type="text"
-                    className="agent-field-input"
-                    placeholder="Arguments (e.g. -y @notionhq/notion-mcp-server)"
-                    value={newArgs}
-                    onChange={(e) => setNewArgs(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAdd();
-                    }}
-                  />
-                </>
-              )}
-
-              {newTransport.trim().toLowerCase() === "http" && (
-                <>
-                  <input
-                    type="text"
-                    className="agent-field-input"
-                    placeholder="URL (e.g. https://mcp.slack.com/mcp)"
-                    value={newUrl}
-                    onChange={(e) => setNewUrl(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAdd();
-                    }}
-                  />
-                  <input
-                    type="text"
-                    className="agent-field-input"
-                    placeholder="OAuth Client ID (optional)"
-                    value={newOAuthClientId}
-                    onChange={(e) => setNewOAuthClientId(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAdd();
-                    }}
-                  />
-                  {newOAuthClientId && (
-                    <>
-                      <input
-                        type="password"
-                        className="agent-field-input"
-                        placeholder="OAuth Client Secret (optional)"
-                        value={newOAuthClientSecret}
-                        onChange={(e) => setNewOAuthClientSecret(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleAdd();
-                        }}
-                      />
-                      <input
-                        type="text"
-                        className="agent-field-input"
-                        placeholder="OAuth Scopes (comma-separated, optional)"
-                        value={newOAuthScopes}
-                        onChange={(e) => setNewOAuthScopes(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleAdd();
-                        }}
-                      />
-                    </>
-                  )}
-                </>
-              )}
-
-              <input
-                type="text"
-                className="agent-field-input"
-                placeholder="Environment (KEY=val KEY2=val2, optional)"
-                value={newEnv}
-                onChange={(e) => setNewEnv(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAdd();
-                }}
-              />
-
-              <button
-                className="agent-action-btn agent-action-btn--accent"
-                onClick={handleAdd}
-                disabled={!newName.trim() || saving}
-              >
-                {saving ? "Connecting..." : "Add & Connect"}
-              </button>
-            </div>
-          )}
-
           {/* Selected server detail */}
-          {!showAddForm && selectedServer && (
+          {selectedServer && (
             <div className="agent-fields">
-              <input
-                type="text"
-                className="agent-field-input"
-                placeholder="Name"
-                value={selectedServer.name}
-                readOnly
-              />
-              <input
-                type="text"
-                className="agent-field-input"
-                placeholder="Type"
-                value={selectedServer.transport}
-                readOnly
-              />
+              <input type="text" className="agent-field-input" placeholder="Name" value={selectedServer.name} readOnly />
+              <input type="text" className="agent-field-input" placeholder="Type" value={selectedServer.transport} readOnly />
               {selectedServer.command && (
                 <input
                   type="text"
@@ -508,13 +241,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 />
               )}
               {selectedServer.url && (
-                <input
-                  type="text"
-                  className="agent-field-input"
-                  placeholder="URL"
-                  value={selectedServer.url}
-                  readOnly
-                />
+                <input type="text" className="agent-field-input" placeholder="URL" value={selectedServer.url} readOnly />
               )}
               <input
                 type="text"
@@ -523,27 +250,25 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 value={selectedServer.connected ? `Connected (${selectedServer.tools} tools)` : "Disconnected"}
                 readOnly
               />
-              {selectedServer.oauth && (
-                <input
-                  type="text"
-                  className="agent-field-input"
-                  placeholder="OAuth"
-                  value={selectedServer.oauth.client_id}
-                  readOnly
-                />
-              )}
               <div className="agent-buttons">
-                <button
-                  className={`agent-action-btn ${selectedServer.enabled ? "agent-action-btn--warning" : "agent-action-btn--accent"}`}
-                  onClick={() => handleToggle(selectedServer.name, !selectedServer.enabled)}
-                  disabled={toggling}
-                >
-                  {toggling ? "..." : selectedServer.enabled ? "Disconnect" : "Connect"}
-                </button>
-                <button
-                  className="agent-action-btn agent-action-btn--danger"
-                  onClick={() => handleRemove(selectedServer.name)}
-                >
+                {selectedServer.connected ? (
+                  <button
+                    className="agent-action-btn agent-action-btn--warning"
+                    onClick={() => handleDisconnect(selectedServer.name)}
+                    disabled={toggling}
+                  >
+                    {toggling ? "..." : "Disconnect"}
+                  </button>
+                ) : (
+                  <button
+                    className="agent-action-btn agent-action-btn--accent"
+                    onClick={() => handleConnect(selectedServer.name)}
+                    disabled={connecting}
+                  >
+                    {connecting ? "Connecting..." : "Connect"}
+                  </button>
+                )}
+                <button className="agent-action-btn agent-action-btn--danger" onClick={() => handleRemove(selectedServer.name)}>
                   Remove
                 </button>
               </div>
@@ -551,15 +276,16 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
           )}
 
           {/* Empty state */}
-          {!showAddForm && !selectedServer && servers.length === 0 && (
+          {!selectedServer && servers.length === 0 && (
             <div className="mcp-empty">
               <McpIcon size={32} />
               <p>No MCP servers configured for this channel.</p>
+              <p style={{ fontSize: "0.85em", opacity: 0.7 }}>Configure servers in ~/.clawd/config.json</p>
             </div>
           )}
 
           {/* No selection but has servers */}
-          {!showAddForm && !selectedServer && servers.length > 0 && (
+          {!selectedServer && servers.length > 0 && (
             <div className="mcp-empty">
               <p>Select a server to view details.</p>
             </div>
