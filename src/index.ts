@@ -197,6 +197,8 @@ import {
 } from "./server/websocket";
 // Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
 import { upgradeRemoteWorkerWs } from "./server/remote-worker";
+import REMOTE_WORKER_PY from "../packages/clawd-worker/python/remote_worker.py" with { type: "text" };
+import REMOTE_WORKER_TS from "../packages/clawd-worker/typescript/remote-worker.ts" with { type: "text" };
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
 
@@ -558,6 +560,25 @@ const server = Bun.serve({
     // Remote worker WebSocket upgrade
     if (path === "/worker/ws") {
       return upgradeRemoteWorkerWs(req, server);
+    }
+
+    // Remote worker script download
+    const scriptMatch = path.match(/^\/worker\/remote-script\/(python|typescript|ts|py)$/);
+    if (scriptMatch) {
+      const lang = scriptMatch[1];
+      const scriptMap: Record<string, { content: string; name: string; ct: string }> = {
+        python: { content: REMOTE_WORKER_PY, name: "remote_worker.py", ct: "text/x-python" },
+        py: { content: REMOTE_WORKER_PY, name: "remote_worker.py", ct: "text/x-python" },
+        typescript: { content: REMOTE_WORKER_TS, name: "remote-worker.ts", ct: "text/typescript" },
+        ts: { content: REMOTE_WORKER_TS, name: "remote-worker.ts", ct: "text/typescript" },
+      };
+      const info = scriptMap[lang];
+      return new Response(info.content, {
+        headers: {
+          "Content-Type": info.ct,
+          "Content-Disposition": `attachment; filename="${info.name}"`,
+        },
+      });
     }
 
     // Workspace noVNC WebSocket proxy (only when workspaces enabled)
