@@ -1926,7 +1926,6 @@ body {
   flex-direction: column;
   padding: 12px 16px;
   border: 1px solid var(--border-color, #e2e8f0);
-  border-left: 3px solid var(--border-color, #e2e8f0);
   border-radius: 8px;
   cursor: pointer;
   transition: background-color 0.15s;
@@ -1961,26 +1960,18 @@ body {
   text-overflow: ellipsis;
   margin-top: 2px;
 }
-.tool-result-card-chevron {
-  font-size: 10px;
-  color: var(--text-secondary, #64748b);
-  flex-shrink: 0;
-}
 /* Status colors */
 .tool-result-card-succeeded {
   background-color: rgba(34, 197, 94, 0.08);
   border-color: rgba(34, 197, 94, 0.3);
-  border-left-color: rgba(34, 197, 94, 0.8);
 }
 .tool-result-card-failed {
   background-color: rgba(239, 68, 68, 0.08);
   border-color: rgba(239, 68, 68, 0.3);
-  border-left-color: rgba(239, 68, 68, 0.8);
 }
 .tool-result-card-running {
   background-color: rgba(251, 191, 36, 0.08);
   border-color: rgba(251, 191, 36, 0.3);
-  border-left-color: rgba(251, 191, 36, 0.8);
 }
 /* Expanded details */
 .tool-result-card-details {

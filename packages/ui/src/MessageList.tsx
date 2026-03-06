@@ -651,7 +651,6 @@ function ToolResultCard({
           <div className="tool-result-card-title">{toolResult.tool_name}</div>
           <div className="tool-result-card-description">{toolResult.description}</div>
         </div>
-        <div className="tool-result-card-chevron">{expanded ? "▼" : "▶"}</div>
       </div>
       {expanded && (
         <div className="tool-result-card-details">

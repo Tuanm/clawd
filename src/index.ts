@@ -281,14 +281,29 @@ initRunner({
     } catch {}
     return null;
   },
-  executeToolFn: async (toolName: string, args: Record<string, any>): Promise<ToolResult> => {
+  executeToolFn: async (toolName: string, args: Record<string, any>, channel: string): Promise<ToolResult> => {
+    // Try built-in tools first
     const handler = builtinTools.get(toolName);
-    if (!handler) return { success: false, output: "", error: `Tool "${toolName}" not found` };
-    try {
-      return await handler(args);
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message || String(err) };
+    if (handler) {
+      try {
+        return await handler(args);
+      } catch (err: any) {
+        return { success: false, output: "", error: err.message || String(err) };
+      }
     }
+    // Fall back to MCP tools for the channel
+    const mcpManager = workerManager.getChannelMcpManager(channel);
+    if (mcpManager) {
+      const mcpResult = await mcpManager.executeMCPTool(toolName, args);
+      if (mcpResult.success) {
+        const text = typeof mcpResult.result === "string" ? mcpResult.result : JSON.stringify(mcpResult.result);
+        return { success: true, output: text };
+      }
+      if (mcpResult.error && mcpResult.error !== `Unknown tool: ${toolName}`) {
+        return { success: false, output: "", error: mcpResult.error };
+      }
+    }
+    return { success: false, output: "", error: `Tool "${toolName}" not found` };
   },
 });
 

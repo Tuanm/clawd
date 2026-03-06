@@ -21,7 +21,7 @@ interface RunnerConfig {
   getAgentConfig: (
     channel: string,
   ) => Promise<{ provider: string; model: string; agentId: string; project?: string } | null>;
-  executeToolFn?: (toolName: string, args: Record<string, any>) => Promise<ToolResult>;
+  executeToolFn?: (toolName: string, args: Record<string, any>, channel: string) => Promise<ToolResult>;
 }
 
 /**
@@ -157,7 +157,7 @@ export function initRunner(config: RunnerConfig): void {
       let result: ToolResult;
       try {
         if (controller.signal.aborted) throw new Error("Aborted before execution");
-        result = await executeToolFn(toolName, toolArgs);
+        result = await executeToolFn(toolName, toolArgs, job.channel);
       } catch (err: any) {
         // Update card to failed
         if (cardTs) {
@@ -224,7 +224,6 @@ interface ToolResultCard {
 }
 
 async function postToolResultCard(apiUrl: string, channel: string, card: ToolResultCard): Promise<string | null> {
-  const emoji = card.status === "running" ? "🔄" : card.status === "succeeded" ? "✅" : "❌";
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
@@ -233,7 +232,7 @@ async function postToolResultCard(apiUrl: string, channel: string, card: ToolRes
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         channel,
-        text: `${emoji} **Tool: ${card.tool_name}** — ${card.description}`,
+        text: "",
         user: "UBOT",
         agent_id: "Cron",
         subtype: "tool_result",
@@ -252,7 +251,6 @@ async function postToolResultCard(apiUrl: string, channel: string, card: ToolRes
 }
 
 async function updateToolResultCard(apiUrl: string, channel: string, ts: string, card: ToolResultCard): Promise<void> {
-  const emoji = card.status === "succeeded" ? "✅" : "❌";
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
@@ -262,7 +260,7 @@ async function updateToolResultCard(apiUrl: string, channel: string, ts: string,
       body: JSON.stringify({
         channel,
         ts,
-        text: `${emoji} **Tool: ${card.tool_name}** — ${card.description}`,
+        text: "",
         tool_result_json: JSON.stringify(card),
       }),
       signal: ctrl.signal,
