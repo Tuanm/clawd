@@ -39,40 +39,24 @@ function PlusIcon() {
   );
 }
 
-/** Simplified MCP protocol icon (two nodes connected) */
+/** MCP protocol icon */
 export function McpIcon({ size = 16 }: { size?: number }) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M4 9h3a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2z" />
-      <path d="M20 9h-3a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h3a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2z" />
-      <path d="M9 12h6" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <polyline points="3 6 5 6 21 6" />
-      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M3.49994 11.7501L11.6717 3.57855C12.7762 2.47398 14.5672 2.47398 15.6717 3.57855C16.7762 4.68312 16.7762 6.47398 15.6717 7.57855M15.6717 7.57855L9.49994 13.7501M15.6717 7.57855C16.7762 6.47398 18.5672 6.47398 19.6717 7.57855C20.7762 8.68312 20.7762 10.474 19.6717 11.5785L12.7072 18.543C12.3167 18.9335 12.3167 19.5667 12.7072 19.9572L13.9999 21.2499"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M17.4999 9.74921L11.3282 15.921C10.2237 17.0255 8.43272 17.0255 7.32823 15.921C6.22373 14.8164 6.22373 13.0255 7.32823 11.921L13.4999 5.74939"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -156,9 +140,10 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
       let env: Record<string, string> | undefined;
       if (newEnv.trim()) {
         env = {};
-        for (const line of newEnv.split("\n")) {
-          const eq = line.indexOf("=");
-          if (eq > 0) env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+        // Parse env vars (KEY=val pairs, space or newline separated)
+        for (const pair of newEnv.split(/[\s]+/)) {
+          const eq = pair.indexOf("=");
+          if (eq > 0) env[pair.slice(0, eq)] = pair.slice(eq + 1);
         }
       }
 
@@ -336,179 +321,187 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
 
           {/* Add form */}
           {showAddForm && (
-            <div className="agent-add-form">
-              <div className="agent-form-field">
-                <label>Name</label>
-                <input
-                  ref={nameInputRef}
-                  type="text"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="e.g. slack, notion"
-                />
-              </div>
-              <div className="agent-form-field">
-                <label>Type</label>
-                <select
-                  value={newTransport}
-                  onChange={(e) => setNewTransport(e.target.value as any)}
-                  className="mcp-type-select"
-                >
-                  <option value="stdio">stdio (local command)</option>
-                  <option value="http">http (remote URL)</option>
-                </select>
-              </div>
+            <div className="agent-fields">
+              <input
+                ref={nameInputRef}
+                type="text"
+                className="agent-field-input"
+                placeholder="Name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAdd();
+                  if (e.key === "Escape") {
+                    setShowAddForm(false);
+                    setError(null);
+                  }
+                }}
+              />
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Type (stdio or http)"
+                value={newTransport}
+                onChange={(e) => {
+                  const v = e.target.value.trim().toLowerCase();
+                  setNewTransport(v === "http" ? "http" : "stdio");
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAdd();
+                  if (e.key === "Escape") {
+                    setShowAddForm(false);
+                    setError(null);
+                  }
+                }}
+              />
 
               {newTransport === "stdio" && (
                 <>
-                  <div className="agent-form-field">
-                    <label>Command</label>
-                    <input
-                      type="text"
-                      value={newCommand}
-                      onChange={(e) => setNewCommand(e.target.value)}
-                      placeholder="e.g. npx, bunx, uvx"
-                    />
-                  </div>
-                  <div className="agent-form-field">
-                    <label>Arguments</label>
-                    <input
-                      type="text"
-                      value={newArgs}
-                      onChange={(e) => setNewArgs(e.target.value)}
-                      placeholder="e.g. -y @notionhq/notion-mcp-server"
-                    />
-                  </div>
+                  <input
+                    type="text"
+                    className="agent-field-input"
+                    placeholder="Command (e.g. npx, bunx, uvx)"
+                    value={newCommand}
+                    onChange={(e) => setNewCommand(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleAdd();
+                    }}
+                  />
+                  <input
+                    type="text"
+                    className="agent-field-input"
+                    placeholder="Arguments (e.g. -y @notionhq/notion-mcp-server)"
+                    value={newArgs}
+                    onChange={(e) => setNewArgs(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleAdd();
+                    }}
+                  />
                 </>
               )}
 
               {newTransport === "http" && (
                 <>
-                  <div className="agent-form-field">
-                    <label>URL</label>
-                    <input
-                      type="text"
-                      value={newUrl}
-                      onChange={(e) => setNewUrl(e.target.value)}
-                      placeholder="https://mcp.example.com/mcp"
-                    />
-                  </div>
-                  <div className="agent-form-field">
-                    <label>
-                      OAuth Client ID <span className="mcp-optional">(optional)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={newOAuthClientId}
-                      onChange={(e) => setNewOAuthClientId(e.target.value)}
-                      placeholder="Leave empty if no OAuth needed"
-                    />
-                  </div>
+                  <input
+                    type="text"
+                    className="agent-field-input"
+                    placeholder="URL (e.g. https://mcp.slack.com/mcp)"
+                    value={newUrl}
+                    onChange={(e) => setNewUrl(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleAdd();
+                    }}
+                  />
+                  <input
+                    type="text"
+                    className="agent-field-input"
+                    placeholder="OAuth Client ID (optional)"
+                    value={newOAuthClientId}
+                    onChange={(e) => setNewOAuthClientId(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleAdd();
+                    }}
+                  />
                   {newOAuthClientId && (
-                    <div className="agent-form-field">
-                      <label>
-                        OAuth Scopes <span className="mcp-optional">(comma-separated)</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={newOAuthScopes}
-                        onChange={(e) => setNewOAuthScopes(e.target.value)}
-                        placeholder="e.g. read,write"
-                      />
-                    </div>
+                    <input
+                      type="text"
+                      className="agent-field-input"
+                      placeholder="OAuth Scopes (comma-separated, optional)"
+                      value={newOAuthScopes}
+                      onChange={(e) => setNewOAuthScopes(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleAdd();
+                      }}
+                    />
                   )}
                 </>
               )}
 
-              <div className="agent-form-field">
-                <label>
-                  Environment Variables <span className="mcp-optional">(optional)</span>
-                </label>
-                <textarea
-                  value={newEnv}
-                  onChange={(e) => setNewEnv(e.target.value)}
-                  placeholder={"KEY=value\nANOTHER=value"}
-                  rows={3}
-                  className="mcp-env-textarea"
-                />
-              </div>
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Environment (KEY=val KEY2=val2, optional)"
+                value={newEnv}
+                onChange={(e) => setNewEnv(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAdd();
+                }}
+              />
 
-              <div className="agent-form-actions">
-                <button className="agent-btn agent-btn-primary" onClick={handleAdd} disabled={saving}>
-                  {saving ? "Connecting..." : "Add & Connect"}
-                </button>
-                <button
-                  className="agent-btn agent-btn-secondary"
-                  onClick={() => {
-                    setShowAddForm(false);
-                    setError(null);
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
+              <button
+                className="agent-action-btn agent-action-btn--accent"
+                onClick={handleAdd}
+                disabled={!newName.trim() || saving}
+              >
+                {saving ? "Connecting..." : "Add & Connect"}
+              </button>
             </div>
           )}
 
           {/* Selected server detail */}
           {!showAddForm && selectedServer && (
-            <div className="mcp-server-detail">
-              <div className="mcp-detail-row">
-                <span className="mcp-detail-label">Name</span>
-                <span className="mcp-detail-value">{selectedServer.name}</span>
-              </div>
-              <div className="mcp-detail-row">
-                <span className="mcp-detail-label">Type</span>
-                <span className="mcp-detail-value">{selectedServer.transport}</span>
-              </div>
+            <div className="agent-fields">
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Name"
+                value={selectedServer.name}
+                readOnly
+              />
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Type"
+                value={selectedServer.transport}
+                readOnly
+              />
               {selectedServer.command && (
-                <div className="mcp-detail-row">
-                  <span className="mcp-detail-label">Command</span>
-                  <span className="mcp-detail-value mcp-mono">
-                    {selectedServer.command} {selectedServer.args?.join(" ") || ""}
-                  </span>
-                </div>
+                <input
+                  type="text"
+                  className="agent-field-input"
+                  placeholder="Command"
+                  value={`${selectedServer.command} ${selectedServer.args?.join(" ") || ""}`}
+                  readOnly
+                />
               )}
               {selectedServer.url && (
-                <div className="mcp-detail-row">
-                  <span className="mcp-detail-label">URL</span>
-                  <span className="mcp-detail-value mcp-mono">{selectedServer.url}</span>
-                </div>
+                <input
+                  type="text"
+                  className="agent-field-input"
+                  placeholder="URL"
+                  value={selectedServer.url}
+                  readOnly
+                />
               )}
-              <div className="mcp-detail-row">
-                <span className="mcp-detail-label">Status</span>
-                <span className={`mcp-status ${selectedServer.connected ? "connected" : "disconnected"}`}>
-                  <span className="mcp-status-dot" />
-                  {selectedServer.connected ? "Connected" : "Disconnected"}
-                </span>
-              </div>
-              {selectedServer.connected && (
-                <div className="mcp-detail-row">
-                  <span className="mcp-detail-label">Tools</span>
-                  <span className="mcp-detail-value">{selectedServer.tools}</span>
-                </div>
-              )}
+              <input
+                type="text"
+                className="agent-field-input"
+                placeholder="Status"
+                value={selectedServer.connected ? `Connected (${selectedServer.tools} tools)` : "Disconnected"}
+                readOnly
+              />
               {selectedServer.oauth && (
-                <div className="mcp-detail-row">
-                  <span className="mcp-detail-label">OAuth</span>
-                  <span className="mcp-detail-value mcp-mono">{selectedServer.oauth.client_id}</span>
-                </div>
+                <input
+                  type="text"
+                  className="agent-field-input"
+                  placeholder="OAuth"
+                  value={selectedServer.oauth.client_id}
+                  readOnly
+                />
               )}
-
-              <div className="mcp-server-actions">
+              <div className="agent-buttons">
                 <button
-                  className={`agent-btn ${selectedServer.enabled ? "agent-btn-secondary" : "agent-btn-primary"}`}
+                  className={`agent-action-btn ${selectedServer.enabled ? "agent-action-btn--warning" : "agent-action-btn--accent"}`}
                   onClick={() => handleToggle(selectedServer.name, !selectedServer.enabled)}
                   disabled={toggling}
                 >
                   {toggling ? "..." : selectedServer.enabled ? "Disconnect" : "Connect"}
                 </button>
                 <button
-                  className="agent-btn agent-btn-danger"
+                  className="agent-action-btn agent-action-btn--danger"
                   onClick={() => handleRemove(selectedServer.name)}
-                  title="Remove server"
                 >
-                  <TrashIcon /> Remove
+                  Remove
                 </button>
               </div>
             </div>
@@ -519,7 +512,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
             <div className="mcp-empty">
               <McpIcon size={32} />
               <p>No MCP servers configured for this channel.</p>
-              <button className="agent-btn agent-btn-primary" onClick={() => setShowAddForm(true)}>
+              <button className="agent-action-btn agent-action-btn--accent" onClick={() => setShowAddForm(true)}>
                 Add MCP Server
               </button>
             </div>
