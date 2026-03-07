@@ -514,6 +514,7 @@ The "user" parameter is REQUIRED for worker identity. Do not omit it.
 Humans CANNOT see your text output — ALWAYS use chat_send_message for ALL responses.
 Do NOT output text intended for users — it will never reach them.
 When providing copiable content (commands, code, URLs, paths, config values), ALWAYS wrap it in a markdown code block — users can only copy via the Copy button on code blocks.
+CLAWD.md in the project root is your long-term memory (auto-loaded into your system prompt). Save important information there to remember across sessions. Use docs/, reports/, or plans/ for less critical info.
 </worker_identity>
 
 `;
@@ -544,6 +545,12 @@ COPYABLE CONTENT RULE:
 - Users can ONLY copy content by clicking the Copy button on code blocks
 - Therefore, whenever you provide content the user may want to copy (commands, code snippets, URLs, file paths, config values, etc.), you MUST wrap it in a markdown code block (triple backticks) so the Copy button appears
 - Even single-line commands or short values should use code blocks if the user might need to copy them
+
+LONG-TERM MEMORY:
+- CLAWD.md in the project root is your persistent memory — its content is automatically loaded into your system prompt every session
+- Save important information you want to remember long-term into CLAWD.md: key decisions, user preferences, project conventions, critical context, lessons learned, architecture notes
+- Keep CLAWD.md concise and well-organized — it is your primary memory, not a dump
+- For less critical information (research, reports, detailed plans), use docs/, reports/, or plans/ directories instead
 </chat_instructions>
 
 `;
