@@ -295,12 +295,7 @@ export class AgentMemoryStore {
   /**
    * Find a similar existing memory using FTS5 candidates + Jaccard word similarity.
    */
-  findSimilar(
-    agentId: string,
-    channel: string | null,
-    content: string,
-    category: string,
-  ): AgentMemory | null {
+  findSimilar(agentId: string, channel: string | null, content: string, category: string): AgentMemory | null {
     this.ensureInit();
     if (!this.initialized) return null;
 
@@ -310,7 +305,10 @@ export class AgentMemoryStore {
 
     // Sanitize for FTS5 safety
     const safeKeywords = keywords.slice(0, 5).map((k) => k.replace(/"/g, ""));
-    const ftsQuery = safeKeywords.filter((k) => k.length > 0).map((k) => `"${k}"`).join(" OR ");
+    const ftsQuery = safeKeywords
+      .filter((k) => k.length > 0)
+      .map((k) => `"${k}"`)
+      .join(" OR ");
     if (!ftsQuery) return null;
 
     try {
@@ -334,10 +332,18 @@ export class AgentMemoryStore {
         .all(...params) as any[];
 
       // Jaccard word similarity check
-      const contentWords = new Set(content.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+      const contentWords = new Set(
+        content
+          .toLowerCase()
+          .split(/\s+/)
+          .filter((w) => w.length > 2),
+      );
       for (const row of candidates) {
         const existingWords = new Set(
-          (row.content as string).toLowerCase().split(/\s+/).filter((w: string) => w.length > 2),
+          (row.content as string)
+            .toLowerCase()
+            .split(/\s+/)
+            .filter((w: string) => w.length > 2),
         );
         const intersection = [...contentWords].filter((w) => existingWords.has(w)).length;
         const union = new Set([...contentWords, ...existingWords]).size;
@@ -360,13 +366,7 @@ export class AgentMemoryStore {
    * Get recent + keyword-relevant memories for system prompt injection.
    * Returns deduplicated list of memories sorted by relevance.
    */
-  getRelevant(
-    agentId: string,
-    channel: string,
-    keywords: string[],
-    maxRecent = 5,
-    maxRelevant = 10,
-  ): AgentMemory[] {
+  getRelevant(agentId: string, channel: string, keywords: string[], maxRecent = 5, maxRelevant = 10): AgentMemory[] {
     this.ensureInit();
     if (!this.initialized) return [];
 
@@ -489,19 +489,122 @@ export class AgentMemoryStore {
 // ── Helpers ────────────────────────────────────────────────────────
 
 const STOP_WORDS = new Set([
-  "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-  "have", "has", "had", "do", "does", "did", "will", "would", "could",
-  "should", "may", "might", "shall", "can", "need", "dare", "ought",
-  "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
-  "as", "into", "through", "during", "before", "after", "above", "below",
-  "between", "out", "off", "over", "under", "again", "further", "then",
-  "once", "here", "there", "when", "where", "why", "how", "all", "each",
-  "every", "both", "few", "more", "most", "other", "some", "such", "no",
-  "nor", "not", "only", "own", "same", "so", "than", "too", "very",
-  "just", "because", "but", "and", "or", "if", "while", "that", "this",
-  "what", "which", "who", "whom", "these", "those", "it", "its", "he",
-  "she", "they", "them", "his", "her", "their", "my", "your", "our",
-  "me", "him", "us", "you", "i", "we", "also", "about", "up",
+  "the",
+  "a",
+  "an",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "being",
+  "have",
+  "has",
+  "had",
+  "do",
+  "does",
+  "did",
+  "will",
+  "would",
+  "could",
+  "should",
+  "may",
+  "might",
+  "shall",
+  "can",
+  "need",
+  "dare",
+  "ought",
+  "used",
+  "to",
+  "of",
+  "in",
+  "for",
+  "on",
+  "with",
+  "at",
+  "by",
+  "from",
+  "as",
+  "into",
+  "through",
+  "during",
+  "before",
+  "after",
+  "above",
+  "below",
+  "between",
+  "out",
+  "off",
+  "over",
+  "under",
+  "again",
+  "further",
+  "then",
+  "once",
+  "here",
+  "there",
+  "when",
+  "where",
+  "why",
+  "how",
+  "all",
+  "each",
+  "every",
+  "both",
+  "few",
+  "more",
+  "most",
+  "other",
+  "some",
+  "such",
+  "no",
+  "nor",
+  "not",
+  "only",
+  "own",
+  "same",
+  "so",
+  "than",
+  "too",
+  "very",
+  "just",
+  "because",
+  "but",
+  "and",
+  "or",
+  "if",
+  "while",
+  "that",
+  "this",
+  "what",
+  "which",
+  "who",
+  "whom",
+  "these",
+  "those",
+  "it",
+  "its",
+  "he",
+  "she",
+  "they",
+  "them",
+  "his",
+  "her",
+  "their",
+  "my",
+  "your",
+  "our",
+  "me",
+  "him",
+  "us",
+  "you",
+  "i",
+  "we",
+  "also",
+  "about",
+  "up",
 ]);
 
 /**

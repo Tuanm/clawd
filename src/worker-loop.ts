@@ -708,53 +708,76 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
   /** Load agent identity from {projectRoot}/.clawd/agents.json */
   private loadAgentIdentity(): string {
     const { projectRoot, agentId } = this.config;
-    const configPath = join(projectRoot, ".clawd", "agents.json");
-    if (!existsSync(configPath)) return "";
+    const sections: string[] = [];
+    const rolesDir = join(projectRoot, ".clawd", "roles");
 
-    let config: Record<string, AgentIdentityConfig>;
-    try {
-      config = JSON.parse(readFileSync(configPath, "utf-8"));
-    } catch (e) {
-      this.log(`Failed to parse .clawd/agents.json: ${e}`);
-      return "";
+    // 1. Always load the agent's own role file first — this is the primary identity
+    //    source and must survive agents.json corruption
+    const ownRolePath = join(rolesDir, `${agentId}.md`);
+    let ownRoleLoaded = false;
+    if (existsSync(ownRolePath)) {
+      try {
+        const content = readFileSync(ownRolePath, "utf-8").trim();
+        if (content) {
+          sections.push(
+            `## YOUR IDENTITY — FOLLOW STRICTLY\n\nYou ARE "${agentId}". You MUST stay in character at ALL times.\n\n${content}`,
+          );
+          ownRoleLoaded = true;
+        }
+      } catch {
+        // Ignore read errors — will fall through to agents.json
+      }
+    }
+
+    // 2. Load agents.json for additional config (description, directives, other roles, other agents)
+    const configPath = join(projectRoot, ".clawd", "agents.json");
+    let config: Record<string, AgentIdentityConfig> = {};
+    if (existsSync(configPath)) {
+      try {
+        config = JSON.parse(readFileSync(configPath, "utf-8"));
+      } catch (e) {
+        this.log(`Failed to parse .clawd/agents.json: ${e}`);
+        // Continue — the own role file is already loaded above
+      }
     }
 
     const agent = config[agentId];
-    if (!agent) {
-      this.log(`Agent "${agentId}" not found in .clawd/agents.json, skipping identity injection`);
-      return "";
-    }
 
-    const sections: string[] = [];
-
-    // 1. Own identity — use strong enforcement language
-    const langNote = agent.language ? ` You MUST communicate in language: "${agent.language}".` : "";
-    sections.push(
-      `## YOUR IDENTITY — FOLLOW STRICTLY\n\nYou ARE "${agentId}". You MUST stay in character at ALL times.${langNote}${agent.description ? `\n\n${agent.description}` : ""}`,
-    );
-
-    // 2. Standing directives (behavioral rules that persist across sessions)
-    if (agent.directives && agent.directives.length > 0) {
+    // 3. If own role file wasn't loaded, use agents.json identity header
+    if (!ownRoleLoaded) {
+      const langNote = agent?.language ? ` You MUST communicate in language: "${agent.language}".` : "";
       sections.push(
-        `### Standing Directives\n\nThese are your standing behavioral rules. Follow them at ALL times, even after long conversations:\n\n${agent.directives.map((d: string) => `- ${d}`).join("\n")}`,
+        `## YOUR IDENTITY — FOLLOW STRICTLY\n\nYou ARE "${agentId}". You MUST stay in character at ALL times.${langNote}${agent?.description ? `\n\n${agent.description}` : ""}`,
       );
+    } else if (agent?.language) {
+      // Append language directive even when role file is loaded
+      sections.push(`You MUST communicate in language: "${agent.language}".`);
     }
 
-    // 3. Load detailed role files
-    const rolesDir = join(projectRoot, ".clawd", "roles");
-    for (const role of agent.roles || []) {
-      const rolePath = join(rolesDir, `${role}.md`);
-      if (existsSync(rolePath)) {
-        try {
-          const content = readFileSync(rolePath, "utf-8");
-          sections.push(`### Role: ${role}\n\n${content}`);
-        } catch {
-          // Ignore read errors for individual role files
+    if (agent) {
+      // 4. Standing directives (behavioral rules that persist across sessions)
+      if (agent.directives && agent.directives.length > 0) {
+        sections.push(
+          `### Standing Directives\n\nThese are your standing behavioral rules. Follow them at ALL times, even after long conversations:\n\n${agent.directives.map((d: string) => `- ${d}`).join("\n")}`,
+        );
+      }
+
+      // 5. Load additional role files (excluding own role which is already loaded)
+      for (const role of agent.roles || []) {
+        if (role === agentId) continue; // Already loaded above
+        const rolePath = join(rolesDir, `${role}.md`);
+        if (existsSync(rolePath)) {
+          try {
+            const content = readFileSync(rolePath, "utf-8");
+            sections.push(`### Role: ${role}\n\n${content}`);
+          } catch {
+            // Ignore read errors for individual role files
+          }
         }
       }
     }
 
-    // 4. Summary of other agents (so this agent knows who else is available)
+    // 6. Summary of other agents (so this agent knows who else is available)
     const others = Object.entries(config)
       .filter(([name]) => name !== agentId)
       .map(([name, cfg]) => {

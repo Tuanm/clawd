@@ -84,14 +84,16 @@ export interface ConfigFile {
    *
    * Example: `"memory": { "provider": "anthropic", "model": "claude-haiku-4.5" }`
    */
-  memory?: boolean | {
-    /** Override provider for memory extraction LLM calls */
-    provider?: string;
-    /** Override model for memory extraction LLM calls */
-    model?: string;
-    /** Enable/disable auto-extraction from responses (default: true when memory enabled) */
-    autoExtract?: boolean;
-  };
+  memory?:
+    | boolean
+    | {
+        /** Override provider for memory extraction LLM calls */
+        provider?: string;
+        /** Override model for memory extraction LLM calls */
+        model?: string;
+        /** Enable/disable auto-extraction from responses (default: true when memory enabled) */
+        autoExtract?: boolean;
+      };
 }
 
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");
