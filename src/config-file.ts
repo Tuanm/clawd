@@ -75,6 +75,23 @@ export interface ConfigFile {
    * Example: `"browser": { "dev": ["tok_abc", "tok_xyz"], "prod": ["tok_prod"] }`
    */
   browser?: boolean | string[] | Record<string, string[]>;
+  /**
+   * Agent long-term memory configuration.
+   *
+   * - `true`  — enabled with defaults for all agents
+   * - `false` or omitted — disabled (default)
+   * - Object — enabled with custom settings
+   *
+   * Example: `"memory": { "provider": "anthropic", "model": "claude-haiku-4.5" }`
+   */
+  memory?: boolean | {
+    /** Override provider for memory extraction LLM calls */
+    provider?: string;
+    /** Override model for memory extraction LLM calls */
+    model?: string;
+    /** Enable/disable auto-extraction from responses (default: true when memory enabled) */
+    autoExtract?: boolean;
+  };
 }
 
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");

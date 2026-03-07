@@ -16,8 +16,10 @@ import { initializeSandbox } from "./agent/src/utils/sandbox";
 import { callContext } from "./agent/src/api/call-context";
 import { setDebug } from "./agent/src/utils/debug";
 import { smartTruncate } from "./agent/src/utils/smart-truncation";
+import { loadConfigFile } from "./config-file";
 import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
+import { createMemoryPlugin, isMemoryEnabled } from "./agent/src/plugins/memory-plugin";
 import { RemoteWorkerBridge } from "./agent/src/plugins/remote-worker-bridge";
 import type { TrackedSpace } from "./spaces/spawn-plugin";
 
@@ -581,6 +583,21 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               toolPlugin: createClawdChatToolPlugin(pluginConfig),
             };
             await agent.usePlugin(plugin);
+
+            // Register memory plugin (if enabled in config)
+            const globalConfig = loadConfigFile();
+            if (isMemoryEnabled(globalConfig?.memory)) {
+              const memConfig = typeof globalConfig!.memory === "object" ? globalConfig!.memory : {};
+              const memoryPlugin = createMemoryPlugin({
+                agentId,
+                channel,
+                projectRoot: resolve(projectRoot),
+                memoryProvider: memConfig.provider,
+                memoryModel: memConfig.model,
+                autoExtract: memConfig.autoExtract,
+              });
+              await agent.usePlugin(memoryPlugin);
+            }
 
             // Register additional plugins (space tools, etc.)
             if (this.config.additionalPlugins) {
