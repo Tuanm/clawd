@@ -14,6 +14,7 @@ import {
 } from "../agent/src/api/provider-config";
 import type { MCPServerConfig } from "../agent/src/api/providers";
 import { loadOAuthToken, removeOAuthToken, startOAuthFlow, discoverOAuthMetadata } from "../mcp-oauth";
+import { COPILOT_LOGO, isCopilotEnabled, setCopilotEnabled } from "../agent/plugins/copilot-analytics-plugin";
 
 function json(data: any, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -68,6 +69,22 @@ export function registerMcpServerRoutes(
           connected: runtime?.connected || false,
           tools: runtime?.tools || 0,
         };
+      });
+
+      // Inject built-in copilot analytics server (always present, non-removable)
+      const copilotOn = isCopilotEnabled(channel);
+      servers.unshift({
+        name: "copilot",
+        transport: "builtin" as any,
+        command: undefined as any,
+        args: undefined as any,
+        env: undefined,
+        url: undefined as any,
+        enabled: copilotOn,
+        logo: COPILOT_LOGO,
+        oauth: undefined,
+        connected: copilotOn,
+        tools: copilotOn ? 5 : 0,
       });
 
       return json({ ok: true, servers });
@@ -327,6 +344,7 @@ export function registerMcpServerRoutes(
         const { channel, name } = body;
 
         if (!channel || !name) return json({ ok: false, error: "channel and name required" }, 400);
+        if (name === "copilot") return json({ ok: false, error: "Cannot remove built-in copilot server" }, 400);
 
         try {
           await workerManager.removeChannelMcpServer(channel, name);
@@ -350,6 +368,12 @@ export function registerMcpServerRoutes(
 
         if (!channel || !name || enabled === undefined) {
           return json({ ok: false, error: "channel, name, and enabled required" }, 400);
+        }
+
+        // Built-in copilot server: toggle in-memory state (no config/MCP needed)
+        if (name === "copilot") {
+          setCopilotEnabled(channel, !!enabled);
+          return json({ ok: true, connected: !!enabled, tools: enabled ? 5 : 0 });
         }
 
         const configs = getChannelMCPServers(channel);

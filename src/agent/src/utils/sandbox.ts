@@ -5,10 +5,11 @@
  * macOS: sandbox-exec with Seatbelt profiles - allow-default, deny-writes approach
  *
  * Security model:
- * - Write access: only projectRoot, /tmp, and ~/.clawd
+ * - Write access: only projectRoot (excluding .clawd/), /tmp, and ~/.clawd
  * - Read access (Linux): only explicitly mounted system paths
  * - Read access (macOS): system-wide reads allowed (required by dyld), home dir blocked
  * - Home directory: blocked except for specific tool dirs (.bun, .cargo, .clawd, etc.)
+ * - {projectRoot}/.clawd/: blocked (agent config/identity, roles, agents.json)
  * - Environment: wiped clean and rebuilt with only safe variables
  */
 
@@ -236,6 +237,12 @@ function getBwrapPrefix(options: BwrapOptions): string {
     "/tmp",
   );
 
+  // Block access to {projectRoot}/.clawd/ — agent config/identity must not be tampered with
+  const projectClawdDir = join(projectRoot, ".clawd");
+  if (existsSync(projectClawdDir)) {
+    args.push("--tmpfs", projectClawdDir);
+  }
+
   // Tool paths (read-only) - only mount if they exist
   const toolPaths = [
     `${home}/.bun`,
@@ -320,6 +327,10 @@ function getMacOSSandboxProfile(): string {
 ; Project root (read-write)
 (allow file-write*
   (subpath (param "PROJECT_DIR")))
+
+; Block writes to {projectRoot}/.clawd/ — agent config/identity must not be tampered with
+(deny file-write*
+  (subpath (string-append (param "PROJECT_DIR") "/.clawd")))
 
 ; /tmp (read-write) -- use real path (/private/tmp on macOS)
 (allow file-write*
@@ -542,6 +553,17 @@ function validateWorkingDirectory(cwd: string, projectRoot: string): void {
   // Check if cwd is within allowed boundaries
   const isWithinProjectRoot = resolvedCwd === resolvedProjectRoot || resolvedCwd.startsWith(`${resolvedProjectRoot}/`);
   const isWithinTmp = resolvedCwd === "/tmp" || resolvedCwd.startsWith("/tmp/");
+
+  // Block access to {projectRoot}/.clawd/ — agent config/identity must not be tampered with
+  const isClawdDir =
+    resolvedCwd === `${resolvedProjectRoot}/.clawd` || resolvedCwd.startsWith(`${resolvedProjectRoot}/.clawd/`);
+
+  if (isClawdDir) {
+    throw new Error(
+      `SANDBOX SECURITY: Working directory "${cwd}" is inside .clawd/ which contains agent configuration. ` +
+        `Direct access to .clawd/ is not allowed — use the provided tools instead.`,
+    );
+  }
 
   if (!isWithinProjectRoot && !isWithinTmp) {
     throw new Error(

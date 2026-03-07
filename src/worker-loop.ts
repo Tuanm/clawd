@@ -20,6 +20,7 @@ import { loadConfigFile } from "./config-file";
 import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 import { createMemoryPlugin, isMemoryEnabled } from "./agent/src/plugins/memory-plugin";
+import { createCopilotAnalyticsPlugin } from "./agent/plugins/copilot-analytics-plugin";
 import { RemoteWorkerBridge } from "./agent/src/plugins/remote-worker-bridge";
 import type { TrackedSpace } from "./spaces/spawn-plugin";
 
@@ -598,6 +599,9 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               });
               await agent.usePlugin(memoryPlugin);
             }
+
+            // Register built-in copilot analytics tools (always available)
+            await agent.usePlugin({ toolPlugin: createCopilotAnalyticsPlugin(channel) });
 
             // Register additional plugins (space tools, etc.)
             if (this.config.additionalPlugins) {
