@@ -578,10 +578,10 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_store",
         description:
-          "Store and retrieve data/scripts per-website using the browser's localStorage. " +
+          "Store and retrieve data/scripts per-website using the browser's extension storage. " +
           "IMPORTANT: For any script you plan to run more than once, save it here first (action=set with a description), then run it via browser_execute with script_id instead of resending the code. " +
           "Use action=list to see all stored items with their descriptions. " +
-          "Data is stored under a namespaced key (__clawd_store__) in the page's localStorage, scoped to the page origin. " +
+          "Data is scoped to the page origin and stored securely in extension storage (invisible to page JavaScript). " +
           "Use descriptive keys like 'scroll-to-bottom', 'extract-table', 'login-form' so scripts are easy to find and reuse.",
         parameters: {
           action: {
@@ -604,6 +604,52 @@ export class BrowserPlugin implements ToolPlugin {
         },
         required: ["action"],
         handler: async (args) => this.handleStore(args),
+      },
+      {
+        name: "browser_cookies",
+        description:
+          "Read, set, or delete browser cookies for any site — including HttpOnly cookies that are inaccessible from page JavaScript. " +
+          "Uses the browser's native cookie API (zero page-side detection). " +
+          'Use "getAll" to list cookies for a site, "get" for a specific cookie by name, "set" to create/update, "remove" to delete.',
+        parameters: {
+          action: {
+            type: "string",
+            description: '"getAll" (list cookies), "get" (one by name), "set" (create/update), or "remove" (delete)',
+            enum: ["getAll", "get", "set", "remove"],
+          },
+          url: {
+            type: "string",
+            description:
+              "Full URL for cookie scope (e.g., https://example.com). Required for set; optional for others (defaults to active tab URL).",
+          },
+          domain: {
+            type: "string",
+            description: "Filter by cookie domain (e.g., .example.com). Used with getAll.",
+          },
+          name: {
+            type: "string",
+            description: "Cookie name. Required for get, set, remove.",
+          },
+          value: {
+            type: "string",
+            description: "Cookie value (required for set).",
+          },
+          path: { type: "string", description: "Cookie path (default: /)" },
+          secure: { type: "boolean", description: "Secure flag (HTTPS only)" },
+          httpOnly: { type: "boolean", description: "HttpOnly flag" },
+          sameSite: {
+            type: "string",
+            description: 'SameSite policy: "lax", "strict", or "none"',
+            enum: ["lax", "strict", "none"],
+          },
+          expirationDate: {
+            type: "number",
+            description: "Unix timestamp for expiration. Omit for session cookie.",
+          },
+          tab_id: { type: "number", description: "Target tab ID (optional, used to infer URL if not provided)" },
+        },
+        required: ["action"],
+        handler: async (args) => this.handleCookies(args),
       },
     ];
   }
@@ -1300,6 +1346,28 @@ export class BrowserPlugin implements ToolPlugin {
         key: args.key,
         value: args.value,
         description: args.description,
+        tabId: args.tab_id,
+      });
+      return { success: true, output: JSON.stringify(result, null, 2) };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  private async handleCookies(args: Record<string, any>): Promise<ToolResult> {
+    const { sendBrowserCommand } = await this.getBridge();
+    try {
+      const result = await sendBrowserCommand("cookies", {
+        action: args.action,
+        url: args.url,
+        domain: args.domain,
+        name: args.name,
+        value: args.value,
+        path: args.path,
+        secure: args.secure,
+        httpOnly: args.httpOnly,
+        sameSite: args.sameSite,
+        expirationDate: args.expirationDate,
         tabId: args.tab_id,
       });
       return { success: true, output: JSON.stringify(result, null, 2) };

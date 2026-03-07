@@ -10,9 +10,9 @@
     "debugger",
     "offscreen",
     "storage",
+    "cookies",
     "downloads",
-    "downloads.ui",
-    "<all_urls>"
+    "downloads.ui"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

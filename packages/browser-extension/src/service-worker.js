@@ -12,6 +12,11 @@
 let offscreenReady = false;
 const debuggerAttached = new Set(); // Set of tabIds with debugger attached
 const debuggerPending = new Map(); // tabId -> Promise (serializes attachment)
+const cdpDomainEnabled = new Map(); // tabId -> Set<domainName> — tracks which CDP domains are enabled per tab
+
+// Session-random prefix for DOM identifiers injected by content script.
+// Prevents anti-bot fingerprinting via known identifier patterns like "__clawd-*".
+const SESSION_PREFIX = "_x" + Math.random().toString(36).slice(2, 8);
 const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)
 const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
 const tabEmulation = new Map(); // tabId -> {metrics, hasTouch, userAgent} for screenshot restore
@@ -24,6 +29,7 @@ const cdpCompletedUrls = new Map(); // url -> timestamp — CDP-confirmed downlo
 chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId) {
     debuggerAttached.delete(source.tabId);
+    cdpDomainEnabled.delete(source.tabId);
     pendingDialogs.delete(source.tabId);
     pendingFileChoosers.delete(source.tabId);
     tabEmulation.delete(source.tabId);
@@ -140,7 +146,7 @@ async function handleCommand(id, method, params) {
       indicatorTab = await getActiveTabId();
     } catch {}
   }
-  if (indicatorTab) showAgentIndicator(indicatorTab);
+  if (indicatorTab) await showAgentIndicator(indicatorTab);
   // Show persistent Claw'd icon during long-running download/upload operations
   const showActivity = method === "download" || method === "file_upload";
   if (showActivity && indicatorTab) showActivityCursor(indicatorTab);
@@ -202,6 +208,8 @@ async function dispatchCommand(method, params) {
       return handlePermissions(params);
     case "store":
       return handleStore(params);
+    case "cookies":
+      return handleCookies(params);
     default:
       throw new Error(`Unknown method: ${method}`);
   }
@@ -592,6 +600,8 @@ async function handleTabs({ action, tabId }) {
 async function handleExecute({ code, tabId, frameId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
+  // Runtime.evaluate requires Runtime domain enabled
+  await ensureCdpDomain(tid, "Runtime");
 
   // Determine execution context for frame targeting
   const evalParams = {
@@ -1133,9 +1143,6 @@ async function handleDialog({ action, promptText, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
-  // Enable Page domain to receive dialog events
-  await sendDebuggerCommand(tid, "Page.enable").catch(() => {});
-
   const dialog = pendingDialogs.get(tid);
   if (!dialog) {
     return { tabId: tid, handled: false, message: "No pending dialog" };
@@ -1187,6 +1194,8 @@ const SET_FILE_JS = `function(base64, fileName, mimeType) {
 async function handleFileUpload({ selector, fileId, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
+  // Runtime needed for Runtime.callFunctionOn (script execution on resolved node)
+  await ensureCdpDomain(tid, "Runtime");
 
   // Track whether a pending file chooser exists at entry — needed for cleanup on early errors
   const hadPendingFC = pendingFileChoosers.has(tid);
@@ -1305,9 +1314,8 @@ async function handleFrames({ tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
-  // Enable Page + Runtime domains for frame/context tracking
-  await sendDebuggerCommand(tid, "Page.enable").catch(() => {});
-  await sendDebuggerCommand(tid, "Runtime.enable").catch(() => {});
+  // Runtime domain needed for execution context tracking (frame targeting)
+  await ensureCdpDomain(tid, "Runtime");
 
   const result = await sendDebuggerCommand(tid, "Page.getFrameTree");
 
@@ -1770,6 +1778,8 @@ async function handleDownload({ action, timeout }) {
 async function handleAuth({ action, username, password, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
+  // Fetch domain needed for HTTP auth interception
+  await ensureCdpDomain(tid, "Fetch", { handleAuthRequests: true });
 
   if (action === "status") {
     const reqIds = pendingAuthByTab.get(tid);
@@ -1852,156 +1862,197 @@ async function handlePermissions({ action, permissions, origin, tabId }) {
   return { tabId: tid, [resultKey]: permissions, origin: permOrigin };
 }
 
-// --- Agent Script Storage (per-origin via localStorage) ---
+// --- Agent Script Storage (per-origin via chrome.storage.local) ---
+// Stealth: Uses chrome.storage.local instead of page localStorage.
+// This is extension-only IPC storage — completely invisible to page JavaScript
+// and all anti-bot detection scripts. No content script injection needed.
 
 async function handleStore({ action, key, value, description, tabId }) {
   const tid = tabId || (await getActiveTabId());
-  // Guard against non-injectable pages (localStorage not available)
+  // Resolve origin for per-site key namespacing
   const tab = await chrome.tabs.get(tid);
-  if (tab.url && /^(chrome|devtools|edge|about):/.test(tab.url)) {
-    throw new Error(`Cannot use store on ${tab.url.split(":")[0]}:// pages. Navigate to an http/https page first.`);
+  let origin;
+  try {
+    origin = new URL(tab.url).origin;
+  } catch {
+    throw new Error(`Cannot determine origin for tab ${tid} (url: ${tab.url})`);
   }
-  const NS = "__clawd_store__";
-  const NS_META = "__clawd_store_meta__";
+  // Reject opaque origins (file:, data:, about:, chrome:, etc.) which all resolve to "null"
+  if (origin === "null") {
+    throw new Error(
+      `Cannot use store on ${tab.url.split(":")[0]}:// pages — no usable origin. Navigate to an http(s) page first.`,
+    );
+  }
+  // Storage keys are namespaced by origin to isolate per-site data
+  const storeKey = `store:${origin}`;
+  const metaKey = `meta:${origin}`;
 
   if (action === "set") {
     if (!key) throw new Error("key is required for store set");
     if (value === undefined || value === null) throw new Error("value is required for store set");
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tid },
-      func: (ns, nsMeta, k, v, desc) => {
-        try {
-          const store = JSON.parse(localStorage.getItem(ns) || "{}");
-          store[k] = v;
-          localStorage.setItem(ns, JSON.stringify(store));
-          // Always sync metadata — clear stale description if none provided
-          const meta = JSON.parse(localStorage.getItem(nsMeta) || "{}");
-          if (desc) {
-            meta[k] = desc;
-          } else {
-            delete meta[k];
-          }
-          localStorage.setItem(nsMeta, JSON.stringify(meta));
-          return { stored: true, key: k };
-        } catch (e) {
-          return { error: e.message };
-        }
-      },
-      args: [NS, NS_META, key, value, description || null],
-    });
-    const r = results[0]?.result;
-    if (r?.error) throw new Error(`Store set failed: ${r.error}`);
-    return { tabId: tid, ...r };
+    const data = await chrome.storage.local.get([storeKey, metaKey]);
+    const store = data[storeKey] || {};
+    const meta = data[metaKey] || {};
+    store[key] = value;
+    if (description) {
+      meta[key] = description;
+    } else {
+      delete meta[key];
+    }
+    await chrome.storage.local.set({ [storeKey]: store, [metaKey]: meta });
+    return { tabId: tid, stored: true, key };
   }
 
   if (action === "get") {
     if (!key) throw new Error("key is required for store get");
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tid },
-      func: (ns, k) => {
-        try {
-          const store = JSON.parse(localStorage.getItem(ns) || "{}");
-          return { key: k, value: store[k] ?? null, found: k in store };
-        } catch (e) {
-          return { error: e.message };
-        }
-      },
-      args: [NS, key],
-    });
-    const r = results[0]?.result;
-    if (r?.error) throw new Error(`Store get failed: ${r.error}`);
-    return { tabId: tid, ...r };
+    const data = await chrome.storage.local.get(storeKey);
+    const store = data[storeKey] || {};
+    return { tabId: tid, key, value: store[key] ?? null, found: key in store };
   }
 
   if (action === "list") {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tid },
-      func: (ns, nsMeta) => {
-        try {
-          const store = JSON.parse(localStorage.getItem(ns) || "{}");
-          const meta = JSON.parse(localStorage.getItem(nsMeta) || "{}");
-          const keys = Object.keys(store);
-          const items = keys.map((k) => {
-            const val = store[k];
-            const isScript = typeof val === "string" && /[;{}()=]|return |function |=>/.test(val);
-            return {
-              key: k,
-              type: isScript ? "script" : typeof val,
-              description: meta[k] || null,
-              size: typeof val === "string" ? val.length : JSON.stringify(val).length,
-            };
-          });
-          return { items, count: keys.length };
-        } catch (e) {
-          return { error: e.message };
-        }
-      },
-      args: [NS, NS_META],
+    const data = await chrome.storage.local.get([storeKey, metaKey]);
+    const store = data[storeKey] || {};
+    const meta = data[metaKey] || {};
+    const keys = Object.keys(store);
+    const items = keys.map((k) => {
+      const val = store[k];
+      const isScript = typeof val === "string" && /[;{}()=]|return |function |=>/.test(val);
+      return {
+        key: k,
+        type: isScript ? "script" : typeof val,
+        description: meta[k] || null,
+        size: typeof val === "string" ? val.length : JSON.stringify(val).length,
+      };
     });
-    const r = results[0]?.result;
-    if (r?.error) throw new Error(`Store list failed: ${r.error}`);
-    let origin = "unknown";
-    try {
-      const tab = await chrome.tabs.get(tid);
-      origin = new URL(tab.url).origin;
-    } catch {
-      /* tab closed or special URL — degrade gracefully */
-    }
-    return { tabId: tid, origin, ...r };
+    return { tabId: tid, origin, items, count: keys.length };
   }
 
   if (action === "delete") {
     if (!key) throw new Error("key is required for store delete");
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tid },
-      func: (ns, nsMeta, k) => {
-        try {
-          const store = JSON.parse(localStorage.getItem(ns) || "{}");
-          const existed = k in store;
-          delete store[k];
-          localStorage.setItem(ns, JSON.stringify(store));
-          // Also remove metadata
-          const meta = JSON.parse(localStorage.getItem(nsMeta) || "{}");
-          delete meta[k];
-          localStorage.setItem(nsMeta, JSON.stringify(meta));
-          return { deleted: existed, key: k };
-        } catch (e) {
-          return { error: e.message };
-        }
-      },
-      args: [NS, NS_META, key],
-    });
-    const r = results[0]?.result;
-    if (r?.error) throw new Error(`Store delete failed: ${r.error}`);
-    return { tabId: tid, ...r };
+    const data = await chrome.storage.local.get([storeKey, metaKey]);
+    const store = data[storeKey] || {};
+    const meta = data[metaKey] || {};
+    const existed = key in store;
+    delete store[key];
+    delete meta[key];
+    await chrome.storage.local.set({ [storeKey]: store, [metaKey]: meta });
+    return { tabId: tid, deleted: existed, key };
   }
 
   if (action === "clear") {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tid },
-      func: (ns, nsMeta) => {
-        try {
-          localStorage.removeItem(ns);
-          localStorage.removeItem(nsMeta);
-          return { cleared: true };
-        } catch (e) {
-          return { error: e.message };
-        }
-      },
-      args: [NS, NS_META],
-    });
-    const r = results[0]?.result;
-    if (r?.error) throw new Error(`Store clear failed: ${r.error}`);
-    return { tabId: tid, ...r };
+    await chrome.storage.local.remove([storeKey, metaKey]);
+    return { tabId: tid, cleared: true };
   }
 
   throw new Error(`Unknown store action: ${action}. Use "set", "get", "list", "delete", or "clear".`);
+}
+
+// --- Cookie Access (HttpOnly-safe via chrome.cookies API) ---
+// Stealth: Uses chrome.cookies IPC — zero page-side detection surface.
+// Unlike CDP Network.getCookies, this doesn't require debugger attachment.
+
+async function handleCookies({
+  action,
+  url,
+  domain,
+  name,
+  value,
+  path,
+  secure,
+  httpOnly,
+  sameSite,
+  expirationDate,
+  tabId,
+}) {
+  if (action === "getAll") {
+    const filter = {};
+    if (url) filter.url = url;
+    if (domain) filter.domain = domain;
+    if (name) filter.name = name;
+    // If no explicit URL/domain, resolve from the active tab
+    if (!url && !domain) {
+      const tid = tabId || (await getActiveTabId());
+      const tab = await chrome.tabs.get(tid);
+      if (tab.url && /^https?:/.test(tab.url)) {
+        filter.url = tab.url;
+      } else {
+        throw new Error(
+          "Cannot determine URL for cookie lookup — navigate to an http(s) page or provide url/domain explicitly.",
+        );
+      }
+    }
+    const cookies = await chrome.cookies.getAll(filter);
+    return { cookies, count: cookies.length };
+  }
+
+  if (action === "get") {
+    if (!name) throw new Error("name is required for cookie get");
+    let cookieUrl = url;
+    if (!cookieUrl) {
+      const tid = tabId || (await getActiveTabId());
+      const tab = await chrome.tabs.get(tid);
+      cookieUrl = tab.url;
+    }
+    if (!cookieUrl) throw new Error("url is required for cookie get (or provide tabId)");
+    const cookie = await chrome.cookies.get({ url: cookieUrl, name });
+    return { cookie };
+  }
+
+  if (action === "set") {
+    if (!url) throw new Error("url is required for cookie set");
+    if (!name) throw new Error("name is required for cookie set");
+    const details = { url, name, value: value ?? "" };
+    if (domain) details.domain = domain;
+    if (path) details.path = path;
+    if (secure !== undefined) details.secure = secure;
+    if (httpOnly !== undefined) details.httpOnly = httpOnly;
+    if (sameSite) {
+      // Normalize HTTP spec "none" → Chrome API "no_restriction"
+      details.sameSite = sameSite.toLowerCase() === "none" ? "no_restriction" : sameSite;
+    }
+    if (expirationDate) details.expirationDate = expirationDate;
+    const cookie = await chrome.cookies.set(details);
+    if (!cookie)
+      throw new Error(
+        `Failed to set cookie "${name}" — the browser rejected it. Check url scheme vs secure flag, sameSite, and domain.`,
+      );
+    return { cookie };
+  }
+
+  if (action === "remove") {
+    if (!name) throw new Error("name is required for cookie remove");
+    let cookieUrl = url;
+    if (!cookieUrl) {
+      const tid = tabId || (await getActiveTabId());
+      const tab = await chrome.tabs.get(tid);
+      cookieUrl = tab.url;
+    }
+    if (!cookieUrl) throw new Error("url is required for cookie remove (or provide tabId)");
+    const details = await chrome.cookies.remove({ url: cookieUrl, name });
+    return { removed: !!details, name };
+  }
+
+  throw new Error(`Unknown cookies action: ${action}. Use "getAll", "get", "set", or "remove".`);
 }
 
 // ============================================================================
 // Debugger Helpers
 // ============================================================================
 
+/**
+ * Attach debugger to a tab (if not already attached).
+ *
+ * Stealth: This no longer eagerly enables Runtime or Fetch domains.
+ * Page.enable is kept eager because dialog detection (Page.javascriptDialogOpening)
+ * must capture events regardless of which handler triggers the dialog.
+ * Each handler calls ensureCdpDomain() for only the domains it actually needs.
+ * This minimises the CDP detection surface:
+ *  - Input.dispatch*, DOM.*, Accessibility.* are stateless — no .enable() needed
+ *  - Runtime.enable is the riskiest (creates execution-context tracking artifacts)
+ *  - Fetch.enable is moderate risk (intercepts all HTTP requests)
+ *  - Page.enable is moderate risk but required for dialog/file-chooser event capture
+ */
 async function ensureDebugger(tabId) {
   if (debuggerAttached.has(tabId)) return;
   // Serialize concurrent attachment attempts for same tab
@@ -2015,11 +2066,17 @@ async function ensureDebugger(tabId) {
       if (!err.message?.includes("Already attached")) throw err;
     }
     debuggerAttached.add(tabId);
-    // Enable Runtime for frame context tracking, Page for dialog events, Fetch for HTTP auth
-    await sendDebuggerCommand(tabId, "Runtime.enable").catch(() => {});
+    // Page.enable kept eager — dialog/file-chooser events must be captured
+    // regardless of which handler the agent calls first
     await sendDebuggerCommand(tabId, "Page.enable").catch(() => {});
-    await sendDebuggerCommand(tabId, "Fetch.enable", { handleAuthRequests: true }).catch(() => {});
+    let enabled = cdpDomainEnabled.get(tabId);
+    if (!enabled) {
+      enabled = new Set();
+      cdpDomainEnabled.set(tabId, enabled);
+    }
+    enabled.add("Page");
     // Auto-accept downloads (suppresses Chrome's "Keep/Discard" confirmation popup)
+    // Browser.setDownloadBehavior is stateless — no .enable() needed
     await sendDebuggerCommand(tabId, "Browser.setDownloadBehavior", {
       behavior: "allow",
       eventsEnabled: true,
@@ -2037,6 +2094,22 @@ async function ensureDebugger(tabId) {
   } finally {
     debuggerPending.delete(tabId);
   }
+}
+
+/**
+ * Lazily enable a CDP domain for a tab.
+ * Only sends the .enable() command once per tab per domain.
+ * Cleaned up automatically on debugger detach.
+ */
+async function ensureCdpDomain(tabId, domain, params) {
+  let enabled = cdpDomainEnabled.get(tabId);
+  if (!enabled) {
+    enabled = new Set();
+    cdpDomainEnabled.set(tabId, enabled);
+  }
+  if (enabled.has(domain)) return;
+  await sendDebuggerCommand(tabId, `${domain}.enable`, params);
+  enabled.add(domain);
 }
 
 function sendDebuggerCommand(tabId, method, params) {
@@ -2069,45 +2142,47 @@ async function getElementCenter(tabId, selector) {
  */
 async function resolveElementCoords(tabId, selector) {
   await ensureDebugger(tabId);
+  // Runtime.evaluate needs Runtime domain enabled
+  await ensureCdpDomain(tabId, "Runtime");
   const result = await sendDebuggerCommand(tabId, "Runtime.evaluate", {
     expression: `(function() {
-      function deepQuery(sel) {
-        let el = document.querySelector(sel);
-        if (el) return el;
-        function searchShadow(root) {
-          for (const node of root.querySelectorAll("*")) {
-            if (node.shadowRoot) {
-              const found = node.shadowRoot.querySelector(sel);
-              if (found) return found;
-              const deep = searchShadow(node.shadowRoot);
-              if (deep) return deep;
+      function q(s) {
+        let e = document.querySelector(s);
+        if (e) return e;
+        function f(r) {
+          for (const n of r.querySelectorAll("*")) {
+            if (n.shadowRoot) {
+              const m = n.shadowRoot.querySelector(s);
+              if (m) return m;
+              const d = f(n.shadowRoot);
+              if (d) return d;
             }
           }
           return null;
         }
-        el = searchShadow(document);
-        if (el) return el;
-        for (const iframe of document.querySelectorAll("iframe")) {
+        e = f(document);
+        if (e) return e;
+        for (const i of document.querySelectorAll("iframe")) {
           try {
-            if (iframe.contentDocument) {
-              const found = iframe.contentDocument.querySelector(sel);
-              if (found) return found;
+            if (i.contentDocument) {
+              const m = i.contentDocument.querySelector(s);
+              if (m) return m;
             }
           } catch {}
         }
         return null;
       }
-      const el = deepQuery(${JSON.stringify(selector)});
-      if (!el) return null;
-      const rect = el.getBoundingClientRect();
-      let x = rect.x + rect.width / 2;
-      let y = rect.y + rect.height / 2;
-      let frame = el.ownerDocument.defaultView?.frameElement;
-      while (frame) {
-        const fRect = frame.getBoundingClientRect();
-        x += fRect.x;
-        y += fRect.y;
-        frame = frame.ownerDocument.defaultView?.frameElement;
+      const e = q(${JSON.stringify(selector)});
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      let x = r.x + r.width / 2;
+      let y = r.y + r.height / 2;
+      let p = e.ownerDocument.defaultView?.frameElement;
+      while (p) {
+        const pr = p.getBoundingClientRect();
+        x += pr.x;
+        y += pr.y;
+        p = p.ownerDocument.defaultView?.frameElement;
       }
       return { x, y };
     })()`,
@@ -2121,20 +2196,20 @@ async function resolveElementCoords(tabId, selector) {
 // Agent Activity Indicator
 // ============================================================================
 
-function showAgentIndicator(tabId) {
+async function showAgentIndicator(tabId) {
   const count = (activeTabCommands.get(tabId) || 0) + 1;
   activeTabCommands.set(tabId, count);
   if (count === 1) {
-    // Ensure content script is injected, then show overlay
-    chrome.scripting
+    // Ensure content script is injected, then send session prefix & show overlay
+    await chrome.scripting
       .executeScript({
         target: { tabId },
         files: ["src/content-script.js"],
       })
-      .catch(() => {}) // Already injected or restricted page
-      .then(() => {
-        chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay" }).catch(() => {});
-      });
+      .catch(() => {}); // Already injected or restricted page
+    // Send session-random prefix for DOM identifier stealth, then show overlay
+    await chrome.tabs.sendMessage(tabId, { type: "set-prefix", prefix: SESSION_PREFIX }).catch(() => {});
+    chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay" }).catch(() => {});
   }
 }
 
@@ -2228,6 +2303,7 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   debuggerAttached.delete(tabId);
   debuggerPending.delete(tabId);
+  cdpDomainEnabled.delete(tabId);
   activeTabCommands.delete(tabId);
   pendingDialogs.delete(tabId);
   pendingFileChoosers.delete(tabId);
