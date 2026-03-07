@@ -54,6 +54,16 @@ const PING_INTERVAL_MS = 30_000;
 const PING_TIMEOUT_MS = 90_000;
 
 const KNOWN_TOOLS = new Set(["view", "edit", "create", "grep", "glob", "bash"]);
+const BROWSER_TIMEOUT_MS = 180_000; // 3 minutes for browser operations
+
+function isKnownTool(name: string): boolean {
+  if (KNOWN_TOOLS.has(name)) return true;
+  if (name.startsWith("browser_")) {
+    const suffix = name.slice(8);
+    return suffix.length > 0 && /^[a-z0-9_]+$/.test(suffix);
+  }
+  return false;
+}
 const TOKEN_FORMAT = /^[a-zA-Z0-9_\-.:]{1,256}$/;
 
 const workers = new Map<string, WorkerState>();
@@ -243,7 +253,7 @@ function handleRegister(ws: ServerWebSocket<RemoteWorkerWsData>, tokenHash: stri
 
   const validTools: ToolSchema[] = [];
   for (const t of tools) {
-    if (!t.name || !KNOWN_TOOLS.has(t.name)) continue;
+    if (!t.name || !isKnownTool(t.name)) continue;
     validTools.push({ name: t.name, inputSchema: t.inputSchema, description: t.description || "" });
   }
 
@@ -414,7 +424,12 @@ export function callRemoteWorkerTool(
     }
 
     const id = `rw_${++requestCounter}_${randomBytes(4).toString("hex")}`;
-    const timeout = toolName === "bash" ? BASH_TIMEOUT_MS : options?.timeout || CALL_TIMEOUT_MS;
+    const timeout =
+      toolName === "bash"
+        ? BASH_TIMEOUT_MS
+        : toolName.startsWith("browser_")
+          ? options?.timeout || BROWSER_TIMEOUT_MS
+          : options?.timeout || CALL_TIMEOUT_MS;
 
     const timer = setTimeout(() => {
       cleanupCall(worker, id);

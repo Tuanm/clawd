@@ -1110,6 +1110,1159 @@ def handle_bash(request_id, args, project_root, read_only, ws_send_func):
 
 
 # ---------------------------------------------------------------------------
+# Browser CDP support
+# ---------------------------------------------------------------------------
+
+chrome_manager = None  # type: Optional['ChromeManager']
+_worker_config = None  # type: Optional[Any]
+
+
+def find_chrome_binary():  # type: () -> Optional[str]
+    """Find Chrome/Chromium/Edge binary on the system."""
+    candidates = []
+    if sys.platform == "darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+    elif sys.platform == "win32":
+        for env_var in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            base = os.environ.get(env_var, "")
+            if base:
+                candidates.extend([
+                    os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"),
+                    os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe"),
+                ])
+    else:  # Linux
+        candidates = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+            "/usr/bin/microsoft-edge",
+        ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    # Fallback: which
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+class CDPClient:
+    """Minimal Chrome DevTools Protocol client over raw WebSocket."""
+
+    def __init__(self, ws_url):  # type: (str) -> None
+        self.ws = StdlibWebSocket(ws_url)
+        self.ws.connect()
+        self._next_id = 1
+        self._lock = threading.Lock()
+        self._pending = {}  # type: Dict[int, threading.Event]
+        self._results = {}  # type: Dict[int, Any]
+        self._event_listeners = {}  # type: Dict[str, List[Any]]
+        self._running = True
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader_thread.start()
+
+    def _reader_loop(self):  # type: () -> None
+        while self._running:
+            try:
+                raw = self.ws.recv()
+                if raw is None:
+                    break
+                msg = json.loads(raw)
+                msg_id = msg.get("id")
+                if msg_id is not None and msg_id in self._pending:
+                    self._results[msg_id] = msg
+                    self._pending[msg_id].set()
+                elif "method" in msg:
+                    method = msg["method"]
+                    with self._lock:
+                        listeners = list(self._event_listeners.get(method, []))
+                    for cb in listeners:
+                        try:
+                            cb(msg.get("params", {}))
+                        except Exception:
+                            pass
+            except Exception:
+                if self._running:
+                    break
+
+    def send(self, method, params=None, session_id=None, timeout=30):
+        # type: (str, Optional[Dict], Optional[str], int) -> Dict
+        with self._lock:
+            msg_id = self._next_id
+            self._next_id += 1
+            evt = threading.Event()
+            self._pending[msg_id] = evt
+        msg = {"id": msg_id, "method": method}  # type: Dict[str, Any]
+        if params:
+            msg["params"] = params
+        if session_id:
+            msg["sessionId"] = session_id
+        self.ws.send(json.dumps(msg))
+        if not evt.wait(timeout):
+            self._pending.pop(msg_id, None)
+            raise TimeoutError(f"CDP timeout: {method}")
+        self._pending.pop(msg_id, None)
+        result = self._results.pop(msg_id, {})
+        if "error" in result:
+            raise RuntimeError(f"CDP error: {result['error'].get('message', str(result['error']))}")
+        return result.get("result", {})
+
+    def on(self, event, callback):  # type: (str, Any) -> None
+        with self._lock:
+            self._event_listeners.setdefault(event, []).append(callback)
+
+    def close(self):  # type: () -> None
+        self._running = False
+        try:
+            self.ws.close()
+        except Exception:
+            pass
+
+
+class ChromeManager:
+    """Manages Chrome browser process and CDP sessions."""
+
+    def __init__(self, chrome_path, profile):
+        # type: (str, Optional[str]) -> None
+        self.chrome_path = chrome_path
+        self.profile = profile
+        self.process = None  # type: Optional[subprocess.Popen]
+        self.cdp = None  # type: Optional[CDPClient]
+        self.cdp_port = 9222 + (os.getpid() % 1000)
+        self._page_session = None  # type: Optional[str]
+        self._dialog_queue = []  # type: List[Dict]
+        self._dialog_lock = threading.Lock()
+        self._downloads = []  # type: List[Dict]
+        self._download_lock = threading.Lock()
+        self._download_path = tempfile.mkdtemp(prefix="clawd-downloads-")
+
+        # Profile directory
+        if profile:
+            self._profile_dir = os.path.join(
+                os.path.expanduser("~"), ".clawd", "browser-profiles", profile
+            )
+            os.makedirs(self._profile_dir, exist_ok=True)
+            self._temp_dir = None
+        else:
+            self._temp_dir = tempfile.mkdtemp(prefix=f"clawd-browser-{os.getpid()}-")
+            self._profile_dir = self._temp_dir
+
+    def launch(self):  # type: () -> None
+        has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or sys.platform == "darwin" or sys.platform == "win32")
+        chrome_args = [
+            self.chrome_path,
+            f"--remote-debugging-port={self.cdp_port}",
+            f"--user-data-dir={self._profile_dir}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--no-sandbox",
+            "--disable-default-apps",
+            "--disable-features=TranslateUI",
+        ]
+        if not has_display:
+            chrome_args.append("--headless=new")
+        self.process = subprocess.Popen(
+            chrome_args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Wait for CDP
+        for attempt in range(30):
+            time.sleep(0.5)
+            try:
+                conn = socket.create_connection(("127.0.0.1", self.cdp_port), timeout=1)
+                conn.close()
+                break
+            except (ConnectionRefusedError, OSError):
+                if attempt == 29:
+                    raise RuntimeError("Chrome CDP port not available after 15s")
+
+        # Get WebSocket URL
+        import urllib.request
+        ws_url = None
+        for _ in range(10):
+            try:
+                resp = urllib.request.urlopen(f"http://127.0.0.1:{self.cdp_port}/json/version", timeout=2)
+                data = json.loads(resp.read())
+                ws_url = data.get("webSocketDebuggerUrl")
+                if ws_url:
+                    break
+            except Exception:
+                time.sleep(0.3)
+        if not ws_url:
+            raise RuntimeError("Could not get CDP WebSocket URL")
+
+        self.cdp = CDPClient(ws_url)
+        # Attach to first page
+        targets = self.cdp.send("Target.getTargets")
+        page_targets = [t for t in targets.get("targetInfos", []) if t.get("type") == "page"]
+        if not page_targets:
+            # Create a page
+            result = self.cdp.send("Target.createTarget", {"url": "about:blank"})
+            target_id = result["targetId"]
+        else:
+            target_id = page_targets[0]["targetId"]
+        attach = self.cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+        self._page_session = attach.get("sessionId")
+        # Enable domains
+        for domain in ("Page", "DOM", "Runtime", "Network", "Input", "Target"):
+            self.cdp.send(f"{domain}.enable", session_id=self._page_session)
+        # Dialog listener
+        self.cdp.on("Page.javascriptDialogOpening", self._on_dialog)
+        # Configure downloads
+        os.makedirs(self._download_path, exist_ok=True)
+        self.cdp.send("Browser.setDownloadBehavior", {
+            "behavior": "allowAndName",
+            "downloadPath": self._download_path,
+            "eventsEnabled": True,
+        })
+        self.cdp.on("Browser.downloadWillBegin", self._on_download_begin)
+        self.cdp.on("Browser.downloadProgress", self._on_download_progress)
+
+    def _on_dialog(self, params):  # type: (Dict) -> None
+        with self._dialog_lock:
+            self._dialog_queue.append(params)
+
+    def pop_dialog(self):  # type: () -> Optional[Dict]
+        with self._dialog_lock:
+            return self._dialog_queue.pop(0) if self._dialog_queue else None
+
+    @property
+    def download_path(self):  # type: () -> str
+        return self._download_path
+
+    def set_download_path(self, path):  # type: (str) -> None
+        with self._download_lock:
+            self._download_path = path
+
+    def get_downloads(self):  # type: () -> List[Dict]
+        with self._download_lock:
+            return [dict(d) for d in self._downloads]
+
+    def _on_download_begin(self, params):  # type: (Dict) -> None
+        with self._download_lock:
+            self._downloads.append({
+                "guid": params.get("guid", ""),
+                "url": params.get("url", ""),
+                "filename": params.get("suggestedFilename", ""),
+                "state": "inProgress",
+                "totalBytes": 0,
+                "receivedBytes": 0,
+            })
+            # Cap at 100 entries
+            if len(self._downloads) > 100:
+                self._downloads = self._downloads[-100:]
+
+    def _on_download_progress(self, params):  # type: (Dict) -> None
+        with self._download_lock:
+            for dl in self._downloads:
+                if dl["guid"] == params.get("guid"):
+                    dl["state"] = params.get("state", dl["state"])
+                    dl["totalBytes"] = params.get("totalBytes", dl["totalBytes"])
+                    dl["receivedBytes"] = params.get("receivedBytes", dl["receivedBytes"])
+                    if dl["state"] == "completed":
+                        safe_name = os.path.basename(dl["filename"]).replace("/", "_").replace("\\", "_") or "download"
+                        dl["path"] = os.path.join(self._download_path, safe_name)
+                    break
+
+    @property
+    def session(self):  # type: () -> Optional[str]
+        return self._page_session
+
+    def switch_to_target(self, target_id):  # type: (str) -> None
+        if self._page_session:
+            try:
+                self.cdp.send("Target.detachFromTarget", {"sessionId": self._page_session})
+            except Exception:
+                pass
+        attach = self.cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+        self._page_session = attach.get("sessionId")
+        for domain in ("Page", "DOM", "Runtime", "Input"):
+            self.cdp.send(f"{domain}.enable", session_id=self._page_session)
+
+    def shutdown(self):  # type: () -> None
+        if self.cdp:
+            try:
+                self.cdp.send("Browser.close", timeout=3)
+            except Exception:
+                pass
+            self.cdp.close()
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+            except Exception:
+                try:
+                    self.process.kill()
+                except Exception:
+                    pass
+        if self._temp_dir and os.path.isdir(self._temp_dir):
+            try:
+                shutil.rmtree(self._temp_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+
+def start_chrome_manager(profile_arg):  # type: (str) -> Optional[ChromeManager]
+    """Start Chrome with CDP and return a ChromeManager, or None if Chrome not found."""
+    global chrome_manager
+    chrome_path = find_chrome_binary()
+    if not chrome_path:
+        return None
+    mgr = ChromeManager(chrome_path, profile_arg if profile_arg else None)
+    try:
+        mgr.launch()
+    except Exception as exc:
+        log(f"Failed to launch Chrome: {exc}")
+        return None
+    chrome_manager = mgr
+    return mgr
+
+
+def _js_str(s):  # type: (str) -> str
+    """Escape string for safe embedding in JavaScript using JSON serialization."""
+    return json.dumps(s)
+
+
+def cdp_evaluate(expression, session_id):  # type: (str, str) -> Any
+    """Evaluate JS in page context via CDP."""
+    if not chrome_manager or not chrome_manager.cdp:
+        raise RuntimeError("Browser not available")
+    result = chrome_manager.cdp.send(
+        "Runtime.evaluate",
+        {"expression": expression, "returnByValue": True, "awaitPromise": True},
+        session_id=session_id,
+    )
+    ex = result.get("exceptionDetails")
+    if ex:
+        text = ex.get("text", "")
+        exc_obj = ex.get("exception", {})
+        desc = exc_obj.get("description", exc_obj.get("value", ""))
+        raise RuntimeError(f"JS error: {text} {desc}".strip())
+    return result.get("result", {}).get("value")
+
+
+def resolve_selector(selector, session_id):
+    # type: (str, str) -> Dict
+    """Resolve a CSS selector to center coordinates via CDP."""
+    if not chrome_manager or not chrome_manager.cdp:
+        raise RuntimeError("Browser not available")
+    cdp = chrome_manager.cdp
+    doc = cdp.send("DOM.getDocument", {"depth": 0}, session_id=session_id)
+    node_id = cdp.send(
+        "DOM.querySelector",
+        {"nodeId": doc["root"]["nodeId"], "selector": selector},
+        session_id=session_id,
+    ).get("nodeId", 0)
+    if not node_id:
+        raise RuntimeError(f"Element not found: {selector}")
+    box = cdp.send("DOM.getBoxModel", {"nodeId": node_id}, session_id=session_id)
+    content = box["model"]["content"]
+    # content is [x1,y1, x2,y2, x3,y3, x4,y4]
+    cx = (content[0] + content[2] + content[4] + content[6]) / 4
+    cy = (content[1] + content[3] + content[5] + content[7]) / 4
+    return {"x": cx, "y": cy, "nodeId": node_id}
+
+
+# ---------------------------------------------------------------------------
+# Browser tool handlers
+# ---------------------------------------------------------------------------
+
+def handle_browser_status(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        url = cdp_evaluate("window.location.href", chrome_manager.session)
+        title = cdp_evaluate("document.title", chrome_manager.session)
+        return {"success": True, "output": json.dumps({"url": url, "title": title})}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_navigate(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    url = args.get("url", "")
+    if not url:
+        return {"success": False, "output": "", "error": "url required"}
+    try:
+        cdp = chrome_manager.cdp
+        sid = chrome_manager.session
+        cdp.send("Page.navigate", {"url": url}, session_id=sid)
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            try:
+                state = cdp_evaluate("document.readyState", sid)
+                if state == "complete":
+                    break
+            except Exception:
+                pass
+            time.sleep(0.3)
+        title = cdp_evaluate("document.title", sid)
+        final_url = cdp_evaluate("window.location.href", sid)
+        return {"success": True, "output": json.dumps({"url": final_url, "title": title})}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_screenshot(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        params = {"format": "jpeg", "quality": args.get("quality", 80)}  # type: Dict[str, Any]
+        if args.get("selector"):
+            pos = resolve_selector(args["selector"], chrome_manager.session)
+            # Use clip for the element
+            cdp = chrome_manager.cdp
+            box = cdp.send("DOM.getBoxModel", {"nodeId": pos["nodeId"]}, session_id=chrome_manager.session)
+            content = box["model"]["content"]
+            min_x = min(content[0], content[2], content[4], content[6])
+            min_y = min(content[1], content[3], content[5], content[7])
+            max_x = max(content[0], content[2], content[4], content[6])
+            max_y = max(content[1], content[3], content[5], content[7])
+            params["clip"] = {"x": min_x, "y": min_y, "width": max_x - min_x, "height": max_y - min_y, "scale": 1}
+        result = chrome_manager.cdp.send("Page.captureScreenshot", params, session_id=chrome_manager.session)
+        return {"success": True, "output": result.get("data", ""), "mimeType": "image/jpeg", "isBase64": True}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_click(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        cdp = chrome_manager.cdp
+        sid = chrome_manager.session
+        if args.get("selector"):
+            pos = resolve_selector(args["selector"], sid)
+            x, y = pos["x"], pos["y"]
+        elif args.get("x") is not None and args.get("y") is not None:
+            x, y = float(args["x"]), float(args["y"])
+        else:
+            return {"success": False, "output": "", "error": "selector or x,y required"}
+        btn = args.get("button", "left")
+        click_count = 2 if args.get("double") else 1
+        for event_type in ("mousePressed", "mouseReleased"):
+            cdp.send("Input.dispatchMouseEvent", {
+                "type": event_type, "x": x, "y": y,
+                "button": btn, "clickCount": click_count,
+            }, session_id=sid)
+        return {"success": True, "output": f"Clicked at ({x:.0f}, {y:.0f})"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_type(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        cdp = chrome_manager.cdp
+        sid = chrome_manager.session
+        text = args.get("text", "")
+        if args.get("selector"):
+            pos = resolve_selector(args["selector"], sid)
+            for evt in ("mousePressed", "mouseReleased"):
+                cdp.send("Input.dispatchMouseEvent", {
+                    "type": evt, "x": pos["x"], "y": pos["y"],
+                    "button": "left", "clickCount": 1,
+                }, session_id=sid)
+        if args.get("clear"):
+            # Select all + delete
+            for key_code in [("a", 2), ("Backspace", 0)]:
+                cdp.send("Input.dispatchKeyEvent", {
+                    "type": "keyDown", "key": key_code[0], "modifiers": key_code[1],
+                }, session_id=sid)
+                cdp.send("Input.dispatchKeyEvent", {
+                    "type": "keyUp", "key": key_code[0], "modifiers": key_code[1],
+                }, session_id=sid)
+        cdp.send("Input.insertText", {"text": text}, session_id=sid)
+        if args.get("submit"):
+            cdp.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter"}, session_id=sid)
+            cdp.send("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter"}, session_id=sid)
+        return {"success": True, "output": f"Typed {len(text)} characters"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_extract(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        sid = chrome_manager.session
+        mode = args.get("mode", "text")
+        selector = args.get("selector")
+        expressions = {
+            "text": "document.body.innerText",
+            "html": "document.documentElement.outerHTML",
+            "links": "JSON.stringify(Array.from(document.querySelectorAll('a[href]')).map(a=>({text:a.textContent.trim(),href:a.href})).filter(l=>l.text||l.href))",
+            "forms": "JSON.stringify(Array.from(document.querySelectorAll('form')).map(f=>({action:f.action,method:f.method,inputs:Array.from(f.querySelectorAll('input,select,textarea')).map(i=>({name:i.name,type:i.type,value:i.value}))})))",
+            "tables": "JSON.stringify(Array.from(document.querySelectorAll('table')).map(t=>({headers:Array.from(t.querySelectorAll('th')).map(th=>th.textContent.trim()),rows:Array.from(t.querySelectorAll('tbody tr')).map(tr=>Array.from(tr.querySelectorAll('td')).map(td=>td.textContent.trim()))})))",
+            "accessibility": "JSON.stringify({title:document.title,lang:document.documentElement.lang,headings:Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).map(h=>({level:h.tagName,text:h.textContent.trim()})),landmarks:Array.from(document.querySelectorAll('[role]')).map(e=>({role:e.getAttribute('role'),label:e.getAttribute('aria-label')||''}))})",
+        }
+        if selector:
+            base_expr = f"document.querySelector({_js_str(selector)})"
+            if mode == "text":
+                expr = f"({base_expr})?.innerText || ''"
+            elif mode == "html":
+                expr = f"({base_expr})?.outerHTML || ''"
+            else:
+                expr = expressions.get(mode, expressions["text"])
+        else:
+            expr = expressions.get(mode, expressions["text"])
+        result = cdp_evaluate(expr, sid)
+        output = result if isinstance(result, str) else json.dumps(result)
+        # Truncate
+        if len(output) > 100000:
+            output = output[:100000] + "\n... (truncated)"
+        return {"success": True, "output": output}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_tabs(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        cdp = chrome_manager.cdp
+        action = args.get("action", "list")
+        if action == "list":
+            targets = cdp.send("Target.getTargets")
+            pages = [t for t in targets.get("targetInfos", []) if t.get("type") == "page"]
+            return {"success": True, "output": json.dumps([{"id": p["targetId"], "url": p.get("url", ""), "title": p.get("title", "")} for p in pages])}
+        elif action == "new":
+            url = args.get("url", "about:blank")
+            result = cdp.send("Target.createTarget", {"url": url})
+            target_id = result["targetId"]
+            chrome_manager.switch_to_target(target_id)
+            return {"success": True, "output": json.dumps({"targetId": target_id})}
+        elif action == "close":
+            target_id = args.get("targetId", "")
+            if not target_id:
+                return {"success": False, "output": "", "error": "targetId required"}
+            cdp.send("Target.closeTarget", {"targetId": target_id})
+            return {"success": True, "output": f"Closed tab {target_id}"}
+        elif action == "switch":
+            target_id = args.get("targetId", "")
+            if not target_id:
+                return {"success": False, "output": "", "error": "targetId required"}
+            cdp.send("Target.activateTarget", {"targetId": target_id})
+            chrome_manager.switch_to_target(target_id)
+            return {"success": True, "output": f"Switched to tab {target_id}"}
+        else:
+            return {"success": False, "output": "", "error": f"Unknown action: {action}"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_execute(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        code = args.get("code", "")
+        if not code:
+            return {"success": False, "output": "", "error": "code required"}
+        result = cdp_evaluate(code, chrome_manager.session)
+        output = result if isinstance(result, str) else json.dumps(result)
+        return {"success": True, "output": output}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_scroll(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        cdp = chrome_manager.cdp
+        sid = chrome_manager.session
+        direction = args.get("direction", "down")
+        amount = args.get("amount", 300)
+        x = args.get("x", 100)
+        y = args.get("y", 100)
+        if args.get("selector"):
+            pos = resolve_selector(args["selector"], sid)
+            x, y = pos["x"], pos["y"]
+        dx, dy = 0, 0
+        if direction == "down":
+            dy = amount
+        elif direction == "up":
+            dy = -amount
+        elif direction == "right":
+            dx = amount
+        elif direction == "left":
+            dx = -amount
+        cdp.send("Input.dispatchMouseEvent", {
+            "type": "mouseWheel", "x": x, "y": y, "deltaX": dx, "deltaY": dy,
+        }, session_id=sid)
+        return {"success": True, "output": f"Scrolled {direction} by {amount}px"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+KEY_MAP = {
+    "Enter": (13, "\r"), "Tab": (9, "\t"), "Escape": (27, ""),
+    "Backspace": (8, "\b"), "Delete": (46, ""), "Space": (32, " "),
+    "ArrowUp": (38, ""), "ArrowDown": (40, ""), "ArrowLeft": (37, ""), "ArrowRight": (39, ""),
+    "Home": (36, ""), "End": (35, ""), "PageUp": (33, ""), "PageDown": (34, ""),
+    "F1": (112, ""), "F2": (113, ""), "F3": (114, ""), "F4": (115, ""), "F5": (116, ""),
+    "F6": (117, ""), "F7": (118, ""), "F8": (119, ""), "F9": (120, ""), "F10": (121, ""),
+    "F11": (122, ""), "F12": (123, ""),
+}
+
+
+def handle_browser_keypress(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        cdp = chrome_manager.cdp
+        sid = chrome_manager.session
+        key = args.get("key", "")
+        modifiers_list = args.get("modifiers", [])
+        mod_flags = 0
+        if "alt" in modifiers_list:
+            mod_flags |= 1
+        if "ctrl" in modifiers_list:
+            mod_flags |= 2
+        if "meta" in modifiers_list:
+            mod_flags |= 4
+        if "shift" in modifiers_list:
+            mod_flags |= 8
+        key_info = KEY_MAP.get(key)
+        params = {"key": key, "modifiers": mod_flags}  # type: Dict[str, Any]
+        if key_info:
+            params["windowsVirtualKeyCode"] = key_info[0]
+            if key_info[1]:
+                params["text"] = key_info[1]
+        elif len(key) == 1:
+            params["text"] = key
+            params["windowsVirtualKeyCode"] = ord(key.upper())
+        cdp.send("Input.dispatchKeyEvent", dict(type="keyDown", **params), session_id=sid)
+        cdp.send("Input.dispatchKeyEvent", dict(type="keyUp", **params), session_id=sid)
+        return {"success": True, "output": f"Pressed {key}"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_wait_for(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        selector = args.get("selector", "")
+        if not selector:
+            return {"success": False, "output": "", "error": "selector required"}
+        timeout_ms = args.get("timeout", 10000)
+        check_visible = args.get("visible", True)
+        deadline = time.time() + timeout_ms / 1000
+        sid = chrome_manager.session
+        while time.time() < deadline:
+            if check_visible:
+                found = cdp_evaluate(
+                    f"!!(function(){{var el=document.querySelector({_js_str(selector)});if(!el)return false;var r=el.getBoundingClientRect();return r.width>0&&r.height>0;}})()",
+                    sid,
+                )
+            else:
+                found = cdp_evaluate(f"!!document.querySelector({_js_str(selector)})", sid)
+            if found:
+                return {"success": True, "output": f"Found: {selector}"}
+            time.sleep(0.5)
+        return {"success": False, "output": "", "error": f"Timeout waiting for {selector}"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_select(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        selector = args.get("selector", "")
+        if not selector:
+            return {"success": False, "output": "", "error": "selector required"}
+        sid = chrome_manager.session
+        value = args.get("value")
+        text = args.get("text")
+        index = args.get("index")
+        if value is not None:
+            expr = f"(function(){{var s=document.querySelector({_js_str(selector)});s.value={_js_str(value)};s.dispatchEvent(new Event('change',{{bubbles:true}}));return s.value;}})()"
+        elif text is not None:
+            expr = f"(function(){{var s=document.querySelector({_js_str(selector)});var o=Array.from(s.options).find(o=>o.text==={_js_str(text)});if(o){{s.value=o.value;s.dispatchEvent(new Event('change',{{bubbles:true}}));return o.value;}}return null;}})()"
+        elif index is not None:
+            expr = f"(function(){{var s=document.querySelector({_js_str(selector)});s.selectedIndex={index};s.dispatchEvent(new Event('change',{{bubbles:true}}));return s.value;}})()"
+        else:
+            return {"success": False, "output": "", "error": "value, text, or index required"}
+        result = cdp_evaluate(expr, sid)
+        return {"success": True, "output": f"Selected: {result}"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_hover(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        cdp = chrome_manager.cdp
+        sid = chrome_manager.session
+        if args.get("selector"):
+            pos = resolve_selector(args["selector"], sid)
+            x, y = pos["x"], pos["y"]
+        elif args.get("x") is not None and args.get("y") is not None:
+            x, y = float(args["x"]), float(args["y"])
+        else:
+            return {"success": False, "output": "", "error": "selector or x,y required"}
+        cdp.send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved", "x": x, "y": y,
+        }, session_id=sid)
+        return {"success": True, "output": f"Hovered at ({x:.0f}, {y:.0f})"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_history(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        action = args.get("action", "back")
+        sid = chrome_manager.session
+        history = chrome_manager.cdp.send("Page.getNavigationHistory", session_id=sid)
+        idx = history.get("currentIndex", 0)
+        entries = history.get("entries", [])
+        if action == "back" and idx > 0:
+            chrome_manager.cdp.send("Page.navigateToHistoryEntry", {"entryId": entries[idx - 1]["id"]}, session_id=sid)
+            return {"success": True, "output": f"Navigated back to {entries[idx - 1].get('url', '')}"}
+        elif action == "forward" and idx < len(entries) - 1:
+            chrome_manager.cdp.send("Page.navigateToHistoryEntry", {"entryId": entries[idx + 1]["id"]}, session_id=sid)
+            return {"success": True, "output": f"Navigated forward to {entries[idx + 1].get('url', '')}"}
+        else:
+            return {"success": False, "output": "", "error": f"Cannot go {action}"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_dialog(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        dialog = chrome_manager.pop_dialog()
+        if not dialog:
+            return {"success": False, "output": "", "error": "No pending dialog"}
+        action = args.get("action", "accept")
+        params = {"accept": action == "accept"}  # type: Dict[str, Any]
+        if args.get("prompt_text") is not None:
+            params["promptText"] = args["prompt_text"]
+        chrome_manager.cdp.send("Page.handleJavaScriptDialog", params, session_id=chrome_manager.session)
+        return {"success": True, "output": json.dumps({"type": dialog.get("type"), "message": dialog.get("message"), "action": action})}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def _get_http_base_url():  # type: () -> str
+    """Convert WS URL to HTTP URL."""
+    url = _worker_config.server
+    if url.startswith("wss://"):
+        return "https://" + url[6:]
+    elif url.startswith("ws://"):
+        return "http://" + url[5:]
+    return url
+
+
+def _download_chat_file(file_id):  # type: (str) -> str
+    """Download a file from the chat server, save to temp, return path."""
+    import urllib.request
+    url = "%s/api/files/%s" % (_get_http_base_url(), urllib.parse.quote(file_id, safe=""))
+    resp = urllib.request.urlopen(url, timeout=30)
+    data = resp.read()
+    # Extract filename from Content-Disposition
+    disposition = resp.headers.get("Content-Disposition", "")
+    name = file_id
+    if "filename=" in disposition:
+        m = re.search(r'filename="?([^";\r\n]+)"?', disposition)
+        if m:
+            name = m.group(1)
+    tmp_dir = os.path.join(tempfile.gettempdir(), "clawd-chat-files")
+    os.makedirs(tmp_dir, exist_ok=True)
+    safe_name = name.replace("/", "_").replace("\\", "_").replace("\x00", "")
+    if not safe_name or safe_name in (".", ".."):
+        safe_name = file_id
+    safe_name = "%s_%s" % (file_id.replace("/", "_")[:32], safe_name)
+    path = os.path.join(tmp_dir, safe_name)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def _upload_chat_file(file_path):  # type: (str) -> Dict
+    """Upload a file to the chat server, return {id, name}."""
+    import urllib.request
+    import mimetypes
+    name = os.path.basename(file_path)
+    mime = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+    boundary = "----ClawdBoundary%d" % int(time.time() * 1000)
+    body = bytearray()
+    body += ("--%s\r\n" % boundary).encode()
+    body += ('Content-Disposition: form-data; name="file"; filename="%s"\r\n' % name.replace('"', '\\"')).encode()
+    body += ("Content-Type: %s\r\n\r\n" % mime).encode()
+    body += file_data
+    body += ("\r\n--%s--\r\n" % boundary).encode()
+    url = "%s/api/files.upload" % _get_http_base_url()
+    req = urllib.request.Request(url, data=bytes(body), method="POST")
+    req.add_header("Content-Type", "multipart/form-data; boundary=%s" % boundary)
+    resp = urllib.request.urlopen(req, timeout=60)
+    result = json.loads(resp.read())
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "Upload failed"))
+    return {"id": result["file"]["id"], "name": result["file"]["name"]}
+
+
+def handle_browser_upload(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not available"}
+    try:
+        selector = args.get("selector", "")
+        files = args.get("files", [])
+        if not selector:
+            return {"success": False, "output": "", "error": "selector is required"}
+        # Validate local files
+        if files and isinstance(files, list):
+            for f in files:
+                if not os.path.isfile(f):
+                    return {"success": False, "output": "", "error": "File not found: " + f}
+        # Download chat files if file_ids provided
+        file_ids = args.get("file_ids", [])
+        temp_files = []
+        if file_ids and isinstance(file_ids, list):
+            for fid in file_ids:
+                temp_path = _download_chat_file(fid)
+                temp_files.append(temp_path)
+        all_files = list(files or []) + temp_files
+        if not all_files:
+            return {"success": False, "output": "", "error": "files or file_ids required"}
+        sid = chrome_manager.session
+        info = resolve_selector(selector, sid)
+        node_id = info["nodeId"]
+        chrome_manager.cdp.send("DOM.setFileInputFiles", {"files": all_files, "nodeId": node_id}, session_id=sid)
+        # Dispatch change and input events
+        js = "(() => { const el = document.querySelector(%s); if (el) { el.dispatchEvent(new Event('change', { bubbles: true })); el.dispatchEvent(new Event('input', { bubbles: true })); } })()" % _js_str(selector)
+        chrome_manager.cdp.send("Runtime.evaluate", {"expression": js, "returnByValue": True}, session_id=sid)
+        count = len(all_files)
+        # Clean up temp files
+        for f in temp_files:
+            try:
+                os.unlink(f)
+            except Exception:
+                pass
+        return {"success": True, "output": "Uploaded %d file(s) to %s" % (count, selector)}
+    except Exception as e:
+        for f in temp_files:
+            try:
+                os.unlink(f)
+            except Exception:
+                pass
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_download(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not available"}
+    try:
+        action = args.get("action", "list")
+        if action == "configure":
+            path = args.get("path", "")
+            if not path:
+                return {"success": False, "output": "", "error": "path is required for configure"}
+            os.makedirs(path, exist_ok=True)
+            chrome_manager.set_download_path(path)
+            chrome_manager.cdp.send("Browser.setDownloadBehavior", {
+                "behavior": "allowAndName",
+                "downloadPath": path,
+                "eventsEnabled": True,
+            })
+            return {"success": True, "output": "Download directory set to " + path}
+        elif action == "wait":
+            timeout = args.get("timeout", 30000)
+            deadline = time.time() + timeout / 1000.0
+            all_dl = chrome_manager.get_downloads()
+            start_count = len([d for d in all_dl if d["state"] == "completed"])
+            start_canceled_count = len([d for d in all_dl if d["state"] == "canceled"])
+            while time.time() < deadline:
+                downloads = chrome_manager.get_downloads()
+                completed = [d for d in downloads if d["state"] == "completed"]
+                if len(completed) > start_count:
+                    latest = completed[-1]
+                    file_info = None
+                    if args.get("upload") and latest.get("path") and os.path.isfile(latest["path"]):
+                        try:
+                            file_info = _upload_chat_file(latest["path"])
+                        except Exception:
+                            pass  # Upload failed but download succeeded
+                    result = {
+                        "filename": latest["filename"], "path": latest.get("path", ""),
+                        "url": latest["url"], "totalBytes": latest["totalBytes"],
+                    }
+                    if file_info:
+                        result["file_id"] = file_info["id"]
+                        result["file_name"] = file_info["name"]
+                    return {"success": True, "output": json.dumps(result, indent=2)}
+                canceled = [d for d in downloads if d["state"] == "canceled"]
+                if len(canceled) > start_canceled_count:
+                    return {"success": False, "output": "", "error": "Download canceled: " + canceled[-1]["filename"]}
+                time.sleep(0.5)
+            return {"success": False, "output": "", "error": "No download completed within %dms" % timeout}
+        elif action == "list":
+            downloads = chrome_manager.get_downloads()
+            result = [{"filename": d["filename"], "url": d["url"], "state": d["state"],
+                        "totalBytes": d["totalBytes"], "receivedBytes": d["receivedBytes"],
+                        "path": d.get("path", "")} for d in downloads]
+            return {"success": True, "output": json.dumps(result, indent=2)}
+        else:
+            return {"success": False, "output": "", "error": "Unknown action: %s. Use 'configure', 'wait', or 'list'" % action}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_mouse_move(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        cdp = chrome_manager.cdp
+        sid = chrome_manager.session
+        x, y = float(args["x"]), float(args["y"])
+        steps = int(args.get("steps", 1))
+        from_x = float(args.get("from_x", x))
+        from_y = float(args.get("from_y", y))
+        for i in range(1, steps + 1):
+            mx = from_x + (x - from_x) * i / steps
+            my = from_y + (y - from_y) * i / steps
+            cdp.send("Input.dispatchMouseEvent", {
+                "type": "mouseMoved", "x": mx, "y": my,
+            }, session_id=sid)
+        return {"success": True, "output": f"Mouse moved to ({x:.0f}, {y:.0f}) in {steps} step(s)"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_drag(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        cdp = chrome_manager.cdp
+        sid = chrome_manager.session
+        # Resolve start position
+        if args.get("from_selector"):
+            pos = resolve_selector(args["from_selector"], sid)
+            fx, fy = pos["x"], pos["y"]
+        elif args.get("from_x") is not None and args.get("from_y") is not None:
+            fx, fy = float(args["from_x"]), float(args["from_y"])
+        else:
+            return {"success": False, "output": "", "error": "from_selector or from_x,from_y required"}
+        # Resolve end position
+        if args.get("to_selector"):
+            pos = resolve_selector(args["to_selector"], sid)
+            tx, ty = pos["x"], pos["y"]
+        elif args.get("to_x") is not None and args.get("to_y") is not None:
+            tx, ty = float(args["to_x"]), float(args["to_y"])
+        else:
+            return {"success": False, "output": "", "error": "to_selector or to_x,to_y required"}
+        steps = int(args.get("steps", 10))
+        # Press
+        cdp.send("Input.dispatchMouseEvent", {
+            "type": "mousePressed", "x": fx, "y": fy,
+            "button": "left", "clickCount": 1,
+        }, session_id=sid)
+        # Move in steps
+        for i in range(1, steps + 1):
+            mx = fx + (tx - fx) * i / steps
+            my = fy + (ty - fy) * i / steps
+            cdp.send("Input.dispatchMouseEvent", {
+                "type": "mouseMoved", "x": mx, "y": my,
+                "button": "left",
+            }, session_id=sid)
+            time.sleep(0.02)
+        # Release
+        cdp.send("Input.dispatchMouseEvent", {
+            "type": "mouseReleased", "x": tx, "y": ty,
+            "button": "left", "clickCount": 1,
+        }, session_id=sid)
+        return {"success": True, "output": f"Dragged from ({fx:.0f}, {fy:.0f}) to ({tx:.0f}, {ty:.0f})"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_touch(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        cdp = chrome_manager.cdp
+        sid = chrome_manager.session
+        action = args.get("action", "tap")
+        # Resolve target coordinates
+        if args.get("selector"):
+            pos = resolve_selector(args["selector"], sid)
+            x, y = pos["x"], pos["y"]
+        elif args.get("x") is not None and args.get("y") is not None:
+            x, y = float(args["x"]), float(args["y"])
+        else:
+            return {"success": False, "output": "", "error": "selector or x,y required"}
+
+        def _tp(px, py, tid=0):
+            return {"x": px, "y": py, "id": tid, "radiusX": 1, "radiusY": 1, "force": 1}
+
+        if action == "tap":
+            cdp.send("Input.dispatchTouchEvent", {
+                "type": "touchStart", "touchPoints": [_tp(x, y)],
+            }, session_id=sid)
+            time.sleep(0.05)
+            cdp.send("Input.dispatchTouchEvent", {
+                "type": "touchEnd", "touchPoints": [],
+            }, session_id=sid)
+            return {"success": True, "output": f"Tapped at ({x:.0f}, {y:.0f})"}
+
+        elif action == "swipe":
+            end_x = float(args.get("end_x", x))
+            end_y = float(args.get("end_y", y))
+            steps = 10
+            cdp.send("Input.dispatchTouchEvent", {
+                "type": "touchStart", "touchPoints": [_tp(x, y)],
+            }, session_id=sid)
+            for i in range(1, steps + 1):
+                mx = x + (end_x - x) * i / steps
+                my = y + (end_y - y) * i / steps
+                cdp.send("Input.dispatchTouchEvent", {
+                    "type": "touchMove", "touchPoints": [_tp(mx, my)],
+                }, session_id=sid)
+                time.sleep(0.02)
+            cdp.send("Input.dispatchTouchEvent", {
+                "type": "touchEnd", "touchPoints": [],
+            }, session_id=sid)
+            return {"success": True, "output": f"Swiped from ({x:.0f}, {y:.0f}) to ({end_x:.0f}, {end_y:.0f})"}
+
+        elif action == "long-press":
+            duration = float(args.get("duration", 500)) / 1000.0
+            cdp.send("Input.dispatchTouchEvent", {
+                "type": "touchStart", "touchPoints": [_tp(x, y)],
+            }, session_id=sid)
+            time.sleep(duration)
+            cdp.send("Input.dispatchTouchEvent", {
+                "type": "touchEnd", "touchPoints": [],
+            }, session_id=sid)
+            return {"success": True, "output": f"Long-pressed at ({x:.0f}, {y:.0f}) for {duration:.2f}s"}
+
+        elif action == "pinch":
+            scale = float(args.get("scale", 1.0))
+            steps = 10
+            # Two touch points starting near center
+            offset = 50.0
+            for i in range(steps + 1):
+                t = i / float(steps)
+                if scale > 1.0:
+                    cur_offset = offset + (offset * (scale - 1.0)) * t
+                else:
+                    cur_offset = offset - (offset * (1.0 - scale)) * t
+                p1 = _tp(x - cur_offset, y, 0)
+                p2 = _tp(x + cur_offset, y, 1)
+                if i == 0:
+                    cdp.send("Input.dispatchTouchEvent", {
+                        "type": "touchStart", "touchPoints": [p1, p2],
+                    }, session_id=sid)
+                else:
+                    cdp.send("Input.dispatchTouchEvent", {
+                        "type": "touchMove", "touchPoints": [p1, p2],
+                    }, session_id=sid)
+                time.sleep(0.02)
+            cdp.send("Input.dispatchTouchEvent", {
+                "type": "touchEnd", "touchPoints": [],
+            }, session_id=sid)
+            return {"success": True, "output": f"Pinch at ({x:.0f}, {y:.0f}) with scale {scale}"}
+
+        else:
+            return {"success": False, "output": "", "error": f"Unknown touch action: {action}"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_frames(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        tree = chrome_manager.cdp.send("Page.getFrameTree", session_id=chrome_manager.session)
+        def flatten(node, depth=0):
+            frames = []
+            f = node.get("frame", {})
+            frames.append({"id": f.get("id"), "url": f.get("url", ""), "name": f.get("name", ""), "depth": depth})
+            for child in node.get("childFrames", []):
+                frames.extend(flatten(child, depth + 1))
+            return frames
+        result = flatten(tree.get("frameTree", {}))
+        return {"success": True, "output": json.dumps(result)}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+BROWSER_TOOL_SCHEMAS = [
+    {"name": "browser_status", "description": "Get current browser page URL and title", "inputSchema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "browser_navigate", "description": "Navigate to a URL", "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "URL to navigate to"}}, "required": ["url"]}},
+    {"name": "browser_screenshot", "description": "Take a screenshot of the page or element", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "CSS selector of element"}, "quality": {"type": "number", "description": "JPEG quality (default: 80)"}}, "required": []}},
+    {"name": "browser_click", "description": "Click an element or coordinates", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "CSS selector"}, "x": {"type": "number"}, "y": {"type": "number"}, "button": {"type": "string", "enum": ["left", "right", "middle"]}, "double": {"type": "boolean"}}, "required": []}},
+    {"name": "browser_type", "description": "Type text into an element", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Text to type"}, "selector": {"type": "string", "description": "CSS selector"}, "clear": {"type": "boolean"}, "submit": {"type": "boolean"}}, "required": ["text"]}},
+    {"name": "browser_extract", "description": "Extract content from the page", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "html", "links", "forms", "tables", "accessibility"]}, "selector": {"type": "string"}}, "required": []}},
+    {"name": "browser_tabs", "description": "Manage browser tabs", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "new", "close", "switch"]}, "url": {"type": "string"}, "targetId": {"type": "string"}}, "required": []}},
+    {"name": "browser_execute", "description": "Execute JavaScript in page context", "inputSchema": {"type": "object", "properties": {"code": {"type": "string", "description": "JavaScript code"}}, "required": ["code"]}},
+    {"name": "browser_scroll", "description": "Scroll the page or element", "inputSchema": {"type": "object", "properties": {"direction": {"type": "string", "enum": ["up", "down", "left", "right"]}, "amount": {"type": "number"}, "selector": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}}, "required": []}},
+    {"name": "browser_keypress", "description": "Press a keyboard key with optional modifiers", "inputSchema": {"type": "object", "properties": {"key": {"type": "string", "description": "Key to press"}, "modifiers": {"type": "array", "items": {"type": "string"}}}, "required": ["key"]}},
+    {"name": "browser_wait_for", "description": "Wait for element to appear", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout": {"type": "number"}, "visible": {"type": "boolean"}}, "required": ["selector"]}},
+    {"name": "browser_select", "description": "Select dropdown option", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}, "value": {"type": "string"}, "text": {"type": "string"}, "index": {"type": "number"}}, "required": ["selector"]}},
+    {"name": "browser_hover", "description": "Hover over an element", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}}, "required": []}},
+    {"name": "browser_history", "description": "Navigate browser history", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["back", "forward"]}}, "required": ["action"]}},
+    {"name": "browser_handle_dialog", "description": "Handle JavaScript dialog", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["accept", "dismiss"]}, "prompt_text": {"type": "string"}}, "required": []}},
+    {"name": "browser_frames", "description": "List all frames in the page", "inputSchema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "browser_mouse_move", "description": "Move the mouse cursor to a specific position", "inputSchema": {"type": "object", "properties": {"x": {"type": "number", "description": "Target X coordinate"}, "y": {"type": "number", "description": "Target Y coordinate"}, "steps": {"type": "number", "description": "Number of intermediate steps (default: 1)"}, "from_x": {"type": "number", "description": "Start X coordinate"}, "from_y": {"type": "number", "description": "Start Y coordinate"}}, "required": ["x", "y"]}},
+    {"name": "browser_drag", "description": "Drag from one element/position to another (drag-and-drop)", "inputSchema": {"type": "object", "properties": {"from_selector": {"type": "string", "description": "CSS selector of element to drag from"}, "from_x": {"type": "number", "description": "Start X coordinate"}, "from_y": {"type": "number", "description": "Start Y coordinate"}, "to_selector": {"type": "string", "description": "CSS selector of drop target"}, "to_x": {"type": "number", "description": "End X coordinate"}, "to_y": {"type": "number", "description": "End Y coordinate"}, "steps": {"type": "number", "description": "Number of intermediate move steps (default: 10)"}}, "required": []}},
+    {"name": "browser_touch", "description": "Perform touch gestures (tap, swipe, long-press, pinch)", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["tap", "swipe", "long-press", "pinch"], "description": "Touch action type"}, "selector": {"type": "string", "description": "CSS selector of target element"}, "x": {"type": "number", "description": "Start X coordinate"}, "y": {"type": "number", "description": "Start Y coordinate"}, "end_x": {"type": "number", "description": "End X for swipe"}, "end_y": {"type": "number", "description": "End Y for swipe"}, "scale": {"type": "number", "description": "Scale factor for pinch (0.5=zoom out, 2.0=zoom in)"}, "duration": {"type": "number", "description": "Hold duration in ms for long-press (default: 500)"}}, "required": []}},
+    {"name": "browser_upload", "description": "Upload files to a file input element on the page", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "CSS selector of the <input type='file'> element"}, "files": {"type": "array", "items": {"type": "string"}, "description": "Array of absolute file paths on the local machine"}, "file_ids": {"type": "array", "items": {"type": "string"}, "description": "Array of chat server file IDs to download and upload"}}, "required": ["selector"]}},
+    {"name": "browser_download", "description": "Manage file downloads: configure download directory, wait for downloads, or list tracked downloads", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["configure", "wait", "list"], "description": "Action to perform"}, "path": {"type": "string", "description": "Download directory path (for 'configure' action)"}, "timeout": {"type": "number", "description": "Max wait time in milliseconds (for 'wait' action, default: 30000)"}, "upload": {"type": "boolean", "description": "Upload completed download to chat server (for 'wait' action)"}}, "required": []}},
+]
+
+
+def _dispatch_browser_tool(tool, args):  # type: (str, Dict) -> Dict
+    handlers = {
+        "browser_status": handle_browser_status,
+        "browser_navigate": handle_browser_navigate,
+        "browser_screenshot": handle_browser_screenshot,
+        "browser_click": handle_browser_click,
+        "browser_type": handle_browser_type,
+        "browser_extract": handle_browser_extract,
+        "browser_tabs": handle_browser_tabs,
+        "browser_execute": handle_browser_execute,
+        "browser_scroll": handle_browser_scroll,
+        "browser_keypress": handle_browser_keypress,
+        "browser_wait_for": handle_browser_wait_for,
+        "browser_select": handle_browser_select,
+        "browser_hover": handle_browser_hover,
+        "browser_history": handle_browser_history,
+        "browser_handle_dialog": handle_browser_dialog,
+        "browser_frames": handle_browser_frames,
+        "browser_mouse_move": handle_browser_mouse_move,
+        "browser_drag": handle_browser_drag,
+        "browser_touch": handle_browser_touch,
+        "browser_upload": handle_browser_upload,
+        "browser_download": handle_browser_download,
+    }
+    handler = handlers.get(tool)
+    if handler:
+        return handler(args)
+    return {"success": False, "output": "", "error": f"Unknown browser tool: {tool}"}
+
+
+# ---------------------------------------------------------------------------
 # Tool schemas — MCP-style definitions
 # ---------------------------------------------------------------------------
 
@@ -1245,7 +2398,9 @@ class RemoteWorker:
 
     def __init__(self, config):
         # type: (Any) -> None
+        global _worker_config
         self.config = config
+        _worker_config = config
         self.ws = None  # type: Optional[StdlibWebSocket]
         self.session_id = str(uuid.uuid4())
         self.reconnect_delay = 1.0
@@ -1284,7 +2439,7 @@ class RemoteWorker:
             "platform": sys.platform,
             "sessionId": self.session_id,
             "maxConcurrent": self.config.max_concurrent,
-            "tools": TOOL_SCHEMAS,
+            "tools": TOOL_SCHEMAS + (BROWSER_TOOL_SCHEMAS if self.config.browser is not None else []),
             "version": "0.1.0",
         })
 
@@ -1357,6 +2512,8 @@ class RemoteWorker:
                     call_id, args, self.config.project_root,
                     self.config.read_only, self._send_json,
                 )
+            elif tool.startswith("browser_"):
+                result = _dispatch_browser_tool(tool, args)
             else:
                 result = {"success": False, "output": "", "error": f"Unknown tool: {tool}"}
             self._send_json({"type": "result", "id": call_id, "result": result})
@@ -1434,6 +2591,10 @@ class RemoteWorker:
                 self.ws.close()
         except Exception:
             pass
+        global chrome_manager
+        if chrome_manager:
+            chrome_manager.shutdown()
+            chrome_manager = None
         sys.exit(0)
 
 
@@ -1511,6 +2672,13 @@ def main():  # type: () -> None
         default=os.environ.get("CF_ACCESS_CLIENT_SECRET"),
         help="Cloudflare Access service token secret (or set CF_ACCESS_CLIENT_SECRET)",
     )
+    parser.add_argument(
+        "--browser",
+        nargs="?",
+        const="",
+        default=None,
+        help="Enable browser control via CDP. Optional profile name (default: temp profile)",
+    )
 
     args = parser.parse_args()
 
@@ -1562,7 +2730,17 @@ def main():  # type: () -> None
         "max_concurrent": args.max_concurrent,
         "cf_client_id": args.cf_client_id,
         "cf_client_secret": args.cf_client_secret,
+        "browser": args.browser,
     })()
+
+    # Browser startup
+    if config.browser is not None:
+        mgr = start_chrome_manager(config.browser)
+        if mgr:
+            log(f"Browser enabled (CDP port {mgr.cdp_port})")
+        else:
+            log("WARNING: Browser requested but Chrome not found")
+            config.browser = None
 
     worker = RemoteWorker(config)
 

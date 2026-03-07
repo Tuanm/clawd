@@ -26,6 +26,7 @@ import java.security.cert.X509Certificate;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
@@ -339,7 +340,8 @@ public class RemoteWorker {
         String caCert,
         int maxConcurrent,
         String cfClientId,
-        String cfClientSecret
+        String cfClientSecret,
+        String browser
     ) {}
 
     // -----------------------------------------------------------------------
@@ -365,6 +367,7 @@ public class RemoteWorker {
               --max-concurrent <n>   Max concurrent tool calls (default: 4)
               --cf-client-id <id>    Cloudflare Access service token client ID (or CF_ACCESS_CLIENT_ID env)
               --cf-client-secret <s> Cloudflare Access service token secret (or CF_ACCESS_CLIENT_SECRET env)
+              --browser [profile]    Enable browser control via CDP (optional profile name)
             """.stripIndent());
         System.exit(1);
     }
@@ -398,6 +401,7 @@ public class RemoteWorker {
         int maxConcurrent = 4;
         String cfClientId = env("CF_ACCESS_CLIENT_ID", null);
         String cfClientSecret = env("CF_ACCESS_CLIENT_SECRET", null);
+        String browser = null;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -413,6 +417,13 @@ public class RemoteWorker {
                 case "--max-concurrent"  -> maxConcurrent = Integer.parseInt(nextArg(args, ++i, "--max-concurrent"));
                 case "--cf-client-id"    -> cfClientId = nextArg(args, ++i, "--cf-client-id");
                 case "--cf-client-secret"-> cfClientSecret = nextArg(args, ++i, "--cf-client-secret");
+                case "--browser"         -> {
+                    if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+                        browser = args[++i];
+                    } else {
+                        browser = "";
+                    }
+                }
                 default -> { System.err.println("Unknown argument: " + args[i]); printUsage(); }
             }
         }
@@ -443,7 +454,7 @@ public class RemoteWorker {
         }
 
         return new Config(server, token, projectRoot, name, readOnly, timeout,
-                           reconnectMax, insecure, caCert, maxConcurrent, cfClientId, cfClientSecret);
+                           reconnectMax, insecure, caCert, maxConcurrent, cfClientId, cfClientSecret, browser);
     }
 
     static String nextArg(String[] args, int i, String flag) {
@@ -1199,6 +1210,1106 @@ public class RemoteWorker {
     }
 
     // -----------------------------------------------------------------------
+    // Browser CDP support
+    // -----------------------------------------------------------------------
+
+    static volatile ChromeManager chromeManager;
+    static volatile Config activeConfig;
+
+    static String findChromeBinary() {
+        List<String> candidates;
+        if (IS_MACOS) {
+            candidates = List.of(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+            );
+        } else if (IS_WINDOWS) {
+            candidates = new ArrayList<>();
+            for (String envVar : List.of("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")) {
+                String base = System.getenv(envVar);
+                if (base != null) {
+                    candidates.add(Path.of(base, "Google", "Chrome", "Application", "chrome.exe").toString());
+                    candidates.add(Path.of(base, "Microsoft", "Edge", "Application", "msedge.exe").toString());
+                }
+            }
+        } else {
+            candidates = List.of(
+                "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
+                "/usr/bin/chromium", "/usr/bin/chromium-browser",
+                "/snap/bin/chromium", "/usr/bin/microsoft-edge"
+            );
+        }
+        for (String c : candidates) {
+            if (Files.isRegularFile(Path.of(c))) return c;
+        }
+        // which fallback
+        for (String name : List.of("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge")) {
+            String path = findExecutable(name);
+            if (path != null) return path;
+        }
+        return null;
+    }
+
+    static final class CdpClient implements AutoCloseable {
+        private final java.net.http.WebSocket ws;
+        private final AtomicInteger nextId = new AtomicInteger(1);
+        private final ConcurrentHashMap<Integer, CompletableFuture<Map<String, Object>>> pending = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<String, List<java.util.function.Consumer<Map<String, Object>>>> eventListeners = new ConcurrentHashMap<>();
+
+        @SuppressWarnings("unchecked")
+        CdpClient(String wsUrl) {
+            this.ws = HttpClient.newHttpClient().newWebSocketBuilder()
+                .buildAsync(URI.create(wsUrl), new java.net.http.WebSocket.Listener() {
+                    final StringBuilder buf = new StringBuilder();
+                    @Override
+                    public CompletionStage<?> onText(java.net.http.WebSocket webSocket, CharSequence data, boolean last) {
+                        buf.append(data);
+                        if (last) {
+                            String text = buf.toString();
+                            buf.setLength(0);
+                            try {
+                                var msg = (Map<String, Object>) Json.parse(text);
+                                var id = msg.get("id");
+                                if (id instanceof Number n && pending.containsKey(n.intValue())) {
+                                    pending.get(n.intValue()).complete(msg);
+                                } else if (msg.containsKey("method")) {
+                                    String method = String.valueOf(msg.get("method"));
+                                    var listeners = eventListeners.get(method);
+                                    if (listeners != null) {
+                                        var params = msg.get("params") instanceof Map<?,?> p ? (Map<String, Object>) p : Map.<String, Object>of();
+                                        for (var cb : listeners) {
+                                            try { cb.accept(params); } catch (Exception ignored) {}
+                                        }
+                                    }
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                        webSocket.request(1);
+                        return null;
+                    }
+                    @Override
+                    public void onOpen(java.net.http.WebSocket webSocket) { webSocket.request(1); }
+                    @Override
+                    public CompletionStage<?> onClose(java.net.http.WebSocket webSocket, int code, String reason) { return null; }
+                    @Override
+                    public void onError(java.net.http.WebSocket webSocket, Throwable error) {}
+                }).join();
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> send(String method, Map<String, Object> params, String sessionId, int timeoutSec) {
+            int id = nextId.getAndIncrement();
+            var future = new CompletableFuture<Map<String, Object>>();
+            pending.put(id, future);
+            var msg = new LinkedHashMap<String, Object>();
+            msg.put("id", id);
+            msg.put("method", method);
+            if (params != null) msg.put("params", params);
+            if (sessionId != null) msg.put("sessionId", sessionId);
+            ws.sendText(Json.serialize(msg), true).join();
+            try {
+                var result = future.get(timeoutSec, TimeUnit.SECONDS);
+                pending.remove(id);
+                if (result.containsKey("error")) {
+                    var err = result.get("error") instanceof Map<?,?> e ? (Map<String, Object>) e : Map.<String, Object>of();
+                    throw new RuntimeException("CDP error: " + err.getOrDefault("message", result.get("error")));
+                }
+                return result.get("result") instanceof Map<?,?> r ? (Map<String, Object>) r : Map.of();
+            } catch (java.util.concurrent.TimeoutException e) {
+                pending.remove(id);
+                throw new RuntimeException("CDP timeout: " + method);
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                pending.remove(id);
+                throw new RuntimeException("CDP error: " + e.getMessage());
+            }
+        }
+
+        Map<String, Object> send(String method) { return send(method, null, null, 30); }
+        Map<String, Object> send(String method, Map<String, Object> params) { return send(method, params, null, 30); }
+        Map<String, Object> send(String method, Map<String, Object> params, String sessionId) { return send(method, params, sessionId, 30); }
+
+        void on(String event, java.util.function.Consumer<Map<String, Object>> callback) {
+            eventListeners.computeIfAbsent(event, k -> new CopyOnWriteArrayList<>()).add(callback);
+        }
+
+        @Override
+        public void close() {
+            try { ws.sendClose(java.net.http.WebSocket.NORMAL_CLOSURE, "close").join(); }
+            catch (Exception ignored) {}
+        }
+    }
+
+    static final class ChromeManager {
+        final String chromePath;
+        final String profile;
+        final int cdpPort;
+        volatile Process process;
+        volatile CdpClient cdp;
+        volatile String pageSession;
+        final java.util.concurrent.ConcurrentLinkedDeque<Map<String, Object>> dialogQueue = new java.util.concurrent.ConcurrentLinkedDeque<>();
+        final java.util.concurrent.CopyOnWriteArrayList<Map<String, Object>> downloads = new java.util.concurrent.CopyOnWriteArrayList<>();
+        volatile String downloadPath;
+        private Path tempDir;
+        private final Path profileDir;
+
+        ChromeManager(String chromePath, String profile) {
+            this.chromePath = chromePath;
+            this.profile = profile;
+            this.cdpPort = 9222 + (int) (ProcessHandle.current().pid() % 1000);
+            try {
+                this.downloadPath = Files.createTempDirectory("clawd-downloads-").toString();
+            } catch (IOException e) {
+                this.downloadPath = System.getProperty("java.io.tmpdir") + "/clawd-downloads-" + ProcessHandle.current().pid();
+                new File(this.downloadPath).mkdirs();
+            }
+            if (profile != null && !profile.isEmpty()) {
+                this.profileDir = Path.of(System.getProperty("user.home"), ".clawd", "browser-profiles", profile);
+                try { Files.createDirectories(profileDir); } catch (IOException ignored) {}
+                this.tempDir = null;
+            } else {
+                try {
+                    this.tempDir = Files.createTempDirectory("clawd-browser-" + ProcessHandle.current().pid() + "-");
+                } catch (IOException e) {
+                    throw new RuntimeException("Cannot create temp dir: " + e.getMessage());
+                }
+                this.profileDir = tempDir;
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        void launch() throws Exception {
+            boolean hasDisplay = System.getenv("DISPLAY") != null || System.getenv("WAYLAND_DISPLAY") != null || IS_MACOS || IS_WINDOWS;
+            var chromeArgs = new ArrayList<>(List.of(
+                chromePath,
+                "--remote-debugging-port=" + cdpPort,
+                "--user-data-dir=" + profileDir,
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--disable-sync"
+            ));
+            if (!IS_MACOS && !IS_WINDOWS) chromeArgs.add("--no-sandbox");
+            chromeArgs.add("--disable-default-apps");
+            chromeArgs.add("--disable-features=TranslateUI");
+            if (!hasDisplay) chromeArgs.add("--headless=new");
+            process = new ProcessBuilder(chromeArgs)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start();
+
+            // Wait for CDP port
+            for (int attempt = 0; attempt < 30; attempt++) {
+                Thread.sleep(500);
+                try (var sock = new java.net.Socket()) {
+                    sock.connect(new java.net.InetSocketAddress("127.0.0.1", cdpPort), 1000);
+                    break;
+                } catch (IOException e) {
+                    if (attempt == 29) throw new RuntimeException("Chrome CDP port not available after 15s");
+                }
+            }
+
+            // Get WebSocket URL
+            String wsUrl = null;
+            var client = HttpClient.newHttpClient();
+            for (int i = 0; i < 10; i++) {
+                try {
+                    var req = java.net.http.HttpRequest.newBuilder()
+                        .uri(URI.create("http://127.0.0.1:" + cdpPort + "/json/version"))
+                        .GET().build();
+                    var resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+                    var data = (Map<String, Object>) Json.parse(resp.body());
+                    wsUrl = String.valueOf(data.get("webSocketDebuggerUrl"));
+                    if (wsUrl != null && !wsUrl.equals("null")) break;
+                } catch (Exception e) {
+                    Thread.sleep(300);
+                }
+            }
+            if (wsUrl == null || wsUrl.equals("null")) {
+                throw new RuntimeException("Could not get CDP WebSocket URL");
+            }
+
+            cdp = new CdpClient(wsUrl);
+
+            // Attach to first page
+            var targets = cdp.send("Target.getTargets");
+            var targetInfos = targets.get("targetInfos") instanceof List<?> l ? l : List.of();
+            String targetId = null;
+            for (var t : targetInfos) {
+                if (t instanceof Map<?,?> m && "page".equals(m.get("type"))) {
+                    targetId = String.valueOf(m.get("targetId"));
+                    break;
+                }
+            }
+            if (targetId == null) {
+                var result = cdp.send("Target.createTarget", Map.of("url", "about:blank"));
+                targetId = String.valueOf(result.get("targetId"));
+            }
+            var attach = cdp.send("Target.attachToTarget", Map.of("targetId", targetId, "flatten", true));
+            pageSession = String.valueOf(attach.get("sessionId"));
+
+            // Enable domains
+            for (String domain : List.of("Page", "DOM", "Runtime", "Network", "Input", "Target")) {
+                cdp.send(domain + ".enable", Map.of(), pageSession);
+            }
+
+            // Dialog listener
+            cdp.on("Page.javascriptDialogOpening", params -> dialogQueue.addLast(params));
+
+            // Configure downloads
+            new File(downloadPath).mkdirs();
+            cdp.send("Browser.setDownloadBehavior", Map.of(
+                "behavior", "allowAndName",
+                "downloadPath", downloadPath,
+                "eventsEnabled", true
+            ));
+            cdp.on("Browser.downloadWillBegin", params -> {
+                var dl = new java.util.concurrent.ConcurrentHashMap<String, Object>();
+                dl.put("guid", params.getOrDefault("guid", ""));
+                dl.put("url", params.getOrDefault("url", ""));
+                dl.put("filename", params.getOrDefault("suggestedFilename", ""));
+                dl.put("state", "inProgress");
+                dl.put("totalBytes", 0);
+                dl.put("receivedBytes", 0);
+                downloads.add(dl);
+                // Cap at 100 entries
+                while (downloads.size() > 100) downloads.remove(0);
+            });
+            cdp.on("Browser.downloadProgress", params -> {
+                var guid = String.valueOf(params.get("guid"));
+                for (var dl : downloads) {
+                    if (guid.equals(dl.get("guid"))) {
+                        dl.put("state", params.getOrDefault("state", dl.get("state")));
+                        dl.put("totalBytes", params.getOrDefault("totalBytes", dl.get("totalBytes")));
+                        dl.put("receivedBytes", params.getOrDefault("receivedBytes", dl.get("receivedBytes")));
+                        if ("completed".equals(dl.get("state"))) {
+                            var fname = String.valueOf(dl.get("filename"));
+                            var safeName = fname.replace("/", "_").replace("\\", "_");
+                            if (safeName.isEmpty()) safeName = "download";
+                            dl.put("path", downloadPath + "/" + safeName);
+                        }
+                        break;
+                    }
+                }
+            });
+        }
+
+        Map<String, Object> popDialog() {
+            return dialogQueue.pollFirst();
+        }
+
+        void switchToTarget(String targetId) {
+            if (pageSession != null) {
+                try { cdp.send("Target.detachFromTarget", Map.of("sessionId", pageSession)); } catch (Exception ignored) {}
+            }
+            var attach = cdp.send("Target.attachToTarget", Map.of("targetId", targetId, "flatten", true));
+            pageSession = String.valueOf(attach.get("sessionId"));
+            for (String domain : List.of("Page", "DOM", "Runtime", "Input")) {
+                cdp.send(domain + ".enable", Map.of(), pageSession);
+            }
+        }
+
+        void shutdown() {
+            if (cdp != null) {
+                try { cdp.send("Browser.close", null, null, 3); } catch (Exception ignored) {}
+                cdp.close();
+            }
+            if (process != null) {
+                process.destroyForcibly();
+            }
+            if (tempDir != null) {
+                try {
+                    try (var walk = Files.walk(tempDir)) {
+                        walk.sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(java.io.File::delete);
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    static ChromeManager startChromeManager(String profileArg) {
+        String chrome = findChromeBinary();
+        if (chrome == null) return null;
+        var mgr = new ChromeManager(chrome, (profileArg != null && !profileArg.isEmpty()) ? profileArg : null);
+        try {
+            mgr.launch();
+        } catch (Exception e) {
+            log("Failed to launch Chrome: " + e.getMessage());
+            return null;
+        }
+        chromeManager = mgr;
+        return mgr;
+    }
+
+    @SuppressWarnings("unchecked")
+    static Object cdpEvaluate(String expression, String sessionId) {
+        if (chromeManager == null || chromeManager.cdp == null) throw new RuntimeException("Browser not available");
+        var result = chromeManager.cdp.send("Runtime.evaluate",
+            Map.of("expression", expression, "returnByValue", true, "awaitPromise", true), sessionId);
+        var exDetails = result.get("exceptionDetails");
+        if (exDetails instanceof Map<?,?> ex) {
+            String text = ex.get("text") != null ? String.valueOf(ex.get("text")) : "";
+            var excObj = ex.get("exception");
+            String desc = excObj instanceof Map<?,?> eo ? (eo.get("description") != null ? String.valueOf(eo.get("description")) : "") : "";
+            throw new RuntimeException(("JS error: " + text + " " + desc).strip());
+        }
+        var res = result.get("result");
+        if (res instanceof Map<?,?> r) return ((Map<?,?>)r).get("value");
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> resolveSelector(String selector, String sessionId) {
+        if (chromeManager == null || chromeManager.cdp == null) throw new RuntimeException("Browser not available");
+        var cdp = chromeManager.cdp;
+        var doc = cdp.send("DOM.getDocument", Map.of("depth", 0), sessionId);
+        var root = (Map<String, Object>) doc.get("root");
+        int rootNodeId = ((Number) root.get("nodeId")).intValue();
+        var qResult = cdp.send("DOM.querySelector", Map.of("nodeId", rootNodeId, "selector", selector), sessionId);
+        int nodeId = ((Number) qResult.getOrDefault("nodeId", 0)).intValue();
+        if (nodeId == 0) throw new RuntimeException("Element not found: " + selector);
+        var box = cdp.send("DOM.getBoxModel", Map.of("nodeId", nodeId), sessionId);
+        var model = (Map<String, Object>) box.get("model");
+        var content = (List<Number>) model.get("content");
+        double cx = (content.get(0).doubleValue() + content.get(2).doubleValue() + content.get(4).doubleValue() + content.get(6).doubleValue()) / 4;
+        double cy = (content.get(1).doubleValue() + content.get(3).doubleValue() + content.get(5).doubleValue() + content.get(7).doubleValue()) / 4;
+        return Map.of("x", cx, "y", cy, "nodeId", nodeId);
+    }
+
+    // -----------------------------------------------------------------------
+    // Browser tool handlers
+    // -----------------------------------------------------------------------
+
+    static Map<String, Object> handleBrowserStatus(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            String url = String.valueOf(cdpEvaluate("window.location.href", chromeManager.pageSession));
+            String title = String.valueOf(cdpEvaluate("document.title", chromeManager.pageSession));
+            return toolOk(Json.serialize(Json.obj("url", url, "title", title)));
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserNavigate(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        String url = strArg(args, "url", "");
+        if (url.isEmpty()) return toolError("url required");
+        try {
+            var cdp = chromeManager.cdp;
+            var sid = chromeManager.pageSession;
+            cdp.send("Page.navigate", Map.of("url", url), sid);
+            long deadline = System.currentTimeMillis() + 30_000;
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    Object state = cdpEvaluate("document.readyState", sid);
+                    if ("complete".equals(state)) break;
+                } catch (Exception ignored) {}
+                Thread.sleep(300);
+            }
+            String title = String.valueOf(cdpEvaluate("document.title", sid));
+            String finalUrl = String.valueOf(cdpEvaluate("window.location.href", sid));
+            return toolOk(Json.serialize(Json.obj("url", finalUrl, "title", title)));
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> handleBrowserScreenshot(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var params = new LinkedHashMap<String, Object>();
+            params.put("format", "jpeg");
+            params.put("quality", args.getOrDefault("quality", 80));
+            String selector = strArg(args, "selector", "");
+            if (!selector.isEmpty()) {
+                var pos = resolveSelector(selector, chromeManager.pageSession);
+                var box = chromeManager.cdp.send("DOM.getBoxModel", Map.of("nodeId", pos.get("nodeId")), chromeManager.pageSession);
+                var content = (List<Number>) ((Map<?,?>)box.get("model")).get("content");
+                double minX = Math.min(Math.min(content.get(0).doubleValue(), content.get(2).doubleValue()), Math.min(content.get(4).doubleValue(), content.get(6).doubleValue()));
+                double minY = Math.min(Math.min(content.get(1).doubleValue(), content.get(3).doubleValue()), Math.min(content.get(5).doubleValue(), content.get(7).doubleValue()));
+                double maxX = Math.max(Math.max(content.get(0).doubleValue(), content.get(2).doubleValue()), Math.max(content.get(4).doubleValue(), content.get(6).doubleValue()));
+                double maxY = Math.max(Math.max(content.get(1).doubleValue(), content.get(3).doubleValue()), Math.max(content.get(5).doubleValue(), content.get(7).doubleValue()));
+                params.put("clip", Json.obj("x", minX, "y", minY, "width", maxX - minX, "height", maxY - minY, "scale", 1));
+            }
+            var result = chromeManager.cdp.send("Page.captureScreenshot", params, chromeManager.pageSession);
+            var out = new LinkedHashMap<String, Object>();
+            out.put("success", true);
+            out.put("output", result.getOrDefault("data", ""));
+            out.put("mimeType", "image/jpeg");
+            out.put("isBase64", true);
+            return out;
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserClick(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var cdp = chromeManager.cdp;
+            var sid = chromeManager.pageSession;
+            double x, y;
+            if (args.containsKey("selector") && !strArg(args, "selector", "").isEmpty()) {
+                var pos = resolveSelector(strArg(args, "selector", ""), sid);
+                x = ((Number) pos.get("x")).doubleValue();
+                y = ((Number) pos.get("y")).doubleValue();
+            } else if (args.containsKey("x") && args.containsKey("y")) {
+                x = ((Number) args.get("x")).doubleValue();
+                y = ((Number) args.get("y")).doubleValue();
+            } else {
+                return toolError("selector or x,y required");
+            }
+            String btn = strArg(args, "button", "left");
+            int clickCount = Boolean.TRUE.equals(args.get("double")) ? 2 : 1;
+            for (String evtType : List.of("mousePressed", "mouseReleased")) {
+                cdp.send("Input.dispatchMouseEvent", Map.of(
+                    "type", evtType, "x", x, "y", y, "button", btn, "clickCount", clickCount
+                ), sid);
+            }
+            return toolOk(String.format("Clicked at (%.0f, %.0f)", x, y));
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserType(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var cdp = chromeManager.cdp;
+            var sid = chromeManager.pageSession;
+            String text = strArg(args, "text", "");
+            String selector = strArg(args, "selector", "");
+            if (!selector.isEmpty()) {
+                var pos = resolveSelector(selector, sid);
+                for (String evt : List.of("mousePressed", "mouseReleased")) {
+                    cdp.send("Input.dispatchMouseEvent", Map.of(
+                        "type", evt, "x", pos.get("x"), "y", pos.get("y"), "button", "left", "clickCount", 1
+                    ), sid);
+                }
+            }
+            if (Boolean.TRUE.equals(args.get("clear"))) {
+                cdp.send("Input.dispatchKeyEvent", Map.of("type", "keyDown", "key", "a", "modifiers", 2), sid);
+                cdp.send("Input.dispatchKeyEvent", Map.of("type", "keyUp", "key", "a", "modifiers", 2), sid);
+                cdp.send("Input.dispatchKeyEvent", Map.of("type", "keyDown", "key", "Backspace"), sid);
+                cdp.send("Input.dispatchKeyEvent", Map.of("type", "keyUp", "key", "Backspace"), sid);
+            }
+            cdp.send("Input.insertText", Map.of("text", text), sid);
+            if (Boolean.TRUE.equals(args.get("submit"))) {
+                cdp.send("Input.dispatchKeyEvent", Map.of("type", "keyDown", "key", "Enter"), sid);
+                cdp.send("Input.dispatchKeyEvent", Map.of("type", "keyUp", "key", "Enter"), sid);
+            }
+            return toolOk("Typed " + text.length() + " characters");
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserExtract(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var sid = chromeManager.pageSession;
+            String mode = strArg(args, "mode", "text");
+            String selector = strArg(args, "selector", "");
+            String expr;
+            if (!selector.isEmpty() && "text".equals(mode)) {
+                expr = "(document.querySelector(" + jsStr(selector) + "))?.innerText || ''";
+            } else if (!selector.isEmpty() && "html".equals(mode)) {
+                expr = "(document.querySelector(" + jsStr(selector) + "))?.outerHTML || ''";
+            } else {
+                expr = switch (mode) {
+                    case "html" -> "document.documentElement.outerHTML";
+                    case "links" -> "JSON.stringify(Array.from(document.querySelectorAll('a[href]')).map(a=>({text:a.textContent.trim(),href:a.href})).filter(l=>l.text||l.href))";
+                    case "forms" -> "JSON.stringify(Array.from(document.querySelectorAll('form')).map(f=>({action:f.action,method:f.method,inputs:Array.from(f.querySelectorAll('input,select,textarea')).map(i=>({name:i.name,type:i.type,value:i.value}))})))";
+                    case "tables" -> "JSON.stringify(Array.from(document.querySelectorAll('table')).map(t=>({headers:Array.from(t.querySelectorAll('th')).map(th=>th.textContent.trim()),rows:Array.from(t.querySelectorAll('tbody tr')).map(tr=>Array.from(tr.querySelectorAll('td')).map(td=>td.textContent.trim()))})))";
+                    case "accessibility" -> "JSON.stringify({title:document.title,lang:document.documentElement.lang,headings:Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).map(h=>({level:h.tagName,text:h.textContent.trim()})),landmarks:Array.from(document.querySelectorAll('[role]')).map(e=>({role:e.getAttribute('role'),label:e.getAttribute('aria-label')||''}))})";
+                    default -> "document.body.innerText";
+                };
+            }
+            Object result = cdpEvaluate(expr, sid);
+            String output = result instanceof String s ? s : Json.serialize(result);
+            if (output.length() > 100000) output = output.substring(0, 100000) + "\n... (truncated)";
+            return toolOk(output);
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> handleBrowserTabs(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var cdp = chromeManager.cdp;
+            String action = strArg(args, "action", "list");
+            return switch (action) {
+                case "list" -> {
+                    var targets = cdp.send("Target.getTargets");
+                    var pages = new ArrayList<Map<String, Object>>();
+                    for (var t : (List<?>) targets.getOrDefault("targetInfos", List.of())) {
+                        if (t instanceof Map<?,?> m && "page".equals(m.get("type"))) {
+                            var url = m.get("url") != null ? m.get("url") : "";
+                            var title = m.get("title") != null ? m.get("title") : "";
+                            pages.add(Json.obj("id", m.get("targetId"), "url", url, "title", title));
+                        }
+                    }
+                    yield toolOk(Json.serialize(pages));
+                }
+                case "new" -> {
+                    String url = strArg(args, "url", "about:blank");
+                    var result = cdp.send("Target.createTarget", Map.of("url", url));
+                    String tid = String.valueOf(result.get("targetId"));
+                    chromeManager.switchToTarget(tid);
+                    yield toolOk(Json.serialize(Json.obj("targetId", tid)));
+                }
+                case "close" -> {
+                    String tid = strArg(args, "targetId", "");
+                    if (tid.isEmpty()) yield toolError("targetId required");
+                    cdp.send("Target.closeTarget", Map.of("targetId", tid));
+                    yield toolOk("Closed tab " + tid);
+                }
+                case "switch" -> {
+                    String tid = strArg(args, "targetId", "");
+                    if (tid.isEmpty()) yield toolError("targetId required");
+                    cdp.send("Target.activateTarget", Map.of("targetId", tid));
+                    chromeManager.switchToTarget(tid);
+                    yield toolOk("Switched to tab " + tid);
+                }
+                default -> toolError("Unknown action: " + action);
+            };
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserExecute(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            String code = strArg(args, "code", "");
+            if (code.isEmpty()) return toolError("code required");
+            Object result = cdpEvaluate(code, chromeManager.pageSession);
+            String output = result instanceof String s ? s : Json.serialize(result);
+            return toolOk(output);
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserScroll(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var cdp = chromeManager.cdp;
+            var sid = chromeManager.pageSession;
+            String direction = strArg(args, "direction", "down");
+            int amount = args.get("amount") instanceof Number n ? n.intValue() : 300;
+            double x = args.get("x") instanceof Number n ? n.doubleValue() : 100;
+            double y = args.get("y") instanceof Number n ? n.doubleValue() : 100;
+            String selector = strArg(args, "selector", "");
+            if (!selector.isEmpty()) {
+                var pos = resolveSelector(selector, sid);
+                x = ((Number) pos.get("x")).doubleValue();
+                y = ((Number) pos.get("y")).doubleValue();
+            }
+            int dx = 0, dy = 0;
+            switch (direction) {
+                case "down" -> dy = amount;
+                case "up" -> dy = -amount;
+                case "right" -> dx = amount;
+                case "left" -> dx = -amount;
+            }
+            cdp.send("Input.dispatchMouseEvent", Map.of(
+                "type", "mouseWheel", "x", x, "y", y, "deltaX", dx, "deltaY", dy
+            ), sid);
+            return toolOk("Scrolled " + direction + " by " + amount + "px");
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static final Map<String, int[]> KEY_MAP = Map.ofEntries(
+        Map.entry("Enter", new int[]{13}), Map.entry("Tab", new int[]{9}),
+        Map.entry("Escape", new int[]{27}), Map.entry("Backspace", new int[]{8}),
+        Map.entry("Delete", new int[]{46}), Map.entry("Space", new int[]{32}),
+        Map.entry("ArrowUp", new int[]{38}), Map.entry("ArrowDown", new int[]{40}),
+        Map.entry("ArrowLeft", new int[]{37}), Map.entry("ArrowRight", new int[]{39}),
+        Map.entry("Home", new int[]{36}), Map.entry("End", new int[]{35}),
+        Map.entry("PageUp", new int[]{33}), Map.entry("PageDown", new int[]{34}),
+        Map.entry("F1", new int[]{112}), Map.entry("F2", new int[]{113}),
+        Map.entry("F3", new int[]{114}), Map.entry("F4", new int[]{115}),
+        Map.entry("F5", new int[]{116}), Map.entry("F6", new int[]{117}),
+        Map.entry("F7", new int[]{118}), Map.entry("F8", new int[]{119}),
+        Map.entry("F9", new int[]{120}), Map.entry("F10", new int[]{121}),
+        Map.entry("F11", new int[]{122}), Map.entry("F12", new int[]{123})
+    );
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> handleBrowserKeypress(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var cdp = chromeManager.cdp;
+            var sid = chromeManager.pageSession;
+            String key = strArg(args, "key", "");
+            var modifiersList = args.get("modifiers") instanceof List<?> l ? l : List.of();
+            int modFlags = 0;
+            for (var m : modifiersList) {
+                switch (String.valueOf(m)) {
+                    case "alt" -> modFlags |= 1;
+                    case "ctrl" -> modFlags |= 2;
+                    case "meta" -> modFlags |= 4;
+                    case "shift" -> modFlags |= 8;
+                }
+            }
+            var params = new LinkedHashMap<String, Object>();
+            params.put("key", key);
+            params.put("modifiers", modFlags);
+            int[] keyInfo = KEY_MAP.get(key);
+            if (keyInfo != null) {
+                params.put("windowsVirtualKeyCode", keyInfo[0]);
+            } else if (key.length() == 1) {
+                params.put("text", key);
+                params.put("windowsVirtualKeyCode", (int) Character.toUpperCase(key.charAt(0)));
+            }
+            var downParams = new LinkedHashMap<>(params);
+            downParams.put("type", "keyDown");
+            cdp.send("Input.dispatchKeyEvent", downParams, sid);
+            var upParams = new LinkedHashMap<>(params);
+            upParams.put("type", "keyUp");
+            cdp.send("Input.dispatchKeyEvent", upParams, sid);
+            return toolOk("Pressed " + key);
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserWaitFor(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            String selector = strArg(args, "selector", "");
+            if (selector.isEmpty()) return toolError("selector required");
+            int timeoutMs = args.get("timeout") instanceof Number n ? n.intValue() : 10000;
+            boolean checkVisible = !(Boolean.FALSE.equals(args.get("visible")));
+            var sid = chromeManager.pageSession;
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            while (System.currentTimeMillis() < deadline) {
+                String expr = checkVisible
+                    ? "!!(function(){var el=document.querySelector(" + jsStr(selector) + ");if(!el)return false;var r=el.getBoundingClientRect();return r.width>0&&r.height>0;})()"
+                    : "!!document.querySelector(" + jsStr(selector) + ")";
+                Object found = cdpEvaluate(expr, sid);
+                if (Boolean.TRUE.equals(found)) return toolOk("Found: " + selector);
+                Thread.sleep(500);
+            }
+            return toolError("Timeout waiting for " + selector);
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserSelect(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            String selector = strArg(args, "selector", "");
+            if (selector.isEmpty()) return toolError("selector required");
+            var sid = chromeManager.pageSession;
+            String expr;
+            String value = strArg(args, "value", null);
+            String text = strArg(args, "text", null);
+            if (value != null) {
+                expr = "(function(){var s=document.querySelector(" + jsStr(selector) + ");s.value=" + jsStr(value) + ";s.dispatchEvent(new Event('change',{bubbles:true}));return s.value;})()";
+            } else if (text != null) {
+                expr = "(function(){var s=document.querySelector(" + jsStr(selector) + ");var o=Array.from(s.options).find(o=>o.text===" + jsStr(text) + ");if(o){s.value=o.value;s.dispatchEvent(new Event('change',{bubbles:true}));return o.value;}return null;})()";
+            } else if (args.containsKey("index")) {
+                int index = ((Number) args.get("index")).intValue();
+                expr = "(function(){var s=document.querySelector(" + jsStr(selector) + ");s.selectedIndex=" + index + ";s.dispatchEvent(new Event('change',{bubbles:true}));return s.value;})()";            } else {
+                return toolError("value, text, or index required");
+            }
+            Object result = cdpEvaluate(expr, sid);
+            return toolOk("Selected: " + result);
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserHover(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var cdp = chromeManager.cdp;
+            var sid = chromeManager.pageSession;
+            double x, y;
+            String selector = strArg(args, "selector", "");
+            if (!selector.isEmpty()) {
+                var pos = resolveSelector(selector, sid);
+                x = ((Number) pos.get("x")).doubleValue();
+                y = ((Number) pos.get("y")).doubleValue();
+            } else if (args.containsKey("x") && args.containsKey("y")) {
+                x = ((Number) args.get("x")).doubleValue();
+                y = ((Number) args.get("y")).doubleValue();
+            } else {
+                return toolError("selector or x,y required");
+            }
+            cdp.send("Input.dispatchMouseEvent", Map.of("type", "mouseMoved", "x", x, "y", y), sid);
+            return toolOk(String.format("Hovered at (%.0f, %.0f)", x, y));
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> handleBrowserHistory(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            String action = strArg(args, "action", "back");
+            var sid = chromeManager.pageSession;
+            var history = chromeManager.cdp.send("Page.getNavigationHistory", Map.of(), sid);
+            int idx = ((Number) history.getOrDefault("currentIndex", 0)).intValue();
+            var entries = (List<Map<String, Object>>) history.getOrDefault("entries", List.of());
+            if ("back".equals(action) && idx > 0) {
+                chromeManager.cdp.send("Page.navigateToHistoryEntry", Map.of("entryId", entries.get(idx - 1).get("id")), sid);
+                return toolOk("Navigated back to " + entries.get(idx - 1).getOrDefault("url", ""));
+            } else if ("forward".equals(action) && idx < entries.size() - 1) {
+                chromeManager.cdp.send("Page.navigateToHistoryEntry", Map.of("entryId", entries.get(idx + 1).get("id")), sid);
+                return toolOk("Navigated forward to " + entries.get(idx + 1).getOrDefault("url", ""));
+            } else {
+                return toolError("Cannot go " + action);
+            }
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserDialog(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var dialog = chromeManager.popDialog();
+            if (dialog == null) return toolError("No pending dialog");
+            String action = strArg(args, "action", "accept");
+            var params = new LinkedHashMap<String, Object>();
+            params.put("accept", "accept".equals(action));
+            String promptText = strArg(args, "prompt_text", null);
+            if (promptText != null) params.put("promptText", promptText);
+            chromeManager.cdp.send("Page.handleJavaScriptDialog", params, chromeManager.pageSession);
+            return toolOk(Json.serialize(Json.obj("type", dialog.getOrDefault("type", ""), "message", dialog.getOrDefault("message", ""), "action", action)));
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static String getHttpBaseUrl() {
+        var url = activeConfig.server();
+        if (url.startsWith("wss://")) return "https://" + url.substring(6);
+        if (url.startsWith("ws://")) return "http://" + url.substring(5);
+        return url;
+    }
+
+    @SuppressWarnings("unchecked")
+    static String downloadChatFile(String fileId) throws Exception {
+        var url = getHttpBaseUrl() + "/api/files/" + URLEncoder.encode(fileId, StandardCharsets.UTF_8);
+        var client = HttpClient.newHttpClient();
+        var req = java.net.http.HttpRequest.newBuilder().uri(URI.create(url)).GET().build();
+        var resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+        if (resp.statusCode() != 200) throw new RuntimeException("Failed to download file " + fileId + ": " + resp.statusCode());
+        var bytes = resp.body();
+        // Extract filename from Content-Disposition
+        var name = fileId;
+        var disposition = resp.headers().firstValue("Content-Disposition").orElse("");
+        var m = java.util.regex.Pattern.compile("filename=\"?([^\";\r\n]+)\"?").matcher(disposition);
+        if (m.find()) name = m.group(1);
+        var dir = Path.of(System.getProperty("java.io.tmpdir"), "clawd-chat-files");
+        Files.createDirectories(dir);
+        var safeName = name.replace("/", "_").replace("\\", "_").replace("\0", "");
+        if (safeName.isEmpty() || safeName.equals(".") || safeName.equals("..")) safeName = fileId;
+        safeName = fileId.replace("/", "_").substring(0, Math.min(32, fileId.length())) + "_" + safeName;
+        var path = dir.resolve(safeName);
+        Files.write(path, bytes);
+        return path.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, String> uploadChatFile(String filePath) throws Exception {
+        var file = Path.of(filePath);
+        var name = file.getFileName().toString();
+        var data = Files.readAllBytes(file);
+        var mime = java.nio.file.Files.probeContentType(file);
+        if (mime == null) mime = "application/octet-stream";
+        var boundary = "----ClawdBoundary" + System.currentTimeMillis();
+        var body = new java.io.ByteArrayOutputStream();
+        body.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(("Content-Disposition: form-data; name=\"file\"; filename=\"" + name.replace("\"", "\\\"") + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(("Content-Type: " + mime + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(data);
+        body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        var url = getHttpBaseUrl() + "/api/files.upload";
+        var client = HttpClient.newHttpClient();
+        var req = java.net.http.HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+            .POST(java.net.http.HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))
+            .build();
+        var resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+        if (resp.statusCode() != 200) throw new RuntimeException("Upload failed: " + resp.statusCode());
+        var result = (Map<String, Object>) Json.parse(resp.body());
+        if (!Boolean.TRUE.equals(result.get("ok"))) throw new RuntimeException(String.valueOf(result.getOrDefault("error", "Upload failed")));
+        var fileInfo = (Map<String, Object>) result.get("file");
+        return Map.of("id", String.valueOf(fileInfo.get("id")), "name", String.valueOf(fileInfo.get("name")));
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> handleBrowserUpload(Map<String, Object> args) {
+        var cm = chromeManager;
+        if (cm == null || cm.cdp == null) return toolError("Browser not available");
+        var tempFiles = new ArrayList<String>();
+        try {
+            var selector = strArg(args, "selector", "");
+            var filesObj = args.get("files");
+            if (selector.isEmpty()) return toolError("selector is required");
+            var files = new ArrayList<String>();
+            if (filesObj instanceof List<?> filesList && !filesList.isEmpty()) {
+                for (var f : filesList) {
+                    var path = String.valueOf(f);
+                    if (!new File(path).isFile()) return toolError("File not found: " + path);
+                    files.add(path);
+                }
+            }
+            // Download chat files
+            var fileIdsObj = args.get("file_ids");
+            if (fileIdsObj instanceof List<?> fidList) {
+                for (var fid : fidList) {
+                    var tempPath = downloadChatFile(String.valueOf(fid));
+                    tempFiles.add(tempPath);
+                }
+            }
+            var allFiles = new ArrayList<>(files);
+            allFiles.addAll(tempFiles);
+            if (allFiles.isEmpty()) return toolError("files or file_ids required");
+            var sid = cm.pageSession;
+            var info = resolveSelector(selector, sid);
+            var nodeId = ((Number) info.get("nodeId")).intValue();
+            cm.cdp.send("DOM.setFileInputFiles", Map.of("files", allFiles, "nodeId", nodeId), sid);
+            // Dispatch change and input events
+            var js = "(() => { const el = document.querySelector(" + jsStr(selector) + "); if (el) { el.dispatchEvent(new Event('change', { bubbles: true })); el.dispatchEvent(new Event('input', { bubbles: true })); } })()";
+            cm.cdp.send("Runtime.evaluate", Map.of("expression", js, "returnByValue", true), sid);
+            for (var f : tempFiles) { try { Files.deleteIfExists(Path.of(f)); } catch (Exception ignored) {} }
+            return toolOk("Uploaded " + allFiles.size() + " file(s) to " + selector);
+        } catch (Exception e) {
+            for (var f : tempFiles) { try { Files.deleteIfExists(Path.of(f)); } catch (Exception ignored) {} }
+            return toolError(e.getMessage());
+        }
+    }
+
+    static Map<String, Object> handleBrowserDownload(Map<String, Object> args) {
+        var cm = chromeManager;
+        if (cm == null || cm.cdp == null) return toolError("Browser not available");
+        try {
+            var action = strArg(args, "action", "list");
+            if ("configure".equals(action)) {
+                var path = strArg(args, "path", "");
+                if (path.isEmpty()) return toolError("path is required for configure");
+                new File(path).mkdirs();
+                cm.downloadPath = path;
+                cm.cdp.send("Browser.setDownloadBehavior", Map.of(
+                    "behavior", "allowAndName", "downloadPath", path, "eventsEnabled", true
+                ));
+                return toolOk("Download directory set to " + path);
+            } else if ("wait".equals(action)) {
+                var timeout = args.containsKey("timeout") ? ((Number) args.get("timeout")).longValue() : 30000L;
+                var deadline = System.currentTimeMillis() + timeout;
+                var startCount = cm.downloads.stream().filter(d -> "completed".equals(d.get("state"))).count();
+                var startCanceledCount = cm.downloads.stream().filter(d -> "canceled".equals(d.get("state"))).count();
+                while (System.currentTimeMillis() < deadline) {
+                    var completed = cm.downloads.stream().filter(d -> "completed".equals(d.get("state"))).toList();
+                    if (completed.size() > startCount) {
+                        var latest = completed.get(completed.size() - 1);
+                        Map<String, String> fileInfo = null;
+                        if (boolArg(args, "upload", false) && latest.get("path") != null) {
+                            try {
+                                var dlPath = String.valueOf(latest.get("path"));
+                                if (new File(dlPath).isFile()) {
+                                    fileInfo = uploadChatFile(dlPath);
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                        var resultMap = new java.util.LinkedHashMap<String, Object>();
+                        resultMap.put("filename", latest.getOrDefault("filename", ""));
+                        resultMap.put("path", latest.getOrDefault("path", ""));
+                        resultMap.put("url", latest.getOrDefault("url", ""));
+                        resultMap.put("totalBytes", latest.getOrDefault("totalBytes", 0));
+                        if (fileInfo != null) {
+                            resultMap.put("file_id", fileInfo.get("id"));
+                            resultMap.put("file_name", fileInfo.get("name"));
+                        }
+                        return toolOk(Json.serialize(resultMap));
+                    }
+                    var canceledNow = cm.downloads.stream().filter(d -> "canceled".equals(d.get("state"))).toList();
+                    if (canceledNow.size() > startCanceledCount) {
+                        var latest = canceledNow.get(canceledNow.size() - 1);
+                        return toolError("Download canceled: " + latest.getOrDefault("filename", "unknown"));
+                    }
+                    Thread.sleep(500);
+                }
+                return toolError("No download completed within " + timeout + "ms");
+            } else if ("list".equals(action)) {
+                var list = new ArrayList<Map<String, Object>>();
+                for (var dl : cm.downloads) {
+                    list.add(Map.of(
+                        "filename", dl.getOrDefault("filename", ""),
+                        "url", dl.getOrDefault("url", ""),
+                        "state", dl.getOrDefault("state", ""),
+                        "totalBytes", dl.getOrDefault("totalBytes", 0),
+                        "receivedBytes", dl.getOrDefault("receivedBytes", 0),
+                        "path", dl.getOrDefault("path", "")
+                    ));
+                }
+                return toolOk(Json.serialize(list));
+            } else {
+                return toolError("Unknown action: " + action + ". Use 'configure', 'wait', or 'list'");
+            }
+        } catch (Exception e) {
+            return toolError(e.getMessage());
+        }
+    }
+
+    static Map<String, Object> handleBrowserMouseMove(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var cdp = chromeManager.cdp;
+            var sid = chromeManager.pageSession;
+            var x = ((Number) args.get("x")).doubleValue();
+            var y = ((Number) args.get("y")).doubleValue();
+            var steps = args.containsKey("steps") ? ((Number) args.get("steps")).intValue() : 1;
+            var fromX = args.containsKey("from_x") ? ((Number) args.get("from_x")).doubleValue() : 0.0;
+            var fromY = args.containsKey("from_y") ? ((Number) args.get("from_y")).doubleValue() : 0.0;
+            for (int i = 1; i <= steps; i++) {
+                var px = fromX + (x - fromX) * ((double) i / steps);
+                var py = fromY + (y - fromY) * ((double) i / steps);
+                cdp.send("Input.dispatchMouseEvent", Map.of("type", "mouseMoved", "x", px, "y", py), sid);
+            }
+            return toolOk("Moved mouse to (" + (int) x + ", " + (int) y + ")");
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserDrag(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var cdp = chromeManager.cdp;
+            var sid = chromeManager.pageSession;
+            double fromX, fromY, toX, toY;
+            if (args.containsKey("from_selector")) {
+                var pos = resolveSelector((String) args.get("from_selector"), sid);
+                fromX = ((Number) pos.get("x")).doubleValue();
+                fromY = ((Number) pos.get("y")).doubleValue();
+            } else if (args.containsKey("from_x") && args.containsKey("from_y")) {
+                fromX = ((Number) args.get("from_x")).doubleValue();
+                fromY = ((Number) args.get("from_y")).doubleValue();
+            } else {
+                return toolError("from_selector or from_x/from_y required");
+            }
+            if (args.containsKey("to_selector")) {
+                var pos = resolveSelector((String) args.get("to_selector"), sid);
+                toX = ((Number) pos.get("x")).doubleValue();
+                toY = ((Number) pos.get("y")).doubleValue();
+            } else if (args.containsKey("to_x") && args.containsKey("to_y")) {
+                toX = ((Number) args.get("to_x")).doubleValue();
+                toY = ((Number) args.get("to_y")).doubleValue();
+            } else {
+                return toolError("to_selector or to_x/to_y required");
+            }
+            int steps = args.containsKey("steps") ? ((Number) args.get("steps")).intValue() : 10;
+            cdp.send("Input.dispatchMouseEvent", Json.obj("type", "mousePressed", "x", fromX, "y", fromY, "button", "left", "clickCount", 1), sid);
+            for (int i = 1; i <= steps; i++) {
+                var px = fromX + (toX - fromX) * ((double) i / steps);
+                var py = fromY + (toY - fromY) * ((double) i / steps);
+                cdp.send("Input.dispatchMouseEvent", Json.obj("type", "mouseMoved", "x", px, "y", py, "button", "left"), sid);
+                Thread.sleep(20);
+            }
+            cdp.send("Input.dispatchMouseEvent", Json.obj("type", "mouseReleased", "x", toX, "y", toY, "button", "left", "clickCount", 1), sid);
+            return toolOk(String.format("Dragged from (%.0f, %.0f) to (%.0f, %.0f)", fromX, fromY, toX, toY));
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> touchPoint(double x, double y, int id) {
+        return Json.obj("x", x, "y", y, "id", id, "radiusX", 1, "radiusY", 1, "force", 1);
+    }
+
+    static Map<String, Object> handleBrowserTouch(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var cdp = chromeManager.cdp;
+            var sid = chromeManager.pageSession;
+            String action = strArg(args, "action", "tap");
+            double x = ((Number) args.get("x")).doubleValue();
+            double y = ((Number) args.get("y")).doubleValue();
+            switch (action) {
+                case "tap" -> {
+                    cdp.send("Input.dispatchTouchEvent", Json.obj("type", "touchStart", "touchPoints", List.of(touchPoint(x, y, 0))), sid);
+                    Thread.sleep(50);
+                    cdp.send("Input.dispatchTouchEvent", Json.obj("type", "touchEnd", "touchPoints", List.of()), sid);
+                    return toolOk(String.format("Tapped at (%.0f, %.0f)", x, y));
+                }
+                case "swipe" -> {
+                    double toX = args.containsKey("to_x") ? ((Number) args.get("to_x")).doubleValue() : x;
+                    double toY = args.containsKey("to_y") ? ((Number) args.get("to_y")).doubleValue() : y;
+                    int steps = args.containsKey("steps") ? ((Number) args.get("steps")).intValue() : 10;
+                    cdp.send("Input.dispatchTouchEvent", Json.obj("type", "touchStart", "touchPoints", List.of(touchPoint(x, y, 0))), sid);
+                    for (int i = 1; i <= steps; i++) {
+                        var px = x + (toX - x) * ((double) i / steps);
+                        var py = y + (toY - y) * ((double) i / steps);
+                        cdp.send("Input.dispatchTouchEvent", Json.obj("type", "touchMove", "touchPoints", List.of(touchPoint(px, py, 0))), sid);
+                        Thread.sleep(20);
+                    }
+                    cdp.send("Input.dispatchTouchEvent", Json.obj("type", "touchEnd", "touchPoints", List.of()), sid);
+                    return toolOk(String.format("Swiped from (%.0f, %.0f) to (%.0f, %.0f)", x, y, toX, toY));
+                }
+                case "long-press" -> {
+                    int duration = args.containsKey("duration") ? ((Number) args.get("duration")).intValue() : 500;
+                    cdp.send("Input.dispatchTouchEvent", Json.obj("type", "touchStart", "touchPoints", List.of(touchPoint(x, y, 0))), sid);
+                    Thread.sleep(duration);
+                    cdp.send("Input.dispatchTouchEvent", Json.obj("type", "touchEnd", "touchPoints", List.of()), sid);
+                    return toolOk(String.format("Long-pressed at (%.0f, %.0f) for %dms", x, y, duration));
+                }
+                case "pinch" -> {
+                    double scale = args.containsKey("scale") ? ((Number) args.get("scale")).doubleValue() : 2.0;
+                    int steps = args.containsKey("steps") ? ((Number) args.get("steps")).intValue() : 10;
+                    double offset = 20.0;
+                    var p0 = touchPoint(x - offset, y, 0);
+                    var p1 = touchPoint(x + offset, y, 1);
+                    cdp.send("Input.dispatchTouchEvent", Json.obj("type", "touchStart", "touchPoints", List.of(p0, p1)), sid);
+                    for (int i = 1; i <= steps; i++) {
+                        double f = 1.0 + (scale - 1.0) * ((double) i / steps);
+                        var mp0 = touchPoint(x - offset * f, y, 0);
+                        var mp1 = touchPoint(x + offset * f, y, 1);
+                        cdp.send("Input.dispatchTouchEvent", Json.obj("type", "touchMove", "touchPoints", List.of(mp0, mp1)), sid);
+                        Thread.sleep(20);
+                    }
+                    cdp.send("Input.dispatchTouchEvent", Json.obj("type", "touchEnd", "touchPoints", List.of()), sid);
+                    return toolOk(String.format("Pinched at (%.0f, %.0f) with scale %.1f", x, y, scale));
+                }
+                default -> { return toolError("Unknown touch action: " + action + ". Use tap, swipe, long-press, or pinch"); }
+            }
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> handleBrowserFrames(Map<String, Object> args) {
+        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
+        try {
+            var tree = chromeManager.cdp.send("Page.getFrameTree", Map.of(), chromeManager.pageSession);
+            var result = new ArrayList<Map<String, Object>>();
+            flattenFrames((Map<String, Object>) tree.get("frameTree"), result, 0);
+            return toolOk(Json.serialize(result));
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    @SuppressWarnings("unchecked")
+    static void flattenFrames(Map<String, Object> node, List<Map<String, Object>> out, int depth) {
+        var frame = (Map<String, Object>) node.getOrDefault("frame", Map.of());
+        out.add(Json.obj("id", frame.getOrDefault("id", ""), "url", frame.getOrDefault("url", ""), "name", frame.getOrDefault("name", ""), "depth", depth));
+        var children = node.get("childFrames");
+        if (children instanceof List<?> list) {
+            for (var child : list) {
+                if (child instanceof Map<?,?> m) flattenFrames((Map<String, Object>) m, out, depth + 1);
+            }
+        }
+    }
+
+    static Map<String, Object> dispatchBrowserTool(String tool, Map<String, Object> args) {
+        return switch (tool) {
+            case "browser_status" -> handleBrowserStatus(args);
+            case "browser_navigate" -> handleBrowserNavigate(args);
+            case "browser_screenshot" -> handleBrowserScreenshot(args);
+            case "browser_click" -> handleBrowserClick(args);
+            case "browser_type" -> handleBrowserType(args);
+            case "browser_extract" -> handleBrowserExtract(args);
+            case "browser_tabs" -> handleBrowserTabs(args);
+            case "browser_execute" -> handleBrowserExecute(args);
+            case "browser_scroll" -> handleBrowserScroll(args);
+            case "browser_keypress" -> handleBrowserKeypress(args);
+            case "browser_wait_for" -> handleBrowserWaitFor(args);
+            case "browser_select" -> handleBrowserSelect(args);
+            case "browser_hover" -> handleBrowserHover(args);
+            case "browser_history" -> handleBrowserHistory(args);
+            case "browser_handle_dialog" -> handleBrowserDialog(args);
+            case "browser_frames" -> handleBrowserFrames(args);
+            case "browser_mouse_move" -> handleBrowserMouseMove(args);
+            case "browser_drag" -> handleBrowserDrag(args);
+            case "browser_touch" -> handleBrowserTouch(args);
+            case "browser_upload" -> handleBrowserUpload(args);
+            case "browser_download" -> handleBrowserDownload(args);
+            default -> toolError("Unknown browser tool: " + tool);
+        };
+    }
+
+    // -----------------------------------------------------------------------
     // Tool schemas
     // -----------------------------------------------------------------------
 
@@ -1292,6 +2403,85 @@ public class RemoteWorker {
         );
     }
 
+    static List<Object> buildBrowserToolSchemas() {
+        return Json.arr(
+            Json.obj("name", "browser_status", "description", "Get current browser page URL and title",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(), "required", Json.arr())),
+            Json.obj("name", "browser_navigate", "description", "Navigate to a URL",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("url", Json.obj("type", "string", "description", "URL to navigate to")), "required", Json.arr("url"))),
+            Json.obj("name", "browser_screenshot", "description", "Take a screenshot of the page or element",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("selector", Json.obj("type", "string", "description", "CSS selector"), "quality", Json.obj("type", "number", "description", "JPEG quality (default: 80)")), "required", Json.arr())),
+            Json.obj("name", "browser_click", "description", "Click an element or coordinates",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("selector", Json.obj("type", "string"), "x", Json.obj("type", "number"), "y", Json.obj("type", "number"), "button", Json.obj("type", "string"), "double", Json.obj("type", "boolean")), "required", Json.arr())),
+            Json.obj("name", "browser_type", "description", "Type text into an element",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("text", Json.obj("type", "string"), "selector", Json.obj("type", "string"), "clear", Json.obj("type", "boolean"), "submit", Json.obj("type", "boolean")), "required", Json.arr("text"))),
+            Json.obj("name", "browser_extract", "description", "Extract content from the page",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("mode", Json.obj("type", "string"), "selector", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "browser_tabs", "description", "Manage browser tabs",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("action", Json.obj("type", "string"), "url", Json.obj("type", "string"), "targetId", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "browser_execute", "description", "Execute JavaScript in page context",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("code", Json.obj("type", "string")), "required", Json.arr("code"))),
+            Json.obj("name", "browser_scroll", "description", "Scroll the page or element",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("direction", Json.obj("type", "string"), "amount", Json.obj("type", "number"), "selector", Json.obj("type", "string"), "x", Json.obj("type", "number"), "y", Json.obj("type", "number")), "required", Json.arr())),
+            Json.obj("name", "browser_keypress", "description", "Press a keyboard key with optional modifiers",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("key", Json.obj("type", "string"), "modifiers", Json.obj("type", "array", "items", Json.obj("type", "string"))), "required", Json.arr("key"))),
+            Json.obj("name", "browser_wait_for", "description", "Wait for element to appear",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("selector", Json.obj("type", "string"), "timeout", Json.obj("type", "number"), "visible", Json.obj("type", "boolean")), "required", Json.arr("selector"))),
+            Json.obj("name", "browser_select", "description", "Select dropdown option",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("selector", Json.obj("type", "string"), "value", Json.obj("type", "string"), "text", Json.obj("type", "string"), "index", Json.obj("type", "number")), "required", Json.arr("selector"))),
+            Json.obj("name", "browser_hover", "description", "Hover over an element",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("selector", Json.obj("type", "string"), "x", Json.obj("type", "number"), "y", Json.obj("type", "number")), "required", Json.arr())),
+            Json.obj("name", "browser_history", "description", "Navigate browser history",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("action", Json.obj("type", "string")), "required", Json.arr("action"))),
+            Json.obj("name", "browser_handle_dialog", "description", "Handle JavaScript dialog",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("action", Json.obj("type", "string"), "prompt_text", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "browser_frames", "description", "List all frames in the page",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(), "required", Json.arr())),
+            Json.obj("name", "browser_mouse_move", "description", "Move the mouse cursor to a position, optionally interpolating from a start point",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(
+                    "x", Json.obj("type", "number", "description", "Target X coordinate"),
+                    "y", Json.obj("type", "number", "description", "Target Y coordinate"),
+                    "from_x", Json.obj("type", "number", "description", "Starting X coordinate (default: 0)"),
+                    "from_y", Json.obj("type", "number", "description", "Starting Y coordinate (default: 0)"),
+                    "steps", Json.obj("type", "number", "description", "Number of intermediate steps (default: 1)")
+                ), "required", Json.arr("x", "y"))),
+            Json.obj("name", "browser_drag", "description", "Drag from one position to another using mouse press, move, release",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(
+                    "from_selector", Json.obj("type", "string", "description", "CSS selector for drag start element"),
+                    "from_x", Json.obj("type", "number", "description", "Start X coordinate"),
+                    "from_y", Json.obj("type", "number", "description", "Start Y coordinate"),
+                    "to_selector", Json.obj("type", "string", "description", "CSS selector for drop target element"),
+                    "to_x", Json.obj("type", "number", "description", "End X coordinate"),
+                    "to_y", Json.obj("type", "number", "description", "End Y coordinate"),
+                    "steps", Json.obj("type", "number", "description", "Number of intermediate move steps (default: 10)")
+                ), "required", Json.arr())),
+            Json.obj("name", "browser_touch", "description", "Simulate touch events: tap, swipe, long-press, or pinch",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(
+                    "action", Json.obj("type", "string", "description", "Touch action: tap, swipe, long-press, or pinch"),
+                    "x", Json.obj("type", "number", "description", "X coordinate"),
+                    "y", Json.obj("type", "number", "description", "Y coordinate"),
+                    "to_x", Json.obj("type", "number", "description", "End X for swipe"),
+                    "to_y", Json.obj("type", "number", "description", "End Y for swipe"),
+                    "duration", Json.obj("type", "number", "description", "Duration in ms for long-press (default: 500)"),
+                    "scale", Json.obj("type", "number", "description", "Scale factor for pinch (default: 2.0)"),
+                    "steps", Json.obj("type", "number", "description", "Number of intermediate steps (default: 10)")
+                ), "required", Json.arr("action", "x", "y"))),
+            Json.obj("name", "browser_upload", "description", "Upload files to a file input element on the page",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(
+                    "selector", Json.obj("type", "string", "description", "CSS selector of the file input element"),
+                    "files", Json.obj("type", "array", "items", Json.obj("type", "string"), "description", "Array of absolute file paths"),
+                    "file_ids", Json.obj("type", "array", "items", Json.obj("type", "string"), "description", "Array of chat file IDs to download and upload to browser")
+                ), "required", Json.arr("selector"))),
+            Json.obj("name", "browser_download", "description", "Manage downloads: configure path, wait for completion, or list downloads",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(
+                    "action", Json.obj("type", "string", "enum", Json.arr("configure", "wait", "list"), "description", "Action to perform"),
+                    "path", Json.obj("type", "string", "description", "Download directory (for configure)"),
+                    "timeout", Json.obj("type", "number", "description", "Max wait time in ms (for wait, default: 30000)"),
+                    "upload", Json.obj("type", "boolean", "description", "Upload completed download to chat server (for wait action)")
+                ), "required", Json.arr()))
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Utility helpers
     // -----------------------------------------------------------------------
@@ -1302,6 +2492,11 @@ public class RemoteWorker {
 
     static Map<String, Object> toolError(String error) {
         return Json.obj("success", false, "output", "", "error", error);
+    }
+
+    /** Escape a string for safe embedding in JavaScript using JSON serialization. */
+    static String jsStr(String s) {
+        return Json.serialize(s);
     }
 
     @SuppressWarnings("unchecked")
@@ -1357,7 +2552,10 @@ public class RemoteWorker {
         Worker(Config config) {
             this.config = config;
             this.concurrencyLimiter = new Semaphore(config.maxConcurrent());
-            this.toolSchemas = buildToolSchemas();
+            this.toolSchemas = new ArrayList<>(buildToolSchemas());
+            if (config.browser() != null) {
+                this.toolSchemas.addAll(buildBrowserToolSchemas());
+            }
 
             // Build HTTP client for WebSocket
             HttpClient.Builder builder = HttpClient.newBuilder()
@@ -1620,7 +2818,7 @@ public class RemoteWorker {
                     case "grep"   -> handleGrep(args, config.projectRoot());
                     case "glob"   -> handleGlob(args, config.projectRoot());
                     case "bash"   -> handleBash(callId, args, config.projectRoot(), config.readOnly(), this::wsSend);
-                    default       -> toolError("Unknown tool: " + tool);
+                    default       -> tool.startsWith("browser_") ? dispatchBrowserTool(tool, args) : toolError("Unknown tool: " + tool);
                 };
 
                 // Skip if cancelled
@@ -1721,6 +2919,7 @@ public class RemoteWorker {
 
     public static void main(String[] args) {
         Config config = parseArgs(args);
+        activeConfig = config;
 
         // Startup diagnostics
         log("Platform: " + System.getProperty("os.name") + " (" + System.getProperty("os.arch") + ")");
@@ -1737,6 +2936,16 @@ public class RemoteWorker {
 
         var worker = new Worker(config);
 
+        // Browser startup
+        if (config.browser() != null) {
+            var mgr = startChromeManager(config.browser());
+            if (mgr != null) {
+                log("Browser enabled (CDP port " + mgr.cdpPort + ")");
+            } else {
+                log("WARNING: Browser requested but Chrome not found");
+            }
+        }
+
         // Graceful shutdown
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log("Shutting down...");
@@ -1752,6 +2961,10 @@ public class RemoteWorker {
                 catch (Exception ignored) {}
                 try { ws.sendClose(WebSocket.NORMAL_CLOSURE, "shutdown").join(); }
                 catch (Exception ignored) {}
+            }
+            if (chromeManager != null) {
+                chromeManager.shutdown();
+                chromeManager = null;
             }
         }));
 
