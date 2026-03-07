@@ -1169,7 +1169,7 @@ Summary: ${summary.summary}`;
 
 registerTool(
   "job_submit",
-  "Submit a long-running task to run in the background. Returns a job ID. Jobs run in isolated tmux sessions and survive agent exit.",
+  "Submit a one-off background command (runs in an isolated tmux session). Returns a job ID. For recurring/scheduled tasks, use schedule_job instead.",
   {
     name: {
       type: "string",
@@ -1210,7 +1210,7 @@ registerTool(
 
 registerTool(
   "job_status",
-  "Get the status of background jobs. Jobs persist across agent restarts.",
+  "Get status of one-off background jobs (from job_submit). For recurring scheduled tasks, use schedule_list instead.",
   {
     job_id: {
       type: "string",
@@ -1282,7 +1282,7 @@ registerTool(
 
 registerTool(
   "job_cancel",
-  "Cancel a running job by killing its tmux session.",
+  "Cancel a one-off background job by its job ID (from job_submit). For recurring schedules, use schedule_cancel instead.",
   {
     job_id: {
       type: "string",

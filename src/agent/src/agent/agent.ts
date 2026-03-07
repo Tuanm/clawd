@@ -649,13 +649,13 @@ SUMMARY:`;
   // Plugin Support
   // ============================================================================
 
-  async usePlugin(plugin: Plugin | { plugin: Plugin; toolPlugin: ToolPlugin }): Promise<void> {
-    // Handle compound plugin (plugin + toolPlugin)
-    let mainPlugin: Plugin;
+  async usePlugin(plugin: Plugin | { plugin?: Plugin; toolPlugin: ToolPlugin }): Promise<void> {
+    // Handle compound plugin (plugin + toolPlugin) or toolPlugin-only
+    let mainPlugin: Plugin | null = null;
     let toolPluginInstance: ToolPlugin | null = null;
 
-    if ("plugin" in plugin && "toolPlugin" in plugin) {
-      mainPlugin = plugin.plugin;
+    if ("toolPlugin" in plugin) {
+      mainPlugin = plugin.plugin ?? null;
       toolPluginInstance = plugin.toolPlugin;
     } else {
       mainPlugin = plugin;
@@ -669,7 +669,9 @@ SUMMARY:`;
       // Provide LLM client to plugins for API calls (e.g., summarization)
       this.plugins.setLLMClient(this.client);
     }
-    await this.plugins.register(mainPlugin);
+    if (mainPlugin) {
+      await this.plugins.register(mainPlugin);
+    }
 
     // Register tool plugin if provided
     if (toolPluginInstance) {
@@ -680,7 +682,7 @@ SUMMARY:`;
     // HTTP servers are awaited (they connect near-instantly to localhost).
     // stdio servers are fire-and-forget — they may take seconds/minutes to start
     // (e.g. bunx downloading a package) and must not block the agent stream.
-    if (mainPlugin.getMcpServers) {
+    if (mainPlugin?.getMcpServers) {
       const servers = mainPlugin.getMcpServers();
       console.log(`[Plugin] Registering ${servers.length} MCP server(s) from ${mainPlugin.name}`);
       for (const server of servers) {

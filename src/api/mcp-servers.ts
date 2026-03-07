@@ -100,6 +100,7 @@ export function registerMcpServerRoutes(
         let { oauth } = body;
 
         if (!channel || !name) return json({ ok: false, error: "channel and name required" }, 400);
+        if (name === "copilot") return json({ ok: false, error: '"copilot" is a reserved server name' }, 400);
 
         console.log(`[mcp-servers] Add: channel=${channel}, name=${name}, body_transport=${body.transport || "none"}`);
 

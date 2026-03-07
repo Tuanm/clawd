@@ -1,8 +1,11 @@
 /**
- * Scheduler Tool Plugin — 7 tools for agent-controlled scheduling
+ * Scheduler Tool Plugin — 8 tools for agent-controlled scheduling
  *
- * Tools: schedule_job, schedule_reminder, list_schedules, cancel_schedule,
- *        pause_schedule, resume_schedule, schedule_history
+ * These tools manage RECURRING scheduled tasks (cron-like). They are different from
+ * the job_* tools which run one-off background commands in tmux sessions.
+ *
+ * Tools: schedule_job, schedule_reminder, schedule_tool, schedule_list,
+ *        schedule_cancel, schedule_pause, schedule_resume, schedule_history
  */
 import type { ToolPlugin, ToolRegistration } from "../src/tools/plugin";
 import type { SchedulerManager } from "../../scheduler/manager";
@@ -181,9 +184,10 @@ export function createSchedulerToolPlugin(config: SchedulerPluginConfig): ToolPl
           },
         },
         {
-          name: "list_schedules",
+          name: "schedule_list",
           description:
-            "List scheduled jobs and reminders in this channel. Filter by status: active, paused, completed, failed, cancelled.",
+            "List recurring scheduled jobs/reminders in this channel (NOT background jobs — use job_status for those). " +
+            "Filter by status: active, paused, completed, failed, cancelled.",
           parameters: {
             status: {
               type: "string",
@@ -200,7 +204,7 @@ export function createSchedulerToolPlugin(config: SchedulerPluginConfig): ToolPl
             const lines = jobs.map((j) => {
               const nextRun = j.status === "active" ? new Date(j.next_run).toISOString() : "—";
               const runs = j.max_runs ? `${j.run_count}/${j.max_runs}` : String(j.run_count);
-              return `• **${j.title}** (${j.id.slice(0, 8)})\n  Type: ${j.type} | Status: ${j.status} | Next: ${nextRun} | Runs: ${runs}`;
+              return `• **${j.title}** (ID: ${j.id})\n  Type: ${j.type} | Status: ${j.status} | Next: ${nextRun} | Runs: ${runs}`;
             });
             return {
               success: true,
@@ -209,10 +213,12 @@ export function createSchedulerToolPlugin(config: SchedulerPluginConfig): ToolPl
           },
         },
         {
-          name: "cancel_schedule",
-          description: "Cancel a scheduled job or reminder by ID. Only the agent that created it can cancel it.",
+          name: "schedule_cancel",
+          description:
+            "Cancel a recurring scheduled job/reminder by its full schedule ID (from schedule_list). " +
+            "This does NOT cancel background jobs — use job_cancel for those.",
           parameters: {
-            id: { type: "string", description: "The job/reminder ID to cancel" },
+            id: { type: "string", description: "The full schedule ID (from schedule_list output)" },
           },
           required: ["id"],
           handler: async (args) => {
@@ -222,10 +228,11 @@ export function createSchedulerToolPlugin(config: SchedulerPluginConfig): ToolPl
           },
         },
         {
-          name: "pause_schedule",
-          description: "Pause an active scheduled job or reminder. It can be resumed later.",
+          name: "schedule_pause",
+          description:
+            "Pause an active recurring scheduled job/reminder. It can be resumed later with schedule_resume.",
           parameters: {
-            id: { type: "string", description: "The job/reminder ID to pause" },
+            id: { type: "string", description: "The full schedule ID (from schedule_list output)" },
           },
           required: ["id"],
           handler: async (args) => {
@@ -235,10 +242,10 @@ export function createSchedulerToolPlugin(config: SchedulerPluginConfig): ToolPl
           },
         },
         {
-          name: "resume_schedule",
-          description: "Resume a paused scheduled job or reminder.",
+          name: "schedule_resume",
+          description: "Resume a paused recurring scheduled job/reminder.",
           parameters: {
-            id: { type: "string", description: "The job/reminder ID to resume" },
+            id: { type: "string", description: "The full schedule ID (from schedule_list output)" },
           },
           required: ["id"],
           handler: async (args) => {
@@ -249,9 +256,9 @@ export function createSchedulerToolPlugin(config: SchedulerPluginConfig): ToolPl
         },
         {
           name: "schedule_history",
-          description: "View past run history for a scheduled job, including status, duration, and errors.",
+          description: "View past run history for a recurring scheduled job, including status, duration, and errors.",
           parameters: {
-            id: { type: "string", description: "The job/reminder ID to view history for" },
+            id: { type: "string", description: "The full schedule ID (from schedule_list output)" },
             limit: { type: "number", description: "Number of recent runs to show (default: 10, max: 50)" },
           },
           required: ["id"],
