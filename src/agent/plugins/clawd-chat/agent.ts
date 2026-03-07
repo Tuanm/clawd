@@ -513,6 +513,7 @@ CRITICAL: When calling chat_send_message, you MUST include these EXACT parameter
 The "user" parameter is REQUIRED for worker identity. Do not omit it.
 Humans CANNOT see your text output — ALWAYS use chat_send_message for ALL responses.
 Do NOT output text intended for users — it will never reach them.
+When providing copiable content (commands, code, URLs, paths, config values), ALWAYS wrap it in a markdown code block — users can only copy via the Copy button on code blocks.
 </worker_identity>
 
 `;
@@ -537,6 +538,12 @@ RICH CONTENT FEATURES (use with chat_send_message):
   - content: The code content
   - start_line (optional): Starting line number
   - highlight_lines (optional): Array of line numbers to highlight
+
+COPYABLE CONTENT RULE:
+- The chat UI does NOT allow users to select and copy text from messages
+- Users can ONLY copy content by clicking the Copy button on code blocks
+- Therefore, whenever you provide content the user may want to copy (commands, code snippets, URLs, file paths, config values, etc.), you MUST wrap it in a markdown code block (triple backticks) so the Copy button appears
+- Even single-line commands or short values should use code blocks if the user might need to copy them
 </chat_instructions>
 
 `;
