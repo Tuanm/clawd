@@ -111,7 +111,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // Messages from popup meant for offscreen — don't intercept, let offscreen handle
-  if (message.type === "get-status" || message.type === "set-server-url" || message.type === "reconnect") {
+  if (
+    message.type === "get-status" ||
+    message.type === "set-server-url" ||
+    message.type === "reconnect" ||
+    message.type === "disconnect"
+  ) {
     // Don't call sendResponse — offscreen document handles these
     return false;
   }

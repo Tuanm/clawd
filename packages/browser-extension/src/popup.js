@@ -118,6 +118,17 @@ checkStatus();
 
 // Connect button
 connectBtn.addEventListener("click", () => {
+  // If connected, disconnect instead
+  if (connectBtn.dataset.connected === "true") {
+    statusText.textContent = "Disconnecting...";
+    connectBtn.disabled = true;
+    chrome.runtime.sendMessage({ type: "disconnect" }, () => {
+      connectBtn.disabled = false;
+      setTimeout(checkStatus, 500);
+    });
+    return;
+  }
+
   const host = serverHostInput.value.trim() || DEFAULT_HOST;
   const wsUrl = buildWsUrl(host);
 
@@ -179,5 +190,7 @@ chrome.runtime.onMessage.addListener((message) => {
 function setStatus(connected) {
   dot.className = connected ? "dot connected" : "dot disconnected";
   statusText.textContent = connected ? "Connected to Claw'd" : "Disconnected";
-  connectBtn.textContent = connected ? "Reconnect" : "Connect";
+  connectBtn.textContent = connected ? "Disconnect" : "Connect";
+  connectBtn.dataset.connected = connected ? "true" : "false";
+  connectBtn.classList.toggle("disconnect", connected);
 }

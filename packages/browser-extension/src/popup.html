@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html {
+      border-radius: 12px;
+      overflow: hidden;
+    }
     body {
       width: 320px;
       padding: 16px;
@@ -23,16 +27,6 @@
       gap: 8px;
     }
     h1 .icon { width: 24px; height: 24px; flex-shrink: 0; }
-    .status {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      border: 1px solid hsl(60 2.6% 7.6% / 12%);
-      background: hsl(60 2.6% 7.6% / 3%);
-      margin-bottom: 12px;
-    }
     .dot {
       width: 8px;
       height: 8px;
@@ -93,6 +87,8 @@
       margin-top: 10px;
       text-align: center;
     }
+    button.disconnect { background: hsl(0 0% 45%); }
+    button.disconnect:hover { background: hsl(0 0% 35%); }
     #icon-connected, #icon-disconnected { display: none; }
   </style>
 </head>
@@ -111,13 +107,9 @@
         <rect x="48" y="13" width="6" height="6.5" fill="#222"/>
       </svg>
     </span>
-    Browse with Claw'd
-  </h1>
-
-  <div class="status">
     <div class="dot disconnected" id="dot"></div>
     <span class="status-text" id="statusText">Connecting...</span>
-  </div>
+  </h1>
 
   <label>Server Host</label>
   <input type="text" id="serverHost" placeholder="localhost:3456" />

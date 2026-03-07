@@ -91,6 +91,7 @@ import { loadConfig, validateConfig } from "./config";
 import { loadConfigFile, reloadConfigFile, isWorkspacesEnabled, isBrowserEnabled } from "./config-file";
 import { upgradeBrowserWs } from "./server/browser-bridge";
 import { getEmbeddedAsset, hasEmbeddedUI, embeddedUIFileCount, embeddedUITotalSize } from "./embedded-ui";
+import { getExtensionZip, extensionZipSize } from "./embedded-extension";
 import { WorkerManager } from "./worker-manager";
 import { setDebug } from "./agent/src/utils/debug";
 import { keyPool } from "./agent/src/api/key-pool";
@@ -568,6 +569,18 @@ const server = Bun.serve({
       const userId = url.searchParams.get("user") || "UHUMAN";
       if (server.upgrade(req, { data: { userId } })) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
+    }
+
+    // Browser extension zip download
+    if (path === "/browser/extension") {
+      const zip = getExtensionZip();
+      return new Response(zip, {
+        headers: {
+          "Content-Type": "application/zip",
+          "Content-Disposition": 'attachment; filename="clawd-browser-extension.zip"',
+          "Content-Length": String(zip.length),
+        },
+      });
     }
 
     // Browser extension WebSocket bridge (only when browser enabled)

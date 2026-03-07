@@ -242,6 +242,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async response
   }
 
+  if (message.type === "disconnect") {
+    console.log("[clawd-offscreen] disconnect requested");
+    if (ws) {
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close();
+      ws = null;
+    }
+    stopHeartbeat();
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    connected = false;
+    chrome.runtime.sendMessage({ source: "offscreen", type: "connection-status", connected: false }).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  }
+
   // Read local file and upload to chat server (offscreen can access file:// URLs, service worker cannot)
   if (message.type === "upload-file") {
     (async () => {

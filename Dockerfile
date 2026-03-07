@@ -6,6 +6,7 @@ WORKDIR /app
 # Install dependencies (includes devDependencies for build tooling)
 COPY package.json bun.lock ./
 COPY packages/ui/package.json packages/ui/
+RUN apt-get update && apt-get install -y --no-install-recommends zip && rm -rf /var/lib/apt/lists/*
 RUN bun install
 
 # Copy source and run full build (UI + embed + compile)
