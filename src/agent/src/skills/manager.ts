@@ -1,14 +1,32 @@
 /**
- * Skill System - Lazy-loaded skills with semantic matching
+ * Skill System - Project-scoped + global skills with Claude Code-compatible format
  *
- * Skills are stored as markdown files with YAML frontmatter in ~/.clawd/skills/
- * They are indexed with keyword-based matching for efficient retrieval.
+ * Skills are stored in two locations (project takes priority):
+ *   1. {projectRoot}/.clawd/skills/{name}/SKILL.md  (project-scoped, folder format)
+ *   2. ~/.clawd/skills/{name}/SKILL.md               (global, folder format)
+ *   3. ~/.clawd/skills/{name}.md                      (global, legacy single-file)
+ *
+ * SKILL.md format:
+ *   ---
+ *   name: skill-name
+ *   description: Brief description (<200 chars)
+ *   triggers: [keyword1, keyword2]
+ *   version: 1.0.0           (optional)
+ *   argument-hint: "[args]"  (optional)
+ *   allowed-tools: [bash, view] (optional)
+ *   ---
+ *   # Markdown instructions...
+ *
+ * Skills are indexed in a cache DB at ~/.clawd/cache/skills/{projectHash}/index.db
+ * for efficient keyword-based matching.
  */
 
 import Database from "bun:sqlite";
-import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, statSync, unlinkSync, rmSync } from "node:fs";
+import { join, basename } from "node:path";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
+import { getContextProjectRoot } from "../utils/agent-context";
 
 // ============================================================================
 // Types
@@ -17,20 +35,23 @@ import { homedir } from "node:os";
 export interface SkillMetadata {
   name: string;
   description: string;
-  triggers: string[]; // Keywords that activate this skill
+  triggers: string[];
   version?: string;
   author?: string;
+  argumentHint?: string;
+  allowedTools?: string[];
+  source: "project" | "global";
 }
 
 export interface Skill extends SkillMetadata {
-  content: string; // Full skill content (markdown)
-  path: string; // File path
-  tokens?: number; // Estimated token count
+  content: string;
+  path: string;
+  tokens?: number;
 }
 
 export interface SkillMatch {
   skill: SkillMetadata;
-  score: number; // 0-1 relevance score
+  score: number;
   matchedTriggers: string[];
 }
 
@@ -39,7 +60,7 @@ export interface SkillMatch {
 // ============================================================================
 
 function parseFrontmatter(content: string): { metadata: Record<string, any>; body: string } {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) {
     return { metadata: {}, body: content };
   }
@@ -47,8 +68,7 @@ function parseFrontmatter(content: string): { metadata: Record<string, any>; bod
   const [, yaml, body] = match;
   const metadata: Record<string, any> = {};
 
-  // Simple YAML parser for our use case
-  for (const line of yaml.split("\n")) {
+  for (const line of yaml.split(/\r?\n/)) {
     const colonIdx = line.indexOf(":");
     if (colonIdx === -1) continue;
 
@@ -60,7 +80,8 @@ function parseFrontmatter(content: string): { metadata: Record<string, any>; bod
       value = value
         .slice(1, -1)
         .split(",")
-        .map((s) => s.trim()) as any;
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 0) as any;
     }
 
     metadata[key] = value;
@@ -69,39 +90,46 @@ function parseFrontmatter(content: string): { metadata: Record<string, any>; bod
   return { metadata, body };
 }
 
+/** Validate skill name: lowercase, no spaces, safe for filesystem */
+const SKILL_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
 // ============================================================================
-// Skill Manager
+// Skill Manager — Dual-source (project + global)
 // ============================================================================
 
 export class SkillManager {
   private db: Database;
-  private skillsDir: string;
+  private projectSkillsDir: string | null;
+  private globalSkillsDir: string;
   private cache = new Map<string, Skill>();
+  private lastIndexedAt = 0;
+  private static INDEX_COOLDOWN_MS = 5_000; // 5 seconds
 
-  constructor(skillsDir?: string) {
-    this.skillsDir = skillsDir || join(homedir(), ".clawd", "skills");
+  constructor(projectRoot?: string) {
+    this.globalSkillsDir = join(homedir(), ".clawd", "skills");
+    this.projectSkillsDir = projectRoot ? join(projectRoot, ".clawd", "skills") : null;
 
-    // Ensure directory exists
-    if (!existsSync(this.skillsDir)) {
-      mkdirSync(this.skillsDir, { recursive: true });
+    // Ensure global dir exists
+    if (!existsSync(this.globalSkillsDir)) {
+      mkdirSync(this.globalSkillsDir, { recursive: true });
     }
 
-    // Initialize database
-    const dbPath = join(this.skillsDir, "index.db");
-    this.db = new Database(dbPath);
+    // Cache DB lives outside .clawd/ (not inside project or skills dir)
+    const hash = projectRoot ? createHash("sha256").update(projectRoot).digest("hex").slice(0, 12) : "global";
+    const cacheDir = join(homedir(), ".clawd", "cache", "skills", hash);
+    if (!existsSync(cacheDir)) mkdirSync(cacheDir, { recursive: true });
+
+    this.db = new Database(join(cacheDir, "index.db"));
     this.setupConcurrency();
     this.initDb();
   }
 
   private setupConcurrency() {
-    // Enable WAL mode for better concurrent access
     this.db.exec("PRAGMA journal_mode = WAL");
-    // Wait up to 30 seconds for locks (increased from 5s)
     this.db.exec("PRAGMA busy_timeout = 30000");
-    // Balanced sync mode
     this.db.exec("PRAGMA synchronous = NORMAL");
-    // Increase cache size
-    this.db.exec("PRAGMA cache_size = -16000"); // 16MB cache
+    this.db.exec("PRAGMA cache_size = -8000");
+    this.db.exec("PRAGMA foreign_keys = ON");
   }
 
   private initDb() {
@@ -110,6 +138,7 @@ export class SkillManager {
         name TEXT PRIMARY KEY,
         description TEXT,
         path TEXT,
+        source TEXT DEFAULT 'global',
         tokens INTEGER,
         updated_at INTEGER
       );
@@ -126,68 +155,108 @@ export class SkillManager {
   }
 
   // ============================================================================
-  // Index Skills
+  // Index Skills — scans both project and global directories
   // ============================================================================
 
-  async indexSkills(): Promise<number> {
-    const files = readdirSync(this.skillsDir).filter((f) => f.endsWith(".md"));
+  indexSkills(): number {
+    // Clear and rebuild
+    this.db.run("DELETE FROM triggers");
+    this.db.run("DELETE FROM skills");
+    this.cache.clear();
+
     let indexed = 0;
 
-    for (const file of files) {
-      const path = join(this.skillsDir, file);
-      const content = readFileSync(path, "utf-8");
-      const { metadata, body } = parseFrontmatter(content);
+    // Index global skills first (lower priority)
+    indexed += this.indexDirectory(this.globalSkillsDir, "global");
 
-      if (!metadata.name) {
-        metadata.name = file.replace(".md", "");
-      }
+    // Index project skills second (overrides global by same name via INSERT OR REPLACE)
+    if (this.projectSkillsDir && existsSync(this.projectSkillsDir)) {
+      indexed += this.indexDirectory(this.projectSkillsDir, "project");
+    }
 
-      const tokens = Math.ceil(body.length / 4);
+    this.lastIndexedAt = Date.now();
+    return indexed;
+  }
 
-      // Update database
-      this.db.run(
-        `
-        INSERT OR REPLACE INTO skills (name, description, path, tokens, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-      `,
-        [metadata.name, metadata.description || "", path, tokens, Date.now()],
-      );
+  /** Index only if the cooldown has elapsed. Returns -1 if skipped. */
+  indexSkillsIfStale(): number {
+    if (Date.now() - this.lastIndexedAt < SkillManager.INDEX_COOLDOWN_MS) return -1;
+    return this.indexSkills();
+  }
 
-      // Update triggers
-      this.db.run("DELETE FROM triggers WHERE skill_name = ?", [metadata.name]);
+  /** Index a single skill by name (efficient re-index after save) */
+  private indexSingleSkill(name: string, skillPath: string, source: "project" | "global"): void {
+    const content = readFileSync(skillPath, "utf-8");
+    const { metadata, body } = parseFrontmatter(content);
+    const tokens = Math.ceil(body.length / 4);
 
-      const triggers = Array.isArray(metadata.triggers) ? metadata.triggers : [];
-      for (const trigger of triggers) {
+    this.db.run(
+      "INSERT OR REPLACE INTO skills (name, description, path, source, tokens, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [name, metadata.description || "", skillPath, source, tokens, Date.now()],
+    );
+
+    this.db.run("DELETE FROM triggers WHERE skill_name = ?", [name]);
+
+    const triggers = Array.isArray(metadata.triggers) ? metadata.triggers : [];
+    for (const trigger of triggers) {
+      if (typeof trigger === "string" && trigger.length > 0) {
         this.db.run("INSERT OR IGNORE INTO triggers (skill_name, trigger) VALUES (?, ?)", [
-          metadata.name,
+          name,
           trigger.toLowerCase(),
         ]);
       }
+    }
 
-      indexed++;
+    this.cache.delete(name);
+  }
+
+  private indexDirectory(dir: string, source: "project" | "global"): number {
+    if (!existsSync(dir)) return 0;
+    let indexed = 0;
+
+    const entries = readdirSync(dir);
+    for (const entry of entries) {
+      const entryPath = join(dir, entry);
+      const stat = statSync(entryPath);
+
+      if (stat.isDirectory()) {
+        // Folder format: {name}/SKILL.md
+        const skillMdPath = join(entryPath, "SKILL.md");
+        if (existsSync(skillMdPath)) {
+          const name = entry;
+          this.indexSingleSkill(name, skillMdPath, source);
+          indexed++;
+        }
+      } else if (entry.endsWith(".md") && entry !== "README.md") {
+        // Legacy single-file format: {name}.md
+        const name = entry.replace(/\.md$/, "");
+        this.indexSingleSkill(name, entryPath, source);
+        indexed++;
+      }
     }
 
     return indexed;
   }
 
   // ============================================================================
-  // List Skills (lightweight - for context)
+  // List Skills
   // ============================================================================
 
   listSkills(): SkillMetadata[] {
     const rows = this.db
-      .query(`
-      SELECT s.name, s.description, GROUP_CONCAT(t.trigger) as triggers
-      FROM skills s
-      LEFT JOIN triggers t ON s.name = t.skill_name
-      GROUP BY s.name
-    `)
+      .query(
+        `SELECT s.name, s.description, s.source, GROUP_CONCAT(t.trigger) as triggers
+         FROM skills s
+         LEFT JOIN triggers t ON s.name = t.skill_name
+         GROUP BY s.name`,
+      )
       .all() as any[];
 
     return rows.map((row) => ({
       name: row.name,
       description: row.description,
       triggers: row.triggers ? row.triggers.split(",") : [],
+      source: row.source as "project" | "global",
     }));
   }
 
@@ -200,7 +269,6 @@ export class SkillManager {
     const matches = new Map<string, { score: number; matchedTriggers: string[] }>();
 
     for (const keyword of normalizedKeywords) {
-      // Exact trigger match
       const exactRows = this.db
         .query("SELECT skill_name, trigger FROM triggers WHERE trigger = ?")
         .all(keyword) as any[];
@@ -212,13 +280,12 @@ export class SkillManager {
         matches.set(row.skill_name, existing);
       }
 
-      // Partial trigger match
       const partialRows = this.db
         .query("SELECT skill_name, trigger FROM triggers WHERE trigger LIKE ?")
         .all(`%${keyword}%`) as any[];
 
       for (const row of partialRows) {
-        if (row.trigger === keyword) continue; // Already counted
+        if (row.trigger === keyword) continue;
         const existing = matches.get(row.skill_name) || { score: 0, matchedTriggers: [] };
         existing.score += 0.5;
         if (!existing.matchedTriggers.includes(row.trigger)) {
@@ -227,7 +294,6 @@ export class SkillManager {
         matches.set(row.skill_name, existing);
       }
 
-      // Description match
       const descRows = this.db.query("SELECT name FROM skills WHERE description LIKE ?").all(`%${keyword}%`) as any[];
 
       for (const row of descRows) {
@@ -237,7 +303,6 @@ export class SkillManager {
       }
     }
 
-    // Convert to SkillMatch array
     const skills = this.listSkills();
     const skillMap = new Map(skills.map((s) => [s.name, s]));
 
@@ -257,19 +322,17 @@ export class SkillManager {
   }
 
   // ============================================================================
-  // Match Skills for Message (semantic-ish matching)
+  // Match Skills for Message
   // ============================================================================
 
   matchForMessage(message: string, maxSkills = 3): SkillMatch[] {
-    // Extract keywords from message
     const words = message
       .toLowerCase()
       .replace(/[^\w\s]/g, " ")
       .split(/\s+/)
       .filter((w) => w.length > 2);
 
-    const matches = this.searchByKeywords(words);
-    return matches.slice(0, maxSkills);
+    return this.searchByKeywords(words).slice(0, maxSkills);
   }
 
   // ============================================================================
@@ -277,14 +340,13 @@ export class SkillManager {
   // ============================================================================
 
   getSkill(name: string): Skill | null {
-    // Check cache
-    if (this.cache.has(name)) {
-      return this.cache.get(name)!;
-    }
+    if (this.cache.has(name)) return this.cache.get(name)!;
 
-    const row = this.db.query("SELECT name, description, path, tokens FROM skills WHERE name = ?").get(name) as any;
+    const row = this.db
+      .query("SELECT name, description, path, source, tokens FROM skills WHERE name = ?")
+      .get(name) as any;
 
-    if (!row) return null;
+    if (!row || !existsSync(row.path)) return null;
 
     const content = readFileSync(row.path, "utf-8");
     const { metadata, body } = parseFrontmatter(content);
@@ -296,6 +358,10 @@ export class SkillManager {
       content: body,
       path: row.path,
       tokens: row.tokens,
+      source: row.source,
+      version: metadata.version,
+      argumentHint: metadata["argument-hint"],
+      allowedTools: Array.isArray(metadata["allowed-tools"]) ? metadata["allowed-tools"] : undefined,
     };
 
     this.cache.set(name, skill);
@@ -303,27 +369,45 @@ export class SkillManager {
   }
 
   // ============================================================================
-  // Create/Update Skill
+  // Create/Update Skill — saves to project or global dir (folder format)
   // ============================================================================
 
-  saveSkill(skill: Omit<Skill, "path" | "tokens">): void {
-    const path = join(this.skillsDir, `${skill.name}.md`);
+  saveSkill(
+    skill: Omit<Skill, "path" | "tokens" | "source">,
+    scope: "project" | "global" = "project",
+  ): { success: boolean; error?: string } {
+    if (!SKILL_NAME_RE.test(skill.name)) {
+      return {
+        success: false,
+        error: `Invalid skill name '${skill.name}'. Use lowercase a-z, 0-9, hyphens, underscores (max 64 chars).`,
+      };
+    }
 
-    const frontmatter = [
+    const targetDir = scope === "project" ? this.projectSkillsDir : this.globalSkillsDir;
+    if (!targetDir) {
+      return { success: false, error: "No project root configured; cannot save project skill." };
+    }
+
+    const skillDir = join(targetDir, skill.name);
+    if (!existsSync(skillDir)) mkdirSync(skillDir, { recursive: true });
+
+    const skillPath = join(skillDir, "SKILL.md");
+
+    const lines = [
       "---",
       `name: ${skill.name}`,
       `description: ${skill.description}`,
       `triggers: [${skill.triggers.join(", ")}]`,
-      "---",
-      "",
-      skill.content,
-    ].join("\n");
+    ];
+    if (skill.version) lines.push(`version: ${skill.version}`);
+    if (skill.argumentHint) lines.push(`argument-hint: ${skill.argumentHint}`);
+    if (skill.allowedTools?.length) lines.push(`allowed-tools: [${skill.allowedTools.join(", ")}]`);
+    lines.push("---", "", skill.content);
 
-    writeFileSync(path, frontmatter);
-    this.cache.delete(skill.name);
+    writeFileSync(skillPath, lines.join("\n"));
+    this.indexSingleSkill(skill.name, skillPath, scope);
 
-    // Re-index this skill
-    this.indexSkills();
+    return { success: true };
   }
 
   // ============================================================================
@@ -331,16 +415,30 @@ export class SkillManager {
   // ============================================================================
 
   deleteSkill(name: string): boolean {
-    const row = this.db.query("SELECT path FROM skills WHERE name = ?").get(name) as any;
+    if (!SKILL_NAME_RE.test(name)) return false;
+
+    const row = this.db.query("SELECT path, source FROM skills WHERE name = ?").get(name) as any;
     if (!row) return false;
 
-    const { unlinkSync } = require("node:fs");
     try {
-      unlinkSync(row.path);
-    } catch {}
+      const skillPath = row.path as string;
+      const parentDir = join(skillPath, "..");
+      const parentName = basename(parentDir);
 
-    this.db.run("DELETE FROM skills WHERE name = ?", [name]);
+      // Folder format: parent dir contains SKILL.md AND parent name matches skill name
+      if (basename(skillPath) === "SKILL.md" && parentName === name) {
+        rmSync(parentDir, { recursive: true, force: true });
+      } else {
+        // Legacy single-file
+        unlinkSync(skillPath);
+      }
+    } catch (err) {
+      console.warn(`[SkillManager] Failed to delete skill files for '${name}':`, err);
+      return false;
+    }
+
     this.db.run("DELETE FROM triggers WHERE skill_name = ?", [name]);
+    this.db.run("DELETE FROM skills WHERE name = ?", [name]);
     this.cache.delete(name);
 
     return true;
@@ -356,7 +454,8 @@ export class SkillManager {
 
     const lines = ["## Available Skills", ""];
     for (const skill of skills) {
-      lines.push(`- **${skill.name}**: ${skill.description}`);
+      const tag = skill.source === "project" ? "(project)" : "(global)";
+      lines.push(`- **${skill.name}** ${tag}: ${skill.description}`);
     }
     lines.push("");
     lines.push("Use `skill_activate` tool to load a skill when needed.");
@@ -365,16 +464,32 @@ export class SkillManager {
   }
 
   close() {
-    this.db.close();
+    try {
+      this.db.close();
+    } catch {}
   }
 }
 
-// Singleton
-let _skillManager: SkillManager | null = null;
+// ============================================================================
+// Per-project instances (keyed by project root)
+// ============================================================================
 
-export function getSkillManager(): SkillManager {
-  if (!_skillManager) {
-    _skillManager = new SkillManager();
+const _managers = new Map<string, SkillManager>();
+
+export function getSkillManager(projectRoot?: string): SkillManager {
+  const root = projectRoot || getContextProjectRoot();
+  const key = root || "__global__";
+
+  if (!_managers.has(key)) {
+    _managers.set(key, new SkillManager(root || undefined));
   }
-  return _skillManager;
+  return _managers.get(key)!;
+}
+
+/** Close all skill manager DB handles. Call on process shutdown. */
+export function closeAllSkillManagers(): void {
+  for (const [, manager] of _managers) {
+    manager.close();
+  }
+  _managers.clear();
 }

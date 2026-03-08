@@ -30,11 +30,14 @@ import { createStatePersistencePlugin } from "../plugins/state-persistence-plugi
 import { createContextModePlugin, type ContextModePluginResult } from "../plugins/context-mode-plugin";
 import { WorkspaceToolPlugin } from "../plugins/workspace-plugin";
 import { TunnelPlugin } from "../plugins/tunnel-plugin";
+import { CustomToolPlugin } from "../plugins/custom-tool-plugin";
 import { isWorkspacesEnabled } from "../../../config-file";
 import { isBrowserEnabled } from "../../../config-file";
-import { getAgentContext } from "../utils/agent-context";
+import { getAgentContext, getContextProjectRoot } from "../utils/agent-context";
 import { ContextTracker } from "../utils/context-tracker";
 import { homedir } from "node:os";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 // ============================================================================
 // Colored Logging Helpers
@@ -263,6 +266,7 @@ export class Agent {
   private _workspacePluginRegistered = false;
   private _tunnelPluginRegistered = false;
   private _browserPluginRegistered = false;
+  private _customToolPluginRegistered = false;
 
   constructor(tokenOrProvider: string | LLMProvider, config: AgentConfig) {
     // Accept either token (legacy) or provider instance
@@ -917,6 +921,7 @@ SUMMARY:`;
   private getSkillsSummaryForPrompt(): string {
     try {
       const manager = getSkillManager();
+      manager.indexSkillsIfStale();
       const summary = manager.getSkillsSummary();
       if (!summary) return "";
       return `\n\n${summary}`;
@@ -1275,6 +1280,37 @@ SUMMARY:`;
       } catch (err: any) {
         if (this.config.verbose) {
           console.log(`[Agent] Tunnel plugin registration failed:`, err?.message || err);
+        }
+      }
+    }
+
+    // Register custom tool plugin (custom_tool management + discovered ct_* tools)
+    // Scans {projectRoot}/.clawd/tools/ for user-created custom tools.
+    if (!this._customToolPluginRegistered) {
+      try {
+        const customPlugin = new CustomToolPlugin();
+        this.toolPluginManager.register(customPlugin);
+        this._customToolPluginRegistered = true;
+        // Discover existing custom tools and register as first-class ct_* tools
+        const projectRoot = ctx?.projectRoot || getContextProjectRoot();
+        if (projectRoot && projectRoot !== "/" && existsSync(join(projectRoot, ".clawd"))) {
+          const discovered = customPlugin.getDiscoveredTools(projectRoot);
+          for (const tool of discovered) {
+            try {
+              this.toolPluginManager.register({
+                name: `custom-tool-${tool.name}`,
+                getTools: () => [tool],
+              });
+            } catch (toolErr: any) {
+              if (this.config.verbose) {
+                console.log(`[Agent] Failed to register ct tool ${tool.name}:`, toolErr?.message);
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        if (this.config.verbose) {
+          console.log(`[Agent] Custom tool plugin registration failed:`, err?.message || err);
         }
       }
     }

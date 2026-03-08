@@ -241,6 +241,12 @@ function getBwrapPrefix(options: BwrapOptions): string {
   const projectClawdDir = join(projectRoot, ".clawd");
   if (existsSync(projectClawdDir)) {
     args.push("--tmpfs", projectClawdDir);
+    // Re-mount skills/ read-only so agents can read SKILL.md and execute skill scripts
+    const skillsDir = join(projectClawdDir, "skills");
+    if (existsSync(skillsDir)) args.push("--ro-bind", skillsDir, skillsDir);
+    // Re-mount tools/ read-only so custom tool entrypoints can be executed
+    const toolsDir = join(projectClawdDir, "tools");
+    if (existsSync(toolsDir)) args.push("--ro-bind", toolsDir, toolsDir);
   }
 
   // Tool paths (read-only) - only mount if they exist
@@ -331,6 +337,18 @@ function getMacOSSandboxProfile(): string {
 ; Block writes to {projectRoot}/.clawd/ — agent config/identity must not be tampered with
 (deny file-write*
   (subpath (string-append (param "PROJECT_DIR") "/.clawd")))
+
+; Allow read + execute for .clawd/skills/ (skill scripts)
+(allow file-read*
+  (subpath (string-append (param "PROJECT_DIR") "/.clawd/skills")))
+(allow process-exec
+  (subpath (string-append (param "PROJECT_DIR") "/.clawd/skills")))
+
+; Allow read + execute for .clawd/tools/ (custom tool entrypoints)
+(allow file-read*
+  (subpath (string-append (param "PROJECT_DIR") "/.clawd/tools")))
+(allow process-exec
+  (subpath (string-append (param "PROJECT_DIR") "/.clawd/tools")))
 
 ; /tmp (read-write) -- use real path (/private/tmp on macOS)
 (allow file-write*
@@ -626,7 +644,7 @@ export async function wrapCommandForSandbox(command: string, cwd?: string): Prom
 export async function runInSandbox(
   command: string,
   args: string[],
-  options: { timeout?: number; cwd?: string } = {},
+  options: { timeout?: number; cwd?: string; stdin?: string } = {},
 ): Promise<{
   success: boolean;
   stdout: string;
@@ -644,8 +662,15 @@ export async function runInSandbox(
 
   return new Promise((resolve) => {
     const proc = spawn("bash", ["-c", wrappedCommand], {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [options.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     });
+
+    // Write stdin data if provided
+    if (options.stdin !== undefined && proc.stdin) {
+      proc.stdin.on("error", () => {}); // Ignore EPIPE if process dies early
+      proc.stdin.write(options.stdin);
+      proc.stdin.end();
+    }
 
     let timedOut = false;
     const timeoutId = setTimeout(() => {
@@ -655,12 +680,13 @@ export async function runInSandbox(
 
     let stdout = "";
     let stderr = "";
+    const MAX_COLLECT = 10 * 1024 * 1024; // 10MB safety cap
 
     proc.stdout?.on("data", (data: Buffer) => {
-      stdout += data.toString();
+      if (stdout.length < MAX_COLLECT) stdout += data.toString();
     });
     proc.stderr?.on("data", (data: Buffer) => {
-      stderr += data.toString();
+      if (stderr.length < MAX_COLLECT) stderr += data.toString();
     });
 
     proc.on("close", (code) => {

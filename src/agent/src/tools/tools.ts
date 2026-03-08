@@ -1407,25 +1407,26 @@ registerTool(
 
 registerTool(
   "skill_list",
-  "List all available skills with brief descriptions. Use this to discover what skills are available.",
+  "List all available skills (project-scoped + global). Use this to discover what skills are available.",
   {},
   [],
   async () => {
     try {
       const { getSkillManager } = await import("../skills/manager");
       const manager = getSkillManager();
+      manager.indexSkillsIfStale();
 
       const skills = manager.listSkills();
 
       if (skills.length === 0) {
         return {
           success: true,
-          output: "No skills installed. Skills can be added to ~/.clawd/skills/",
+          output: "No skills installed. Use skill_create to add skills to the project.",
         };
       }
 
       const formatted = skills
-        .map((s) => `• **${s.name}**: ${s.description}\n  Triggers: ${s.triggers.join(", ")}`)
+        .map((s) => `• **${s.name}** (${s.source}): ${s.description}\n  Triggers: ${s.triggers.join(", ")}`)
         .join("\n\n");
 
       return { success: true, output: `Available skills:\n\n${formatted}` };
@@ -1454,6 +1455,7 @@ registerTool(
     try {
       const { getSkillManager } = await import("../skills/manager");
       const manager = getSkillManager();
+      manager.indexSkillsIfStale();
 
       const matches = manager.searchByKeywords(keywords);
 
@@ -1464,7 +1466,7 @@ registerTool(
       const formatted = matches
         .map(
           (m) =>
-            `• **${m.skill.name}** (${Math.round(m.score * 100)}% match)\n  ${m.skill.description}\n  Matched: ${m.matchedTriggers.join(", ")}`,
+            `• **${m.skill.name}** (${m.skill.source}, ${Math.round(m.score * 100)}% match)\n  ${m.skill.description}\n  Matched: ${m.matchedTriggers.join(", ")}`,
         )
         .join("\n\n");
 
@@ -1493,6 +1495,7 @@ registerTool(
     try {
       const { getSkillManager } = await import("../skills/manager");
       const manager = getSkillManager();
+      manager.indexSkillsIfStale();
 
       const skill = manager.getSkill(name);
 
@@ -1500,13 +1503,13 @@ registerTool(
         return {
           success: false,
           output: "",
-          error: `Skill '${name}' not found`,
+          error: `Skill '${name}' not found. Use skill_list to see available skills.`,
         };
       }
 
       return {
         success: true,
-        output: `# Skill: ${skill.name}\n\n${skill.content}\n\n---\n*Skill activated. Follow the guidelines above.*`,
+        output: `# Skill: ${skill.name} (${skill.source})\n\n${skill.content}\n\n---\n*Skill activated. Follow the guidelines above.*`,
       };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -1520,15 +1523,16 @@ registerTool(
 
 registerTool(
   "skill_create",
-  "Create or update a skill. Skills are stored as markdown with metadata.",
+  "Create or update a skill. Saved as {projectRoot}/.clawd/skills/{name}/SKILL.md (Claude Code-compatible folder format). " +
+    "Use scope='global' to save to ~/.clawd/skills/ instead.",
   {
     name: {
       type: "string",
-      description: "Skill name (lowercase, no spaces)",
+      description: "Skill name (lowercase a-z, 0-9, hyphens, underscores, max 64 chars)",
     },
     description: {
       type: "string",
-      description: "Brief description of what the skill does",
+      description: "Brief description of what the skill does (<200 chars)",
     },
     triggers: {
       type: "array",
@@ -1537,18 +1541,59 @@ registerTool(
     },
     content: {
       type: "string",
-      description: "Full skill content in markdown format",
+      description: "Full skill content in markdown format (instructions for the agent)",
+    },
+    scope: {
+      type: "string",
+      enum: ["project", "global"],
+      description: 'Where to save: "project" (default, in .clawd/skills/) or "global" (~/.clawd/skills/)',
     },
   },
   ["name", "description", "triggers", "content"],
-  async ({ name, description, triggers, content }) => {
+  async ({ name, description, triggers, content, scope }) => {
     try {
       const { getSkillManager } = await import("../skills/manager");
       const manager = getSkillManager();
 
-      manager.saveSkill({ name, description, triggers, content });
+      const result = manager.saveSkill({ name, description, triggers, content }, scope || "project");
 
-      return { success: true, output: `Skill '${name}' saved successfully.` };
+      if (!result.success) {
+        return { success: false, output: "", error: result.error };
+      }
+
+      return { success: true, output: `Skill '${name}' saved to ${scope || "project"} scope.` };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Skill Delete
+// ============================================================================
+
+registerTool(
+  "skill_delete",
+  "Delete a skill by name. Removes the skill folder and its index entry.",
+  {
+    name: {
+      type: "string",
+      description: "Name of the skill to delete",
+    },
+  },
+  ["name"],
+  async ({ name }) => {
+    try {
+      const { getSkillManager } = await import("../skills/manager");
+      const manager = getSkillManager();
+
+      const deleted = manager.deleteSkill(name);
+
+      if (!deleted) {
+        return { success: false, output: "", error: `Skill '${name}' not found.` };
+      }
+
+      return { success: true, output: `Skill '${name}' deleted.` };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
     }
