@@ -24,18 +24,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     fd-find \
+    ffmpeg \
+    findutils \
     git \
+    imagemagick \
     jq \
+    less \
     openssh-client \
+    procps \
     python3 \
     python3-pip \
     python3-venv \
     ripgrep \
+    rsync \
+    sed \
+    tar \
     tmux \
     unzip \
     wget \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/fdfind /usr/local/bin/fd
+    && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+    && if [ -f /etc/ImageMagick-6/policy.xml ]; then \
+         sed -i 's/rights="none"/rights="read|write"/g' /etc/ImageMagick-6/policy.xml; \
+       fi
+
+# cloudflared (tunnel support)
+RUN ARCH=$(dpkg --print-architecture) && \
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" \
+      -o /usr/local/bin/cloudflared && \
+    chmod +x /usr/local/bin/cloudflared
 
 # Bun runtime (agents spawn bun for sub-tasks)
 COPY --from=builder /usr/local/bin/bun /usr/local/bin/bun
@@ -49,11 +67,13 @@ RUN useradd -m -s /bin/bash clawd \
 USER clawd
 ENV RUSTUP_HOME=/home/clawd/.rustup
 ENV CARGO_HOME=/home/clawd/.cargo
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile default
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal \
+    && rm -rf /home/clawd/.rustup/downloads /home/clawd/.rustup/tmp
 ENV PATH="/home/clawd/.cargo/bin:${PATH}"
 
 USER root
 COPY --from=builder /app/dist/server/clawd-app /usr/local/bin/clawd-app
+RUN ln -s /usr/local/bin/clawd-app /usr/local/bin/clawd
 
 USER clawd
 WORKDIR /home/clawd
