@@ -1,7 +1,6 @@
-# Claw'd — Architecture & Tool Reference
+# Claw'd — Architecture Reference
 
-> Last updated: 2026-03-02  
-> Branch: `feat/agent-workspace`
+> Last updated: 2026-03-08
 
 ---
 
@@ -12,41 +11,73 @@
 3. [Directory Layout](#3-directory-layout)
 4. [Server Entry Point](#4-server-entry-point)
 5. [Database Schema](#5-database-schema)
+   - [chat.db — Chat & Agent State](#51-chatdb--chat--agent-state)
+   - [memory.db — Agent Session Memory](#52-memorydb--agent-session-memory)
 6. [Agent System](#6-agent-system)
-7. [MCP Tool Reference](#7-mcp-tool-reference)
-   - [Chat & File Tools](#71-chat--file-tools-16-tools)
-   - [Plan & Task Tools](#72-plan--task-tools-8-tools)
-   - [Scheduler Tools](#73-scheduler-tools-4-tools)
-   - [Multimodal Tools](#74-multimodal-tools-4-tools)
-   - [Workspace Host Tools](#75-workspace-host-tools-3-tools)
-   - [Workspace Desktop Tools](#76-workspace-desktop-tools-14-tools)
-8. [Multimodal Tools Architecture](#8-multimodal-tools-architecture)
-9. [Agent Workspace System](#9-agent-workspace-system)
-10. [LLM Provider System](#10-llm-provider-system)
-11. [Chat UI](#11-chat-ui)
-12. [Build & Run](#12-build--run)
-13. [Configuration Reference](#13-configuration-reference)
-14. [Example Agent Interactions](#14-example-agent-interactions)
+   - [Worker Loop](#61-worker-loop)
+   - [Agent Class & Reasoning Loop](#62-agent-class--reasoning-loop)
+   - [Token Management & Context Compaction](#63-token-management--context-compaction)
+   - [Plugin System](#64-plugin-system)
+   - [Memory System](#65-memory-system)
+7. [Browser Extension](#7-browser-extension)
+   - [Architecture Overview](#71-architecture-overview)
+   - [Normal Mode (CDP)](#72-normal-mode-cdp)
+   - [Stealth Mode (Anti-Bot)](#73-stealth-mode-anti-bot)
+   - [Anti-Detection Shield](#74-anti-detection-shield)
+   - [Distribution](#75-distribution)
+8. [Sub-Agent System (Spaces)](#8-sub-agent-system-spaces)
+   - [Space Lifecycle](#81-space-lifecycle)
+   - [Scheduler Integration](#82-scheduler-integration)
+9. [Sandbox Security](#9-sandbox-security)
+   - [Linux (bubblewrap)](#91-linux-bubblewrap)
+   - [macOS (sandbox-exec)](#92-macos-sandbox-exec)
+   - [Access Policy](#93-access-policy)
+10. [Remote Worker Bridge](#10-remote-worker-bridge)
+11. [WebSocket Events](#11-websocket-events)
+12. [API Reference](#12-api-reference)
+    - [Chat APIs](#121-chat-apis)
+    - [File APIs](#122-file-apis)
+    - [Reaction APIs](#123-reaction-apis)
+    - [Agent Streaming APIs](#124-agent-streaming-apis)
+    - [Agent Management APIs](#125-agent-management-apis)
+    - [App Management APIs](#126-app-management-apis)
+    - [Project Browser APIs](#127-project-browser-apis)
+    - [Analytics APIs](#128-analytics-apis)
+    - [Task Management APIs](#129-task-management-apis)
+    - [Special Endpoints](#1210-special-endpoints)
+13. [LLM Provider System](#13-llm-provider-system)
+14. [Chat UI](#14-chat-ui)
+15. [Build System](#15-build-system)
+16. [Docker Deployment](#16-docker-deployment)
+17. [Configuration Reference](#17-configuration-reference)
+    - [config.json Schema](#171-configjson-schema)
+    - [System Files & Directories](#172-system-files--directories)
 
 ---
 
 ## 1. System Overview
 
-Claw'd is an open-source agentic chat platform where AI agents operate autonomously in isolated desktop environments called **workspaces**. Agents can:
+Claw'd is an open-source agentic chat platform where AI agents operate autonomously,
+communicating with users through a real-time collaborative chat UI. Agents can:
 
-- Communicate with users through a real-time collaborative chat UI
-- Execute code, browse the web, and interact with files using MCP tools
-- Control a full Ubuntu desktop (Chrome, native apps, clipboard, TOTP) from inside Docker containers
-- Analyze and generate images/video using Gemini vision models
-- Create and manage multi-phase plans and scheduled tasks
-- Delegate work to sub-agents for parallel execution
+- Communicate with users and each other through real-time collaborative chat
+- Execute code, browse the web, and interact with files using tool plugins
+- Control a Chrome browser remotely via the browser extension (CDP or stealth mode)
+- Analyze and generate images using multi-provider vision models
+- Create and manage scheduled tasks (cron, interval, one-shot)
+- Delegate work to sub-agents via the Spaces system for parallel execution
+- Persist long-term memories, knowledge chunks, and session context across restarts
 
 **Core design principles:**
-- **Single binary deployment** — compiles to `dist/server/clawd-app` with embedded UI
-- **Workspace isolation** — each agent gets its own Docker container + private Docker network
-- **Tool-first agents** — all agent actions go through the Model Context Protocol (MCP)
-- **Provider-agnostic** — supports Copilot, OpenAI, Anthropic, Gemini, CPA (CLIProxyAPI)
-- **Secure by default** — sandboxed tools, path validation, auth tokens, no host port exposure
+
+| Principle | Description |
+|---|---|
+| **Single binary deployment** | Compiles to `dist/server/clawd-app` with embedded UI + browser extension |
+| **Provider-agnostic** | Supports Copilot, OpenAI, Anthropic, Ollama, Minimax |
+| **Plugin-first agents** | All agent capabilities are expressed through the ToolPlugin/Plugin interfaces |
+| **Secure by default** | Sandboxed tool execution (bubblewrap/sandbox-exec), path validation, auth tokens |
+| **Real-time collaboration** | WebSocket-driven UI with streaming tokens, tool calls, and read receipts |
+| **Multi-agent** | Multiple agents per channel, sub-agent spawning, remote worker bridge |
 
 ---
 
@@ -54,47 +85,50 @@ Claw'd is an open-source agentic chat platform where AI agents operate autonomou
 
 ```
 User Browser
-    │
-    │  HTTP/WebSocket  (default: localhost:3456)
+    │  HTTP/WebSocket (default: localhost:3456)
     ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ Claw'd Server  (src/index.ts — Bun HTTP + WebSocket)             │
-│                                                                  │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
-│  │  Chat API   │  │ MCP Endpoint │  │ Workspace Proxy       │   │
-│  │ /api/*      │  │ /mcp         │  │ /workspace/:id/novnc  │   │
-│  └──────┬──────┘  └──────┬───────┘  └──────────┬───────────┘   │
-│         │                │                       │               │
-│  ┌──────▼────────────────▼───────┐    ┌──────────▼──────────┐   │
-│  │  SQLite (WAL mode)            │    │  Caddy Gateway       │   │
-│  │  messages, files, agents,     │    │  (clawd-gateway)     │   │
-│  │  plans, scheduler, summaries  │    │  127.0.0.1:7777      │   │
-│  └───────────────────────────────┘    └──────────┬──────────┘   │
-│                                                   │ Docker net   │
-│  ┌────────────────────────────────────────────────▼──────────┐   │
-│  │  Agent Loop  (src/agent/)                                  │   │
-│  │  ├─ LLM provider (Copilot / OpenAI / Anthropic / Gemini)  │   │
-│  │  ├─ Tool plugins (workspace, state-persistence, context)   │   │
-│  │  ├─ MCP clients (chat server MCP + workspace MCP)          │   │
-│  │  ├─ Sub-agent spawner                                      │   │
-│  │  └─ Context compactor / token budget manager              │   │
-│  └────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
-                                    │
-          ┌─────────────────────────┘
-          │  Docker
-          ▼
-┌─────────────────────────────────────────┐
-│ clawd-workspace:{base|web3} container    │
-│  ├─ Xvfb :99 (1280×1024 virtual display)│
-│  ├─ Fluxbox (window manager)            │
-│  ├─ Chromium (Playwright-controlled)     │
-│  ├─ MetaMask + Freighter (web3 image)   │
-│  ├─ noVNC :6080 (desktop streaming)     │
-│  └─ Workspace MCP Server :3000          │
-│      └─ 14 desktop-control tools        │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│ Claw'd Server (src/index.ts — Bun HTTP+WS) │
+│                                              │
+│  ┌──────────┐  ┌────────────┐  ┌──────────┐│
+│  │ Chat API │  │MCP Endpoint│  │ Browser  ││
+│  │ /api/*   │  │ /mcp       │  │ Bridge   ││
+│  └────┬─────┘  └─────┬──────┘  └────┬─────┘│
+│       │               │              │       │
+│  ┌────▼───────────────▼──────┐       │       │
+│  │ SQLite (WAL mode)         │       │       │
+│  │ chat.db (messages, agents)│       │       │
+│  │ memory.db (LLM sessions)  │       │       │
+│  └───────────────────────────┘       │       │
+│                                      │       │
+│  ┌──────────────────────────────────▼──────┐│
+│  │ Agent Loop (src/agent/)                  ││
+│  │ ├─ LLM provider (multi-provider)        ││
+│  │ ├─ Tool plugins (browser, workspace)    ││
+│  │ ├─ MCP clients (chat + external)        ││
+│  │ ├─ Sub-agent spawner (spaces)           ││
+│  │ └─ Context compactor / token manager    ││
+│  └──────────────────────────────────────────┘│
+└──────────────────────────────────────────────┘
+         │ WebSocket
+         ▼
+┌──────────────────────────┐
+│ Chrome Browser Extension │
+│ (packages/browser-extension/) │
+│ ├─ CDP tools (normal)    │
+│ └─ Stealth mode (anti-bot)│
+└──────────────────────────┘
 ```
+
+### Data Flow Summary
+
+1. **User → Server**: HTTP requests hit `/api/*` routes; WebSocket at `/ws` for real-time events
+2. **Server → Database**: Two SQLite databases — `chat.db` for chat state, `memory.db` for LLM sessions
+3. **Server → Agent Loop**: Worker manager starts one `WorkerLoop` per agent, polling every 200ms
+4. **Agent → LLM**: Streaming calls to configured provider (Copilot, OpenAI, Anthropic, Ollama, Minimax)
+5. **Agent → Tools**: Plugin system executes tool calls; results flow back into the LLM loop
+6. **Agent → Browser**: WebSocket bridge to Chrome extension for remote browser automation
+7. **Agent → Sub-agents**: Spaces system spawns isolated sub-agent channels for parallel work
 
 ---
 
@@ -102,56 +136,73 @@ User Browser
 
 ```
 clawd/
-├── src/
-│   ├── index.ts                  # Bun HTTP + WebSocket server
-│   ├── config-file.ts            # ~/.clawd/config.json loader
-│   ├── embedded-ui.ts            # Auto-generated: UI assets as base64
+├── src/                        # Main server + agent system
+│   ├── index.ts                # Server entry point (HTTP/WS/routes)
+│   ├── config.ts               # CLI config parser
+│   ├── config-file.ts          # ~/.clawd/config.json loader
+│   ├── worker-loop.ts          # Per-agent polling loop
+│   ├── worker-manager.ts       # Multi-agent orchestrator
 │   ├── server/
-│   │   ├── mcp.ts                # MCP tool definitions + handlers (36 tools)
-│   │   ├── database.ts           # SQLite setup, schema, prepared statements
-│   │   ├── multimodal.ts         # Gemini image/video analysis + generation
-│   │   └── routes/
-│   │       ├── files.ts          # File upload/download routes
-│   │       ├── workspace-proxy.ts# noVNC HTTP + WS proxy via Caddy gateway
-│   │       └── websocket.ts      # WebSocket dispatch (chat + workspace WS)
-│   └── agent/
-│       ├── src/
-│       │   ├── agent/            # Main Agent class + agentic loop
-│       │   ├── api/              # LLM provider abstraction + factory
-│       │   ├── workspace/
-│       │   │   ├── container.ts  # Docker container lifecycle
-│       │   │   ├── pool.ts       # Pre-warmed workspace pool
-│       │   │   ├── gateway.ts    # Caddy gateway management
-│       │   │   └── worktree.ts   # Git worktree management
-│       │   ├── plugins/
-│       │   │   ├── workspace-plugin.ts  # spawn/destroy/list workspace tools
-│       │   │   ├── state-persistence-plugin.ts
-│       │   │   └── context-mode-plugin.ts
-│       │   ├── mcp/              # MCP JSON-RPC client
-│       │   ├── memory/           # Token tracking + context compaction
-│       │   ├── subagent/         # Sub-agent delegation
-│       │   └── skills/           # Custom skill plugins
-│       ├── plugins/
-│       │   ├── clawd-chat/       # Primary chat agent
-│       │   └── clawd-agent-bus/  # Inter-agent event bus
-│       └── workers/              # Multi-agent worker pools
-├── packages/
-│   ├── ui/                       # React SPA (Vite + TypeScript)
+│   │   ├── database.ts         # chat.db SQLite schema
+│   │   ├── websocket.ts        # WebSocket broadcasting
+│   │   ├── routes/             # API route handlers
+│   │   └── browser-bridge.ts   # Browser extension WS bridge
+│   ├── agent/
 │   │   └── src/
-│   │       ├── App.tsx           # Root component
-│   │       ├── MessageList.tsx   # Messages, workspace cards, subspace cards
-│   │       ├── MessageComposer.tsx
-│   │       ├── PlanModal.tsx
-│   │       └── styles.css
-│   └── workspace-mcp/            # Workspace container MCP server
-│       └── src/server.ts         # 14 desktop tools
-├── docs/                         # Architecture docs, research, brainstorms
-├── plans/                        # Agent implementation plans
-├── scripts/                      # Build utilities (embed-ui.ts)
-├── Dockerfile                    # Builds clawd-workspace:base image
-├── Dockerfile.web3               # Adds MetaMask + Freighter wallet extensions
-└── package.json
+│   │       ├── agent/agent.ts  # Main Agent class + reasoning loop
+│   │       ├── memory/         # memory.ts, knowledge-base.ts, agent-memory.ts
+│   │       ├── session/        # Session manager, checkpoints, summarizer
+│   │       ├── plugins/        # browser-plugin.ts, workspace-plugin.ts
+│   │       ├── mcp/            # MCP client connections
+│   │       ├── tools/          # Tool execution + plugin system
+│   │       └── utils/          # sandbox.ts, agent-context.ts
+│   ├── spaces/                 # Sub-agent system
+│   │   ├── manager.ts          # Space lifecycle management
+│   │   ├── worker.ts           # Space worker orchestrator
+│   │   ├── spawn-plugin.ts     # spawn_agent tool
+│   │   ├── plugin.ts           # respond_to_parent, get_space_info
+│   │   └── db.ts               # spaces table schema
+│   ├── scheduler/              # Scheduled jobs (cron, interval, once)
+│   │   ├── manager.ts          # Scheduler tick loop
+│   │   ├── runner.ts           # Job executor (creates sub-spaces)
+│   │   └── parse-schedule.ts   # Natural language schedule parser
+│   └── api/                    # Agent management, articles, MCP servers
+├── packages/
+│   ├── ui/                     # React SPA (Vite + TypeScript)
+│   │   └── src/
+│   │       ├── App.tsx         # Main app, WS handling, state
+│   │       ├── MessageList.tsx # Messages + StreamOutputDialog
+│   │       └── styles.css      # All styles
+│   └── browser-extension/      # Chrome MV3 extension
+│       ├── manifest.json       # Extension manifest
+│       └── src/
+│           ├── service-worker.js # Command dispatcher (~2700 lines)
+│           ├── content-script.js # DOM extraction
+│           ├── shield.js       # Anti-detection patches
+│           └── offscreen.js    # WS connection maintainer
+├── scripts/                    # Build utilities
+│   ├── embed-ui.ts             # Embeds UI into binary
+│   └── zip-extension.ts        # Packs extension into binary
+├── docs/                       # Documentation
+├── Dockerfile                  # Multi-stage Docker build
+└── compose.yaml                # Docker Compose deployment
 ```
+
+### Key Files Quick Reference
+
+| File | Purpose |
+|------|---------|
+| `src/index.ts` | HTTP server, WebSocket handler, route registration |
+| `src/config.ts` | CLI argument parser (--port, --host, --yolo, --debug) |
+| `src/config-file.ts` | Loads and validates `~/.clawd/config.json` |
+| `src/worker-loop.ts` | Per-agent polling loop (200ms interval) |
+| `src/worker-manager.ts` | Manages lifecycle of all agent WorkerLoop instances |
+| `src/server/database.ts` | SQLite schema, migrations, prepared statements for chat.db |
+| `src/server/websocket.ts` | WebSocket connection tracking, message broadcasting |
+| `src/server/browser-bridge.ts` | WebSocket bridge between agents and browser extension |
+| `src/agent/src/agent/agent.ts` | Core Agent class — reasoning loop, tool dispatch |
+| `src/spaces/manager.ts` | Sub-agent space creation, lifecycle, cleanup |
+| `src/scheduler/manager.ts` | Cron/interval/once job scheduling and execution |
 
 ---
 
@@ -159,417 +210,837 @@ clawd/
 
 `src/index.ts` runs a single Bun HTTP + WebSocket server (default: `0.0.0.0:3456`).
 
-### HTTP Routes
+### Request Routing
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/health` | Liveness probe |
-| POST | `/mcp`, `/api/mcp` | MCP JSON-RPC tool dispatch |
-| POST | `/api/chat.postMessage` | Send a message |
-| POST | `/api/chat.update` | Edit a message |
-| POST | `/api/chat.delete` | Delete a message |
-| GET | `/api/conversations.list` | List channels |
-| GET | `/api/conversations.history` | Message history (paginated) |
-| GET | `/api/conversations.search` | Full-text message search |
-| POST | `/api/files.upload` | Upload file attachment |
-| GET | `/api/files/:fileId` | Download / serve file |
-| GET | `/api/files/:fileId/optimized` | Serve resized image |
-| GET | `/api/agent.getLastSeen` | Agent read state |
-| POST | `/api/agent.markSeen` | Update agent read cursor |
-| POST | `/api/agent.setSleeping` | Hibernate/wake agent |
-| GET/POST | `/api/plans.*` | Plan CRUD |
-| GET/POST | `/api/tasks.*` | Task CRUD |
-| GET/POST | `/api/scheduler.*` | Scheduler management |
-| GET | `/workspace/:id/novnc/*` | Proxy to workspace noVNC via Caddy gateway |
-| GET | `/*` | Embedded React SPA (SPA fallback) |
+All API requests are routed through the HTTP handler. The server serves three primary
+functions:
 
-### WebSocket Protocol
+1. **REST API** (`/api/*`) — Chat, agent management, files, scheduler, analytics
+2. **MCP Endpoint** (`/mcp`) — Model Context Protocol SSE transport for external clients
+3. **Static Assets** (`/*`) — Embedded React SPA served as fallback for all non-API routes
+
+### WebSocket Connections
 
 | Upgrade Path | Purpose |
 |-------------|---------|
-| `/ws` | Real-time chat (messages, reactions, agent tokens, tool calls) |
-| `/workspace/:id/novnc/websockify` | Binary relay to noVNC websockify via Caddy gateway |
-
-**WS message types (server → client):**
-- `message_new` / `message_update` / `message_delete`
-- `agent_streaming` / `agent_token` / `agent_tool_call`
-- `reaction_add` / `reaction_remove`
-- `typing_start` / `typing_stop`
+| `/ws` | Real-time chat events (messages, reactions, agent streaming, tool calls) |
+| `/browser/ws` | Browser extension bridge (command dispatch + results) |
 
 ---
 
 ## 5. Database Schema
 
-SQLite (WAL mode), located at `~/.clawd/clawd.db`.
+Claw'd uses two separate SQLite databases, both in WAL mode for concurrent read/write.
 
-| Table | Key Columns | Purpose |
-|-------|-------------|---------|
-| `users` | id, name, avatar_url, is_bot | User + agent profiles |
-| `channels` | id, name, created_by | Chat spaces/channels |
-| `messages` | ts (PK), channel, user, text, html_preview, agent_id, files_json, reactions_json, subspace_json, **workspace_json** | Core message log |
-| `files` | id, name, mimetype, size, path, uploaded_by | File attachments |
-| `agent_seen` | agent_id, channel, last_seen_ts, last_processed_ts | Agent read state |
-| `agent_status` | agent_id, channel, status, hibernate_until | Agent lifecycle |
-| `agents` | id, channel, avatar_color, display_name, is_sleeping | Agent registry |
-| `summaries` | id, channel, agent_id, summary, from_ts, to_ts | Context summaries |
-| `message_seen` | message_ts, channel, agent_id | Per-agent receipts |
-| `articles` | id, channel, title, content, tags_json, published | Blog/doc posts |
-| `plans` | id, channel, title, description, phases_json, status | Multi-phase plans |
-| `tasks` | id, plan_id, phase_id, title, status, assignee | Plan tasks |
-| `scheduler_jobs` | id, channel, cron/delay, action, last_run, next_run | Scheduled jobs |
+### 5.1 chat.db — Chat & Agent State
 
-**`workspace_json` column** (in `messages`) stores workspace preview cards:
-```json
-{
-  "workspace_id": "abc123...",
-  "title": "Web3 Testing Workspace",
-  "description": "Ready for MetaMask interaction",
-  "status": "running"
-}
-```
+**Location**: `~/.clawd/data/chat.db`
+
+This is the primary database for all chat, agent, and scheduling state.
+
+#### channels
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | Channel identifier |
+| `name` | TEXT | Display name |
+| `created_by` | TEXT | Creator user/agent ID |
+
+#### messages
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ts` | TEXT PK | Timestamp (message ID) |
+| `channel` | TEXT | Channel the message belongs to |
+| `user` | TEXT | Sender (user or agent ID) |
+| `text` | TEXT | Message content (Markdown) |
+| `agent_id` | TEXT | Agent that generated this message (nullable) |
+| `subspace_json` | TEXT | Sub-agent space metadata (nullable) |
+| `tool_result_json` | TEXT | Tool execution result (nullable) |
+
+#### files
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | File identifier |
+| `name` | TEXT | Storage filename |
+| `mimetype` | TEXT | MIME type |
+| `size` | INTEGER | File size in bytes |
+| `path` | TEXT | File storage path |
+| `message_ts` | TEXT | Associated message timestamp |
+| `uploaded_by` | TEXT | User who uploaded the file |
+| `created_at` | TEXT | Creation timestamp |
+| `public` | INTEGER | Whether the file is publicly accessible |
+
+#### agents
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | Agent identifier |
+| `channel` | TEXT | Home channel |
+| `avatar_color` | TEXT | Display color |
+| `display_name` | TEXT | Human-readable name |
+| `is_worker` | INTEGER | Whether this is a worker agent |
+| `is_sleeping` | INTEGER | Whether the agent is hibernating |
+
+#### channel_agents
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `channel` | TEXT | Channel ID |
+| `agent_id` | TEXT | Agent ID |
+| `provider` | TEXT | LLM provider for this assignment |
+| `model` | TEXT | LLM model for this assignment |
+| `project` | TEXT | Project/workspace path |
+| `worker_token` | TEXT | Remote worker auth token (nullable) |
+
+#### agent_seen
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `agent_id` | TEXT | Agent ID |
+| `channel` | TEXT | Channel ID |
+| `last_seen_ts` | TEXT | Last message the agent observed |
+| `last_processed_ts` | TEXT | Last message the agent acted on |
+| `last_poll_ts` | TEXT | Last poll timestamp |
+
+#### agent_status
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `agent_id` | TEXT | Agent ID |
+| `channel` | TEXT | Channel ID |
+| `status` | TEXT | Current status |
+| `hibernate_until` | TEXT | Wake-up timestamp (nullable) |
+
+#### summaries
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `channel` | TEXT | Channel ID |
+| `agent_id` | TEXT | Agent that created the summary |
+| `summary` | TEXT | Compressed context summary |
+
+#### spaces
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | Space identifier |
+| `channel` | TEXT | Parent channel |
+| `space_channel` | TEXT | Isolated sub-channel (format: `{parent}:space:{uuid}`) |
+| `title` | TEXT | Space task description |
+| `status` | TEXT | Status (active, completed, failed, timed_out) |
+
+#### Other Tables
+
+| Table | Purpose |
+|-------|---------|
+| `articles` | Knowledge articles |
+| `copilot_calls` | API call analytics and tracking |
+
+### 5.1b kanban.db — Task & Plan Management
+
+**Location**: `~/.clawd/data/kanban.db`
+
+| Table | Purpose |
+|-------|---------|
+| `tasks` | Channel-scoped tasks (status, assignee, priority, due dates) |
+| `plans` | Plan documents with phases |
+| `phases` | Plan phases/milestones |
+| `plan_tasks` | Tasks linked to plan phases |
+
+### 5.1c scheduler.db — Scheduler State
+
+**Location**: `~/.clawd/data/scheduler.db`
+
+#### scheduled_jobs
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | Job identifier |
+| `channel` | TEXT | Channel the job belongs to |
+| `title` | TEXT | Job description |
+| `type` | TEXT | Schedule type: `once`, `interval`, `cron`, `reminder`, or `tool_call` |
+| `cron_expr` | TEXT | Cron expression (for cron type) |
+
+### 5.2 memory.db — Agent Session Memory
+
+**Location**: `~/.clawd/memory.db`
+
+This database stores all LLM session context, knowledge retrieval data, and long-term
+agent memories.
+
+#### sessions
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | Session identifier |
+| `name` | TEXT | Session name (format: `{channel}-{agentId}`) |
+| `model` | TEXT | LLM model used |
+| `created_at` | INTEGER | Creation timestamp |
+| `updated_at` | INTEGER | Last update timestamp |
+
+#### messages
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `session_id` | TEXT | Foreign key to sessions |
+| `role` | TEXT | Message role (system, user, assistant, tool) |
+| `content` | TEXT | Message content |
+| `tool_calls` | TEXT | JSON-encoded tool call array (nullable) |
+| `tool_call_id` | TEXT | Tool call ID for tool results (nullable) |
+
+#### messages_fts
+
+FTS5 full-text search index on `messages.content` for fast session search.
+
+#### knowledge
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PK | Chunk identifier |
+| `session_id` | TEXT | Session the chunk belongs to |
+| `source_id` | TEXT | Source identifier |
+| `tool_name` | TEXT | Tool that produced this chunk |
+| `chunk_index` | INTEGER | Index of this chunk within the source |
+| `content` | TEXT | Tool output text chunk for retrieval |
+| `created_at` | TEXT | Creation timestamp |
+
+#### knowledge_fts
+
+FTS5 full-text search index on `knowledge.content`.
+
+#### agent_memories
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `agent_id` | TEXT | Agent that owns this memory |
+| `content` | TEXT | Long-term fact, preference, or decision |
+| `channel` | TEXT | Channel context for this memory |
+| `category` | TEXT | Memory category |
+| `source` | TEXT | How this memory was created |
+| `access_count` | INTEGER | Number of times this memory was retrieved |
+| `last_accessed` | TEXT | Last retrieval timestamp |
+| `created_at` | TEXT | Creation timestamp |
+| `updated_at` | TEXT | Last update timestamp |
+
+#### agent_memories_fts
+
+FTS5 full-text search index on `agent_memories.content`.
 
 ---
 
 ## 6. Agent System
 
-### Agentic Loop
+### 6.1 Worker Loop
 
-Each agent session runs a continuous loop:
+**File**: `src/worker-loop.ts`
+
+Each agent runs its own `WorkerLoop` instance, managed by `WorkerManager`:
 
 ```
-poll_chat → get_unprocessed_message
-    │
-    ▼
-inject context (CLAWD.md, recent history, summaries)
-    │
-    ▼
-LLM call (streaming) ← system prompt + tools list
-    │
-    ├── text response → chat_send_message
-    │
-    └── tool call(s) → execute via MCP → inject result → continue loop
-                │
-                └── workspace tools → Docker container → MCP client → result
+┌─────────────────────────────────────────────┐
+│ WorkerManager (src/worker-manager.ts)       │
+│  ├─ WorkerLoop (agent-1) ─── poll 200ms ──┐│
+│  ├─ WorkerLoop (agent-2) ─── poll 200ms ──┤│
+│  └─ WorkerLoop (agent-N) ─── poll 200ms ──┤│
+│                                             ││
+│  Each loop:                                 ││
+│  1. Check for new messages in channel       ││
+│  2. Build prompt (system + context + tools) ││
+│  3. Call LLM (streaming)                    ││
+│  4. Parse response → execute tool calls     ││
+│  5. Post results back to channel            ││
+│  6. Repeat until no pending messages        ││
+└─────────────────────────────────────────────┘
 ```
 
-### Context Management
+**Key behaviors:**
+
+- **Poll interval**: 200ms between checks for new messages
+- **Continuation**: If the LLM returns tool calls, results are injected and the loop continues
+- **Interrupts**: New user messages can interrupt an in-progress agent turn
+- **Retry**: Transient LLM failures trigger automatic retry with exponential backoff
+
+### 6.2 Agent Class & Reasoning Loop
+
+**File**: `src/agent/src/agent/agent.ts`
+
+The `Agent` class implements the core reasoning loop:
+
+```
+LLM Call (streaming)
+    │
+    ├── Text response → post to channel
+    │
+    └── Tool calls → parse → execute each tool
+            │
+            ├── Tool result → inject into context
+            │
+            └── Continue loop (call LLM again with results)
+```
+
+Each iteration:
+
+1. **Build messages array**: system prompt + conversation history + tool definitions
+2. **Stream LLM response**: tokens broadcast via WebSocket as `agent_token` events
+3. **Parse tool calls**: Extract function name + arguments from the response
+4. **Execute tools**: Run through plugin system with `beforeExecute` / `afterExecute` hooks
+5. **Inject results**: Tool outputs added as `tool` role messages
+6. **Loop or terminate**: If tool calls present, repeat; otherwise, post final text
+
+### 6.3 Token Management & Context Compaction
+
+The agent maintains a token budget with three tiers:
 
 | Threshold | Action |
 |-----------|--------|
-| > 50K tokens | Begin soft compaction (keep last 30 messages + summaries) |
-| > 70K tokens | Hard reset (emergency truncation) |
-| Tool results | Capped at 10KB per result (`truncateForAgent`) |
+| **~50K tokens** | ⚠️ Warning — begin soft compaction |
+| **~70K tokens** | 🔴 Critical — aggressive compaction with summarization |
+| **Checkpoint** | Context recovery from saved checkpoints on overflow |
 
-### Sub-Agents
+**Smart compaction** uses importance-weighted message scoring:
 
-Agents can delegate to sub-agents via `chat_send_message` to a dedicated sub-agent channel. Sub-agents run the same loop with a scoped system prompt and report back results.
+- System messages: highest weight (never removed)
+- Recent user messages: high weight
+- Old assistant messages: lower weight, candidates for summarization
+- Tool results: lowest weight, first to be compacted
 
-### Plugins
+**Checkpoint system**: Periodically saves a snapshot of the conversation state. On context
+overflow, the agent can recover from the last checkpoint rather than losing all context.
 
-| Plugin | Purpose |
-|--------|---------|
-| `WorkspaceToolPlugin` | Registers `spawn_workspace`, `destroy_workspace`, `list_workspaces` |
-| `StatePersistencePlugin` | Save/restore agent memory to disk between sessions |
-| `ContextModePlugin` | Toggle between full-action and context-only modes |
+### 6.4 Plugin System
 
----
+Agents are extended through two plugin interfaces:
 
-## 7. MCP Tool Reference
+#### ToolPlugin Interface
 
-All tools follow the [Model Context Protocol](https://modelcontextprotocol.io) JSON-RPC spec and are available at `/mcp`.
-
-### 7.1 Chat & File Tools (16 tools)
-
-| Tool | Description |
-|------|-------------|
-| `chat_poll_and_ack` | Poll for new unprocessed messages in a channel and mark them as seen |
-| `chat_mark_processed` | Mark a specific message as processed to prevent duplicate handling |
-| `chat_send_message` | Post a text message to a channel (supports Markdown, code blocks, workspace cards) |
-| `chat_get_history` | Fetch recent conversation history (paginated, with thread support) |
-| `chat_get_message` | Fetch a single message by timestamp |
-| `chat_get_message_files` | List files attached to a message (returns file ID + metadata, never image base64) |
-| `chat_download_file` | Download a file by ID; for images, returns a hint to use `read_image` instead |
-| `chat_read_file_range` | Read a byte range of a file (blocked for images in base64 encoding) |
-| `chat_upload_file` | Upload a file to the server and attach it to a message |
-| `chat_upload_local_file` | Read a local file path and upload it to chat storage |
-| `chat_send_message_with_files` | Atomically post a message with one or more file attachments |
-| `chat_delete_message` | Delete a message by timestamp |
-| `chat_update_message` | Edit the text of an existing message |
-| `chat_query_messages` | Full-text search across message history by pattern, user, or date range |
-| `chat_get_last_summary` | Retrieve the most recent context summary for a channel |
-| `chat_store_summary` | Save a context summary (used for long-term memory compaction) |
-
-> **Image handling**: `chat_download_file`, `chat_get_message_files`, and `chat_read_file_range` all **refuse to return base64 image content**. Instead they return a hint directing the agent to use `read_image` with the file ID. This prevents context overflow.
-
-### 7.2 Plan & Task Tools (8 tools)
-
-| Tool | Description |
-|------|-------------|
-| `plan_create` | Create a new multi-phase plan with title and description |
-| `plan_list` | List all plans in a channel |
-| `plan_get` | Get full plan details including phases and tasks |
-| `plan_update` | Update plan title, description, or status |
-| `plan_add_phase` | Add a new phase to a plan |
-| `plan_update_phase` | Update phase name, description, or completion status |
-| `plan_link_task` | Associate a task with a plan phase |
-| `plan_get_tasks` | List all tasks in a plan phase |
-
-### 7.3 Scheduler Tools (4 tools)
-
-| Tool | Description |
-|------|-------------|
-| `scheduler_create` | Schedule a recurring (cron) or one-time (delay) job |
-| `scheduler_list` | List all scheduled jobs |
-| `scheduler_cancel` | Cancel a scheduled job by ID |
-| `scheduler_history` | Fetch execution history of a scheduled job |
-
-### 7.4 Multimodal Tools (4 tools)
-
-| Tool | Input | Description |
-|------|-------|-------------|
-| `read_image` | `file_id`, `prompt?` | Analyze an image with Gemini vision; returns text description |
-| `create_image` | `prompt`, `aspect_ratio?`, `image_size?` | Generate an image; auto-saves to files table, returns file ID |
-| `edit_image` | `file_id`, `prompt`, `aspect_ratio?` | Edit/inpaint an existing image using Gemini |
-| `read_video` | `file_id`, `prompt?`, `max_frames?` | Analyze a video (Gemini native upload, or frame extraction fallback) |
-
-**Provider priority**: CPA (primary, if configured) → Gemini direct API (fallback, with quota tracking).  
-**Quota**: Gemini image generation defaults to 50/day. Set `quotas.daily_image_limit: 0` to disable.
-
-### 7.5 Workspace Host Tools (3 tools)
-
-These are registered by `WorkspaceToolPlugin` in the agent process (not the MCP server).
-
-| Tool | Description |
-|------|-------------|
-| `spawn_workspace` | Start a new Docker workspace container (image: `base` or `web3`); returns workspace ID and noVNC URL |
-| `destroy_workspace` | Stop and remove a workspace container, volume, and network |
-| `list_workspaces` | List all active workspaces owned by this agent session |
-
-### 7.6 Workspace Desktop Tools (14 tools)
-
-These become available inside the agent's context after `spawn_workspace`. They control the workspace container's desktop via Playwright and xdotool.
-
-| Tool | Description |
-|------|-------------|
-| `launch_browser` | Open a URL in Chromium (or new tab if already running) |
-| `launch_app` | Start a native Linux application (e.g., `code`, `libreoffice`, `gedit`) |
-| `snapshot` | Get the accessibility tree of the current browser page (cheapest, fastest) |
-| `screenshot` | Capture the entire display; returns file path (use `read_image` to analyze) |
-| `observe` | Screenshot + AI vision analysis in one call (for extension popups and native apps) |
-| `click` | Click an element by CSS selector, coordinates, or AI description |
-| `type_text` | Type text at the current focus (Playwright or xdotool for extension dialogs) |
-| `press_key` | Press a keyboard key or combination (e.g., `Enter`, `Ctrl+C`, `Tab`) |
-| `select_option` | Select a `<select>` dropdown option by value or label |
-| `drag` | Drag from one coordinate to another |
-| `handle_dialog` | Accept or dismiss browser dialogs (alert, confirm, prompt) |
-| `wait` | Wait for an element to appear, disappear, or for a fixed duration |
-| `scroll` | Scroll the page or an element up, down, left, or right |
-| `get_context` | Get current browser URL, title, and scroll position |
-| `window_manage` | Resize, minimize, maximize, or focus a native window |
-| `clipboard` | Read from or write to the system clipboard |
-| `file_dialog` | Handle file picker dialogs (upload files into the browser) |
-| `totp_code` | Generate a TOTP 2FA code from a stored secret |
-| `pause_for_human` | Display a message in the workspace UI to request human interaction |
-
----
-
-## 8. Multimodal Tools Architecture
-
-### Provider Priority
-
-```
-create_image / edit_image / read_image / read_video
-    │
-    ├─ CPA configured? (providers.cpa in config.json)
-    │       └─ YES → POST to CPA base_url (OpenAI-compatible)
-    │                    model: models.flash-image (image gen/edit)
-    │                    model: models.flash (vision analysis)
-    │                 ├─ Success → return result
-    │                 └─ Failure → fall through to Gemini
-    │
-    └─ Gemini API key configured? (env.GEMINI_API_KEY)
-            └─ YES → POST to generativelanguage.googleapis.com
-                         ├─ Image gen/edit: check daily quota first
-                         ├─ Success → record quota, return result
-                         └─ Quota exceeded → return error with usage info
-```
-
-### Image Tools
-
-| Setting | Value |
-|---------|-------|
-| Vision model (CPA) | `models.flash` or `gemini-3-flash` |
-| Vision model (Gemini) | `gemini-2.5-flash` |
-| Image gen model (CPA) | `models.flash-image` or `gemini-3.1-flash-image` |
-| Image gen model (Gemini) | `gemini-3.1-flash-image-preview` |
-| Max inline size | 20 MB (base64 inline) |
-| Max Files API size | 200 MB (resumable upload) |
-| Output truncation | 10,000 characters |
-| Generated image saved to | `ATTACHMENTS_DIR` + registered in `files` table |
-
-### Video Analysis Flow
-
-```
-read_video(file_id)
-    │
-    ├─ file ≤ 200 MB → Upload via Gemini Files API (polling until ACTIVE)
-    │       ├─ Analysis OK → return result
-    │       └─ Analysis fails → fallback ↓
-    │
-    └─ file > 200 MB → Frame extraction
-            ├─ ffprobe → get duration
-            ├─ ffmpeg → fps = max_frames/duration → extract JPEGs
-            ├─ Gemini → analyze extracted frames as inline images
-            └─ Cleanup temp frames directory
-```
-
-### Quota Tracking
-
-- **Applies to**: Gemini API image generation and editing only
-- **Not applied to**: CPA calls (CPA server manages its own limits)
-- **Usage file**: `~/.clawd/usage.json` (atomic write on every update)
-- **Default limit**: 50 images/day
-- **Reset**: Midnight Pacific Time (Google's quota cycle)
-- **Config**: `quotas.daily_image_limit` in `~/.clawd/config.json` (`0` = unlimited)
-
-### Security
-
-| Protection | Implementation |
-|-----------|----------------|
-| No path traversal | Tools accept `file_id` only; path resolved via DB lookup |
-| Symlink-safe | `isPathSafe()` uses `realpathSync()` before directory check |
-| API key sanitization | `sanitizeError()` strips keys from all error messages |
-| Image base64 blocking | Three MCP handlers refuse to return image base64 (always redirect to `read_image`) |
-| Input validation | `aspect_ratio` and `image_size` validated against allowlists |
-| MIME defense-in-depth | All MIME checks use `.toLowerCase().startsWith()` in both handlers and helpers |
-
----
-
-## 9. Agent Workspace System
-
-### Architecture
-
-```
-Host Process (src/agent/)
-├── WorkspaceToolPlugin
-│   └── spawn_workspace → container.ts → Docker API
-│
-├── WorkspacePool (pool.ts)
-│   ├── Pre-warmed containers (acquire in ~200ms vs 5-10s cold)
-│   └── TCP probe health checks
-│
-├── MCPManager
-│   └── HTTP connection per workspace (Bearer token auth)
-│
-└── gateway.ts → clawd-gateway (Caddy, port 7777)
-        └── /{id}/* → clawd-ws-{id}:6080 (via Docker network DNS)
-
-Workspace Container (clawd-workspace:base or :web3)
-├── Ubuntu 24.04
-├── Node.js 22 + Playwright 1.58.2
-├── Chromium (persistent profile in named volume)
-├── Xvfb :99 → x11vnc → noVNC :6080
-├── Fluxbox window manager
-└── Workspace MCP Server (Express, :3000)
-    ├── Auth: WORKSPACE_AUTH_TOKEN (256-bit)
-    ├── /health (unauthenticated)
-    └── 14 tools (launch_browser, screenshot, click, ...)
-```
-
-### Container Lifecycle
-
-```
-spawnWorkspace()
-  1. Allocate MCP port (pool: 6000–6099)
-  2. docker volume create clawd-ws-data-{id}
-  3. docker network create clawd-ws-net-{id}
-  4. ensureGatewayRunning() — start Caddy if not running
-  5. docker run [hardening flags] clawd-workspace:{image}
-  6. waitForHealthy(): Docker HEALTHCHECK → TCP probe → HTTP 401
-  7. connectWorkspaceToGateway(id):
-     a. docker network connect clawd-ws-net-{id} clawd-gateway
-     b. POST Caddy admin API: register route /{id}/* → clawd-ws-{id}:6080
-  8. Register in MCPManager with auth token
-
-destroyWorkspace()
-  1. disconnectWorkspaceFromGateway(id):
-     a. DELETE Caddy route /id/ws-{id}
-     b. docker network disconnect clawd-ws-net-{id} clawd-gateway
-  2. docker stop → docker rm
-  3. docker volume rm clawd-ws-data-{id}
-  4. docker network rm clawd-ws-net-{id}
-  5. Release MCP port
-  6. MCPManager.removeServer(workspace-{id})
-```
-
-### Caddy Gateway
-
-noVNC ports are **not published to the host**. All desktop traffic routes through the Caddy gateway container:
-
-```
-Browser → /workspace/{id}/novnc/*
-    → workspace-proxy.ts (src/server/routes/)
-    → http://127.0.0.1:7777/{id}/{path}   (Caddy gateway)
-    → clawd-ws-{id}:6080                  (via Docker bridge DNS)
-```
-
-- Caddy admin API (port 2019) is bound to `127.0.0.1` only
-- Routes registered per-workspace on spawn, removed on destroy
-- Reconciled from Docker inspect on process restart
-
-### Isolation & Security
-
-| Feature | Implementation |
-|---------|----------------|
-| Container hardening | `--cap-drop ALL --security-opt no-new-privileges --pids-limit 200 --tmpfs /tmp` |
-| Network isolation | Per-workspace bridge network `clawd-ws-net-{id}` — containers cannot reach each other |
-| Auth token | `randomBytes(32)` (256-bit entropy), injected as `WORKSPACE_AUTH_TOKEN` |
-| Image allowlist | `clawd-workspace:{base,web3,devtools,office}` — LLM cannot pull arbitrary images |
-| Port binding | MCP bound to `127.0.0.1:{6000-6099}` only; noVNC/VNC only inside Docker network |
-| Credential injection | CPA key passed as env vars only — full `config.json` never mounted |
-
-### Docker Images
-
-| Image | Contents | Use Case |
-|-------|----------|----------|
-| `clawd-workspace:base` | Ubuntu 24.04, Chromium + Playwright, Xvfb, Fluxbox, noVNC, workspace MCP server | General browsing and automation |
-| `clawd-workspace:web3` | base + MetaMask v12.0.0 (SHA256 verified) + Freighter v5.37.3 (SHA256 verified) | DeFi / blockchain / wallet tasks |
-
-### Workspace Preview Card
-
-When an agent calls `spawn_workspace`, it can include a workspace preview card in its message:
-
-```json
-{
-  "workspace_id": "abc123def456...",
-  "title": "Web3 Testing Workspace",
-  "description": "MetaMask + Freighter installed",
-  "status": "running"
+```typescript
+interface ToolPlugin {
+  getTools(): ToolDefinition[]      // Register available tools
+  beforeExecute?(call): boolean     // Pre-execution hook (can block)
+  afterExecute?(call, result): void // Post-execution hook
 }
 ```
 
-The card appears in the chat UI with a colored border:
-- 🟢 **Green** = `running` (desktop is live, click to open noVNC tab)
-- 🟡 **Yellow** = `waiting` (container starting)
-- ⚫ **Grey** = `completed` (workspace destroyed)
+#### Plugin Interface
 
-Clicking the card opens the noVNC desktop in a new browser tab at `/workspace/{id}/novnc/vnc.html`.
+```typescript
+interface Plugin {
+  onUserMessage?(message): void       // React to user messages
+  onToolCall?(call): void             // React to tool executions
+  getSystemContext?(): string          // Inject into system prompt
+  // ... additional lifecycle hooks
+}
+```
 
-### Single-Workspace Constraint
+#### Active Plugins
 
-Each agent session is limited to **one active workspace at a time**. This prevents MCP tool name collisions (all workspace MCP servers expose the same 14 tool names). To switch workspaces: call `destroy_workspace` first, then `spawn_workspace`.
+| Plugin | File | Purpose |
+|--------|------|---------|
+| `browser-plugin` | `plugins/browser-plugin.ts` | Browser automation tools via extension bridge |
+| `workspace-plugin` | `plugins/workspace-plugin.ts` | File system and project workspace tools |
+| `context-mode-plugin` | `plugins/context-mode-plugin.ts` | Toggle between action and context-only modes |
+| `state-persistence-plugin` | `plugins/state-persistence-plugin.ts` | Save/restore agent state across restarts |
+| `tunnel-plugin` | `plugins/tunnel-plugin.ts` | Expose local services via tunnels |
+| `spawn-agent-spaces` | `spaces/spawn-plugin.ts` | Sub-agent spawning via spaces system |
+
+### 6.5 Memory System
+
+The memory system has three tiers, each serving different retrieval needs:
+
+```
+┌─────────────────────────────────────────────────┐
+│ Tier 1: Session Memory (messages table)         │
+│ ├─ Full conversation history with LLM           │
+│ ├─ Subject to compaction at token thresholds    │
+│ └─ Checkpointed for recovery                    │
+├─────────────────────────────────────────────────┤
+│ Tier 2: Knowledge Base (knowledge table)        │
+│ ├─ FTS5-indexed tool output chunks              │
+│ ├─ Retrieved by FTS5 keyword matching on demand │
+│ └─ Enables recall of past tool results          │
+├─────────────────────────────────────────────────┤
+│ Tier 3: Agent Memory (agent_memories table)     │
+│ ├─ Long-term facts, preferences, decisions      │
+│ ├─ FTS5-indexed for search                      │
+│ └─ Persists across sessions indefinitely        │
+└─────────────────────────────────────────────────┘
+```
+
+**Tier 1 — Session memory**: The raw conversation with the LLM, stored in `memory.db → messages`.
+This is the working memory that gets compacted when token limits are reached.
+
+**Tier 2 — Knowledge base**: When tools return large outputs (file contents, command results,
+web pages), the output is chunked and stored in `knowledge` with FTS5 indexing. The
+agent can later retrieve relevant chunks via FTS5 keyword matching without re-executing the tool.
+
+**Tier 3 — Agent memory**: Explicit long-term storage of facts ("user prefers dark mode"),
+preferences ("always use TypeScript"), and decisions ("we chose PostgreSQL for the DB").
+These persist indefinitely and are injected into the system prompt when relevant.
 
 ---
 
-## 10. LLM Provider System
+## 7. Browser Extension
 
-### Configuration
+The Chrome browser extension is the primary mechanism for agent browser automation. It
+connects to the clawd server via WebSocket and executes browser commands on behalf of agents.
 
-Set the provider in `~/.clawd/config.json`:
+### 7.1 Architecture Overview
+
+```
+┌─────────────────────────────────────────────┐
+│ Chrome Browser Extension (MV3)              │
+│                                              │
+│  ┌──────────────────────────────────────┐   │
+│  │ service-worker.js (~2700 lines)      │   │
+│  │ ├─ Command dispatcher                │   │
+│  │ ├─ CDP mode (chrome.debugger API)    │   │
+│  │ └─ Stealth mode (scripting API)      │   │
+│  └──────────────┬───────────────────────┘   │
+│                  │                            │
+│  ┌──────────────▼───────────────────────┐   │
+│  │ offscreen.js                         │   │
+│  │ └─ WebSocket connection maintainer   │   │
+│  │    (WS ping every 20s,              │   │
+│  │     SW keepalive every 25s)         │   │
+│  └──────────────┬───────────────────────┘   │
+│                  │ WebSocket                  │
+│  ┌──────────────▼───────────────────────┐   │
+│  │ content-script.js                    │   │
+│  │ └─ DOM extraction + interaction      │   │
+│  └──────────────────────────────────────┘   │
+│                                              │
+│  ┌──────────────────────────────────────┐   │
+│  │ shield.js (MAIN world, document_start│   │
+│  │ └─ Anti-detection patches            │   │
+│  └──────────────────────────────────────┘   │
+└─────────────────────────────────────────────┘
+         │ WebSocket
+         ▼
+┌─────────────────────────────────────────────┐
+│ Claw'd Server (browser-bridge.ts)           │
+│ └─ /browser/ws endpoint                     │
+└─────────────────────────────────────────────┘
+```
+
+**Communication flow:**
+
+1. Extension's `offscreen.js` maintains a persistent WebSocket to the server at `/browser/ws`
+2. Server sends commands (navigate, click, screenshot, etc.) through the bridge
+3. `service-worker.js` dispatches commands to the appropriate handler (CDP or stealth)
+4. Results (screenshots, DOM data, success/error) flow back through the WebSocket
+
+**25+ command types** are supported: navigate, screenshot, click, type, execute, scroll,
+hover, select, drag, upload, accessibility tree, tab management, and more.
+
+### 7.2 Normal Mode (CDP)
+
+Normal mode uses the **Chrome DevTools Protocol** via `chrome.debugger` API for precise,
+full-featured browser control.
+
+**Capabilities:**
+
+| Feature | Implementation |
+|---------|----------------|
+| Screenshots | CDP `Page.captureScreenshot` — full page or viewport |
+| Accessibility tree | CDP `Accessibility.getFullAXTree` — structured page content |
+| Click | CDP `Input.dispatchMouseEvent` — precise coordinate clicks |
+| Type | CDP `Input.dispatchKeyEvent` — keystroke simulation |
+| File upload | CDP `DOM.setFileInputFiles` — programmatic file picker |
+| Drag and drop | CDP `Input.dispatchDragEvent` — native drag simulation |
+| Touch events | CDP `Input.dispatchTouchEvent` — mobile simulation |
+| Device emulation | CDP `Emulation.setDeviceMetricsOverride` — viewport + UA |
+| JavaScript execution | CDP `Runtime.evaluate` — arbitrary JS in page context |
+
+**Trade-off**: CDP attaches a debugger to the tab, which is **detectable by anti-bot
+systems** (Cloudflare, DataDome, PerimeterX, etc.).
+
+### 7.3 Stealth Mode (Anti-Bot)
+
+Stealth mode uses `chrome.scripting.executeScript()` instead of CDP, making automation
+**invisible to anti-bot detection systems**.
+
+**How it works:**
+
+- No debugger attachment — `navigator.webdriver` stays `false`
+- `el.click()` produces `isTrusted=true` events (native browser behavior)
+- Synthetic events include proper `buttons`, `pointerType`, `view` properties
+- React/Angular compatibility via native value setters + `_valueTracker` reset
+- Input events dispatched in correct order: `pointerdown → mousedown → pointerup → mouseup → click`
+
+**Available in stealth mode:**
+
+| Feature | Status |
+|---------|--------|
+| Navigate | ✅ |
+| Screenshot | ✅ |
+| Click | ✅ (`isTrusted=true`) |
+| Type/input | ✅ (native setter + event dispatch) |
+| Scroll | ✅ |
+| Hover | ✅ |
+| JavaScript execution | ✅ |
+| Select dropdown | ✅ |
+| Tab management | ✅ |
+
+**NOT available in stealth mode:**
+
+| Feature | Reason |
+|---------|--------|
+| File upload | Requires CDP `DOM.setFileInputFiles` |
+| Accessibility tree | Requires CDP `Accessibility.getFullAXTree` |
+| Drag and drop | Requires CDP `Input.dispatchDragEvent` |
+| Touch events | Requires CDP `Input.dispatchTouchEvent` |
+| Device emulation | Requires CDP `Emulation.setDeviceMetricsOverride` |
+
+### 7.4 Anti-Detection Shield
+
+**File**: `packages/browser-extension/src/shield.js`
+
+The shield runs in the **MAIN world** at `document_start` — before any page JavaScript
+executes. It patches browser APIs to prevent detection of automation:
+
+| Patch | What It Does |
+|-------|--------------|
+| `navigator.webdriver` | Forces `false` via property redefinition |
+| DevTools detection | Patches `console.clear` as no-op; spoofs `outerHeight`/`outerWidth` |
+| `Function.prototype.toString` | Returns original native function strings for patched APIs |
+| `performance.now()` timing | Normalizes to prevent timing-based detection fingerprinting |
+| `Date.now()` / `Date` constructor | Patches to prevent timing-based detection |
+| `requestAnimationFrame` | Patches to prevent frame-timing detection |
+| Debugger trap neutralization | Prevents `debugger` statement traps from detecting automation |
+| `chrome.csi` / `chrome.loadTimes` | Spoofs Chrome-specific API fingerprints |
+
+### 7.5 Distribution
+
+The browser extension is **not installed from a store**. Instead:
+
+1. `scripts/zip-extension.ts` packs the extension directory into a zip archive
+2. The zip is base64-encoded and embedded into `src/embedded-extension.ts`
+3. At runtime, the server serves the zip at `/browser/extension`
+4. Users download and load it as an unpacked extension in Chrome
+
+---
+
+## 8. Sub-Agent System (Spaces)
+
+The Spaces system allows agents to delegate tasks to isolated sub-agents that run in
+parallel.
+
+### 8.1 Space Lifecycle
+
+```
+Parent Agent                    Spaces System                   Sub-Agent
+    │                               │                               │
+    │  spawn_agent(task, name)      │                               │
+    ├──────────────────────────────►│                               │
+    │                               │  Create isolated channel      │
+    │                               │  {parent}:space:{uuid}        │
+    │                               ├──────────────────────────────►│
+    │                               │  Start new WorkerLoop         │
+    │                               │  (inherits provider/model)    │
+    │                               │                               │
+    │                               │           ... working ...     │
+    │                               │                               │
+    │                               │  respond_to_parent(result)    │
+    │                               │◄──────────────────────────────┤
+    │  Result posted to parent      │                               │
+    │  channel + space locked       │  Space status → completed     │
+    │◄──────────────────────────────┤                               │
+    │                               │                               │
+```
+
+**Key details:**
+
+- **Isolated channel**: Each space gets its own channel (`{parent}:space:{uuid}`) so
+  conversations don't interfere
+- **Inheritance**: Sub-agents inherit the parent's project path, LLM provider, and model
+- **Concurrency limit**: Maximum **3 concurrent spaces** globally (not per-channel)
+- **Timeout**: Default **300 seconds** (5 minutes); `spawn_agent` overrides to 600 seconds
+- **Result delivery**: Sub-agent calls `respond_to_parent(result)` which posts the result
+  to the parent channel and locks the space (preventing further messages)
+
+**Sub-agent tools**: Sub-agents receive only `respond_to_parent` and `get_space_info` tools.
+
+**Space statuses**: `active` → `completed` | `failed` | `timed_out`
+
+### 8.2 Scheduler Integration
+
+**Files**: `src/scheduler/manager.ts`, `src/scheduler/runner.ts`, `src/scheduler/parse-schedule.ts`
+
+The scheduler creates and manages recurring or one-time jobs:
+
+| Job Type | Behavior |
+|----------|----------|
+| `cron` | Runs on a cron schedule (e.g., `0 9 * * 1-5` for weekday 9 AM) |
+| `interval` | Runs every N seconds/minutes/hours |
+| `once` | Runs once at a specific time |
+| Reminder | Posts a message without creating a sub-space |
+| Tool call | Executes a tool directly without agent involvement |
+
+**Execution flow:**
+
+1. Scheduler **tick loop** runs every **10 seconds**
+2. Checks for jobs whose next run time has passed
+3. For agent tasks: creates a **sub-space** with the job's instructions
+4. Maximum **3 concurrent jobs** globally
+5. Natural language schedule parsing via `parse-schedule.ts` (e.g., "every weekday at 9am")
+
+---
+
+## 9. Sandbox Security
+
+Tool execution is sandboxed to prevent agents from accessing sensitive host resources.
+The sandbox implementation differs by platform.
+
+### 9.1 Linux (bubblewrap)
+
+Uses [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) for
+**filesystem isolation via bind mounts and a clean environment**:
+
+- Filesystem is constructed from explicit bind mounts
+- Clean environment — not inherited from host
+- Agents share the host PID and network namespace (no PID or network namespace isolation)
+- No access to anything not explicitly allowed
+
+### 9.2 macOS (sandbox-exec)
+
+Uses `sandbox-exec` with Seatbelt profiles:
+
+- **Allow-default** policy with explicit deny rules for writes
+- Less strict than Linux bubblewrap but still prevents unauthorized file access
+
+### 9.3 Access Policy
+
+| Access | Paths |
+|--------|-------|
+| **Read + Write** | `{projectRoot}`, `/tmp` |
+| **Read + Write** (macOS only) | `~/.clawd` |
+| **Read only** | `/usr`, `/bin`, `/lib`, `/etc`, `~/.bun`, `~/.cargo`, `~/.deno`, `~/.nvm`, `~/.local` |
+| **Read only** (Linux bwrap) | `~/.clawd/bin`, `~/.clawd/.ssh`, `~/.clawd/.gitconfig` |
+| **Blocked** | `{projectRoot}/.clawd/` (agent config directory) |
+| **Blocked** | Home directory (except explicitly allowed tool directories) |
+
+**Environment handling:**
+
+- Agent environment is **cleaned and rebuilt** — not inherited from the host
+- Only safe variables from `~/.clawd/.env` are passed through
+- API keys and secrets are injected explicitly, not via host environment
+
+---
+
+## 10. Remote Worker Bridge
+
+External machines can connect to the clawd server as **remote tool providers**, extending
+an agent's capabilities across multiple hosts.
+
+```
+┌─────────────────────┐        WebSocket         ┌──────────────────────┐
+│ Remote Machine      │ ◄─────────────────────── │ Claw'd Server        │
+│ (worker)            │                           │                      │
+│ ├─ Custom tools     │  worker:registered event  │ RemoteWorkerBridge   │
+│ └─ worker_token auth│ ─────────────────────────►│ ├─ SHA256 token hash │
+└─────────────────────┘                           │ └─ Channel authz     │
+                                                  └──────────────────────┘
+```
+
+**How it works:**
+
+1. A `worker_token` is configured in `channel_agents` for a specific agent+channel
+2. Remote worker connects via WebSocket with the token
+3. `RemoteWorkerBridge` hashes the token (SHA256) and validates it
+4. Worker registers its available tools
+5. Tools from the remote worker appear **alongside local tools** in the agent's toolset
+6. Workers can be limited to **specific channels** for authorization
+
+---
+
+## 11. WebSocket Events
+
+All real-time communication flows through the WebSocket connection at `/ws`.
+
+### Server → Client Events
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `message` | `{ ts, channel, user, text, ... }` | New message posted |
+| `message_changed` | `{ ts, channel, text, ... }` | Message edited |
+| `message` (with `deleted: true`) | `{ ts, channel, deleted: true }` | Message removed (sent as regular `message` event with `deleted` flag) |
+| `channel_cleared` | `{ channel }` | Channel messages cleared |
+| `agent_streaming` | `{ agent_id, channel, streaming }` | Agent started/stopped thinking |
+| `agent_token` | `{ agent_id, channel, token, type }` | Real-time LLM output (`content` or `thinking` type) |
+| `agent_tool_call` | `{ agent_id, tool, status }` | Tool execution event (`started` / `completed` / `error`) |
+| `reaction_added` | `{ ts, channel, user, reaction }` | Emoji reaction added |
+| `reaction_removed` | `{ ts, channel, user, reaction }` | Emoji reaction removed |
+| `message_seen` | `{ ts, channel, user }` | Read receipt |
+
+### Client → Server Events
+
+Messages are sent via HTTP POST to `/api/chat.postMessage`. The WebSocket is primarily
+a **server-to-client push channel** — clients send messages via the REST API.
+
+---
+
+## 12. API Reference
+
+All API endpoints are available at `/api/{method}` via POST (or GET where noted).
+
+### 12.1 Chat APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `conversations.list` | GET | List all channels |
+| `conversations.create` | POST | Create a new channel |
+| `conversations.history` | GET | Message history (paginated) |
+| `conversations.replies` | GET | Thread replies for a message |
+| `conversations.search` | GET | Full-text message search |
+| `conversations.around` | GET | Messages around a specific timestamp |
+| `conversations.newer` | GET | Messages newer than a timestamp |
+| `chat.postMessage` | POST | Send a message to a channel |
+| `chat.update` | POST | Edit an existing message |
+| `chat.delete` | POST | Delete a message |
+
+### 12.2 File APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `files.upload` | POST | Upload a file attachment |
+| `files/{id}` | GET | Download/serve a file by ID |
+
+### 12.3 Reaction APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `reactions.add` | POST | Add an emoji reaction to a message |
+| `reactions.remove` | POST | Remove an emoji reaction |
+
+### 12.4 Agent Streaming APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `agent.setStreaming` | POST | Set agent streaming state (thinking/idle) |
+| `agent.streamToken` | POST | Push a streaming LLM token |
+| `agent.streamToolCall` | POST | Push a tool call event |
+
+### 12.5 Agent Management APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `agent.markSeen` | POST | Update agent's read cursor |
+| `agent.setSleeping` | POST | Hibernate or wake an agent |
+| `agent.setStatus` | POST | Set agent status for a channel |
+| `agent.getThoughts` | GET | Get agent's current thinking/reasoning |
+| `agents.list` | GET | List all registered agents |
+| `agents.info` | GET | Get info about a specific agent |
+| `agents.register` | POST | Register a new agent |
+
+### 12.6 App Management APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `app.agents.list` | GET | List app-level agent configurations |
+| `app.agents.add` | POST | Add a new agent configuration |
+| `app.agents.remove` | POST | Remove an agent configuration |
+| `app.agents.update` | POST | Update an agent configuration |
+| `app.models.list` | GET | List available LLM models |
+| `app.mcp.list` | GET | List configured MCP servers |
+| `app.mcp.add` | POST | Add an MCP server configuration |
+| `app.mcp.remove` | POST | Remove an MCP server configuration |
+
+### 12.7 Project Browser APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `app.project.tree` | GET | Get project file tree |
+| `app.project.listDir` | GET | List files in a directory |
+| `app.project.readFile` | GET | Read a file's contents |
+
+### 12.8 Analytics APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `analytics/copilot/calls` | GET | Raw API call log |
+| `analytics/copilot/summary` | GET | Usage summary statistics |
+| `analytics/copilot/keys` | GET | API key usage breakdown |
+| `analytics/copilot/models` | GET | Per-model usage statistics |
+| `analytics/copilot/recent` | GET | Recent API calls |
+
+### 12.9 Task Management APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `tasks.list` | GET | List tasks/projects |
+| `tasks.get` | GET | Get a specific task |
+| `tasks.create` | POST | Create a new task |
+| `tasks.update` | POST | Update an existing task |
+| `tasks.delete` | POST | Delete a task |
+| `tasks.addAttachment` | POST | Add an attachment to a task |
+| `tasks.removeAttachment` | POST | Remove an attachment from a task |
+| `tasks.addComment` | POST | Add a comment to a task |
+
+### 12.9b Plan Management APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `plans.*` | Various | Plan management CRUD |
+
+### 12.9c User APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `user.markSeen` | POST | Mark messages as seen |
+| `user.getUnreadCounts` | GET | Get unread message counts |
+| `user.getLastSeen` | GET | Get last seen timestamps |
+
+### 12.9d Spaces APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `spaces.list` | GET | List spaces |
+| `spaces.get` | GET | Get a specific space |
+
+### 12.10 Special Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/mcp` | GET/POST | MCP SSE endpoint for external clients |
+| `/health` | GET | Liveness probe (returns 200) |
+| `/browser/ws` | WS | Browser extension WebSocket bridge |
+| `/browser/extension` | GET | Download packed browser extension |
+| `/browser/files/*` | GET | Serve files for browser extension |
+| `/worker/ws` | WS | Remote worker WebSocket bridge |
+| `auth.test` | POST | Validate authentication |
+| `channel.status` | GET | Get channel status summary |
+| `config/reload` | POST | Reload config.json without restart |
+| `keys/status` | GET | API key health status |
+| `keys/sync` | POST | Sync API keys |
+| `admin.migrateChannels` | POST | Migrate channel data |
+| `admin.renameChannel` | POST | Rename a channel |
+| `articles.*` | Various | Knowledge article CRUD |
+
+---
+
+## 13. LLM Provider System
+
+Claw'd is provider-agnostic — agents can use any supported LLM provider, configured
+per-channel or globally.
+
+### Supported Providers
+
+| Provider | API Type | Notes |
+|----------|----------|-------|
+| `copilot` | GitHub Copilot API | Recommended default; uses GitHub token |
+| `openai` | OpenAI API | GPT-4o, o1, o3, etc. |
+| `anthropic` | Anthropic API | Claude Opus, Sonnet, Haiku |
+| `ollama` | Ollama API | Local models via Ollama |
+| `minimax` | Minimax API | Image generation and other capabilities |
+
+### Provider Configuration
+
+Each provider is configured in the `providers` section of `~/.clawd/config.json`:
 
 ```json
 {
-  "selected_provider": "copilot",
   "providers": {
     "copilot": {
       "model": "claude-sonnet-4-5",
@@ -584,340 +1055,259 @@ Set the provider in `~/.clawd/config.json`:
       "api_key": "sk-ant-...",
       "model": "claude-opus-4-5"
     },
-    "cpa": {
-      "base_url": "https://your-cpa-endpoint.com/v1",
+    "ollama": {
+      "base_url": "http://localhost:11434",
+      "model": "llama3"
+    },
+    "minimax": {
       "api_key": "...",
-      "models": {
-        "flash-image": "gemini-3.1-flash-image",
-        "flash": "gemini-3-flash"
-      }
+      "model": "image-01"
     }
-  },
-  "env": {
-    "GEMINI_API_KEY": "AIza..."
-  },
-  "quotas": {
-    "daily_image_limit": 50
   }
 }
 ```
 
-### Supported Providers
+### Per-Channel Override
 
-| Provider | Type | Notes |
-|----------|------|-------|
-| `copilot` | GitHub Copilot API | Recommended default; uses GitHub token |
-| `openai` | OpenAI API | GPT-4o, o1, o3 etc. |
-| `anthropic` | Anthropic API | Claude Opus/Sonnet/Haiku |
-| `cpa` | CLIProxyAPI (OpenAI-compatible) | Proxies to Antigravity/Gemini; primary for image tools |
+Agents can be assigned different providers per channel via `channel_agents.provider` and
+`channel_agents.model`. This allows mixing providers — e.g., Claude for code tasks and
+GPT for creative writing — in the same instance.
 
-CPA is an [OpenAI-compatible proxy](https://github.com/router-for-me/CLIProxyAPI) that routes to multiple backends. It is the **primary provider for image tools** (if configured).
+### Vision Configuration
+
+Vision operations (image analysis, generation, editing) use a separate provider
+configuration. Supported vision providers: `copilot`, `gemini`, `minimax`.
+
+```json
+{
+  "vision": {
+    "provider": "copilot",
+    "model": "gpt-4.1",
+    "read_image": { "provider": "gemini", "model": "gemini-2.0-flash" },
+    "generate_image": { "provider": "minimax", "model": "image-01" },
+    "edit_image": { "provider": "minimax", "model": "image-01" }
+  }
+}
+```
+
+Gemini vision requires `GEMINI_API_KEY` in `~/.clawd/.env`. The system uses a
+Gemini → Minimax fallback chain for image generation.
 
 ---
 
-## 11. Chat UI
+## 14. Chat UI
 
-Built with React 18 + Vite, embedded into the server binary via `scripts/embed-ui.ts`.
+Built with React + Vite + TypeScript, the UI is embedded into the server binary at build
+time and served as a single-page application.
 
 ### Key Components
 
-| Component | Purpose |
-|-----------|---------|
-| `App.tsx` | Root: channel list, multi-channel subscriptions, real-time WS |
-| `MessageList.tsx` | Render messages with reactions, agent metadata, workspace cards, subspace cards, article cards |
-| `MessageComposer.tsx` | Input with file upload, mention support, markdown preview |
-| `PlanModal.tsx` | Create/view multi-phase plans and tasks |
-| `AgentDialog.tsx` | Configure agent (provider, model, system prompt) |
-| `SearchModal.tsx` | Full-text search across history |
-| `ProjectsDialog.tsx` | Workspace/project selector |
-| `ArticleModal.tsx` | Blog post editor |
-| `MarkdownContent.tsx` | Code highlighting + LaTeX math rendering |
+| Component | File | Purpose |
+|-----------|------|---------|
+| `App.tsx` | `packages/ui/src/App.tsx` | Root: WebSocket connection, state management, channel routing |
+| `MessageList.tsx` | `packages/ui/src/MessageList.tsx` | Message rendering, streaming output, space cards |
+| `StreamOutputDialog` | (in MessageList) | Real-time display of agent tool execution output |
+| `styles.css` | `packages/ui/src/styles.css` | All application styles |
 
-### Workspace Card (MessageList)
+### Real-Time Features
 
-```tsx
-<div className="message-workspace-card workspace-card-{running|waiting|completed}"
-     onClick={() => window.open(`/workspace/${id}/novnc/vnc.html?autoconnect=1&resize=scale`)}>
-  <div className="workspace-card-icon">🖥️</div>
-  <div className="workspace-card-content">
-    <div className="workspace-card-title">{title}</div>
-    <div className="workspace-card-description">{description}</div>
-    <div className="workspace-card-action">Open Desktop →</div>
-  </div>
-  <div className="workspace-status-dot workspace-status-{running|waiting|completed}" />
-</div>
-```
+The UI connects to the server via WebSocket at `/ws` and handles:
+
+- **Live streaming**: `agent_token` events render LLM output character-by-character
+- **Tool call cards**: `agent_tool_call` events show tool execution with started/completed/error states
+- **Thinking indicator**: `agent_streaming` events show when agents are processing
+- **Read receipts**: `message_seen` events mark messages as read
+- **Reactions**: Emoji reactions with real-time add/remove
+- **Space cards**: Sub-agent spaces show as expandable cards with status indicators
 
 ---
 
-## 12. Build & Run
+## 15. Build System
 
-### Quick Start
+The build process compiles everything into a single self-contained binary.
 
-```bash
-# Install Bun (https://bun.sh)
-curl -fsSL https://bun.sh/install | bash
+### Build Pipeline
 
-# Install dependencies
-bun install
-
-# Configure
-cat > ~/.clawd/config.json <<'EOF'
-{
-  "selected_provider": "copilot",
-  "providers": {
-    "copilot": { "model": "claude-sonnet-4-5", "token": "ghp_..." }
-  }
-}
-EOF
-
-# Build workspace Docker image
-docker build -t clawd-workspace:base .
-docker build -f Dockerfile.web3 -t clawd-workspace:web3 .
-
-# Build and run
+```
 bun run build
-./dist/server/clawd-app --port 3456
-```
-
-### CLI Options
-
-```
-clawd-app [options]
-  --host <host>   Bind address (default: 0.0.0.0)
-  -p, --port <n>  Port number (default: 3456)
-  --no-browser    Don't auto-open browser
-  --yolo          Disable sandbox restrictions for agents
-  --debug         Enable verbose debug logging
-  -h, --help      Show help
+    │
+    ├─ 1. Vite builds UI
+    │     packages/ui/ → packages/ui/dist/
+    │
+    ├─ 2. embed-ui.ts
+    │     packages/ui/dist/ → base64 → src/embedded-ui.ts
+    │
+    ├─ 3. zip-extension.ts
+    │     packages/browser-extension/ → zip → base64 → src/embedded-extension.ts
+    │
+    └─ 4. bun build --compile
+          src/index.ts → dist/server/clawd-app (single binary)
 ```
 
 ### Build Commands
 
 | Command | Output |
 |---------|--------|
-| `bun run dev` | Run server directly (no compile) |
-| `bun run build` | UI + current-platform binary |
-| `bun run build:all` | UI + all 5 platform binaries |
-| `bun run build:linux` | Linux x64 + arm64 |
-| `bun run install:local` | Copy to `~/.clawd/bin/clawd-app` |
+| `bun run dev` | Run server directly from TypeScript (no compile) |
+| `bun run build` | Full build → single-platform binary |
+| `bun run build:all` | Full build → all platform binaries |
+| `bun run build:linux` | Linux x64 binary |
+| `bun run install:local` | Copy binary to `~/.clawd/bin/clawd-app` |
 
----
+### CLI Options
 
-## 13. Configuration Reference
-
-`~/.clawd/config.json` — full reference:
-
-```json
-{
-  "selected_provider": "copilot",
-
-  "providers": {
-    "copilot": { "model": "claude-sonnet-4-5", "token": "ghp_..." },
-    "openai": { "base_url": "...", "api_key": "...", "model": "gpt-4o" },
-    "anthropic": { "api_key": "...", "model": "claude-opus-4-5" },
-    "cpa": {
-      "base_url": "https://your-cpa.com/v1",
-      "api_key": "...",
-      "models": {
-        "flash": "gemini-3-flash",
-        "flash-image": "gemini-3.1-flash-image"
-      }
-    }
-  },
-
-  "env": {
-    "GEMINI_API_KEY": "AIza..."
-  },
-
-  "quotas": {
-    "daily_image_limit": 50
-  },
-
-  "server": {
-    "port": 3456,
-    "host": "0.0.0.0"
-  },
-
-  "workspace": {
-    "pool_size": 1,
-    "memory": "2g",
-    "cpus": "1.5",
-    "default_image": "clawd-workspace:base"
-  },
-
-  "mcp_servers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["@modelcontextprotocol/server-filesystem", "/home/user/projects"]
-    }
-  }
-}
+```
+clawd-app [options]
+  --host <host>     Bind address (default: 0.0.0.0)
+  -p, --port <n>    Port number (default: 3456)
+  --no-browser      Don't auto-open browser on start
+  --yolo            Disable sandbox restrictions for agent tools
+  --debug           Enable verbose debug logging
+  -h, --help        Show help
 ```
 
 ---
 
-## 14. Example Agent Interactions
+## 16. Docker Deployment
 
-These examples show how agents use Claw'd tools to complete real tasks. Each shows the user's question, the agent's reasoning path, and the expected outcome.
+### Multi-Stage Dockerfile
 
----
+The Dockerfile uses a two-stage build for minimal image size:
 
-### Example 1: "Sign up for a GitHub account"
+**Stage 1 — Builder** (`oven/bun:1`):
+1. Install dependencies (`bun install`)
+2. Build UI with Vite
+3. Embed UI assets into TypeScript source
+4. Zip and embed browser extension
+5. Compile to native binary (`bun build --compile`)
 
-**User:** Hey, can you sign up for a GitHub account for me?
+**Stage 2 — Runtime** (`debian:bookworm-slim`):
+1. Install runtime dependencies: git, ripgrep, python3, tmux, build-essential, bun, rust, bubblewrap, curl
+2. Copy compiled binary from builder stage
+3. Run as non-root `clawd` user
+4. Healthcheck on `/health` endpoint
 
-**Agent behavior:**
-1. Calls `spawn_workspace` (image: `base`) → starts a fresh Chromium container
-2. Sends a workspace card message: "I've started a workspace. I'll need your help entering personal info — click to open the desktop."
-3. Calls `launch_browser` with `https://github.com/signup`
-4. Calls `snapshot` to read the form structure
-5. Calls `type_text` to fill in the username and email fields
-6. Calls `pause_for_human` with message: "Please enter your password in the workspace — I can't handle passwords securely."
-7. After user completes, calls `click` to submit, `screenshot` + `read_image` to verify the confirmation page
-8. Reports success with account details back to chat
-9. Calls `destroy_workspace`
+### Docker Compose
 
-**What the user sees:** A green workspace card in chat. Clicking it opens the noVNC desktop in a new tab. The agent guides them step by step.
+```yaml
+# compose.yaml
+services:
+  clawd:
+    image: clawd-pilot/clawd:latest
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3456:3456"
+    volumes:
+      - clawd-data:/home/clawd/.clawd
+    security_opt:
+      - apparmor=unconfined  # Required for bubblewrap sandbox
+      - seccomp=unconfined
 
----
+volumes:
+  clawd-data:
+```
 
-### Example 2: "Install MetaMask and verify my wallet can connect to our dapp"
+The `apparmor=unconfined` and `seccomp=unconfined` security options are required because the bubblewrap sandbox
+inside the container needs to create namespaces, which AppArmor and seccomp block by default.
 
-**User:** Install MetaMask, import my wallet using this seed phrase: `word1 word2 ... word12`, then go to https://app.our-dapp.com and verify the Connect Wallet button works.
-
-**Agent behavior:**
-1. Calls `spawn_workspace` with `image: "web3"` (MetaMask pre-installed)
-2. Calls `launch_browser` with `chrome://extensions/` to verify MetaMask is loaded
-3. Calls `observe` to visually confirm extension icons
-4. Calls `click` on MetaMask extension icon (by description: "MetaMask fox icon in toolbar")
-5. Calls `type_text` with `use_xdotool: true` to type seed phrase in the extension popup
-6. Calls `press_key` with `Enter`, waits for wallet setup
-7. Calls `navigate` to `https://app.our-dapp.com`
-8. Calls `click` on "Connect Wallet"
-9. Calls `observe` to see the MetaMask approval popup
-10. Calls `click` to approve
-11. Calls `screenshot` + `read_image` to verify wallet address appears on the page
-12. Reports: "Successfully connected wallet 0xABC... to app.our-dapp.com"
-
----
-
-### Example 3: "Analyze this screenshot I uploaded"
-
-**User:** *(uploads a PNG screenshot)* Can you tell me what's wrong with the UI in this image?
-
-**Agent behavior:**
-1. Calls `chat_get_message_files` → receives `{ file_id: "F-abc123", image_hint: "This is an image... use read_image tool" }`
-2. Calls `read_image` with `file_id: "F-abc123"`, `prompt: "Identify any UI problems, layout issues, or visual bugs in this interface"`
-3. Receives detailed text analysis from Gemini vision
-4. Calls `chat_send_message` with a structured response listing the issues
-
-**What prevents problems:** The agent never sees the raw base64 — `chat_download_file` and `chat_get_message_files` both redirect to `read_image`. This prevents context overflow from large images.
+**Note**: The healthcheck is defined in the `Dockerfile` (not compose.yaml) using `curl -f http://localhost:3456/health`.
 
 ---
 
-### Example 4: "Generate a hero banner for our website"
+## 17. Configuration Reference
 
-**User:** Create a hero banner image for our fintech startup. Dark theme, cityscape at night, with subtle blue glow. 16:9 ratio.
+### 17.1 config.json Schema
 
-**Agent behavior:**
-1. Calls `create_image` with:
-   ```json
-   {
-     "prompt": "Hero banner for a fintech startup. Dark theme, nighttime city skyline with subtle electric blue neon glow. Professional, modern, cinematic lighting. Ultra-wide panoramic composition.",
-     "aspect_ratio": "16:9",
-     "image_size": "2K"
-   }
-   ```
-2. If CPA is configured → request goes to `gemini-3.1-flash-image` via CPA proxy
-3. Image saved to `ATTACHMENTS_DIR`, registered in `files` table with ID `F-xyz789`
-4. Response: `{ ok: true, image: { id: "F-xyz789", name: "generated-1709...", ... }, quota: { used: 1, limit: 50, remaining: 49 } }`
-5. Calls `chat_send_message_with_files` to share the image in chat
+**Location**: `~/.clawd/config.json`
 
----
+```json
+{
+  // Server settings
+  "host": "0.0.0.0",
+  "port": 3456,
+  "debug": false,
+  "yolo": false,
+  "contextMode": true,       // Note: hardcoded to true in code; not actually configurable at runtime
+  "dataDir": "~/.clawd/data",
+  "uiDir": "/custom/ui/path",
 
-### Example 5: "Schedule a daily standup summary"
+  // Environment variables passed to agent sandbox
+  "env": {
+    "KEY": "VALUE"
+  },
 
-**User:** Every weekday morning at 9 AM, summarize what the team worked on yesterday and post it to the #general channel.
+  // LLM provider configurations
+  "providers": {
+    "copilot": { "model": "claude-sonnet-4-5", "token": "ghp_..." },
+    "openai": { "base_url": "...", "api_key": "...", "model": "gpt-4o" },
+    "anthropic": { "api_key": "...", "model": "claude-opus-4-5" },
+    "ollama": { "base_url": "http://localhost:11434", "model": "llama3" },
+    "minimax": { "api_key": "...", "model": "image-01" }
+  },
 
-**Agent behavior:**
-1. Calls `scheduler_create` with:
-   ```json
-   {
-     "cron": "0 9 * * 1-5",
-     "channel": "general",
-     "action": "summarize_yesterday",
-     "description": "Daily standup summary"
-   }
-   ```
-2. On each trigger:
-   - Calls `chat_get_history` for the previous day's messages
-   - Calls `chat_get_last_summary` for any stored context
-   - Constructs standup summary
-   - Calls `chat_send_message` to post
-3. Confirms: "Scheduled! I'll post standup summaries every weekday at 9 AM."
+  // Image generation quotas
+  "quotas": {
+    "daily_image_limit": 50
+  },
 
----
+  // Workspace plugin toggle
+  // true = all channels, false = disabled, ["channel1"] = specific channels
+  "workspaces": true,
 
-### Example 6: "Create a plan and execute Phase 1"
+  // Remote worker configuration
+  // true = accept workers, { "channel": ["token1"] } = per-channel tokens
+  "worker": true,
 
-**User:** Make a plan to migrate our database from PostgreSQL to SQLite. Execute the first phase.
+  // Vision model configuration
+  "vision": {
+    "provider": "copilot",
+    "model": "gpt-4.1",
+    "read_image": { "provider": "copilot", "model": "gpt-4.1" },
+    "generate_image": { "provider": "minimax", "model": "image-01" },
+    "edit_image": { "provider": "minimax", "model": "image-01" }
+  },
 
-**Agent behavior:**
-1. Calls `plan_create` with title "PostgreSQL → SQLite Migration", description, and phases
-2. Calls `plan_add_phase` for each phase (Schema Analysis, Data Export, Import & Verify, Cutover)
-3. Calls `plan_update_phase` on Phase 1 to mark as in-progress
-4. **Executes Phase 1** using other tools: reads schema files, analyzes tables, generates SQLite DDL
-5. Posts progress updates to chat via `chat_send_message`
-6. Calls `plan_update_phase` to mark Phase 1 complete
-7. Asks user: "Phase 1 complete — schema analysis done. Ready to proceed to Phase 2 (Data Export)?"
+  // Browser extension toggle
+  // true = all channels, false = disabled, ["channel"] = specific channels
+  // { "channel": ["auth_token"] } = per-channel with auth
+  "browser": true,
 
----
+  // Memory system configuration
+  // true = enabled with defaults
+  // { "provider": "...", "model": "...", "autoExtract": true } = custom config
+  "memory": true
+}
+```
 
-### Example 7: "Watch this recording and tell me what the bug is"
+### 17.2 System Files & Directories
 
-**User:** *(uploads a screen recording .mp4)* There's a weird bug when clicking the dropdown. Can you identify it?
+```
+~/.clawd/
+├── config.json          # App configuration (see schema above)
+├── .env                 # Agent environment variables (KEY=VALUE format)
+├── .ssh/                # SSH keys for Git operations (id_ed25519)
+├── .gitconfig           # Git config for agent-initiated Git operations
+├── bin/                 # Custom binaries added to agent PATH
+├── data/
+│   ├── chat.db          # Chat messages, agents, channels, spaces
+│   ├── kanban.db        # Tasks, plans, phases
+│   ├── scheduler.db     # Scheduled jobs
+│   └── attachments/     # Uploaded files & generated images
+├── memory.db            # Agent session memory, knowledge base, long-term memories
+└── mcp-oauth-tokens.json # OAuth tokens for external MCP server connections
+```
 
-**Agent behavior:**
-1. Calls `chat_get_message_files` → gets `file_id: "F-vid001"` with video metadata
-2. Calls `read_video` with:
-   ```json
-   {
-     "file_id": "F-vid001",
-     "prompt": "Identify any bugs, unexpected behavior, or UI glitches when the user interacts with the dropdown",
-     "max_frames": 60
-   }
-   ```
-3. If video ≤ 200MB → uploads to Gemini Files API, analyzes natively
-4. If video > 200MB → extracts frames with ffmpeg, analyzes keyframes
-5. Reports: "At 0:04, after clicking the dropdown, it flickers and re-renders twice before showing options. This looks like a state update triggering an unnecessary re-render on the parent component."
-
----
-
-### Example 8: "Monitor a page and alert me when the price drops"
-
-**User:** Watch https://shop.example.com/product/123 and send me a message when the price drops below $50.
-
-**Agent behavior:**
-1. Calls `scheduler_create` with a 15-minute interval job
-2. On each run:
-   - Calls `spawn_workspace`
-   - Calls `navigate` to the product URL
-   - Calls `snapshot` to extract the price element
-   - Parses the price
-   - If price < $50: calls `chat_send_message` "⚡ Price alert: $item dropped to $48.99!"
-   - Calls `destroy_workspace`
-3. Confirms: "I'll check the price every 15 minutes and alert you when it drops below $50."
-
----
-
-### Tool Availability Summary
-
-| Context | Available Tools |
-|---------|----------------|
-| Always | 16 chat/file tools + 8 plan tools + 4 scheduler tools + 4 multimodal tools |
-| After `spawn_workspace` | + 14 workspace desktop tools |
-| With CPA configured | Image tools use CPA as primary |
-| With Gemini API key | Image tools use Gemini as fallback (quota-tracked) |
-| `--yolo` mode | Sandbox restrictions lifted |
+| File/Directory | Purpose |
+|----------------|---------|
+| `config.json` | Primary configuration — providers, features, server settings |
+| `.env` | Environment variables injected into agent sandbox (e.g., API keys) |
+| `.ssh/` | SSH keys used by agents for Git clone/push operations |
+| `.gitconfig` | Git user config (name, email) for agent commits |
+| `bin/` | Custom executables available in agent's PATH |
+| `data/chat.db` | All chat state — messages, agents, channels, spaces |
+| `data/scheduler.db` | Scheduled jobs and execution state |
+| `data/attachments/` | File storage for uploads and generated images |
+| `memory.db` | LLM session history, knowledge base, long-term agent memories |
+| `mcp-oauth-tokens.json` | Cached OAuth tokens for authenticated MCP server connections |
 
