@@ -61,7 +61,8 @@ export class BrowserPlugin implements ToolPlugin {
         description:
           "Take a screenshot of the current browser tab. Returns a base64 JPEG image. Use read_image tool to analyze the screenshot content if needed. " +
           "PREFER browser_extract or browser_execute (with stored scripts) to read page content — they return structured data, are faster, and use less context. " +
-          "Only use screenshots when you need visual layout information that cannot be obtained from DOM/text extraction (e.g., charts, images, visual styling, spatial layout).",
+          "Only use screenshots when you need visual layout information that cannot be obtained from DOM/text extraction (e.g., charts, images, visual styling, spatial layout). " +
+          "On anti-bot protected sites, use stealth=true (viewport-only, no selector/fullPage).",
         parameters: {
           tab_id: {
             type: "number",
@@ -87,7 +88,8 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_click",
         description:
-          'Click an element on the page. Supports single-click, double-click (click_count=2 to select words or open items), and right-click (button="right" for context menus). For dynamic pages, prefer selectors over coordinates. Set intercept_file_chooser=true when clicking upload/file buttons.',
+          'Click an element on the page. Supports single-click, double-click (click_count=2 to select words or open items), and right-click (button="right" for context menus). For dynamic pages, prefer selectors over coordinates. Set intercept_file_chooser=true when clicking upload/file buttons. ' +
+          "WARNING: On anti-bot protected sites, use stealth=true to avoid CDP debugger detection that causes immediate logout/redirect.",
         parameters: {
           selector: {
             type: "string",
@@ -127,7 +129,8 @@ export class BrowserPlugin implements ToolPlugin {
       {
         name: "browser_type",
         description:
-          "Type text into a focused element or a specific element by selector. Can also send special keys like Enter, Tab, Escape.",
+          "Type text into a focused element or a specific element by selector. Can also send special keys like Enter, Tab, Escape. " +
+          "On anti-bot protected sites, use stealth=true to avoid CDP debugger detection.",
         parameters: {
           text: { type: "string", description: "Text to type" },
           selector: {
@@ -206,7 +209,8 @@ export class BrowserPlugin implements ToolPlugin {
           "Execute JavaScript in the browser tab. Supports running inline code OR a stored script by ID (saved via browser_store). " +
           "When reusing a stored script, pass script_id (and optional script_args) instead of code — this avoids re-sending large scripts and enables reuse across sessions. " +
           "If both code and script_id are provided, script_id takes priority. " +
-          "TIP: If you find yourself running similar code more than once, save it as a reusable script via browser_store (with a description) and call it by script_id going forward.",
+          "TIP: If you find yourself running similar code more than once, save it as a reusable script via browser_store (with a description) and call it by script_id going forward. " +
+          "WARNING: On anti-bot protected sites, use stealth=true to avoid CDP debugger detection that causes immediate logout/redirect.",
         parameters: {
           code: {
             type: "string",
