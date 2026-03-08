@@ -20,7 +20,7 @@ interface RunnerConfig {
   spaceWorkerManager: SpaceWorkerManager;
   getAgentConfig: (
     channel: string,
-  ) => Promise<{ provider: string; model: string; agentId: string; project?: string } | null>;
+  ) => Promise<{ provider: string; model: string; agentId: string; project?: string; avatar_color?: string } | null>;
   executeToolFn?: (toolName: string, args: Record<string, any>, channel: string) => Promise<ToolResult>;
 }
 
@@ -53,7 +53,7 @@ export function initRunner(config: RunnerConfig): void {
       title: sanitizedTitle,
       description: job.prompt,
       agent_id: agentConfig.agentId,
-      agent_color: "#6366f1",
+      agent_color: agentConfig.avatar_color || "#6366f1",
       source: "scheduler",
       source_id: job.id,
       timeout_seconds: job.timeout_seconds || 300,

@@ -290,6 +290,8 @@ initRunner({
             provider: agent.provider || "copilot",
             model: agent.model || "default",
             agentId: agent.agent_id,
+            project: agent.project,
+            avatar_color: agent.avatar_color,
           };
         }
       }
@@ -1925,6 +1927,7 @@ setTimeout(async () => {
             provider: agentEntry.provider || "copilot",
             model: agentEntry.model || "default",
             agentId: agentEntry.agent_id,
+            project: agentEntry.project,
           };
 
           // Create abort controller with remaining timeout
