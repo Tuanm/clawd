@@ -159,6 +159,8 @@ async function handleCommand(id, method, params) {
 }
 
 async function dispatchCommand(method, params) {
+  // Stealth mode: use chrome.scripting instead of CDP to avoid bot detection
+  if (params?.stealth) return dispatchStealthCommand(method, params);
   switch (method) {
     case "navigate":
       return handleNavigate(params);
@@ -2034,6 +2036,447 @@ async function handleCookies({
   }
 
   throw new Error(`Unknown cookies action: ${action}. Use "getAll", "get", "set", or "remove".`);
+}
+
+// ============================================================================
+// Stealth Mode — CDP-free handlers using chrome.scripting
+// ============================================================================
+
+/**
+ * Route commands through stealth handlers that NEVER touch chrome.debugger.
+ * Protected sites detect CDP attachment itself, so avoiding ensureDebugger()
+ * is the key to staying undetected. Handlers use chrome.scripting.executeScript
+ * to inject DOM operations directly.
+ */
+async function dispatchStealthCommand(method, params) {
+  // Warn if CDP was already attached on this tab (stealth may be ineffective)
+  const tid = params.tabId || (await getActiveTabId());
+  if (debuggerAttached.has(tid)) {
+    console.warn(`[stealth] Tab ${tid} already has CDP attached — stealth may be ineffective. Use a fresh tab for full stealth.`);
+  }
+  switch (method) {
+    case "click":
+      if (params.intercept_file_chooser) throw new Error("File chooser interception requires CDP — not available in stealth mode");
+      return stealthClick(params);
+    case "type":
+      return stealthType(params);
+    case "keypress":
+      return stealthKeypress(params);
+    case "scroll":
+      return stealthScroll(params);
+    case "execute":
+      return stealthExecute(params);
+    case "hover":
+      return stealthHover(params);
+    case "screenshot": {
+      // Stealth screenshot: captureVisibleTab only (no CDP)
+      if (params.tabId) await chrome.tabs.update(tid, { active: true });
+      const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "jpeg", quality: 60 });
+      return { tabId: tid, dataUrl, width: null, height: null };
+    }
+    case "extract":
+      if (params.mode === "accessibility") {
+        throw new Error("Accessibility extraction requires CDP — not available in stealth mode");
+      }
+      return handleExtract(params);
+    // Already CDP-free handlers — pass through directly
+    case "navigate":
+      return handleNavigate(params);
+    case "tabs":
+      return handleTabs(params);
+    case "select":
+      return handleSelect(params);
+    case "wait_for":
+      return handleWaitFor(params);
+    case "cookies":
+      return handleCookies(params);
+    case "history":
+      return handleHistory(params);
+    default:
+      throw new Error(`${method} is not available in stealth mode (requires CDP debugger)`);
+  }
+}
+
+async function stealthClick({ selector, x, y, tabId, button, clickCount }) {
+  const tid = tabId || (await getActiveTabId());
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    func: (sel, cx, cy, btn, count) => {
+      // Shadow DOM + iframe deep search
+      function deepQuery(s, root) {
+        const el = (root || document).querySelector(s);
+        if (el) return el;
+        for (const n of (root || document).querySelectorAll("*")) {
+          if (n.shadowRoot) {
+            const d = deepQuery(s, n.shadowRoot);
+            if (d) return d;
+          }
+        }
+        if (!root || root === document) {
+          for (const iframe of document.querySelectorAll("iframe")) {
+            try {
+              if (iframe.contentDocument) {
+                const m = iframe.contentDocument.querySelector(s);
+                if (m) return m;
+              }
+            } catch {}
+          }
+        }
+        return null;
+      }
+
+      let el;
+      if (sel) {
+        el = deepQuery(sel);
+        if (!el) return { error: `Element not found: ${sel}` };
+        // behavior: "instant" is synchronous in Chromium — no await needed
+        if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(true);
+        else el.scrollIntoView({ block: "center", behavior: "instant" });
+      } else if (cx != null && cy != null) {
+        el = document.elementFromPoint(cx, cy);
+        if (!el) return { error: `No element at (${cx},${cy})` };
+      } else {
+        return { error: "Provide selector or x,y coordinates" };
+      }
+
+      const rect = el.getBoundingClientRect();
+      const px = rect.x + rect.width / 2;
+      const py = rect.y + rect.height / 2;
+      const buttonNum = btn === "right" ? 2 : btn === "middle" ? 1 : 0;
+      const shared = { bubbles: true, cancelable: true, clientX: px, clientY: py, button: buttonNum, view: window };
+      const ptrBase = { ...shared, pointerId: 1, pointerType: "mouse" };
+
+      if (btn === "right") {
+        el.dispatchEvent(new PointerEvent("pointerdown", { ...ptrBase, buttons: 2 }));
+        el.dispatchEvent(new MouseEvent("mousedown", { ...shared, buttons: 2 }));
+        el.dispatchEvent(new PointerEvent("pointerup", { ...ptrBase, buttons: 0 }));
+        el.dispatchEvent(new MouseEvent("mouseup", { ...shared, buttons: 0 }));
+        el.dispatchEvent(new MouseEvent("contextmenu", { ...shared }));
+      } else if (btn === "middle") {
+        el.dispatchEvent(new PointerEvent("pointerdown", { ...ptrBase, buttons: 4 }));
+        el.dispatchEvent(new MouseEvent("mousedown", { ...shared, buttons: 4 }));
+        el.dispatchEvent(new PointerEvent("pointerup", { ...ptrBase, buttons: 0 }));
+        el.dispatchEvent(new MouseEvent("mouseup", { ...shared, buttons: 0 }));
+        el.dispatchEvent(new MouseEvent("click", { ...shared }));
+      } else if (count >= 2) {
+        for (let i = 0; i < count; i++) {
+          el.dispatchEvent(new PointerEvent("pointerdown", { ...ptrBase, buttons: 1 }));
+          el.dispatchEvent(new MouseEvent("mousedown", { ...shared, buttons: 1, detail: i + 1 }));
+          el.dispatchEvent(new PointerEvent("pointerup", { ...ptrBase, buttons: 0 }));
+          el.dispatchEvent(new MouseEvent("mouseup", { ...shared, buttons: 0, detail: i + 1 }));
+          el.dispatchEvent(new MouseEvent("click", { ...shared, detail: i + 1 }));
+          if (i === 1) el.dispatchEvent(new MouseEvent("dblclick", { ...shared, detail: 2 }));
+        }
+      } else {
+        // Single click: synthetic mousedown/mouseup + trusted el.click()
+        el.dispatchEvent(new PointerEvent("pointerdown", { ...ptrBase, buttons: 1 }));
+        el.dispatchEvent(new MouseEvent("mousedown", { ...shared, buttons: 1 }));
+        el.dispatchEvent(new PointerEvent("pointerup", { ...ptrBase, buttons: 0 }));
+        el.dispatchEvent(new MouseEvent("mouseup", { ...shared, buttons: 0 }));
+        el.click(); // isTrusted=true — note: coordinates will be (0,0), but most detectors only check isTrusted
+      }
+
+      return { x: px, y: py };
+    },
+    args: [selector || null, x, y, button || "left", clickCount || 1],
+  });
+  const result = results[0]?.result;
+  if (result?.error) throw new Error(result.error);
+  showActionCursor(tid, result.x, result.y);
+  return { tabId: tid, element: selector || `(${x},${y})` };
+}
+
+async function stealthType({ text, selector, tabId, clearFirst, pressEnter }) {
+  const tid = tabId || (await getActiveTabId());
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    func: (sel, txt, clear, enter) => {
+      // Shadow DOM + iframe deep search
+      function deepQuery(s, root) {
+        const el = (root || document).querySelector(s);
+        if (el) return el;
+        for (const n of (root || document).querySelectorAll("*")) {
+          if (n.shadowRoot) {
+            const d = deepQuery(s, n.shadowRoot);
+            if (d) return d;
+          }
+        }
+        if (!root || root === document) {
+          for (const iframe of document.querySelectorAll("iframe")) {
+            try {
+              if (iframe.contentDocument) {
+                const m = iframe.contentDocument.querySelector(s);
+                if (m) return m;
+              }
+            } catch {}
+          }
+        }
+        return null;
+      }
+
+      let el = sel ? deepQuery(sel) : document.activeElement;
+      if (sel && !el) return { error: `Element not found: ${sel}` };
+      if (!el) return { error: "No focused element" };
+
+      if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(true);
+      else el.scrollIntoView({ block: "center", behavior: "instant" });
+      el.focus();
+
+      const isTypeable = el.tagName === "INPUT" || el.tagName === "TEXTAREA";
+
+      if (isTypeable) {
+        const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+
+        if (clear) {
+          const prev = el.value;
+          if (nativeSetter) nativeSetter.call(el, "");
+          else el.value = "";
+          // Reset React's _valueTracker so React detects the change
+          const tracker = el._valueTracker;
+          if (tracker) tracker.setValue(prev);
+          el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+        }
+
+        const prevValue = el.value;
+        const newValue = clear ? txt : el.value + txt;
+        if (nativeSetter) nativeSetter.call(el, newValue);
+        else el.value = newValue;
+        // Reset React's _valueTracker so React detects the change
+        const tracker = el._valueTracker;
+        if (tracker) tracker.setValue(prevValue);
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: txt }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      } else if (el.isContentEditable) {
+        if (clear) {
+          document.execCommand("selectAll", false, null);
+          document.execCommand("delete", false, null);
+        }
+        document.execCommand("insertText", false, txt);
+      } else {
+        return { error: `Element <${el.tagName.toLowerCase()}> is not a typeable field` };
+      }
+
+      if (enter) {
+        const enterOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        const kd = new KeyboardEvent("keydown", enterOpts);
+        el.dispatchEvent(kd);
+        el.dispatchEvent(new KeyboardEvent("keypress", enterOpts));
+        el.dispatchEvent(new KeyboardEvent("keyup", enterOpts));
+        if (!kd.defaultPrevented) {
+          const form = el.closest("form");
+          if (form) {
+            if (form.requestSubmit) form.requestSubmit();
+            else form.submit();
+          }
+        }
+      }
+
+      const rect = el.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    },
+    args: [selector || null, text, !!clearFirst, !!pressEnter],
+  });
+  const result = results[0]?.result;
+  if (result?.error) throw new Error(result.error);
+  if (result?.x != null) showActionCursor(tid, result.x, result.y);
+  return { tabId: tid, element: selector || "(focused)" };
+}
+
+async function stealthKeypress({ key, modifiers, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    func: (k, mods) => {
+      try {
+        const el = document.activeElement || document.body;
+        const keyMap = { enter: "Enter", tab: "Tab", escape: "Escape", backspace: "Backspace", delete: "Delete", space: " ",
+          arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight",
+          home: "Home", end: "End", pageup: "PageUp", pagedown: "PageDown" };
+        const mapped = keyMap[k.toLowerCase()] || k;
+        const codeMap = { " ": "Space" };
+        const code = codeMap[mapped]
+          || (mapped.length === 1
+            ? (/^[a-z]$/i.test(mapped) ? `Key${mapped.toUpperCase()}`
+              : /^[0-9]$/.test(mapped) ? `Digit${mapped}`
+              : mapped)
+            : mapped);
+        const opts = { key: mapped, code, bubbles: true, cancelable: true,
+          ctrlKey: mods.includes("ctrl"), altKey: mods.includes("alt"),
+          shiftKey: mods.includes("shift"), metaKey: mods.includes("meta") };
+        el.dispatchEvent(new KeyboardEvent("keydown", opts));
+        // keypress only fires for printable characters (per UI Events spec)
+        if (mapped.length === 1 || mapped === "Enter") {
+          el.dispatchEvent(new KeyboardEvent("keypress", opts));
+        }
+        el.dispatchEvent(new KeyboardEvent("keyup", opts));
+
+        // Imperative side-effects for common keys (JS dispatched events don't trigger defaults)
+        if (mapped === "Tab" && !mods.includes("ctrl") && !mods.includes("alt")) {
+          const focusables = [...document.querySelectorAll(
+            'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')];
+          const idx = focusables.indexOf(el);
+          const next = mods.includes("shift") ? focusables[idx - 1] : focusables[idx + 1];
+          if (next) next.focus();
+        } else if (mapped === "Backspace" && "selectionStart" in el) {
+          const start = el.selectionStart;
+          if (start > 0) {
+            el.value = el.value.slice(0, start - 1) + el.value.slice(el.selectionEnd);
+            el.selectionStart = el.selectionEnd = start - 1;
+            el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+          }
+        } else if (mapped === "Escape") {
+          el.blur();
+        }
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message || String(e) };
+      }
+    },
+    args: [key, modifiers || []],
+  });
+  const result = results[0]?.result;
+  if (result?.error) throw new Error(result.error);
+  return { tabId: tid, key, modifiers: modifiers || [] };
+}
+
+async function stealthScroll({ direction, amount, selector, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  const dist = amount || 300;
+  let deltaX = 0;
+  let deltaY = 0;
+  switch (direction) {
+    case "up": deltaY = -dist; break;
+    case "down": deltaY = dist; break;
+    case "left": deltaX = -dist; break;
+    case "right": deltaX = dist; break;
+    default: deltaY = dist;
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    func: (sel, dx, dy) => {
+      if (sel) {
+        const el = document.querySelector(sel);
+        if (!el) return { error: `Element not found: ${sel}` };
+        // Walk up to find nearest scrollable ancestor
+        let target = el;
+        while (target && target !== document.documentElement) {
+          const s = getComputedStyle(target);
+          if ((dy !== 0 && (s.overflowY === "auto" || s.overflowY === "scroll") && target.scrollHeight > target.clientHeight) ||
+              (dx !== 0 && (s.overflowX === "auto" || s.overflowX === "scroll") && target.scrollWidth > target.clientWidth)) break;
+          target = target.parentElement;
+        }
+        (target || window).scrollBy(dx, dy);
+      } else {
+        window.scrollBy(dx, dy);
+      }
+      return { ok: true };
+    },
+    args: [selector || null, deltaX, deltaY],
+  });
+  const result = results[0]?.result;
+  if (result?.error) throw new Error(result.error);
+  await new Promise((r) => setTimeout(r, 150));
+  return { tabId: tid, direction: direction || "down", amount: dist };
+}
+
+async function stealthExecute({ code, tabId, frameId }) {
+  const tid = tabId || (await getActiveTabId());
+  const target = { tabId: tid };
+  if (frameId) {
+    const fid = parseInt(frameId, 10);
+    if (isNaN(fid)) throw new Error("Stealth mode requires Chrome frame IDs (integers). The 'frames' command is not available in stealth mode.");
+    target.frameIds = [fid];
+  }
+  let timer;
+  const timeout = new Promise((_, rej) => {
+    timer = setTimeout(() => rej(new Error("Stealth execute timed out (30s)")), 30000);
+  });
+  try {
+    const exec = chrome.scripting.executeScript({
+      target,
+      world: "MAIN",
+      func: async (c) => {
+        try {
+          const result = await (0, eval)(c); // eslint-disable-line no-eval -- intentional indirect eval for global scope
+          // Guard against non-cloneable return values (DOM elements, functions, etc.)
+          try { structuredClone(result); return { value: result }; } catch {}
+          try { return { value: JSON.parse(JSON.stringify(result)) }; } catch {}
+          return { value: String(result) };
+        } catch (e) {
+          const msg = e.message || String(e);
+          if (msg.includes("unsafe-eval") || msg.includes("Content Security Policy")) {
+            return { error: `CSP blocks eval() on this page. Remove stealth:true to use CDP (which bypasses CSP). Original: ${msg}` };
+          }
+          return { error: msg };
+        }
+      },
+      args: [code],
+    });
+    const results = await Promise.race([exec, timeout]);
+    const result = results[0]?.result;
+    if (result?.error) throw new Error(result.error);
+    return { value: result?.value };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function stealthHover({ selector, x, y, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  if (!selector && (x === undefined || y === undefined)) {
+    throw new Error("Stealth hover requires either 'selector' or both 'x' and 'y' coordinates");
+  }
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    func: (sel, hx, hy) => {
+      // Shadow DOM + iframe deep search
+      function deepQuery(s, root) {
+        const el = (root || document).querySelector(s);
+        if (el) return el;
+        for (const n of (root || document).querySelectorAll("*")) {
+          if (n.shadowRoot) {
+            const d = deepQuery(s, n.shadowRoot);
+            if (d) return d;
+          }
+        }
+        if (!root || root === document) {
+          for (const iframe of document.querySelectorAll("iframe")) {
+            try {
+              if (iframe.contentDocument) {
+                const m = iframe.contentDocument.querySelector(s);
+                if (m) return m;
+              }
+            } catch {}
+          }
+        }
+        return null;
+      }
+
+      let el;
+      if (sel) {
+        el = deepQuery(sel);
+        if (!el) return { error: `Element not found: ${sel}` };
+      } else {
+        el = document.elementFromPoint(hx, hy);
+        if (!el) return { error: `No element at (${hx},${hy})` };
+      }
+      const rect = el.getBoundingClientRect();
+      const cx = rect.x + rect.width / 2;
+      const cy = rect.y + rect.height / 2;
+      // Hover event sequence — NOTE: CSS :hover pseudo-class will NOT activate (only JS listeners fire)
+      el.dispatchEvent(new MouseEvent("mouseenter", { clientX: cx, clientY: cy, bubbles: false }));
+      el.dispatchEvent(new MouseEvent("mouseover", { clientX: cx, clientY: cy, bubbles: true }));
+      el.dispatchEvent(new MouseEvent("mousemove", { clientX: cx, clientY: cy, bubbles: true }));
+      return { x: cx, y: cy };
+    },
+    args: [selector || null, x ?? 0, y ?? 0],
+  });
+  const result = results[0]?.result;
+  if (result?.error) throw new Error(result.error);
+  showActionCursor(tid, result.x, result.y);
+  return { tabId: tid, element: selector || `(${x},${y})` };
 }
 
 // ============================================================================

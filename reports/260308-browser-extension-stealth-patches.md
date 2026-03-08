@@ -1,6 +1,6 @@
 # Browser Extension Stealth Patches — Implementation Report
 
-**Date:** 2025-03-08  
+**Date:** 2025-03-08 (updated 2025-03-09)  
 **Scope:** Anti-bot detection bypass for Claw'd browser extension  
 **Files modified:** `content-script.js`, `service-worker.js`, `manifest.json`, `browser-plugin.ts`
 
@@ -264,3 +264,163 @@ The shield was reviewed across 3 rounds by 15 agents total:
 - **Round 1 (5 agents):** Found critical Proxy detection issues (`Function.prototype.toString.call()` bypass, background tab drift, prototype bypass, monotonicity violation, float Date.now), missing detection vectors (rAF, eval, Date constructor)
 - **Round 2 (5 agents):** Found crash bug (`.prototype=` on non-writable), getter toString leaks, regex false positives, timing race, navigator.webdriver should return false
 - **Round 3 (3 agents):** Verified 18/18 fixes applied, zero browser compatibility issues, confirmed remaining timing race fixed with inline anomaly correction
+
+---
+
+## Part 2: CDP-Free Stealth Mode (Added 2025-03-09)
+
+### Problem Statement
+
+The shield (Part 1) handles DOM fingerprinting, timing detection, and DevTools/debugger-statement bypass. However, some protected websites detect the **Chrome DevTools Protocol (CDP) attachment itself** — the instant `chrome.debugger.attach()` is called on a tab, the site detects it and redirects to the login page, kicking the agent out. This happens before any CDP commands are even executed.
+
+This means that all browser tools relying on CDP (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Runtime.evaluate`, `Page.captureScreenshot`, etc.) are automatically detected on these protected sites, regardless of how well the extension hides its DOM fingerprints.
+
+### Solution: `stealth` Parameter
+
+A new `stealth: true` parameter was added to 7 browser tools. When enabled, commands are routed through a parallel handler tree (`dispatchStealthCommand`) that **never calls `chrome.debugger.attach()`**. Instead, handlers use `chrome.scripting.executeScript()` to inject DOM operations directly into the page context.
+
+### Why This Works
+
+1. **`chrome.scripting.executeScript()`** runs code in the page via Chrome's extension IPC — it does NOT attach the debugger protocol
+2. **`el.click()` from ISOLATED world** produces `isTrusted: true` events — the browser generates the native event, not JavaScript
+3. **Extension runs in Chrome's ISOLATED world** — page scripts cannot observe the extension code or its globals
+4. **No detectable side-effects** — no `chrome.debugger` attachment, no CDP WebSocket, no DevTools banner
+
+### Stealth Handlers
+
+| Tool | CDP Handler | Stealth Handler | Mechanism |
+|------|-------------|-----------------|-----------|
+| `browser_click` | `Input.dispatchMouseEvent` | `stealthClick` | Pointer/mouse event sequence + `el.click()` for trusted events |
+| `browser_type` | `Input.dispatchKeyEvent` | `stealthType` | Native property setter + React `_valueTracker` reset + InputEvent |
+| `browser_keypress` | `Input.dispatchKeyEvent` | `stealthKeypress` | KeyboardEvent dispatch + imperative side-effects (Tab focus, Backspace delete) |
+| `browser_scroll` | `Input.dispatchMouseEvent` (wheel) | `stealthScroll` | `window.scrollBy()` / scrollable ancestor walk |
+| `browser_execute` | `Runtime.evaluate` | `stealthExecute` | `chrome.scripting.executeScript({ world: "MAIN" })` + indirect eval |
+| `browser_hover` | `Input.dispatchMouseEvent` | `stealthHover` | mouseenter/mouseover/mousemove event sequence |
+| `browser_screenshot` | `Page.captureScreenshot` | Inline | `chrome.tabs.captureVisibleTab()` (viewport-only JPEG) |
+
+### Already CDP-Free (No Stealth Needed)
+
+These tools already use Chrome extension APIs and never touch CDP:
+
+| Tool | API Used |
+|------|----------|
+| `browser_navigate` | `chrome.tabs.update/create` |
+| `browser_tabs` | `chrome.tabs.query/update/remove` |
+| `browser_select` | `chrome.scripting.executeScript` |
+| `browser_wait_for` | `chrome.scripting.executeScript` |
+| `browser_extract` | `chrome.scripting.executeScript` (except accessibility mode → blocked in stealth) |
+| `browser_cookies` | `chrome.cookies.*` |
+| `browser_history` | `chrome.tabs.goBack/goForward` |
+
+### Implementation Details
+
+#### stealthClick — Full Pointer/Mouse Event Sequence
+
+```javascript
+// Single click: pointer/mouse events + el.click() for isTrusted=true
+el.dispatchEvent(new PointerEvent("pointerdown", { ...shared, pointerId: 1, pointerType: "mouse", buttons: 1 }));
+el.dispatchEvent(new MouseEvent("mousedown", { ...shared, buttons: 1 }));
+el.dispatchEvent(new PointerEvent("pointerup", { ...shared, pointerId: 1, pointerType: "mouse", buttons: 0 }));
+el.dispatchEvent(new MouseEvent("mouseup", { ...shared, buttons: 0 }));
+el.click(); // isTrusted=true — coordinates will be (0,0) but most detectors only check isTrusted
+```
+
+Features:
+- **`buttons` bitmask** per spec (1=left, 2=right, 4=middle)
+- **`pointerType: "mouse"`** — real mouse events include this
+- **Middle-click** and **right-click** with correct button values
+- **Double-click** fires `dblclick` after 2nd click (per UI Events spec)
+- **Shadow DOM + iframe deep search** via `deepQuery(selector, root)`
+- **Scroll into view** before clicking (`scrollIntoViewIfNeeded` with fallback)
+
+#### stealthType — React/Vue/Angular Compatible
+
+```javascript
+// Bypass framework property setters via prototype native setter
+const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+if (nativeSetter) nativeSetter.call(el, newValue);
+else el.value = newValue;
+
+// Dispatch InputEvent with correct inputType for Vue 3
+el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+```
+
+Features:
+- **Native setter** bypasses React/Angular property interceptors
+- **InputEvent with `inputType`** for Vue 3 compatibility
+- **`contenteditable`** support via `document.execCommand`
+- **Form submission** via `requestSubmit()` (with validation) → `submit()` fallback
+- **`defaultPrevented` check** on Enter keydown — handles autocomplete dropdowns
+
+#### stealthKeypress — Correct Key Codes + Side Effects
+
+```javascript
+// code property mapping for common keys
+const codeMap = { " ": "Space" };
+const code = codeMap[mapped] || (/^[a-z]$/i.test(mapped) ? `Key${mapped.toUpperCase()}`
+  : /^[0-9]$/.test(mapped) ? `Digit${mapped}` : mapped);
+
+// keypress only fires for printable characters (per UI Events spec)
+if (mapped.length === 1 || mapped === "Enter") {
+  el.dispatchEvent(new KeyboardEvent("keypress", opts));
+}
+```
+
+Features:
+- **Correct `code` property** for Space, digits, letters
+- **`keypress` only for printable keys** (spec-compliant)
+- **Imperative Tab focus cycling** (respects Shift+Tab for reverse)
+- **Imperative Backspace delete** with selection handling
+- **Escape blurs** the focused element
+
+#### stealthExecute — MAIN World with CSP Detection
+
+```javascript
+chrome.scripting.executeScript({
+  world: "MAIN",  // Required for accessing page globals
+  func: async (c) => {
+    const result = await (0, eval)(c);  // Indirect eval → global scope
+    // structuredClone → JSON → String fallback chain
+    try { structuredClone(result); return { value: result }; } catch {}
+    try { return { value: JSON.parse(JSON.stringify(result)) }; } catch {}
+    return { value: String(result) };
+  }
+});
+```
+
+Features:
+- **`world: "MAIN"`** for page-scope access (only handler that needs it)
+- **Indirect eval `(0, eval)`** for global scope execution
+- **30s timeout** via `Promise.race` with proper `clearTimeout` in `finally`
+- **CSP detection** — catches `unsafe-eval` errors with actionable message
+- **Non-cloneable return guard** — 3-tier fallback prevents serialization crashes
+- **Frame ID validation** — rejects CDP hex frame IDs with clear error
+
+### Safety Guards
+
+1. **CDP contamination warning**: If `stealth: true` is requested on a tab that already has CDP attached, a console warning is logged
+2. **`intercept_file_chooser` rejection**: Stealth click throws if file chooser interception is requested (requires CDP)
+3. **Accessibility extraction blocked**: `browser_extract` with `mode: "accessibility"` throws in stealth (requires CDP `Accessibility.getFullAXTree`)
+4. **Unknown command rejection**: `dispatchStealthCommand` default case throws with descriptive error — never falls through to CDP
+
+### Known Limitations of Stealth Mode
+
+| Limitation | Reason | Workaround |
+|-----------|--------|------------|
+| **Viewport-only screenshots** | `captureVisibleTab` cannot capture full page or element-specific screenshots | Scroll and take multiple viewport screenshots |
+| **No accessibility tree** | `Accessibility.getFullAXTree` requires CDP | Use `extract mode=text` for content reading |
+| **No file chooser interception** | `Page.setInterceptFileChooserDialog` requires CDP | Use non-stealth mode for file uploads |
+| **No JS dialog auto-handling** | Dialog events require CDP event subscription | Agent must handle dialogs manually |
+| **CSS `:hover` won't activate** | Only trusted browser-dispatched events trigger CSS pseudo-classes | JS-based hover menus/tooltips still work (listeners fire) |
+| **CSP blocks `stealthExecute`** | `eval()` in MAIN world is subject to page CSP | Remove `stealth: true` for CDP fallback (bypasses CSP) |
+| **`el.click()` coords are (0,0)** | Chrome's `el.click()` produces `isTrusted: true` but with zero coordinates | Most detectors only check `isTrusted`, not coordinates |
+| **Double-click text selection** | Browser's selection engine needs trusted mousedown/mouseup sequence | Use `stealthExecute` to programmatically select text |
+| **Right-click context menu** | `contextmenu` event is `isTrusted: false` | JS-based context menus work; native browser menu won't open |
+
+### Review Process
+
+The stealth mode was reviewed across 3 rounds by 11 agents total:
+
+- **Round 1 (5 agents):** Found 6 missing tool `name:` properties, double form submission, missing React `_valueTracker` reset, wrong Event type (should be InputEvent), missing shadow DOM traversal inconsistency, missing mousedown/mouseup in click sequence, stealthExecute missing timeout/frameId/serialization guard
+- **Round 2 (5 agents):** Found critical CDP leak in stealth screenshot (handleScreenshot attaches debugger), null guard bypass (cx !== undefined fails for null), missing buttons/pointerType on events, wrong keypress code for Space/digits, keypress firing for non-printable keys, timeout Promise leak (unhandled rejection), deepQuery inconsistency (iframe search missing in type/hover)
+- **Round 3 (1 agent):** Found deepQuery infinite recursion in stealthType/stealthHover (1-param vs 2-param signature mismatch), redundant getActiveTabId in screenshot case. Verified all other fixes correctly applied. CDP isolation audit passed for all pass-through handlers.

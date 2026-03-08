@@ -75,6 +75,11 @@ export class BrowserPlugin implements ToolPlugin {
             type: "boolean",
             description: "Capture full scrollable page instead of viewport (default: false)",
           },
+          stealth: {
+            type: "boolean",
+            description:
+              "Use stealth mode. Only viewport screenshots are available (selector and full_page are ignored). Uses chrome.tabs.captureVisibleTab instead of CDP.",
+          },
         },
         required: [],
         handler: async (args) => this.handleScreenshot(args),
@@ -110,6 +115,11 @@ export class BrowserPlugin implements ToolPlugin {
             description:
               "Set true when clicking a file upload button. Intercepts the file chooser dialog so you can provide a file via browser_upload_file. Do NOT set for download buttons.",
           },
+          stealth: {
+            type: "boolean",
+            description:
+              "Use stealth mode to avoid CDP debugger detection on anti-bot protected sites. Uses chrome.scripting injection instead of CDP Input events. el.click() is used (isTrusted=true). Cannot intercept file choosers in stealth mode.",
+          },
         },
         required: [],
         handler: async (args) => this.handleClick(args),
@@ -136,6 +146,11 @@ export class BrowserPlugin implements ToolPlugin {
           pierce: {
             type: "boolean",
             description: "Pierce shadow DOM and iframes to find the element (default: false)",
+          },
+          stealth: {
+            type: "boolean",
+            description:
+              "Use stealth mode to avoid CDP debugger detection. Sets value via native setter + dispatches input/change events. Works with React/Vue controlled inputs.",
           },
         },
         required: ["text"],
@@ -214,6 +229,11 @@ export class BrowserPlugin implements ToolPlugin {
             type: "string",
             description: "Frame ID for frame-targeted execution (use browser_frames to list frames)",
           },
+          stealth: {
+            type: "boolean",
+            description:
+              "Use stealth mode to avoid CDP debugger detection. Runs code via chrome.scripting in MAIN world instead of CDP Runtime.evaluate. Frame targeting not supported in stealth mode.",
+          },
         },
         required: [],
         handler: async (args) => this.handleExecute(args),
@@ -225,7 +245,6 @@ export class BrowserPlugin implements ToolPlugin {
         parameters: {
           direction: {
             type: "string",
-            description: '"down" (default), "up", "left", or "right"',
             enum: ["up", "down", "left", "right"],
           },
           amount: {
@@ -240,6 +259,10 @@ export class BrowserPlugin implements ToolPlugin {
           x: { type: "number", description: "X coordinate to scroll at (alternative to selector)" },
           y: { type: "number", description: "Y coordinate to scroll at (alternative to selector)" },
           tab_id: { type: "number", description: "Target tab ID (optional)" },
+          stealth: {
+            type: "boolean",
+            description: "Use stealth mode. Uses window.scrollBy() via chrome.scripting instead of CDP mouseWheel events.",
+          },
         },
         required: [],
         handler: async (args) => this.handleScroll(args),
@@ -259,6 +282,10 @@ export class BrowserPlugin implements ToolPlugin {
           pierce: {
             type: "boolean",
             description: "Pierce shadow DOM and iframes to find the element (default: false)",
+          },
+          stealth: {
+            type: "boolean",
+            description: "Use stealth mode. Dispatches mouseenter/mouseover/mousemove events via chrome.scripting. CSS :hover may not activate (JS listeners will fire).",
           },
         },
         required: [],
@@ -323,6 +350,10 @@ export class BrowserPlugin implements ToolPlugin {
               'Modifier keys to hold: "ctrl", "shift", "alt", "meta", or combinations like ["ctrl", "shift"]',
           },
           tab_id: { type: "number", description: "Target tab ID (optional)" },
+          stealth: {
+            type: "boolean",
+            description: "Use stealth mode. Dispatches KeyboardEvent via chrome.scripting instead of CDP Input.dispatchKeyEvent.",
+          },
         },
         required: ["key"],
         handler: async (args) => this.handleKeypress(args),
@@ -334,7 +365,6 @@ export class BrowserPlugin implements ToolPlugin {
         parameters: {
           selector: {
             type: "string",
-            description: "CSS selector to wait for",
           },
           timeout: {
             type: "number",
@@ -764,6 +794,7 @@ export class BrowserPlugin implements ToolPlugin {
         tabId: args.tab_id,
         selector: args.selector,
         fullPage: args.full_page,
+        stealth: args.stealth,
       });
       if (!result.dataUrl) {
         return { success: false, output: "", error: "No screenshot data returned" };
@@ -817,6 +848,7 @@ export class BrowserPlugin implements ToolPlugin {
         clickCount: args.click_count,
         pierce: args.pierce,
         intercept_file_chooser: args.intercept_file_chooser,
+        stealth: args.stealth,
       });
       return {
         success: true,
@@ -847,6 +879,7 @@ export class BrowserPlugin implements ToolPlugin {
         clearFirst: args.clear_first,
         pressEnter: args.press_enter,
         pierce: args.pierce,
+        stealth: args.stealth,
       });
       return {
         success: true,
@@ -962,6 +995,7 @@ export class BrowserPlugin implements ToolPlugin {
         code,
         tabId: args.tab_id,
         frameId: args.frame_id,
+        stealth: args.stealth,
       });
       let output =
         result.value !== undefined
@@ -988,6 +1022,7 @@ export class BrowserPlugin implements ToolPlugin {
         x: args.x,
         y: args.y,
         tabId: args.tab_id,
+        stealth: args.stealth,
       });
       return {
         success: true,
@@ -1014,6 +1049,7 @@ export class BrowserPlugin implements ToolPlugin {
         y: args.y,
         tabId: args.tab_id,
         pierce: args.pierce,
+        stealth: args.stealth,
       });
       return {
         success: true,
@@ -1080,6 +1116,7 @@ export class BrowserPlugin implements ToolPlugin {
         key: args.key,
         modifiers: args.modifiers,
         tabId: args.tab_id,
+        stealth: args.stealth,
       });
       return {
         success: true,
