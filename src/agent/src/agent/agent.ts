@@ -418,13 +418,22 @@ export class Agent {
 
           // Apply lifecycle stages
           const keptMessages: Message[] = [];
+          const droppedMessages: Message[] = [];
           for (const s of fitted) {
             if (s.stage === "FULL" || s.isAnchor) {
               keptMessages.push(s.message);
             } else if (s.stage === "COMPRESSED") {
               keptMessages.push(compressMessage(s.message));
+            } else {
+              droppedMessages.push(s.message);
             }
-            // DROPPED messages are absorbed into WorkingState
+          }
+
+          // Pre-compaction harvest: let plugins extract critical info from dropped messages
+          if (droppedMessages.length > 0 && this.plugins) {
+            try {
+              await this.plugins.beforeCompaction(droppedMessages);
+            } catch {}
           }
 
           // Repair role alternation
@@ -475,6 +484,13 @@ export class Agent {
 
       // Legacy compaction: keep last N messages
       const messagesToCompact = allMessages.slice(0, Math.max(0, allMessages.length - this.compactKeepCount));
+
+      // Pre-compaction harvest: let plugins extract critical info from dropped messages
+      if (messagesToCompact.length > 0 && this.plugins) {
+        try {
+          await this.plugins.beforeCompaction(messagesToCompact);
+        } catch {}
+      }
 
       // Generate LLM summary of compacted messages (like Copilot CLI)
       let summary = `[Checkpoint ${this.checkpointManager?.getCheckpointCount() || 0} created]`;

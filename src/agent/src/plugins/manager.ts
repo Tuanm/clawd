@@ -47,6 +47,9 @@ export interface PluginHooks {
   onCompaction?: (deleted: number, remaining: number, ctx: PluginContext) => Promise<void>;
   onError?: (error: string, ctx: PluginContext) => Promise<void>;
 
+  // Pre-compaction hook - extract important info from messages about to be dropped
+  beforeCompaction?: (droppedMessages: any[], ctx: PluginContext) => Promise<void>;
+
   // Context hook - return additional context to inject into system prompt
   getSystemContext?: (ctx: PluginContext) => Promise<string | null>;
 }
@@ -237,6 +240,18 @@ export class PluginManager extends EventEmitter {
     for (const plugin of this.plugins.values()) {
       if (plugin.hooks.onCompaction) {
         await plugin.hooks.onCompaction(deleted, remaining, this.context);
+      }
+    }
+  }
+
+  async beforeCompaction(droppedMessages: any[]): Promise<void> {
+    for (const plugin of this.plugins.values()) {
+      if (plugin.hooks.beforeCompaction) {
+        try {
+          await plugin.hooks.beforeCompaction(droppedMessages, this.context);
+        } catch {
+          // Ignore plugin errors during pre-compaction harvest
+        }
       }
     }
   }

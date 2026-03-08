@@ -45,7 +45,7 @@ export interface MemoryPluginResult {
 
 // ── Constants ──────────────────────────────────────────────────────
 
-const INJECTION_CAP = 2000; // 2K chars max for memory context
+const INJECTION_CAP = 4000; // 4K chars max for memory context
 const MAX_RECENT = 5;
 const MAX_RELEVANT = 10;
 const MIN_IDENTITY_LENGTH = 50;
@@ -135,7 +135,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
     const lines = results.map((m) => {
       const age = formatAge(m.createdAt);
       const scope = m.channel ? "" : " [agent-wide]";
-      return `#${m.id} [${m.category}] (${age}${scope}): ${m.content}`;
+      const pin = m.priority >= 80 ? " 📌" : "";
+      return `#${m.id} [${m.category}] (${age}${scope}${pin}): ${m.content}`;
     });
 
     const header = args.query
@@ -157,6 +158,30 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
     }
 
     return { success: true, output: `Memory #${id} deleted` };
+  }
+
+  async function handleMemoPin(args: Record<string, any>): Promise<ToolResult> {
+    const id = Number(args.id);
+    if (!id || isNaN(id)) {
+      return { success: false, output: "", error: "Valid memory ID required" };
+    }
+    const result = store.pin(id, agentId);
+    if (!result.success) {
+      return { success: false, output: "", error: result.error || "Failed to pin" };
+    }
+    return { success: true, output: `Memory #${id} pinned — it will always be loaded into your context.` };
+  }
+
+  async function handleMemoUnpin(args: Record<string, any>): Promise<ToolResult> {
+    const id = Number(args.id);
+    if (!id || isNaN(id)) {
+      return { success: false, output: "", error: "Valid memory ID required" };
+    }
+    const result = store.unpin(id, agentId);
+    if (!result.success) {
+      return { success: false, output: "", error: result.error || "Failed to unpin" };
+    }
+    return { success: true, output: `Memory #${id} unpinned — it will only be loaded when relevant.` };
   }
 
   async function handleIdentityUpdate(args: Record<string, any>): Promise<ToolResult> {
@@ -227,26 +252,82 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
   async function getSystemContext(ctx: PluginContext): Promise<string | null> {
     try {
       const memories = store.getRelevant(agentId, channel, lastKeywords, MAX_RECENT, MAX_RELEVANT);
-      if (memories.length === 0) return null;
+      if (memories.length === 0 && compactionCount === 0) return null;
+
+      // Build actually-injected IDs list during rendering
+      const actuallyInjectedIds: number[] = [];
 
       let output = "<agent_memory>\n";
       let charCount = 0;
 
-      for (const mem of memories) {
-        const age = formatAge(mem.createdAt);
-        const line =
-          mem.category === "fact" || mem.category === "correction"
-            ? `- [#${mem.id} ${mem.category} ${age}] ${mem.content}\n`
-            : `- [#${mem.id} ${mem.category}] ${mem.content}\n`;
+      // Session DNA — orientation context after compactions
+      if (compactionCount > 0) {
+        const dna =
+          `  <session_dna compactions="${compactionCount}" turn="${turnCount}">\n` +
+          `    This is a long-running session. ${compactionCount} compaction(s) have occurred.\n` +
+          `    Your pinned memories and extracted facts below persist across compactions.\n` +
+          `  </session_dna>\n`;
+        output += dna;
+        charCount += dna.length;
+      }
 
-        if (charCount + line.length > INJECTION_CAP) break;
-        output += line;
-        charCount += line.length;
+      // Separate pinned vs non-pinned
+      const pinned = memories.filter((m) => m.priority >= 80);
+      const others = memories.filter((m) => m.priority < 80);
+
+      // Pinned rules section — always included (up to 1500 chars)
+      if (pinned.length > 0) {
+        output += "  <pinned_rules>\n";
+        let pinnedIncluded = 0;
+        for (const mem of pinned) {
+          const line = `    - [#${mem.id} ${mem.category}] ${mem.content}\n`;
+          if (charCount + line.length > 1500) break;
+          output += line;
+          charCount += line.length;
+          pinnedIncluded++;
+          actuallyInjectedIds.push(mem.id);
+        }
+        if (pinnedIncluded < pinned.length) {
+          output += `    (${pinned.length - pinnedIncluded} pinned memories truncated — unpin some to free space)\n`;
+        }
+        output += "  </pinned_rules>\n";
+      }
+
+      // Relevant + recent section
+      if (others.length > 0) {
+        output += "  <relevant>\n";
+        for (const mem of others) {
+          const age = formatAge(mem.createdAt);
+          const line = `    - [#${mem.id} ${mem.category} ${age}] ${mem.content}\n`;
+          if (charCount + line.length > INJECTION_CAP) break;
+          output += line;
+          charCount += line.length;
+          actuallyInjectedIds.push(mem.id);
+        }
+        output += "  </relevant>\n";
+      }
+
+      // Track only actually injected IDs for Phase 4 reflection
+      lastInjectedIds = actuallyInjectedIds;
+
+      // Memory hints — tell agent what topics it knows about (Phase 4)
+      if (charCount < INJECTION_CAP - 200) {
+        const hints = store.getMemoryHints(agentId);
+        if (hints) {
+          const hintsSection = `  <memory_topics>\n${hints
+            .split("\n")
+            .map((h: string) => `    ${h}`)
+            .join("\n")}\n  </memory_topics>\n`;
+          if (charCount + hintsSection.length <= INJECTION_CAP) {
+            output += hintsSection;
+            charCount += hintsSection.length;
+          }
+        }
       }
 
       output += "</agent_memory>";
       return output;
-    } catch (err) {
+    } catch {
       // Silent fail — don't break agent loop
       return null;
     }
@@ -259,6 +340,28 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
 
   async function onAgentResponse(response: any, ctx: PluginContext): Promise<void> {
     turnCount++;
+
+    // Periodic priority decay (every 50 turns) — must run regardless of extraction
+    if (turnCount % 50 === 0) {
+      try {
+        store.decayPriorities(agentId);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // Periodic consolidation (every 200 turns) — merge similar memories
+    // Stagger: consolidation at 200, reflection at non-200 multiples of 100
+    if (turnCount % 200 === 0) {
+      consolidateMemories(ctx).catch(() => {
+        /* best-effort */
+      });
+    } else if (turnCount % 100 === 0 && turnCount > 10) {
+      // Periodic reflection (every 100 turns, skipped when consolidation runs)
+      reflectOnMemories(ctx).catch(() => {
+        /* best-effort */
+      });
+    }
 
     // Update keywords from recent context
     if (response?.content) {
@@ -323,6 +426,7 @@ ${content.slice(0, 2000)}`;
           content: fact.content.trim(),
           category,
           source: "auto",
+          priority: 40,
         });
       }
     } catch {
@@ -331,11 +435,246 @@ ${content.slice(0, 2000)}`;
     }
   }
 
+  // ── Memory Consolidation (Phase 3) ────────────────────────────
+
+  /**
+   * Periodically merge similar memories to reduce duplicates.
+   * Uses LLM to merge groups of similar memories in the same category.
+   */
+  async function consolidateMemories(ctx: PluginContext): Promise<void> {
+    const llmClient = ctx.llmClient;
+    if (!llmClient) return;
+
+    const groups = store.findConsolidationCandidates(agentId);
+    if (groups.length === 0) return;
+
+    let merged = 0;
+    for (const group of groups.slice(0, 3)) {
+      // Max 3 categories per consolidation run
+      // Find clusters of similar memories within the category
+      const memories = group.memories;
+      if (memories.length < 5) continue;
+
+      // Simple cluster: group by content similarity (Jaccard on keywords)
+      const clusters: AgentMemory[][] = [];
+      const used = new Set<number>();
+
+      for (let i = 0; i < memories.length; i++) {
+        if (used.has(memories[i].id)) continue;
+        const cluster = [memories[i]];
+        used.add(memories[i].id);
+        const iWords = new Set(extractKeywords(memories[i].content));
+
+        for (let j = i + 1; j < memories.length; j++) {
+          if (used.has(memories[j].id)) continue;
+          const jWords = new Set(extractKeywords(memories[j].content));
+          const intersection = [...iWords].filter((w) => jWords.has(w)).length;
+          const union = new Set([...iWords, ...jWords]).size;
+          if (union > 0 && intersection / union >= 0.3) {
+            cluster.push(memories[j]);
+            used.add(memories[j].id);
+          }
+        }
+
+        if (cluster.length >= 2) {
+          clusters.push(cluster);
+        }
+      }
+
+      // LLM merge each cluster
+      for (const cluster of clusters.slice(0, 3)) {
+        try {
+          const items = cluster.map((m) => `- [#${m.id}] ${m.content}`).join("\n");
+          const result = await llmClient.complete({
+            model: config.memoryModel || llmClient.model,
+            messages: [
+              {
+                role: "user",
+                content: `Merge these related memories into a single, comprehensive memory. Preserve all unique information. Return ONLY the merged text, no explanation.\n\n${items}`,
+              },
+            ],
+            max_tokens: 300,
+            temperature: 0,
+          });
+
+          const mergedContent = result?.choices?.[0]?.message?.content?.trim();
+          if (mergedContent && mergedContent.length > 10) {
+            const mergeIds = cluster.map((m) => m.id);
+            store.mergeMemories(agentId, mergeIds, mergedContent, group.category);
+            merged += cluster.length;
+          }
+        } catch {
+          // Skip this cluster
+        }
+      }
+    }
+
+    if (merged > 0) {
+      console.log(`[Memory] Consolidation: merged ${merged} memories into fewer entries`);
+    }
+  }
+
+  // ── Self-Reflection (Phase 4) ─────────────────────────────────
+
+  /** Track which memory IDs were injected in the last context */
+  let lastInjectedIds: number[] = [];
+
+  /**
+   * Reflect on recently injected memories: which were critical vs irrelevant?
+   * Uses LLM to evaluate and adjusts effectiveness + priority accordingly.
+   */
+  async function reflectOnMemories(ctx: PluginContext): Promise<void> {
+    const llmClient = ctx.llmClient;
+    if (!llmClient || lastInjectedIds.length === 0) return;
+
+    // Fetch the exact memories that were injected (without bumping access counts)
+    const nonPinnedIds = lastInjectedIds.slice(0, 15);
+    const injected = store.getByIds(nonPinnedIds, agentId).filter((m) => m.priority < 80);
+    if (injected.length === 0) return;
+
+    try {
+      const memList = injected.map((m) => `#${m.id} [${m.category}]: ${m.content}`).join("\n");
+      const result = await llmClient.complete({
+        model: config.memoryModel || llmClient.model,
+        messages: [
+          {
+            role: "user",
+            content: `Evaluate these memories that were loaded into your context. For each, rate how useful it was for the recent conversation. Return a JSON array of objects with "id" (number) and "rating" ("critical"|"useful"|"neutral"|"irrelevant"). Return ONLY the JSON array.\n\nMemories:\n${memList}`,
+          },
+        ],
+        max_tokens: 500,
+        temperature: 0,
+      });
+
+      const text = result?.choices?.[0]?.message?.content?.trim();
+      if (!text) return;
+
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) return;
+      const ratings = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(ratings)) return;
+
+      const validIds = new Set(injected.map((m) => m.id));
+      const updates: { id: number; delta: number; priorityDelta?: number }[] = [];
+      for (const r of ratings) {
+        if (typeof r.id !== "number" || !validIds.has(r.id) || !r.rating) continue;
+        switch (r.rating) {
+          case "critical":
+            updates.push({ id: r.id, delta: 0.1, priorityDelta: 5 });
+            break;
+          case "useful":
+            updates.push({ id: r.id, delta: 0.05, priorityDelta: 2 });
+            break;
+          case "irrelevant":
+            updates.push({ id: r.id, delta: -0.1, priorityDelta: -5 });
+            break;
+          // "neutral" — no change
+        }
+      }
+
+      if (updates.length > 0) {
+        const changed = store.updateEffectiveness(updates, agentId);
+        if (changed > 0) {
+          console.log(`[Memory] Reflection: updated effectiveness for ${changed} memories`);
+        }
+      }
+    } catch {
+      // Best-effort
+    }
+  }
+
+  // ── Compaction Harvest (Phase 2) ──────────────────────────────
+
+  let compactionCount = 0;
+
+  /**
+   * Before compaction: extract critical facts from messages about to be dropped.
+   * This ensures decisions, preferences, and lessons survive context compaction.
+   */
+  async function beforeCompaction(droppedMessages: any[], ctx: PluginContext): Promise<void> {
+    const llmClient = ctx.llmClient;
+    if (!llmClient) return;
+
+    // Build a condensed text from dropped messages (cap at 8K chars to control cost)
+    const condensed: string[] = [];
+    let charBudget = 8000;
+    for (const msg of droppedMessages) {
+      const content = typeof msg.content === "string" ? msg.content : "";
+      if (!content || content.length < 20) continue;
+      // Skip tool results (often verbose, low signal)
+      if (msg.role === "tool") continue;
+      const snippet = content.length > 500 ? content.slice(0, 500) + "..." : content;
+      if (charBudget - snippet.length < 0) break;
+      condensed.push(`[${msg.role}] ${snippet}`);
+      charBudget -= snippet.length;
+    }
+
+    if (condensed.length === 0) return;
+
+    try {
+      const result = await llmClient.complete({
+        model: config.memoryModel || llmClient.model,
+        messages: [
+          {
+            role: "user",
+            content: `These messages are about to be lost from context (compaction #${compactionCount}). Extract the most critical information that should be remembered long-term. Focus on: user decisions, user preferences, project-specific rules, important corrections, critical bugs discovered, and architectural decisions.
+
+Return a JSON array of objects with "content" (one atomic fact), "category" (fact|preference|decision|lesson|correction), and "priority" (40-70, higher = more important). Return [] if nothing critical. Max 8 items. Return ONLY the JSON array.
+
+Messages being dropped:
+${condensed.join("\n")}`,
+          },
+        ],
+        max_tokens: 1000,
+        temperature: 0,
+      });
+
+      const text = result?.choices?.[0]?.message?.content?.trim();
+      if (!text) return;
+
+      // Parse JSON array
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) return;
+      const items = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(items)) return;
+
+      let saved = 0;
+      for (const item of items.slice(0, 8)) {
+        if (!item.content || typeof item.content !== "string") continue;
+        const cat = VALID_CATEGORIES.includes(item.category) ? item.category : "fact";
+        const priority = Math.max(40, Math.min(70, Number(item.priority) || 50));
+        const result = store.save({
+          agentId,
+          channel: config.channel,
+          content: item.content,
+          category: cat,
+          source: "auto",
+          priority,
+          tags: extractKeywords(item.content).slice(0, 5).join(","),
+        });
+        if (result.id) saved++;
+      }
+
+      if (saved > 0) {
+        console.log(
+          `[Memory] Compaction harvest: saved ${saved} memories from ${droppedMessages.length} dropped messages`,
+        );
+      }
+    } catch {
+      // Best-effort — don't block compaction
+    }
+  }
+
   // ── Plugin Hooks ───────────────────────────────────────────────
 
   const pluginHooks: PluginHooks = {
     getSystemContext,
     onAgentResponse,
+    beforeCompaction,
+    async onCompaction(_deleted: number, _remaining: number) {
+      // Track compaction count here — fires on ALL compaction paths (smart, legacy, critical, overflow)
+      compactionCount++;
+    },
     async onUserMessage(message: string) {
       // Update keywords from user message for injection relevance
       lastKeywords = extractKeywords(message).slice(0, 15);
@@ -361,7 +700,7 @@ ${content.slice(0, 2000)}`;
         {
           name: "memo_save",
           description:
-            "Save important information to your long-term memory. Memories persist across sessions and are scoped to you. Use categories: fact, preference, decision, lesson, correction.",
+            "Save important information to your long-term memory. Memories persist across sessions and are scoped to you. Use categories: fact, preference, decision, lesson, correction. Use memo_pin to ensure critical memories are always loaded.",
           parameters: {
             content: {
               type: "string",
@@ -422,6 +761,31 @@ ${content.slice(0, 2000)}`;
           },
           required: ["id"],
           handler: handleMemoDelete,
+        },
+        {
+          name: "memo_pin",
+          description:
+            "Pin a memory so it is ALWAYS loaded into your context. Use for critical rules, important decisions, and must-remember facts. Max 25 pinned memories. Find IDs with memo_recall.",
+          parameters: {
+            id: {
+              type: "number",
+              description: "Memory ID to pin",
+            },
+          },
+          required: ["id"],
+          handler: handleMemoPin,
+        },
+        {
+          name: "memo_unpin",
+          description: "Unpin a previously pinned memory. It will still exist but only loaded when relevant.",
+          parameters: {
+            id: {
+              type: "number",
+              description: "Memory ID to unpin",
+            },
+          },
+          required: ["id"],
+          handler: handleMemoUnpin,
         },
         {
           name: "identity_update",
