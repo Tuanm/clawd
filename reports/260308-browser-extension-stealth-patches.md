@@ -196,7 +196,71 @@ Two rounds of 5-agent reviews (10 total review agents) were conducted:
 
 ## Build & Deployment
 
-- Extension zip: 56.4KB (served at `GET /browser/extension`)
+- Extension zip: 60.5KB (served at `GET /browser/extension`)
 - Binary: `dist/server/clawd-app` (compiled Bun executable)
-- Docker image: `clawd-pilot/clawd:26.03.07`
+- Docker image: `clawd-pilot/clawd:26.03.08`
 - Deployed and verified at `localhost:53456`
+
+---
+
+## Anti-Detection Shield (`shield.js`)
+
+### Overview
+
+After the initial stealth patches (DOM fingerprinting, lazy CDP, store migration, cookies), real-world testing on anti-debug sites (e.g., `utt.huelms.com`) revealed that **CDP debugger attachment itself** is the primary detection surface. Sites detect the `debugger` statement timing gap, window dimension anomalies, and `navigator.webdriver` flag.
+
+The shield is a MAIN-world content script injected at `document_start` before any page script runs. It patches browser APIs to neutralize 18+ detection vectors.
+
+### Architecture
+
+- **Injection:** `content_scripts` in `manifest.json`, `world: "MAIN"`, `run_at: "document_start"`, `all_frames: true`
+- **Minimum Chrome:** 111 (required for MAIN-world static content scripts)
+- **toString defense:** `Function.prototype.toString` is overridden with a WeakMap-backed implementation. Every patched function is registered, making patches survive both `fn.toString()` and `Function.prototype.toString.call(fn)`.
+- **No Proxy on patched functions:** Date and Function constructors use Proxy (with `get` trap for `.prototype`), but all user-facing functions use direct replacement.
+
+### Detection Vectors Neutralized
+
+| # | Vector | Technique |
+|---|--------|-----------|
+| 1 | `performance.now()` timing gaps | Offset subtraction + monotonic high-water mark |
+| 2 | `Date.now()` timing gaps | Same offset, `Math.round()` for integer type |
+| 3 | `new Date()` / `Date()` timing | Proxy constructor applies offset for 0-arg calls |
+| 4 | `requestAnimationFrame` timestamp | Routes through shared `_adjustedPerfNow()` |
+| 5 | `setInterval` pause detection | Adaptive EMA baseline, 200ms–30s window, visibility guard |
+| 6 | Background tab throttle | `visibilitychange` + `document.hidden` checks |
+| 7 | `outerHeight` / `outerWidth` gap | Prototype-level getter (not instance) with captured chrome height |
+| 8 | `navigator.webdriver` | Prototype getter returns `false` (not `undefined`) |
+| 9 | `console.clear` timing | No-op replacement |
+| 10 | `Error.stack` automation frames | `prepareStackTrace` filter (10 patterns incl. extension, puppeteer, playwright) |
+| 11 | `Function()` constructor debugger | Proxy strips debugger from body with word-boundary regex |
+| 12 | `eval()` debugger injection | Wrapper strips debugger statements |
+| 13 | `setTimeout` string debugger | Wrapper strips debugger |
+| 14 | `setInterval` string debugger | Wrapper strips debugger |
+| 15 | `Function.prototype.toString` | WeakMap + self-registration (toString of toString) |
+| 16 | `chrome.csi` absence | Polyfill with cached onloadT + timing values |
+| 17 | `chrome.loadTimes` absence | Polyfill with navigation timing |
+| 18 | `chrome.app` absence | Stub with InstallState/RunningState |
+| 19 | BFCache lifecycle | `pagehide`/`pageshow` detector management |
+| 20 | Inline anomaly detection | `_adjustedPerfNow()` detects >200ms jumps inline (no tick wait) |
+
+### Key Design Decisions
+
+1. **Prototypes, not instances:** Patches are on `Performance.prototype.now`, `Window.prototype.outerHeight`, `Navigator.prototype.webdriver` — avoids `hasOwnProperty` detection.
+2. **Symbol.for guard:** Re-injection guard uses `Symbol.for()` (invisible to `getOwnPropertyNames`).
+3. **Adaptive baseline EMA:** The pause detector's expected interval adapts to CPU conditions rather than using a fixed 50ms assumption.
+4. **Monotonic high-water mark:** `performance.now()` and `requestAnimationFrame` share a single high-water to prevent backwards timestamps and cross-API divergence.
+5. **Inline anomaly correction:** `_adjustedPerfNow()` detects and corrects >200ms jumps synchronously, closing the race between debugger pause resume and setInterval detector tick.
+
+### Known Limitations
+
+- **Direct `eval("debugger")`:** JavaScript's `eval()` uses caller scope when called directly. Our wrapper converts to indirect eval (global scope). Direct eval with `debugger` in caller's local variables won't be intercepted.
+- **Worker timing inconsistency:** Web Workers have unpatched `performance.now()`. Cross-thread timing comparisons may show discrepancies during debugger pauses.
+- **Dynamic debugger regex:** The `_stripDebugger` regex operates on raw text, not AST. String literals containing the word "debugger" inside `eval()`/`new Function()` could be affected (very rare edge case).
+
+### Review Process
+
+The shield was reviewed across 3 rounds by 15 agents total:
+
+- **Round 1 (5 agents):** Found critical Proxy detection issues (`Function.prototype.toString.call()` bypass, background tab drift, prototype bypass, monotonicity violation, float Date.now), missing detection vectors (rAF, eval, Date constructor)
+- **Round 2 (5 agents):** Found crash bug (`.prototype=` on non-writable), getter toString leaks, regex false positives, timing race, navigator.webdriver should return false
+- **Round 3 (3 agents):** Verified 18/18 fixes applied, zero browser compatibility issues, confirmed remaining timing race fixed with inline anomaly correction
