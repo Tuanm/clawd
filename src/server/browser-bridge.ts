@@ -61,7 +61,44 @@ const agentBrowser = new Map<string, string>();
 /** Active agent count per extension: extensionId → Set<agentId> */
 const extensionAgents = new Map<string, Set<string>>();
 
-const REQUEST_TIMEOUT_MS = 120_000; // 120s — file transfers may take time
+/** Last pong timestamp per extension for dead connection detection */
+const lastPong = new Map<string, number>();
+
+const HEARTBEAT_CHECK_INTERVAL_MS = 30_000; // check every 30s
+const HEARTBEAT_DEAD_THRESHOLD_MS = 45_000; // consider dead if no pong for 45s
+
+// Server-initiated heartbeat: detect dead extensions and reject pending requests
+setInterval(() => {
+  const now = Date.now();
+  for (const [extId, ws] of connections) {
+    const lastSeen = lastPong.get(extId) ?? ws.data.connectedAt;
+    if (now - lastSeen > HEARTBEAT_DEAD_THRESHOLD_MS) {
+      console.warn(
+        `[browser-bridge] Extension ${extId} unresponsive (no pong for ${Math.round((now - lastSeen) / 1000)}s), closing`,
+      );
+      try {
+        ws.close(1001, "heartbeat timeout");
+      } catch {}
+      // handleBrowserWsClose will clean up pending requests
+      continue;
+    }
+    // Send server-initiated ping
+    try {
+      ws.send(JSON.stringify({ type: "ping" }));
+    } catch {}
+  }
+}, HEARTBEAT_CHECK_INTERVAL_MS);
+
+const DEFAULT_TIMEOUT_MS = 30_000; // 30s default — agents can override with timeout param
+
+/** Per-command timeout overrides (ms). Commands not listed use DEFAULT_TIMEOUT_MS. */
+const COMMAND_TIMEOUTS: Record<string, number> = {
+  navigate: 60_000,
+  execute: 60_000,
+  wait_for: 60_000,
+  download: 120_000,
+  file_upload: 120_000,
+};
 const MAX_CONNECTIONS = 10;
 const EXT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 const AUTH_TOKEN_PATTERN = /^[a-zA-Z0-9_\-.:]{1,256}$/;
@@ -83,6 +120,7 @@ export function handleBrowserWsOpen(ws: ServerWebSocket<BrowserWsData>) {
     return;
   }
   connections.set(extId, ws);
+  lastPong.set(extId, Date.now());
   const authInfo = ws.data.authToken ? ` (token: ${maskToken(ws.data.authToken)})` : " (no auth)";
   console.log(`[browser-bridge] Extension connected: ${extId}${authInfo} (${connections.size} total)`);
 }
@@ -95,8 +133,7 @@ export function handleBrowserWsClose(ws: ServerWebSocket<BrowserWsData>) {
   if (connections.get(extId) !== ws) return;
 
   connections.delete(extId);
-
-  // Clean up tab ownership for tabs on this extension
+  lastPong.delete(extId);
   // Safe: Map spec guarantees iteration handles concurrent deletes
   for (const [tabKey] of tabOwnership) {
     if (tabKey.startsWith(`${extId}:`)) {
@@ -129,6 +166,13 @@ export function handleBrowserWsMessage(ws: ServerWebSocket<BrowserWsData>, messa
     // Heartbeat
     if (data.type === "ping") {
       ws.send(JSON.stringify({ type: "pong" }));
+      lastPong.set(ws.data.extensionId, Date.now());
+      return;
+    }
+
+    // Pong response to our server-initiated ping
+    if (data.type === "pong") {
+      lastPong.set(ws.data.extensionId, Date.now());
       return;
     }
 
@@ -374,6 +418,8 @@ export async function sendBrowserCommand(
     extensionId?: string;
     agentId?: string;
     channel?: string;
+    /** Agent-specified timeout override in ms. Capped at 120s. */
+    timeoutMs?: number;
   },
 ): Promise<any> {
   const agentId = options?.agentId;
@@ -405,12 +451,14 @@ export async function sendBrowserCommand(
 
   const id = `req_${++requestCounter}_${randomBytes(4).toString("hex")}`;
   const extId = ws.data.extensionId;
+  // Priority: agent-specified timeout > per-command default > global default (30s). Cap at 120s.
+  const timeoutMs = Math.min(options?.timeoutMs || COMMAND_TIMEOUTS[method] || DEFAULT_TIMEOUT_MS, 120_000);
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(id);
-      reject(new Error(`Browser command '${method}' timed out after ${REQUEST_TIMEOUT_MS / 1000}s`));
-    }, REQUEST_TIMEOUT_MS);
+      reject(new Error(`Browser command '${method}' timed out after ${timeoutMs / 1000}s`));
+    }, timeoutMs);
 
     pendingRequests.set(id, { resolve, reject, method, timer, extensionId: extId });
 

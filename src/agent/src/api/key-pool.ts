@@ -27,8 +27,8 @@ const GITHUB_API_BASE = "https://api.github.com";
 
 const RPM_WINDOW_MS = 60_000;
 const RPM_LIMIT = 8; // 80% of documented 10 RPM; conservative
-const MIN_SPACING_MS = 2_000; // minimum 2s between requests on the same key
-const SPACING_JITTER_MS = 1_000; // +[0, 1000ms] random jitter
+const MIN_SPACING_MS = 1_200; // minimum 1.2s between requests on the same key
+const SPACING_JITTER_MS = 500; // +[0, 500ms] random jitter
 const COOLDOWN_429_DEFAULT_MS = 180_000; // 3 min default when no Retry-After header
 const CONNECT_TIMEOUT_MS = 10_000;
 const PREMIUM_LIMIT_PER_KEY = 300; // Pro plan monthly premium request allowance
@@ -249,17 +249,21 @@ class KeyPool {
       )[0];
     } else {
       // Prefer key with fewest RPM requests + inFlight (least loaded)
-      best =
-        available
-          .filter((k) => {
-            const rpm = k.window60s.filter((t) => t > now - RPM_WINDOW_MS).length;
-            return rpm + k.inFlight < RPM_LIMIT;
-          })
-          .sort((a, b) => {
-            const aLoad = a.window60s.filter((t) => t > now - RPM_WINDOW_MS).length + a.inFlight;
-            const bLoad = b.window60s.filter((t) => t > now - RPM_WINDOW_MS).length + b.inFlight;
-            return aLoad - bLoad;
-          })[0] ?? available.sort((a, b) => a.inFlight - b.inFlight)[0]; // fallback: least in-flight
+      // Randomize among equally-loaded keys to prevent clustering
+      const viable = available.filter((k) => {
+        const rpm = k.window60s.filter((t) => t > now - RPM_WINDOW_MS).length;
+        return rpm + k.inFlight < RPM_LIMIT;
+      });
+      const pool = viable.length > 0 ? viable : available;
+      const scored = pool.map((k) => ({
+        key: k,
+        load: k.window60s.filter((t) => t > now - RPM_WINDOW_MS).length + k.inFlight,
+      }));
+      scored.sort((a, b) => a.load - b.load);
+      // Pick randomly among keys within 1 load unit of the best (avoids clustering)
+      const minLoad = scored[0].load;
+      const equallyGood = scored.filter((s) => s.load <= minLoad + 1);
+      best = equallyGood[Math.floor(Math.random() * equallyGood.length)].key;
     }
 
     // Atomic slot increment (single-threaded JS — no race)

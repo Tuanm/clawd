@@ -52,6 +52,10 @@ export class BrowserPlugin implements ToolPlugin {
             description: 'Wait condition: "load" (default) or "domcontentloaded"',
             enum: ["load", "domcontentloaded"],
           },
+          bridge_timeout: {
+            type: "number",
+            description: "Override server-side timeout in seconds (default: 60, max: 120). Use for slow-loading pages.",
+          },
         },
         required: ["url"],
         handler: async (args) => this.handleNavigate(args),
@@ -180,6 +184,10 @@ export class BrowserPlugin implements ToolPlugin {
             type: "string",
             description: "Frame ID to extract from (use browser_frames to list frames)",
           },
+          bridge_timeout: {
+            type: "number",
+            description: "Override server-side timeout in seconds (default: 30, max: 120). Use for heavy pages.",
+          },
         },
         required: ["mode"],
         handler: async (args) => this.handleExtract(args),
@@ -237,6 +245,11 @@ export class BrowserPlugin implements ToolPlugin {
             type: "boolean",
             description:
               "Use stealth mode to avoid CDP debugger detection. Runs code via chrome.scripting in MAIN world instead of CDP Runtime.evaluate. Frame targeting not supported in stealth mode.",
+          },
+          bridge_timeout: {
+            type: "number",
+            description:
+              "Override server-side timeout in seconds (default: 60, max: 120). Use for long-running scripts.",
           },
         },
         required: [],
@@ -386,9 +399,11 @@ export class BrowserPlugin implements ToolPlugin {
             description: "Pierce shadow DOM and iframes to find the element (default: false)",
           },
           tab_id: { type: "number", description: "Target tab ID (optional)" },
+          bridge_timeout: {
+            type: "number",
+            description: "Override server-side timeout in seconds (default: 60, max: 120). Should be >= timeout/1000.",
+          },
         },
-        required: ["selector"],
-        handler: async (args) => this.handleWaitFor(args),
       },
       {
         name: "browser_select",
@@ -707,8 +722,11 @@ export class BrowserPlugin implements ToolPlugin {
     const channel = this.channel;
     const agentId = this.agentId;
     // Wrap sendBrowserCommand to auto-inject agent routing options
-    const send = (method: string, params: Record<string, any> = {}) =>
-      sendBrowserCommand(method, params, { agentId, channel });
+    const send = (method: string, params: Record<string, any> = {}) => {
+      // Allow agent to override bridge timeout via bridge_timeout param (seconds)
+      const bridgeTimeout = typeof params.bridge_timeout === "number" ? params.bridge_timeout * 1000 : undefined;
+      return sendBrowserCommand(method, params, { agentId, channel, timeoutMs: bridgeTimeout });
+    };
     return {
       isExtensionConnected,
       isExtensionConnectedForChannel,
@@ -996,6 +1014,11 @@ export class BrowserPlugin implements ToolPlugin {
           output: "",
           error: "Either 'code' or 'script_id' is required.",
         };
+      }
+
+      // Wrap inline code in async IIFE for clean scope isolation & top-level await support
+      if (!args.script_id) {
+        code = `(async()=>{${code}})()`;
       }
 
       const result = await sendBrowserCommand("execute", {

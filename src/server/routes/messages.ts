@@ -53,6 +53,13 @@ export interface UpdateMessageRequest {
   tool_result_json?: string;
 }
 
+export interface AppendMessageRequest {
+  channel: string;
+  ts: string;
+  text: string;
+  separator?: string;
+}
+
 export interface ReactionsRequest {
   channel: string;
   timestamp: string;
@@ -194,7 +201,39 @@ export function updateMessage(req: UpdateMessageRequest) {
   };
 }
 
-// POST /api/conversations.history - uses prepared statement
+// POST /api/chat.append - append text to existing message
+export function appendMessage(req: AppendMessageRequest) {
+  // Lock check for space channels
+  if (req.channel.includes(":space:")) {
+    const space = db
+      .query<{ locked: number }, [string]>(`SELECT locked FROM spaces WHERE space_channel = ?`)
+      .get(req.channel);
+    if (space?.locked) {
+      return { ok: false, error: "space_is_locked" };
+    }
+  }
+
+  const existing = preparedStatements.getMessageByTs.get(req.ts);
+  if (!existing) {
+    return { ok: false, error: "message_not_found" };
+  }
+
+  const separator = req.separator ?? "\n\n";
+  const currentText = existing.text || "";
+  const newText = currentText ? currentText + separator + req.text : req.text;
+  const now = Math.floor(Date.now() / 1000);
+
+  preparedStatements.updateMessage.run(newText, now, req.ts, req.channel);
+
+  const msg = preparedStatements.getMessageByTs.get(req.ts);
+
+  return {
+    ok: true,
+    channel: req.channel,
+    ts: req.ts,
+    message: msg ? toSlackMessage(msg) : null,
+  };
+}
 export function getConversationHistory(channel: string, limit = 100, oldest?: string) {
   let messages: Message[];
 

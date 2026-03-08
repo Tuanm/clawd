@@ -99,15 +99,33 @@ async function connect() {
       const data = JSON.parse(event.data);
       if (data.type === "pong") return;
 
+      // Respond to server-initiated pings
+      if (data.type === "ping") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "pong" }));
+        }
+        return;
+      }
+
       if (data.id && data.method) {
         try {
-          const response = await chrome.runtime.sendMessage({
-            source: "offscreen",
-            type: "command",
-            id: data.id,
-            method: data.method,
-            params: data.params || {},
-          });
+          // Race the service worker relay against a timeout to prevent silent hangs
+          const RELAY_TIMEOUT_MS = 90_000; // 90s — must be less than server's per-command timeout
+          const response = await Promise.race([
+            chrome.runtime.sendMessage({
+              source: "offscreen",
+              type: "command",
+              id: data.id,
+              method: data.method,
+              params: data.params || {},
+            }),
+            new Promise((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`SW relay timeout after ${RELAY_TIMEOUT_MS / 1000}s`)),
+                RELAY_TIMEOUT_MS,
+              ),
+            ),
+          ]);
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(
               JSON.stringify({

@@ -780,6 +780,62 @@ Note: Updates broadcast to all connected WebSocket clients in real-time.`,
     },
   },
   {
+    name: "chat_append_message",
+    description: `Append text to an existing message. Unlike chat_update_message which replaces the full text,
+this tool appends new content to the end of the current message text.
+
+Args:
+  - channel (string): Channel ID
+  - ts (string): Message timestamp/ID to append to
+  - text (string): Text to append
+  - separator (string, optional): Separator between existing and appended text. Default: "\\n\\n"
+
+Returns JSON:
+{
+  "ok": true,
+  "channel": "chat-task",
+  "ts": "1234567890.123456"
+}
+
+Use this for:
+- Progressive message building (send initial summary, then append details)
+- Breaking up long messages into smaller tool calls for faster streaming
+- Adding follow-up content without overwriting existing text
+
+Tip: Send a short initial message with chat_send_message, then use chat_append_message
+to add more content. This way users see your initial response faster.
+
+Note: Updates broadcast to all connected WebSocket clients in real-time.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        channel: {
+          type: "string",
+          description: "Channel ID",
+        },
+        ts: {
+          type: "string",
+          description: "Message timestamp/ID to append to",
+        },
+        text: {
+          type: "string",
+          description: "Text to append to the existing message",
+        },
+        separator: {
+          type: "string",
+          description: 'Separator between existing and appended text (default: "\\n\\n")',
+        },
+      },
+      required: ["channel", "ts", "text"],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
     name: "chat_query_messages",
     description: `Search and query messages in a channel with powerful filtering.
 
@@ -2245,6 +2301,27 @@ async function executeToolCall(
         // Import updateMessage from routes
         const { updateMessage } = await import("./routes/messages");
         const result = updateMessage({ channel, ts, text });
+
+        // Broadcast update to WebSocket clients if successful
+        if (result.ok) {
+          const updatedMsg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(ts);
+          if (updatedMsg) {
+            broadcastUpdate(channel, toSlackMessage(updatedMsg));
+          }
+        }
+
+        resultText = JSON.stringify(result, null, 2);
+        break;
+      }
+
+      case "chat_append_message": {
+        const channel = args.channel as string;
+        const ts = args.ts as string;
+        const text = args.text as string;
+        const separator = args.separator as string | undefined;
+
+        const { appendMessage } = await import("./routes/messages");
+        const result = appendMessage({ channel, ts, text, separator });
 
         // Broadcast update to WebSocket clients if successful
         if (result.ok) {
