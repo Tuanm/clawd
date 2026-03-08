@@ -265,7 +265,8 @@ export class BrowserPlugin implements ToolPlugin {
           tab_id: { type: "number", description: "Target tab ID (optional)" },
           stealth: {
             type: "boolean",
-            description: "Use stealth mode. Uses window.scrollBy() via chrome.scripting instead of CDP mouseWheel events.",
+            description:
+              "Use stealth mode. Uses window.scrollBy() via chrome.scripting instead of CDP mouseWheel events.",
           },
         },
         required: [],
@@ -289,7 +290,8 @@ export class BrowserPlugin implements ToolPlugin {
           },
           stealth: {
             type: "boolean",
-            description: "Use stealth mode. Dispatches mouseenter/mouseover/mousemove events via chrome.scripting. CSS :hover may not activate (JS listeners will fire).",
+            description:
+              "Use stealth mode. Dispatches mouseenter/mouseover/mousemove events via chrome.scripting. CSS :hover may not activate (JS listeners will fire).",
           },
         },
         required: [],
@@ -356,7 +358,8 @@ export class BrowserPlugin implements ToolPlugin {
           tab_id: { type: "number", description: "Target tab ID (optional)" },
           stealth: {
             type: "boolean",
-            description: "Use stealth mode. Dispatches KeyboardEvent via chrome.scripting instead of CDP Input.dispatchKeyEvent.",
+            description:
+              "Use stealth mode. Dispatches KeyboardEvent via chrome.scripting instead of CDP Input.dispatchKeyEvent.",
           },
         },
         required: ["key"],

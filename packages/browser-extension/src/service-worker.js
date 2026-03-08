@@ -2052,11 +2052,14 @@ async function dispatchStealthCommand(method, params) {
   // Warn if CDP was already attached on this tab (stealth may be ineffective)
   const tid = params.tabId || (await getActiveTabId());
   if (debuggerAttached.has(tid)) {
-    console.warn(`[stealth] Tab ${tid} already has CDP attached — stealth may be ineffective. Use a fresh tab for full stealth.`);
+    console.warn(
+      `[stealth] Tab ${tid} already has CDP attached — stealth may be ineffective. Use a fresh tab for full stealth.`,
+    );
   }
   switch (method) {
     case "click":
-      if (params.intercept_file_chooser) throw new Error("File chooser interception requires CDP — not available in stealth mode");
+      if (params.intercept_file_chooser)
+        throw new Error("File chooser interception requires CDP — not available in stealth mode");
       return stealthClick(params);
     case "type":
       return stealthType(params);
@@ -2178,7 +2181,7 @@ async function stealthClick({ selector, x, y, tabId, button, clickCount }) {
 
       return { x: px, y: py };
     },
-    args: [selector || null, x, y, button || "left", clickCount || 1],
+    args: [selector || null, x ?? null, y ?? null, button || "left", clickCount || 1],
   });
   const result = results[0]?.result;
   if (result?.error) throw new Error(result.error);
@@ -2290,20 +2293,43 @@ async function stealthKeypress({ key, modifiers, tabId }) {
     func: (k, mods) => {
       try {
         const el = document.activeElement || document.body;
-        const keyMap = { enter: "Enter", tab: "Tab", escape: "Escape", backspace: "Backspace", delete: "Delete", space: " ",
-          arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight",
-          home: "Home", end: "End", pageup: "PageUp", pagedown: "PageDown" };
+        const keyMap = {
+          enter: "Enter",
+          tab: "Tab",
+          escape: "Escape",
+          backspace: "Backspace",
+          delete: "Delete",
+          space: " ",
+          arrowup: "ArrowUp",
+          arrowdown: "ArrowDown",
+          arrowleft: "ArrowLeft",
+          arrowright: "ArrowRight",
+          home: "Home",
+          end: "End",
+          pageup: "PageUp",
+          pagedown: "PageDown",
+        };
         const mapped = keyMap[k.toLowerCase()] || k;
         const codeMap = { " ": "Space" };
-        const code = codeMap[mapped]
-          || (mapped.length === 1
-            ? (/^[a-z]$/i.test(mapped) ? `Key${mapped.toUpperCase()}`
-              : /^[0-9]$/.test(mapped) ? `Digit${mapped}`
-              : mapped)
+        const code =
+          codeMap[mapped] ||
+          (mapped.length === 1
+            ? /^[a-z]$/i.test(mapped)
+              ? `Key${mapped.toUpperCase()}`
+              : /^[0-9]$/.test(mapped)
+                ? `Digit${mapped}`
+                : mapped
             : mapped);
-        const opts = { key: mapped, code, bubbles: true, cancelable: true,
-          ctrlKey: mods.includes("ctrl"), altKey: mods.includes("alt"),
-          shiftKey: mods.includes("shift"), metaKey: mods.includes("meta") };
+        const opts = {
+          key: mapped,
+          code,
+          bubbles: true,
+          cancelable: true,
+          ctrlKey: mods.includes("ctrl"),
+          altKey: mods.includes("alt"),
+          shiftKey: mods.includes("shift"),
+          metaKey: mods.includes("meta"),
+        };
         el.dispatchEvent(new KeyboardEvent("keydown", opts));
         // keypress only fires for printable characters (per UI Events spec)
         if (mapped.length === 1 || mapped === "Enter") {
@@ -2313,8 +2339,11 @@ async function stealthKeypress({ key, modifiers, tabId }) {
 
         // Imperative side-effects for common keys (JS dispatched events don't trigger defaults)
         if (mapped === "Tab" && !mods.includes("ctrl") && !mods.includes("alt")) {
-          const focusables = [...document.querySelectorAll(
-            'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')];
+          const focusables = [
+            ...document.querySelectorAll(
+              'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])',
+            ),
+          ];
           const idx = focusables.indexOf(el);
           const next = mods.includes("shift") ? focusables[idx - 1] : focusables[idx + 1];
           if (next) next.focus();
@@ -2346,11 +2375,20 @@ async function stealthScroll({ direction, amount, selector, tabId }) {
   let deltaX = 0;
   let deltaY = 0;
   switch (direction) {
-    case "up": deltaY = -dist; break;
-    case "down": deltaY = dist; break;
-    case "left": deltaX = -dist; break;
-    case "right": deltaX = dist; break;
-    default: deltaY = dist;
+    case "up":
+      deltaY = -dist;
+      break;
+    case "down":
+      deltaY = dist;
+      break;
+    case "left":
+      deltaX = -dist;
+      break;
+    case "right":
+      deltaX = dist;
+      break;
+    default:
+      deltaY = dist;
   }
 
   const results = await chrome.scripting.executeScript({
@@ -2363,8 +2401,15 @@ async function stealthScroll({ direction, amount, selector, tabId }) {
         let target = el;
         while (target && target !== document.documentElement) {
           const s = getComputedStyle(target);
-          if ((dy !== 0 && (s.overflowY === "auto" || s.overflowY === "scroll") && target.scrollHeight > target.clientHeight) ||
-              (dx !== 0 && (s.overflowX === "auto" || s.overflowX === "scroll") && target.scrollWidth > target.clientWidth)) break;
+          if (
+            (dy !== 0 &&
+              (s.overflowY === "auto" || s.overflowY === "scroll") &&
+              target.scrollHeight > target.clientHeight) ||
+            (dx !== 0 &&
+              (s.overflowX === "auto" || s.overflowX === "scroll") &&
+              target.scrollWidth > target.clientWidth)
+          )
+            break;
           target = target.parentElement;
         }
         (target || window).scrollBy(dx, dy);
@@ -2386,7 +2431,10 @@ async function stealthExecute({ code, tabId, frameId }) {
   const target = { tabId: tid };
   if (frameId) {
     const fid = parseInt(frameId, 10);
-    if (isNaN(fid)) throw new Error("Stealth mode requires Chrome frame IDs (integers). The 'frames' command is not available in stealth mode.");
+    if (isNaN(fid))
+      throw new Error(
+        "Stealth mode requires Chrome frame IDs (integers). The 'frames' command is not available in stealth mode.",
+      );
     target.frameIds = [fid];
   }
   let timer;
@@ -2401,13 +2449,20 @@ async function stealthExecute({ code, tabId, frameId }) {
         try {
           const result = await (0, eval)(c); // eslint-disable-line no-eval -- intentional indirect eval for global scope
           // Guard against non-cloneable return values (DOM elements, functions, etc.)
-          try { structuredClone(result); return { value: result }; } catch {}
-          try { return { value: JSON.parse(JSON.stringify(result)) }; } catch {}
+          try {
+            structuredClone(result);
+            return { value: result };
+          } catch {}
+          try {
+            return { value: JSON.parse(JSON.stringify(result)) };
+          } catch {}
           return { value: String(result) };
         } catch (e) {
           const msg = e.message || String(e);
           if (msg.includes("unsafe-eval") || msg.includes("Content Security Policy")) {
-            return { error: `CSP blocks eval() on this page. Remove stealth:true to use CDP (which bypasses CSP). Original: ${msg}` };
+            return {
+              error: `CSP blocks eval() on this page. Remove stealth:true to use CDP (which bypasses CSP). Original: ${msg}`,
+            };
           }
           return { error: msg };
         }
@@ -2471,7 +2526,7 @@ async function stealthHover({ selector, x, y, tabId }) {
       el.dispatchEvent(new MouseEvent("mousemove", { clientX: cx, clientY: cy, bubbles: true }));
       return { x: cx, y: cy };
     },
-    args: [selector || null, x ?? 0, y ?? 0],
+    args: [selector || null, x ?? null, y ?? null],
   });
   const result = results[0]?.result;
   if (result?.error) throw new Error(result.error);
