@@ -10,6 +10,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
+import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 
 // Check for --help BEFORE importing other modules (to avoid database initialization)
@@ -214,6 +215,19 @@ const HOST = config.host;
 const PORT = config.port;
 
 // Database is initialized at module load time in database.ts (before prepared statements)
+
+// Lazy-loaded read-only connection to memory.db (for agent thoughts API)
+import { Database } from "bun:sqlite";
+let _memoryDb: InstanceType<typeof Database> | null = null;
+function getMemoryDb(): InstanceType<typeof Database> {
+  if (!_memoryDb) {
+    const memPath = join(homedir(), ".clawd", "memory.db");
+    _memoryDb = new Database(memPath, { readonly: true });
+    _memoryDb.exec("PRAGMA journal_mode = WAL");
+    _memoryDb.exec("PRAGMA busy_timeout = 5000");
+  }
+  return _memoryDb;
+}
 
 // Always clean up orphaned workspace containers on startup (even if workspaces is now disabled,
 // containers may exist from when it was enabled). Only reconcile ports if currently enabled.
@@ -1443,6 +1457,99 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const agent = getOrRegisterAgent(body.agent_id, channel, body.is_worker || false);
       broadcastUpdate(channel, { type: "agent_joined", agent });
       return json({ ok: true, agent });
+    }
+
+    // Agent thoughts — fetch historical stream entries from memory.db
+    if (path === "/api/agent.getThoughts") {
+      const agentId = url.searchParams.get("agent_id");
+      const channel = url.searchParams.get("channel") || "general";
+      const limit = Math.min(parseInt(url.searchParams.get("limit") || "200", 10) || 200, 500);
+      if (!agentId) return json({ ok: false, error: "agent_id required" }, 400);
+
+      try {
+        const mdb = getMemoryDb();
+        const sessionName = `${channel}-${agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
+        const session = mdb
+          .query<{ id: string }, [string]>("SELECT id FROM sessions WHERE name = ? ORDER BY updated_at DESC LIMIT 1")
+          .get(sessionName);
+        if (!session) return json({ ok: true, entries: [] });
+
+        // Fetch latest messages (ordered oldest-first for display)
+        const rows = mdb
+          .query<
+            {
+              id: number;
+              role: string;
+              content: string | null;
+              tool_calls: string | null;
+              tool_call_id: string | null;
+              created_at: number;
+            },
+            [string, number]
+          >(
+            `SELECT id, role, content, tool_calls, tool_call_id, created_at
+             FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?`,
+          )
+          .all(session.id, limit)
+          .reverse();
+
+        // Map to StreamEntry[] format
+        type Entry = { type: string; text: string; timestamp: number; toolName?: string; toolArgs?: any };
+        const entries: Entry[] = [];
+
+        // Build tool_call_id → tool_name lookup from assistant messages
+        const toolCallNames = new Map<string, string>();
+        for (const row of rows) {
+          if (row.role === "assistant" && row.tool_calls) {
+            try {
+              for (const call of JSON.parse(row.tool_calls)) {
+                if (call.id && call.function?.name) toolCallNames.set(call.id, call.function.name);
+              }
+            } catch {}
+          }
+        }
+
+        for (const row of rows) {
+          if (row.role === "assistant") {
+            // Content text → thinking/content entry
+            if (row.content) {
+              entries.push({ type: "content", text: row.content, timestamp: row.created_at });
+            }
+            // Tool calls → tool_start entries
+            if (row.tool_calls) {
+              try {
+                const calls = JSON.parse(row.tool_calls);
+                for (const call of calls) {
+                  const fn = call.function || {};
+                  let args: any = {};
+                  try {
+                    args = typeof fn.arguments === "string" ? JSON.parse(fn.arguments) : fn.arguments || {};
+                  } catch {}
+                  entries.push({
+                    type: "tool_start",
+                    text: "",
+                    timestamp: row.created_at,
+                    toolName: fn.name || "unknown",
+                    toolArgs: args,
+                  });
+                }
+              } catch {}
+            }
+          } else if (row.role === "tool") {
+            entries.push({
+              type: "tool_end",
+              text: (row.content || "").slice(0, 2000),
+              timestamp: row.created_at,
+              toolName: toolCallNames.get(row.tool_call_id || "") || "result",
+            });
+          }
+          // Skip user/system messages — not agent "thoughts"
+        }
+
+        return json({ ok: true, entries });
+      } catch (err: any) {
+        return json({ ok: false, error: err.message || "Failed to read memory.db" }, 500);
+      }
     }
 
     // Channel status

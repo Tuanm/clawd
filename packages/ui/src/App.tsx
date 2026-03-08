@@ -470,6 +470,7 @@ export default function App({ channel: initialChannel }: Props) {
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [isActiveChannelAtBottom, setIsActiveChannelAtBottom] = useState(true);
   const [streamDialogOpen, setStreamDialogOpen] = useState(false);
+  const [streamDialogAgentId, setStreamDialogAgentId] = useState<string | null>(null);
 
   // Helper to get current channel state
   const currentState = channelStates.get(activeChannel) || defaultChannelState;
@@ -1649,6 +1650,44 @@ export default function App({ channel: initialChannel }: Props) {
     }
   }, [activeChannel]);
 
+  // Open thoughts dialog for a specific agent (loads historical entries from memory.db)
+  const openAgentThoughts = useCallback(
+    async (agentId: string, avatarColor: string) => {
+      const key = `${activeChannel}:${agentId}`;
+      const existing = streamingOutputRef.current.get(key);
+
+      // If agent already has streaming entries, just open the dialog
+      if (existing && existing.entries.length > 0) {
+        setStreamDialogAgentId(agentId);
+        setStreamDialogOpen(true);
+        return;
+      }
+
+      // Fetch historical thoughts from server
+      try {
+        const res = await fetch(
+          `/api/agent.getThoughts?agent_id=${encodeURIComponent(agentId)}&channel=${encodeURIComponent(activeChannel)}&limit=200`,
+        );
+        const data = await res.json();
+        if (data.ok && data.entries.length > 0) {
+          streamingOutputRef.current.set(key, {
+            agentId,
+            avatarColor,
+            entries: data.entries,
+            completed: true,
+          });
+          streamingVersionRef.current++;
+        }
+      } catch {
+        // Silently fail — dialog will show empty state
+      }
+
+      setStreamDialogAgentId(agentId);
+      setStreamDialogOpen(true);
+    },
+    [activeChannel],
+  );
+
   // Redirect to home if project is invalid
   // (We no longer redirect -- channels with no messages still show the channel UI)
 
@@ -1765,7 +1804,12 @@ export default function App({ channel: initialChannel }: Props) {
             {[...activeAgents]
               .sort((a, b) => a.agent_id.localeCompare(b.agent_id))
               .map((agent) => (
-                <div key={agent.agent_id} className="online-agent" title={agent.agent_id}>
+                <div
+                  key={agent.agent_id}
+                  className="online-agent clickable"
+                  title={`${agent.agent_id} — click to see thoughts`}
+                  onClick={() => openAgentThoughts(agent.agent_id, agent.avatar_color)}
+                >
                   <AgentAvatarSmall color={agent.avatar_color} />
                 </div>
               ))}
@@ -1895,7 +1939,14 @@ export default function App({ channel: initialChannel }: Props) {
         disabled={!channelStates.get(activeChannel)?.loaded || (isSpaceChannel && isSpaceLocked)}
         thinkingBanner={
           streamingAgents.length > 0 ? (
-            <div className="thinking-banner" onClick={() => setStreamDialogOpen(true)} title="Click to see thoughts">
+            <div
+              className="thinking-banner"
+              onClick={() => {
+                setStreamDialogAgentId(null);
+                setStreamDialogOpen(true);
+              }}
+              title="Click to see thoughts"
+            >
               <div className="thinking-clawd">
                 <ClawdLogo />
               </div>
@@ -1954,11 +2005,13 @@ export default function App({ channel: initialChannel }: Props) {
         open={streamDialogOpen}
         onClose={() => {
           setStreamDialogOpen(false);
+          setStreamDialogAgentId(null);
           clearCompletedStreamingOutput();
         }}
         getStreamingOutput={getStreamingOutput}
         streamingVersion={streamingVersionRef}
         streamingAgents={streamingAgents}
+        initialAgentId={streamDialogAgentId}
       />
       <PlanModal channel={activeChannel} isOpen={showPlanModal} onClose={() => setShowPlanModal(false)} />
       <SearchModal

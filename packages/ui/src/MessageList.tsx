@@ -943,12 +943,14 @@ export function StreamOutputDialog({
   getStreamingOutput,
   streamingVersion,
   streamingAgents,
+  initialAgentId,
 }: {
   open: boolean;
   onClose: () => void;
   getStreamingOutput: () => StreamingAgentInfo[];
   streamingVersion: React.MutableRefObject<number>;
   streamingAgents: { agentId: string; avatarColor: string }[];
+  initialAgentId?: string | null;
 }) {
   const [, forceUpdate] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -983,6 +985,13 @@ export function StreamOutputDialog({
       setSelectedAgentId(null);
     }
   }, [open]);
+
+  // Pre-select agent when dialog opens with initialAgentId
+  useEffect(() => {
+    if (open && initialAgentId) {
+      setSelectedAgentId(initialAgentId);
+    }
+  }, [open, initialAgentId]);
 
   // Auto-scroll to bottom when new content arrives
   useEffect(() => {

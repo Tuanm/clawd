@@ -1075,6 +1075,10 @@ body {
   transition: opacity 0.15s ease;
 }
 
+.online-agent.clickable {
+  cursor: pointer;
+}
+
 .online-agent:hover {
   opacity: 1;
 }
