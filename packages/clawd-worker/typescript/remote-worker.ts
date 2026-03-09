@@ -1195,7 +1195,6 @@ class ChromeManager {
     await this.pageSend("Page.enable");
     await this.pageSend("Runtime.enable");
     await this.pageSend("DOM.enable");
-    await this.pageSend("Input.enable").catch(() => {});
     await this.pageSend("Network.enable").catch(() => {});
     await this.pageSend("Target.enable").catch(() => {});
   }

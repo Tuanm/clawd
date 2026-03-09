@@ -1510,7 +1510,7 @@ public class RemoteWorker {
             pageSession = String.valueOf(attach.get("sessionId"));
 
             // Enable domains
-            for (String domain : List.of("Page", "DOM", "Runtime", "Network", "Input", "Target")) {
+            for (String domain : List.of("Page", "DOM", "Runtime", "Network", "Target")) {
                 cdp.send(domain + ".enable", Map.of(), pageSession);
             }
 
@@ -1565,7 +1565,7 @@ public class RemoteWorker {
             }
             var attach = cdp.send("Target.attachToTarget", Map.of("targetId", targetId, "flatten", true));
             pageSession = String.valueOf(attach.get("sessionId"));
-            for (String domain : List.of("Page", "DOM", "Runtime", "Network", "Input", "Target")) {
+            for (String domain : List.of("Page", "DOM", "Runtime", "Network", "Target")) {
                 cdp.send(domain + ".enable", Map.of(), pageSession);
             }
         }
