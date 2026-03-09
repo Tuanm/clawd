@@ -1362,7 +1362,7 @@ class ChromeManager:
         attach = self.cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
         self._page_session = attach.get("sessionId")
         # Enable domains
-        for domain in ("Page", "DOM", "Runtime", "Network", "Input", "Target"):
+        for domain in ("Page", "DOM", "Runtime", "Network"):
             self.cdp.send(f"{domain}.enable", session_id=self._page_session)
         # Dialog listener
         self.cdp.on("Page.javascriptDialogOpening", self._on_dialog)
@@ -1434,7 +1434,7 @@ class ChromeManager:
                 pass
         attach = self.cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
         self._page_session = attach.get("sessionId")
-        for domain in ("Page", "DOM", "Runtime", "Network", "Input", "Target"):
+        for domain in ("Page", "DOM", "Runtime", "Network"):
             self.cdp.send(f"{domain}.enable", session_id=self._page_session)
 
     def shutdown(self):  # type: () -> None

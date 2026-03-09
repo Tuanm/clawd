@@ -1196,7 +1196,6 @@ class ChromeManager {
     await this.pageSend("Runtime.enable");
     await this.pageSend("DOM.enable");
     await this.pageSend("Network.enable").catch(() => {});
-    await this.pageSend("Target.enable").catch(() => {});
   }
 
   getCdp(): CDPClient | null {
