@@ -1451,6 +1451,7 @@ class ChromeManager:
             except Exception:
                 try:
                     self.process.kill()
+                    self.process.wait(timeout=2)
                 except Exception:
                     pass
         if self._temp_dir and os.path.isdir(self._temp_dir):
