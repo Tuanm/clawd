@@ -1677,6 +1677,7 @@ public class RemoteWorker {
     static Map<String, Object> handleBrowserNavigate(Map<String, Object> args) {
         String url = strArg(args, "url", "");
         if (url.isEmpty()) return toolError("url required");
+        if (url.toLowerCase().startsWith("file://")) return toolError("file:// URLs are not allowed");
         try {
             var cdp = chromeManager.cdp;
             var sid = chromeManager.pageSession;

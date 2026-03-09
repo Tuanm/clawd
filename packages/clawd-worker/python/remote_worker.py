@@ -1016,9 +1016,7 @@ def handle_bash(request_id, args, project_root, read_only, ws_send_func):
         return {"success": False, "output": "", "error": "command is required"}
 
     if read_only:
-        # Allow read-only commands in read-only mode by checking for mutating patterns
-        # For now, just warn — we trust the server-side to enforce this too.
-        pass
+        return {"success": False, "output": "", "error": "Worker is in read-only mode"}
 
     description = args.get("description", "")
     timeout_secs = args.get("timeout", 120)
@@ -1115,25 +1113,66 @@ def handle_bash(request_id, args, project_root, read_only, ws_send_func):
 
 chrome_manager = None  # type: Optional['ChromeManager']
 _worker_config = None  # type: Optional[Any]
+_browser_lock = threading.Lock()
+
+
+def detect_default_browser():  # type: () -> Optional[str]
+    """Detect system default browser: returns 'edge', 'chrome', or None."""
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["reg", "query",
+                 r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
+                 "/v", "ProgId"],
+                capture_output=True, text=True, timeout=5
+            )
+            output = result.stdout.lower()
+            if "chromehtml" in output:
+                return "chrome"
+            if "msedgehtm" in output:
+                return "edge"
+        elif sys.platform == "darwin":
+            result = subprocess.run(
+                ["/usr/bin/open", "-Ra", "http://example.com"],
+                capture_output=True, text=True, timeout=5
+            )
+            output = result.stdout.lower()
+            if "microsoft edge" in output:
+                return "edge"
+            if "google chrome" in output:
+                return "chrome"
+    except Exception:
+        pass
+    return None
 
 
 def find_chrome_binary():  # type: () -> Optional[str]
-    """Find Chrome/Chromium/Edge binary on the system."""
+    """Find Chrome/Chromium/Edge binary on the system, respecting system default."""
+    default_browser = detect_default_browser()
     candidates = []
     if sys.platform == "darwin":
         candidates = [
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         ]
+        # If default is Chrome, move it first
+        if default_browser == "chrome":
+            chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            if chrome_path in candidates:
+                candidates.remove(chrome_path)
+                candidates.insert(0, chrome_path)
     elif sys.platform == "win32":
+        prefer_edge = (default_browser == "edge")
         for env_var in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
             base = os.environ.get(env_var, "")
             if base:
-                candidates.extend([
-                    os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"),
-                    os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe"),
-                ])
+                chrome = os.path.join(base, "Google", "Chrome", "Application", "chrome.exe")
+                edge = os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe")
+                if prefer_edge:
+                    candidates.extend([edge, chrome])
+                else:
+                    candidates.extend([chrome, edge])
     else:  # Linux
         candidates = [
             "/usr/bin/google-chrome",
@@ -1147,7 +1186,7 @@ def find_chrome_binary():  # type: () -> Optional[str]
         if os.path.isfile(c):
             return c
     # Fallback: which
-    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"):
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "msedge"):
         path = shutil.which(name)
         if path:
             return path
@@ -1170,28 +1209,36 @@ class CDPClient:
         self._reader_thread.start()
 
     def _reader_loop(self):  # type: () -> None
-        while self._running:
-            try:
-                raw = self.ws.recv()
-                if raw is None:
-                    break
-                msg = json.loads(raw)
-                msg_id = msg.get("id")
-                if msg_id is not None and msg_id in self._pending:
-                    self._results[msg_id] = msg
-                    self._pending[msg_id].set()
-                elif "method" in msg:
-                    method = msg["method"]
-                    with self._lock:
-                        listeners = list(self._event_listeners.get(method, []))
-                    for cb in listeners:
-                        try:
-                            cb(msg.get("params", {}))
-                        except Exception:
-                            pass
-            except Exception:
-                if self._running:
-                    break
+        try:
+            while self._running:
+                try:
+                    raw = self.ws.recv()
+                    if raw is None:
+                        break
+                    msg = json.loads(raw)
+                    msg_id = msg.get("id")
+                    if msg_id is not None and msg_id in self._pending:
+                        self._results[msg_id] = msg
+                        self._pending[msg_id].set()
+                    elif "method" in msg:
+                        method = msg["method"]
+                        with self._lock:
+                            listeners = list(self._event_listeners.get(method, []))
+                        for cb in listeners:
+                            try:
+                                cb(msg.get("params", {}))
+                            except Exception:
+                                pass
+                except Exception:
+                    if self._running:
+                        break
+        finally:
+            # Complete all pending requests so callers don't hang
+            with self._lock:
+                for msg_id, evt in list(self._pending.items()):
+                    if msg_id not in self._results:
+                        self._results[msg_id] = {"error": {"message": "CDP connection closed"}}
+                    evt.set()
 
     def send(self, method, params=None, session_id=None, timeout=30):
         # type: (str, Optional[Dict], Optional[str], int) -> Dict
@@ -1387,7 +1434,7 @@ class ChromeManager:
                 pass
         attach = self.cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
         self._page_session = attach.get("sessionId")
-        for domain in ("Page", "DOM", "Runtime", "Input"):
+        for domain in ("Page", "DOM", "Runtime", "Network", "Input", "Target"):
             self.cdp.send(f"{domain}.enable", session_id=self._page_session)
 
     def shutdown(self):  # type: () -> None
@@ -1427,6 +1474,30 @@ def start_chrome_manager(profile_arg):  # type: (str) -> Optional[ChromeManager]
         return None
     chrome_manager = mgr
     return mgr
+
+
+def ensure_browser():  # type: () -> ChromeManager
+    """Thread-safe health check + lazy restart. Returns healthy ChromeManager."""
+    global chrome_manager
+    with _browser_lock:
+        if chrome_manager and chrome_manager.cdp:
+            try:
+                chrome_manager.cdp.send("Browser.getVersion", timeout=3)
+                return chrome_manager
+            except Exception:
+                log("Browser CDP connection lost, restarting...")
+                try:
+                    chrome_manager.shutdown()
+                except Exception:
+                    pass
+                chrome_manager = None
+        if not _worker_config or not getattr(_worker_config, "browser", None):
+            raise RuntimeError("Browser not enabled. Start worker with --browser flag.")
+        mgr = start_chrome_manager(_worker_config.browser)
+        if not mgr:
+            raise RuntimeError("Failed to start browser. Ensure Chrome or Edge is installed.")
+        chrome_manager = mgr
+        return mgr
 
 
 def _js_str(s):  # type: (str) -> str
@@ -1495,22 +1566,29 @@ def handle_browser_navigate(args):  # type: (Dict) -> Dict
     url = args.get("url", "")
     if not url:
         return {"success": False, "output": "", "error": "url required"}
+    if url.lower().startswith("file://"):
+        return {"success": False, "output": "", "error": "file:// URLs are not allowed"}
     try:
         cdp = chrome_manager.cdp
         sid = chrome_manager.session
         cdp.send("Page.navigate", {"url": url}, session_id=sid)
         deadline = time.time() + 30
+        loaded = False
         while time.time() < deadline:
             try:
                 state = cdp_evaluate("document.readyState", sid)
                 if state == "complete":
+                    loaded = True
                     break
             except Exception:
                 pass
             time.sleep(0.3)
         title = cdp_evaluate("document.title", sid)
         final_url = cdp_evaluate("window.location.href", sid)
-        return {"success": True, "output": json.dumps({"url": final_url, "title": title})}
+        result = {"url": final_url, "title": title}
+        if not loaded:
+            result["warning"] = "Page did not fully load within 30s"
+        return {"success": True, "output": json.dumps(result)}
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
@@ -1552,6 +1630,10 @@ def handle_browser_click(args):  # type: (Dict) -> Dict
             return {"success": False, "output": "", "error": "selector or x,y required"}
         btn = args.get("button", "left")
         click_count = 2 if args.get("double") else 1
+        # Move mouse to target first (triggers hover states, mouseenter events)
+        cdp.send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved", "x": x, "y": y,
+        }, session_id=sid)
         for event_type in ("mousePressed", "mouseReleased"):
             cdp.send("Input.dispatchMouseEvent", {
                 "type": event_type, "x": x, "y": y,
@@ -1726,6 +1808,8 @@ def handle_browser_keypress(args):  # type: (Dict) -> Dict
         cdp = chrome_manager.cdp
         sid = chrome_manager.session
         key = args.get("key", "")
+        if not key:
+            return {"success": False, "output": "", "error": "key is required"}
         modifiers_list = args.get("modifiers", [])
         mod_flags = 0
         if "alt" in modifiers_list:
@@ -1979,14 +2063,20 @@ def handle_browser_download(args):  # type: (Dict) -> Dict
             path = args.get("path", "")
             if not path:
                 return {"success": False, "output": "", "error": "path is required for configure"}
-            os.makedirs(path, exist_ok=True)
-            chrome_manager.set_download_path(path)
+            resolved = os.path.realpath(os.path.expanduser(path))
+            home = os.path.realpath(os.path.expanduser("~"))
+            tmp = os.path.realpath(tempfile.gettempdir())
+            if not (resolved.startswith(home + os.sep) or resolved == home or
+                    resolved.startswith(tmp + os.sep) or resolved == tmp):
+                return {"success": False, "output": "", "error": "Download path must be under home or temp directory"}
+            os.makedirs(resolved, exist_ok=True)
+            chrome_manager.set_download_path(resolved)
             chrome_manager.cdp.send("Browser.setDownloadBehavior", {
                 "behavior": "allowAndName",
-                "downloadPath": path,
+                "downloadPath": resolved,
                 "eventsEnabled": True,
             })
-            return {"success": True, "output": "Download directory set to " + path}
+            return {"success": True, "output": "Download directory set to " + resolved}
         elif action == "wait":
             timeout = args.get("timeout", 30000)
             deadline = time.time() + timeout / 1000.0
@@ -2233,6 +2323,10 @@ BROWSER_TOOL_SCHEMAS = [
 
 
 def _dispatch_browser_tool(tool, args):  # type: (str, Dict) -> Dict
+    try:
+        ensure_browser()
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
     handlers = {
         "browser_status": handle_browser_status,
         "browser_navigate": handle_browser_navigate,
@@ -2408,6 +2502,7 @@ class RemoteWorker:
         self.running = True
         self._heartbeat_thread = None  # type: Optional[threading.Thread]
         self._heartbeat_stop = threading.Event()
+        self._call_semaphore = threading.Semaphore(config.max_concurrent)
 
     def connect(self):  # type: () -> None
         server = self.config.server.rstrip("/")
@@ -2491,6 +2586,15 @@ class RemoteWorker:
             log(f"Unknown message type: {msg_type}")
 
     def _handle_tool_call(self, msg):  # type: (Dict[str, Any]) -> None
+        if not self._call_semaphore.acquire(timeout=60):
+            self._send_json({"type": "error", "id": msg.get("id", ""), "error": "Too many concurrent calls"})
+            return
+        try:
+            self._handle_tool_call_inner(msg)
+        finally:
+            self._call_semaphore.release()
+
+    def _handle_tool_call_inner(self, msg):  # type: (Dict[str, Any]) -> None
         call_id = msg.get("id", "")
         tool = msg.get("tool", "")
         args = msg.get("args", {})

@@ -71,6 +71,7 @@ let requestCounter = 0;
 let configCacheTime = 0;
 
 export const workerEvents = new EventEmitter();
+workerEvents.setMaxListeners(100);
 
 function isTokenAllowed(token: string, channel?: string): boolean {
   if (!TOKEN_FORMAT.test(token)) return false;
@@ -183,6 +184,15 @@ export function handleRemoteWorkerWsOpen(ws: ServerWebSocket<RemoteWorkerWsData>
       pendingCalls: new Map(),
       disconnectTimer: null,
     });
+  } else {
+    // Reconnection: update WS reference and clear stale disconnect timer
+    const worker = workers.get(tokenHash)!;
+    worker.ws = ws;
+    worker.status = "connected";
+    if (worker.disconnectTimer) {
+      clearTimeout(worker.disconnectTimer);
+      worker.disconnectTimer = null;
+    }
   }
 }
 
@@ -259,8 +269,14 @@ function handleRegister(ws: ServerWebSocket<RemoteWorkerWsData>, tokenHash: stri
 
   let worker = workers.get(tokenHash);
 
-  if (worker && worker.sessionId && worker.sessionId !== sessionId) {
-    rejectAllPending(worker, "Stale session — worker reconnected with new context");
+  if (worker && worker.pendingCalls.size > 0) {
+    // Reconnect (stale or same session) — reject all pending, worker state is reset
+    rejectAllPending(
+      worker,
+      worker.sessionId !== sessionId
+        ? "Stale session — worker reconnected with new context"
+        : "Connection reset — call lost during reconnect",
+    );
   }
 
   if (!worker) {
@@ -390,6 +406,9 @@ export function handleRemoteWorkerWsClose(ws: ServerWebSocket<RemoteWorkerWsData
   const { tokenHash, name } = ws.data;
   const worker = workers.get(tokenHash);
   if (!worker) return;
+
+  // Guard: ignore stale close if a newer connection is already active
+  if (worker.ws !== ws) return;
 
   console.log(`[remote-worker] Connection closed: ${name} (${tokenHash.slice(0, 8)}…)`);
 

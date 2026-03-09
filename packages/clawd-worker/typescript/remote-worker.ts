@@ -60,26 +60,52 @@ const REAL_TMP = (() => {
 
 const WIN_RESERVED = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..+)?$/i;
 
+function detectDefaultBrowser(): "chrome" | "edge" | null {
+  try {
+    if (IS_WINDOWS) {
+      const output = execSync(
+        'reg query "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice" /v ProgId',
+        { encoding: "utf-8", timeout: 5000 },
+      ).toLowerCase();
+      if (output.includes("chromehtml")) return "chrome";
+      if (output.includes("msedgehtm")) return "edge";
+    } else if (IS_MACOS) {
+      const output = execSync("/usr/bin/open -Ra http://example.com", {
+        encoding: "utf-8",
+        timeout: 5000,
+      }).toLowerCase();
+      if (output.includes("microsoft edge")) return "edge";
+      if (output.includes("google chrome")) return "chrome";
+    }
+  } catch {}
+  return null;
+}
+
 function findChromeBinary(): string | null {
+  const defaultBrowser = detectDefaultBrowser();
   if (IS_WINDOWS) {
-    const paths = [
+    const chromePaths = [
       join(process.env.PROGRAMFILES || "", "Google", "Chrome", "Application", "chrome.exe"),
       join(process.env["PROGRAMFILES(X86)"] || "", "Google", "Chrome", "Application", "chrome.exe"),
       join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "Application", "chrome.exe"),
-      join(process.env.PROGRAMFILES || "", "Microsoft", "Edge", "Application", "msedge.exe"),
     ];
+    const edgePaths = [join(process.env.PROGRAMFILES || "", "Microsoft", "Edge", "Application", "msedge.exe")];
+    // Prefer Edge only if it's the detected default
+    const paths = defaultBrowser === "edge" ? [...edgePaths, ...chromePaths] : [...chromePaths, ...edgePaths];
     for (const p of paths) {
       if (existsSync(p)) return p;
     }
     return null;
   }
   if (IS_MACOS) {
-    const paths = [
+    const chromePaths = [
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
       "/Applications/Chromium.app/Contents/MacOS/Chromium",
-      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     ];
+    const edgePaths = ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"];
+    // Put Edge first on macOS by default; only put Chrome first if it's the detected default
+    const paths = defaultBrowser === "chrome" ? [...chromePaths, ...edgePaths] : [...edgePaths, ...chromePaths];
     for (const p of paths) {
       if (existsSync(p)) return p;
     }
@@ -1169,6 +1195,9 @@ class ChromeManager {
     await this.pageSend("Page.enable");
     await this.pageSend("Runtime.enable");
     await this.pageSend("DOM.enable");
+    await this.pageSend("Input.enable").catch(() => {});
+    await this.pageSend("Network.enable").catch(() => {});
+    await this.pageSend("Target.enable").catch(() => {});
   }
 
   getCdp(): CDPClient | null {
@@ -1240,6 +1269,36 @@ async function cdpEvaluate(chrome: ChromeManager, expression: string): Promise<a
 // 8c. Browser tool handlers
 // ---------------------------------------------------------------------------
 
+let _ensureBrowserLock: Promise<void> | null = null;
+
+async function ensureBrowser(): Promise<void> {
+  if (_ensureBrowserLock) return _ensureBrowserLock;
+  _ensureBrowserLock = _ensureBrowserInner().finally(() => {
+    _ensureBrowserLock = null;
+  });
+  return _ensureBrowserLock;
+}
+
+async function _ensureBrowserInner(): Promise<void> {
+  if (!config.browser) throw new Error("Browser not enabled");
+  if (chromeManager && chromeManager.getCdp()?.isConnected) {
+    try {
+      await Promise.race([
+        chromeManager.getCdp()!.send("Browser.getVersion"),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Health check timeout")), 3000)),
+      ]);
+      return;
+    } catch {
+      await chromeManager.shutdown().catch(() => {});
+      chromeManager = null;
+    }
+  }
+  if (!chromeManager) {
+    chromeManager = new ChromeManager(config.browserProfile);
+    await chromeManager.launch();
+  }
+}
+
 async function handleBrowserStatus(): Promise<ToolResult> {
   if (!chromeManager?.getCdp()?.isConnected) {
     return { success: true, output: JSON.stringify({ connected: false, message: "Browser not running" }) };
@@ -1266,15 +1325,22 @@ async function handleBrowserStatus(): Promise<ToolResult> {
 
 async function handleBrowserNavigate(args: { url: string; tab_id?: string }): Promise<ToolResult> {
   if (!chromeManager) return { success: false, output: "", error: "Browser not available" };
+  if (args.url.toLowerCase().startsWith("file://")) {
+    return { success: false, output: "", error: "file:// URLs are not allowed" };
+  }
   try {
     if (args.tab_id) await chromeManager.switchToTarget(args.tab_id);
     await chromeManager.pageSend("Page.navigate", { url: args.url });
     // Poll for page load completion instead of event listener (avoids listener leak)
+    let loaded = false;
     const deadline = Date.now() + 30000;
     while (Date.now() < deadline) {
       try {
         const state = await cdpEvaluate(chromeManager, "document.readyState");
-        if (state === "complete") break;
+        if (state === "complete") {
+          loaded = true;
+          break;
+        }
       } catch {}
       await new Promise((r) => setTimeout(r, 300));
     }
@@ -1286,9 +1352,11 @@ async function handleBrowserNavigate(args: { url: string; tab_id?: string }): Pr
       expression: "window.location.href",
       returnByValue: true,
     });
+    const result: Record<string, any> = { url: urlResult?.value, title: titleResult?.value };
+    if (!loaded) result.warning = "Page did not fully load within 30s";
     return {
       success: true,
-      output: JSON.stringify({ url: urlResult?.value, title: titleResult?.value }, null, 2),
+      output: JSON.stringify(result, null, 2),
     };
   } catch (e: any) {
     return { success: false, output: "", error: e.message };
@@ -1351,6 +1419,8 @@ async function handleBrowserClick(args: {
     const button = args.button || "left";
     const clickCount = args.double ? 2 : 1;
     const buttons = button === "right" ? 2 : button === "middle" ? 4 : 1;
+    // Move mouse to target before clicking
+    await chromeManager.pageSend("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
     // Mouse press + release
     await chromeManager.pageSend("Input.dispatchMouseEvent", {
       type: "mousePressed",
@@ -1642,6 +1712,7 @@ const KEY_MAP: Record<string, { key: string; code: string; keyCode?: number }> =
 
 async function handleBrowserKeypress(args: { key: string; modifiers?: string[] }): Promise<ToolResult> {
   if (!chromeManager) return { success: false, output: "", error: "Browser not available" };
+  if (!args.key) return { success: false, output: "", error: "key is required" };
   try {
     const mods = args.modifiers || [];
     let modifierFlags = 0;
@@ -1797,12 +1868,13 @@ async function handleBrowserDialog(args: { action?: string; prompt_text?: string
 
 async function handleBrowserUpload(args: any): Promise<ToolResult> {
   if (!chromeManager) return { success: false, output: "", error: "Browser not available" };
+  const { existsSync: existsSyncUp, unlinkSync: unlinkTmp } = await import("node:fs");
+  const tempFiles: string[] = [];
   try {
     const selector = args.selector as string;
     const files = args.files as string[] | undefined;
     if (!selector) return { success: false, output: "", error: "selector is required" };
     // Verify local files exist
-    const { existsSync: existsSyncUp, unlinkSync: unlinkTmp } = await import("node:fs");
     if (files && Array.isArray(files)) {
       for (const f of files) {
         if (!existsSyncUp(f)) return { success: false, output: "", error: `File not found: ${f}` };
@@ -1810,7 +1882,6 @@ async function handleBrowserUpload(args: any): Promise<ToolResult> {
     }
     // Download chat files if file_ids provided
     const fileIds = args.file_ids as string[] | undefined;
-    const tempFiles: string[] = [];
     if (fileIds && Array.isArray(fileIds)) {
       for (const fid of fileIds) {
         const tempPath = await downloadChatFile(fid);
@@ -1858,15 +1929,21 @@ async function handleBrowserDownload(args: any): Promise<ToolResult> {
     if (action === "configure") {
       const path = args.path as string;
       if (!path) return { success: false, output: "", error: "path is required for configure" };
+      const resolvedPath = pathResolve(path);
+      const home = process.env.HOME || process.env.USERPROFILE || "";
+      const tmpDir = process.env.TMPDIR || REAL_TMP;
+      if (!resolvedPath.startsWith(home) && !resolvedPath.startsWith(tmpDir)) {
+        return { success: false, output: "", error: "Download path must be under $HOME or $TMPDIR" };
+      }
       const { mkdirSync: mkdirSyncCfg } = await import("node:fs");
-      mkdirSyncCfg(path, { recursive: true });
-      chromeManager.setDownloadPath(path);
+      mkdirSyncCfg(resolvedPath, { recursive: true });
+      chromeManager.setDownloadPath(resolvedPath);
       await chromeManager.getCdp()!.send("Browser.setDownloadBehavior", {
         behavior: "allowAndName",
-        downloadPath: path,
+        downloadPath: resolvedPath,
         eventsEnabled: true,
       });
-      return { success: true, output: `Download directory set to ${path}` };
+      return { success: true, output: `Download directory set to ${resolvedPath}` };
     } else if (action === "wait") {
       const timeout = (args.timeout as number) || 30000;
       const deadline = Date.now() + timeout;
@@ -2696,7 +2773,8 @@ async function handleToolCall(msg: { id: string; tool: string; args: any }): Pro
         result = await handleBash(msg.id, msg.args);
         break;
       default:
-        if (msg.tool.startsWith("browser_") && chromeManager) {
+        if (msg.tool.startsWith("browser_")) {
+          await ensureBrowser();
           result = await handleBrowserTool(msg.tool, msg.args);
         } else {
           result = { success: false, output: "", error: `Unknown tool: ${msg.tool}` };
