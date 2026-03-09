@@ -1112,6 +1112,10 @@ def handle_bash(request_id, args, project_root, read_only, ws_send_func):
 # ---------------------------------------------------------------------------
 
 chrome_manager = None  # type: Optional['ChromeManager']
+_script_store = {}  # type: Dict[str, Dict[str, str]]  # key -> {"code": str, "description": str}
+_STORE_MAX_SCRIPTS = 100
+_STORE_MAX_SCRIPT_SIZE = 1_000_000  # 1MB
+_STORE_MAX_KEY_LEN = 256
 _worker_config = None  # type: Optional[Any]
 _browser_lock = threading.Lock()
 
@@ -1287,6 +1291,8 @@ class ChromeManager:
         self._page_session = None  # type: Optional[str]
         self._dialog_queue = []  # type: List[Dict]
         self._dialog_lock = threading.Lock()
+        self._auth_queue = []  # type: List[Dict]
+        self._auth_lock = threading.Lock()
         self._downloads = []  # type: List[Dict]
         self._download_lock = threading.Lock()
         self._download_path = tempfile.mkdtemp(prefix="clawd-downloads-")
@@ -1366,6 +1372,14 @@ class ChromeManager:
             self.cdp.send(f"{domain}.enable", session_id=self._page_session)
         # Dialog listener
         self.cdp.on("Page.javascriptDialogOpening", self._on_dialog)
+        # Register Fetch handlers BEFORE enabling to avoid race condition
+        self.cdp.on("Fetch.authRequired", self._on_auth_required)
+        self.cdp.on("Fetch.requestPaused", self._on_request_paused)
+        # Enable Fetch for HTTP auth interception (after handlers registered)
+        try:
+            self.cdp.send("Fetch.enable", {"handleAuthRequests": True}, session_id=self._page_session)
+        except Exception:
+            pass
         # Configure downloads
         os.makedirs(self._download_path, exist_ok=True)
         self.cdp.send("Browser.setDownloadBehavior", {
@@ -1383,6 +1397,30 @@ class ChromeManager:
     def pop_dialog(self):  # type: () -> Optional[Dict]
         with self._dialog_lock:
             return self._dialog_queue.pop(0) if self._dialog_queue else None
+
+    def _on_auth_required(self, params):  # type: (Dict) -> None
+        with self._auth_lock:
+            self._auth_queue.append({
+                "requestId": params.get("requestId", ""),
+                "url": params.get("request", {}).get("url", ""),
+                "scheme": params.get("authChallenge", {}).get("scheme", ""),
+                "realm": params.get("authChallenge", {}).get("realm", ""),
+            })
+
+    def _on_request_paused(self, params):  # type: (Dict) -> None
+        # Continue non-auth paused requests transparently
+        try:
+            self.cdp.send("Fetch.continueRequest", {"requestId": params.get("requestId")}, session_id=self._page_session)
+        except Exception:
+            pass
+
+    def pop_auth(self):  # type: () -> Optional[Dict]
+        with self._auth_lock:
+            return self._auth_queue.pop(0) if self._auth_queue else None
+
+    def peek_auth(self):  # type: () -> Optional[Dict]
+        with self._auth_lock:
+            return self._auth_queue[0] if self._auth_queue else None
 
     @property
     def download_path(self):  # type: () -> str
@@ -1436,6 +1474,10 @@ class ChromeManager:
         self._page_session = attach.get("sessionId")
         for domain in ("Page", "DOM", "Runtime", "Network"):
             self.cdp.send(f"{domain}.enable", session_id=self._page_session)
+        try:
+            self.cdp.send("Fetch.enable", {"handleAuthRequests": True}, session_id=self._page_session)
+        except Exception:
+            pass
 
     def shutdown(self):  # type: () -> None
         if self.cdp:
@@ -1752,9 +1794,18 @@ def handle_browser_execute(args):  # type: (Dict) -> Dict
         return {"success": False, "output": "", "error": "Browser not running"}
     try:
         code = args.get("code", "")
-        if not code:
-            return {"success": False, "output": "", "error": "code required"}
-        result = cdp_evaluate(code, chrome_manager.session)
+        script_id = args.get("script_id", "")
+        if script_id:
+            stored = _script_store.get(script_id)
+            if not stored:
+                return {"success": False, "output": "", "error": "Script '" + script_id + "' not found. Use browser_store action=set first."}
+            args_json = json.dumps(args.get("script_args", {}))
+            wrapped = "(async function(){const __args=" + args_json + ";" + stored["code"] + "})()"
+        else:
+            if not code:
+                return {"success": False, "output": "", "error": "Either 'code' or 'script_id' is required"}
+            wrapped = "(async()=>{" + code + "})()"
+        result = cdp_evaluate(wrapped, chrome_manager.session)
         output = result if isinstance(result, str) else json.dumps(result)
         return {"success": True, "output": output}
     except Exception as e:
@@ -1937,7 +1988,7 @@ def handle_browser_dialog(args):  # type: (Dict) -> Dict
     try:
         dialog = chrome_manager.pop_dialog()
         if not dialog:
-            return {"success": False, "output": "", "error": "No pending dialog"}
+            return {"success": True, "output": json.dumps({"handled": False, "message": "No pending dialog"})}
         action = args.get("action", "accept")
         params = {"accept": action == "accept"}  # type: Dict[str, Any]
         if args.get("prompt_text") is not None:
@@ -1946,6 +1997,82 @@ def handle_browser_dialog(args):  # type: (Dict) -> Dict
         return {"success": True, "output": json.dumps({"type": dialog.get("type"), "message": dialog.get("message"), "action": action})}
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_auth(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        action = args.get("action", "status")
+        if action == "status":
+            auth = chrome_manager.peek_auth()
+            if not auth:
+                return {"success": True, "output": json.dumps({"pending": False})}
+            return {"success": True, "output": json.dumps({"pending": True, "url": auth["url"], "scheme": auth["scheme"], "realm": auth["realm"]})}
+        elif action == "provide":
+            auth = chrome_manager.pop_auth()
+            if not auth:
+                return {"success": False, "output": "", "error": "No pending auth challenge"}
+            chrome_manager.cdp.send("Fetch.continueWithAuth", {
+                "requestId": auth["requestId"],
+                "authChallengeResponse": {"response": "ProvideCredentials", "username": args.get("username", ""), "password": args.get("password", "")},
+            }, session_id=chrome_manager.session)
+            return {"success": True, "output": json.dumps({"authenticated": True})}
+        elif action == "cancel":
+            auth = chrome_manager.pop_auth()
+            if not auth:
+                return {"success": False, "output": "", "error": "No pending auth challenge"}
+            chrome_manager.cdp.send("Fetch.continueWithAuth", {
+                "requestId": auth["requestId"],
+                "authChallengeResponse": {"response": "CancelAuth"},
+            }, session_id=chrome_manager.session)
+            return {"success": True, "output": json.dumps({"cancelled": True})}
+        return {"success": False, "output": "", "error": "Unknown action: " + action}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def handle_browser_store(args):  # type: (Dict) -> Dict
+    action = args.get("action", "list")
+    if action == "set":
+        key = args.get("key", "")
+        value = args.get("value", "")
+        if not key:
+            return {"success": False, "output": "", "error": "key is required"}
+        if not value:
+            return {"success": False, "output": "", "error": "value is required"}
+        if len(key) > _STORE_MAX_KEY_LEN:
+            return {"success": False, "output": "", "error": "key too long (max %d chars)" % _STORE_MAX_KEY_LEN}
+        if len(value) > _STORE_MAX_SCRIPT_SIZE:
+            return {"success": False, "output": "", "error": "script too large (max %d bytes)" % _STORE_MAX_SCRIPT_SIZE}
+        if key not in _script_store and len(_script_store) >= _STORE_MAX_SCRIPTS:
+            return {"success": False, "output": "", "error": "store full (max %d scripts)" % _STORE_MAX_SCRIPTS}
+        desc = args.get("description", "")
+        _script_store[key] = {"code": value, "description": desc}
+        return {"success": True, "output": json.dumps({"stored": True, "key": key})}
+    elif action == "get":
+        key = args.get("key", "")
+        if not key:
+            return {"success": False, "output": "", "error": "key is required"}
+        item = _script_store.get(key)
+        if not item:
+            return {"success": True, "output": json.dumps({"found": False})}
+        return {"success": True, "output": json.dumps({"found": True, "key": key, "value": item["code"], "description": item["description"]})}
+    elif action == "list":
+        items = [{"key": k, "description": v["description"], "size": len(v["code"])} for k, v in _script_store.items()]
+        return {"success": True, "output": json.dumps({"count": len(items), "items": items})}
+    elif action == "delete":
+        key = args.get("key", "")
+        if not key:
+            return {"success": False, "output": "", "error": "key is required"}
+        deleted = key in _script_store
+        _script_store.pop(key, None)
+        return {"success": True, "output": json.dumps({"deleted": deleted})}
+    elif action == "clear":
+        count = len(_script_store)
+        _script_store.clear()
+        return {"success": True, "output": json.dumps({"cleared": count})}
+    return {"success": False, "output": "", "error": "Unknown action: " + action}
 
 
 def _get_http_base_url():  # type: () -> str
@@ -2306,7 +2433,7 @@ BROWSER_TOOL_SCHEMAS = [
     {"name": "browser_type", "description": "Type text into an element", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Text to type"}, "selector": {"type": "string", "description": "CSS selector"}, "clear": {"type": "boolean"}, "submit": {"type": "boolean"}}, "required": ["text"]}},
     {"name": "browser_extract", "description": "Extract content from the page", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "html", "links", "forms", "tables", "accessibility"]}, "selector": {"type": "string"}}, "required": []}},
     {"name": "browser_tabs", "description": "Manage browser tabs", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "new", "close", "switch"]}, "url": {"type": "string"}, "targetId": {"type": "string"}}, "required": []}},
-    {"name": "browser_execute", "description": "Execute JavaScript in page context", "inputSchema": {"type": "object", "properties": {"code": {"type": "string", "description": "JavaScript code"}}, "required": ["code"]}},
+    {"name": "browser_execute", "description": "Execute JavaScript in page context", "inputSchema": {"type": "object", "properties": {"code": {"type": "string", "description": "JavaScript code"}, "script_id": {"type": "string", "description": "Key of a stored script (saved via browser_store)"}, "script_args": {"type": "object", "description": "Arguments passed to stored script as __args"}}, "required": []}},
     {"name": "browser_scroll", "description": "Scroll the page or element", "inputSchema": {"type": "object", "properties": {"direction": {"type": "string", "enum": ["up", "down", "left", "right"]}, "amount": {"type": "number"}, "selector": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}}, "required": []}},
     {"name": "browser_keypress", "description": "Press a keyboard key with optional modifiers", "inputSchema": {"type": "object", "properties": {"key": {"type": "string", "description": "Key to press"}, "modifiers": {"type": "array", "items": {"type": "string"}}}, "required": ["key"]}},
     {"name": "browser_wait_for", "description": "Wait for element to appear", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout": {"type": "number"}, "visible": {"type": "boolean"}}, "required": ["selector"]}},
@@ -2320,6 +2447,19 @@ BROWSER_TOOL_SCHEMAS = [
     {"name": "browser_touch", "description": "Perform touch gestures (tap, swipe, long-press, pinch)", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["tap", "swipe", "long-press", "pinch"], "description": "Touch action type"}, "selector": {"type": "string", "description": "CSS selector of target element"}, "x": {"type": "number", "description": "Start X coordinate"}, "y": {"type": "number", "description": "Start Y coordinate"}, "end_x": {"type": "number", "description": "End X for swipe"}, "end_y": {"type": "number", "description": "End Y for swipe"}, "scale": {"type": "number", "description": "Scale factor for pinch (0.5=zoom out, 2.0=zoom in)"}, "duration": {"type": "number", "description": "Hold duration in ms for long-press (default: 500)"}}, "required": []}},
     {"name": "browser_upload", "description": "Upload files to a file input element on the page", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "CSS selector of the <input type='file'> element"}, "files": {"type": "array", "items": {"type": "string"}, "description": "Array of absolute file paths on the local machine"}, "file_ids": {"type": "array", "items": {"type": "string"}, "description": "Array of chat server file IDs to download and upload"}}, "required": ["selector"]}},
     {"name": "browser_download", "description": "Manage file downloads: configure download directory, wait for downloads, or list tracked downloads", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["configure", "wait", "list"], "description": "Action to perform"}, "path": {"type": "string", "description": "Download directory path (for 'configure' action)"}, "timeout": {"type": "number", "description": "Max wait time in milliseconds (for 'wait' action, default: 30000)"}, "upload": {"type": "boolean", "description": "Upload completed download to chat server (for 'wait' action)"}}, "required": []}},
+    {"name": "browser_auth", "description": "Handle HTTP Basic/Digest authentication",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["status", "provide", "cancel"]},
+         "username": {"type": "string"},
+         "password": {"type": "string"},
+     }, "required": ["action"]}},
+    {"name": "browser_store", "description": "Store and retrieve reusable scripts",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["set", "get", "list", "delete", "clear"]},
+         "key": {"type": "string"},
+         "value": {"type": "string"},
+         "description": {"type": "string"},
+     }, "required": ["action"]}},
 ]
 
 
@@ -2350,6 +2490,8 @@ def _dispatch_browser_tool(tool, args):  # type: (str, Dict) -> Dict
         "browser_touch": handle_browser_touch,
         "browser_upload": handle_browser_upload,
         "browser_download": handle_browser_download,
+        "browser_auth": handle_browser_auth,
+        "browser_store": handle_browser_store,
     }
     handler = handlers.get(tool)
     if handler:

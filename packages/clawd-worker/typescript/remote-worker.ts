@@ -290,6 +290,10 @@ function parseArgs(): WorkerConfig {
 
 const config = parseArgs();
 let chromeManager: ChromeManager | null = null;
+const scriptStore = new Map<string, { code: string; description: string }>();
+const STORE_MAX_SCRIPTS = 100;
+const STORE_MAX_SCRIPT_SIZE = 1_000_000; // 1MB
+const STORE_MAX_KEY_LEN = 256;
 
 // ---------------------------------------------------------------------------
 // 4. Security module
@@ -1039,6 +1043,7 @@ class ChromeManager {
   private port: number;
   private pageSessionId: string | null = null;
   private pendingDialogs: Array<{ message: string; type: string; defaultPrompt?: string }> = [];
+  private authQueue: Array<{ requestId: string; url: string; scheme: string; realm: string }> = [];
   private downloads: Array<{
     guid: string;
     url: string;
@@ -1136,11 +1141,25 @@ class ChromeManager {
     await this.pageSend("Runtime.enable");
     await this.pageSend("DOM.enable");
     await this.pageSend("Network.enable");
-
     // Listen for dialogs
     this.cdp!.on("Page.javascriptDialogOpening", (params) => {
       this.pendingDialogs.push({ message: params.message, type: params.type, defaultPrompt: params.defaultPrompt });
     });
+    // Register Fetch handlers BEFORE enabling to avoid race condition
+    this.cdp!.on("Fetch.authRequired", (params) => {
+      this.authQueue.push({
+        requestId: params.requestId,
+        url: params.request?.url || "",
+        scheme: params.authChallenge?.scheme || "",
+        realm: params.authChallenge?.realm || "",
+      });
+    });
+    this.cdp!.on("Fetch.requestPaused", async (params) => {
+      // Continue non-auth paused requests transparently
+      try { await this.pageSend("Fetch.continueRequest", { requestId: params.requestId }); } catch {}
+    });
+    // Enable Fetch for HTTP auth interception (after handlers registered)
+    await this.pageSend("Fetch.enable", { handleAuthRequests: true }).catch(() => {});
 
     // Listen for new targets (tabs)
     await this.cdp!.send("Target.setDiscoverTargets", { discover: true });
@@ -1196,6 +1215,7 @@ class ChromeManager {
     await this.pageSend("Runtime.enable");
     await this.pageSend("DOM.enable");
     await this.pageSend("Network.enable").catch(() => {});
+    await this.pageSend("Fetch.enable", { handleAuthRequests: true }).catch(() => {});
   }
 
   getCdp(): CDPClient | null {
@@ -1207,6 +1227,8 @@ class ChromeManager {
   getPendingDialogs() {
     return this.pendingDialogs;
   }
+  getAuthQueue() { return this.authQueue; }
+  popAuth() { return this.authQueue.shift(); }
   getDownloads() {
     return this.downloads;
   }
@@ -1598,13 +1620,95 @@ async function handleBrowserTabs(args: { action?: string; targetId?: string; url
   }
 }
 
-async function handleBrowserExecute(args: { code: string }): Promise<ToolResult> {
+async function handleBrowserExecute(args: { code?: string; script_id?: string; script_args?: any }): Promise<ToolResult> {
   if (!chromeManager) return { success: false, output: "", error: "Browser not available" };
   try {
-    const value = await cdpEvaluate(chromeManager, args.code);
+    let code = args.code || "";
+
+    if (args.script_id) {
+      const stored = scriptStore.get(args.script_id);
+      if (!stored) return { success: false, output: "", error: `Script '${args.script_id}' not found. Use browser_store action=set first.` };
+      let argsJson: string;
+      try { argsJson = JSON.stringify(args.script_args ?? {}); } catch { return { success: false, output: "", error: "script_args is not JSON-serializable" }; }
+      code = "(async function(){const __args=" + argsJson + ";" + stored.code + "})()";
+    }
+
+    if (!code || code.trim() === "") return { success: false, output: "", error: "Either 'code' or 'script_id' is required" };
+
+    // Only wrap inline code (script_id already wrapped above)
+    if (!args.script_id) {
+      code = "(async()=>{" + code + "})()";
+    }
+
+    const value = await cdpEvaluate(chromeManager, code);
     const output = typeof value === "string" ? value : JSON.stringify(value, null, 2);
     const truncated = output?.length > 50000 ? output.slice(0, 50000) + "\n[TRUNCATED]" : (output ?? "undefined");
     return { success: true, output: truncated };
+  } catch (e: any) {
+    return { success: false, output: "", error: e.message };
+  }
+}
+
+async function handleBrowserStore(args: { action: string; key?: string; value?: string; description?: string }): Promise<ToolResult> {
+  const action = args.action || "list";
+  if (action === "set") {
+    if (!args.key) return { success: false, output: "", error: "key is required" };
+    if (!args.value) return { success: false, output: "", error: "value is required" };
+    if (args.key.length > STORE_MAX_KEY_LEN) return { success: false, output: "", error: "key too long (max " + STORE_MAX_KEY_LEN + " chars)" };
+    if (args.value.length > STORE_MAX_SCRIPT_SIZE) return { success: false, output: "", error: "script too large (max " + STORE_MAX_SCRIPT_SIZE + " bytes)" };
+    if (!scriptStore.has(args.key) && scriptStore.size >= STORE_MAX_SCRIPTS) return { success: false, output: "", error: "store full (max " + STORE_MAX_SCRIPTS + " scripts)" };
+    scriptStore.set(args.key, { code: args.value, description: args.description || "" });
+    return { success: true, output: JSON.stringify({ stored: true, key: args.key }) };
+  } else if (action === "get") {
+    if (!args.key) return { success: false, output: "", error: "key is required" };
+    const item = scriptStore.get(args.key);
+    if (!item) return { success: true, output: JSON.stringify({ found: false }) };
+    return { success: true, output: JSON.stringify({ found: true, key: args.key, value: item.code, description: item.description }) };
+  } else if (action === "list") {
+    const items: any[] = [];
+    for (const [key, val] of scriptStore) {
+      items.push({ key, description: val.description, size: val.code.length });
+    }
+    return { success: true, output: JSON.stringify({ count: items.length, items }) };
+  } else if (action === "delete") {
+    if (!args.key) return { success: false, output: "", error: "key is required" };
+    const deleted = scriptStore.delete(args.key);
+    return { success: true, output: JSON.stringify({ deleted }) };
+  } else if (action === "clear") {
+    const count = scriptStore.size;
+    scriptStore.clear();
+    return { success: true, output: JSON.stringify({ cleared: count }) };
+  }
+  return { success: false, output: "", error: "Unknown action: " + action };
+}
+
+async function handleBrowserAuth(args: { action: string; username?: string; password?: string }): Promise<ToolResult> {
+  if (!chromeManager) return { success: false, output: "", error: "Browser not available" };
+  try {
+    const action = args.action || "status";
+    if (action === "status") {
+      const queue = chromeManager.getAuthQueue();
+      if (queue.length === 0) return { success: true, output: JSON.stringify({ pending: false }) };
+      const auth = queue[0];
+      return { success: true, output: JSON.stringify({ pending: true, url: auth.url, scheme: auth.scheme, realm: auth.realm }) };
+    } else if (action === "provide") {
+      const auth = chromeManager.popAuth();
+      if (!auth) return { success: false, output: "", error: "No pending auth challenge" };
+      await chromeManager.pageSend("Fetch.continueWithAuth", {
+        requestId: auth.requestId,
+        authChallengeResponse: { response: "ProvideCredentials", username: args.username || "", password: args.password || "" },
+      });
+      return { success: true, output: JSON.stringify({ authenticated: true }) };
+    } else if (action === "cancel") {
+      const auth = chromeManager.popAuth();
+      if (!auth) return { success: false, output: "", error: "No pending auth challenge" };
+      await chromeManager.pageSend("Fetch.continueWithAuth", {
+        requestId: auth.requestId,
+        authChallengeResponse: { response: "CancelAuth" },
+      });
+      return { success: true, output: JSON.stringify({ cancelled: true }) };
+    }
+    return { success: false, output: "", error: "Unknown action: " + action };
   } catch (e: any) {
     return { success: false, output: "", error: e.message };
   }
@@ -2206,6 +2310,10 @@ async function handleBrowserTool(tool: string, args: any): Promise<ToolResult> {
       return handleBrowserHistory(args);
     case "browser_handle_dialog":
       return handleBrowserDialog(args);
+    case "browser_auth":
+      return handleBrowserAuth(args);
+    case "browser_store":
+      return handleBrowserStore(args);
     case "browser_frames":
       return handleBrowserFrames();
     case "browser_mouse_move":
@@ -2406,8 +2514,10 @@ const BROWSER_TOOL_SCHEMAS: ToolSchema[] = [
       type: "object",
       properties: {
         code: { type: "string", description: "JavaScript code to execute" },
+        script_id: { type: "string", description: "Key of a stored script (saved via browser_store)" },
+        script_args: { type: "object", description: "Arguments passed to stored script as __args variable" },
       },
-      required: ["code"],
+      required: [],
     },
   },
   // Tier 2 tools
@@ -2494,6 +2604,20 @@ const BROWSER_TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: "browser_store",
+    description: "Store and retrieve reusable scripts. Save scripts with action=set, run them via browser_execute with script_id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["set", "get", "list", "delete", "clear"], description: "Storage action" },
+        key: { type: "string", description: "Script key/ID (required for set/get/delete)" },
+        value: { type: "string", description: "Script code to store (required for set)" },
+        description: { type: "string", description: "Human-readable description of the script" },
+      },
+      required: ["action"],
+    },
+  },
+  {
     name: "browser_handle_dialog",
     description: "Handle a JavaScript dialog (alert, confirm, prompt)",
     inputSchema: {
@@ -2507,6 +2631,19 @@ const BROWSER_TOOL_SCHEMAS: ToolSchema[] = [
         prompt_text: { type: "string", description: "Text to enter in a prompt dialog" },
       },
       required: [],
+    },
+  },
+  {
+    name: "browser_auth",
+    description: "Handle HTTP Basic/Digest authentication",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["status", "provide", "cancel"], description: "Auth action" },
+        username: { type: "string", description: "Username for authentication" },
+        password: { type: "string", description: "Password for authentication" },
+      },
+      required: ["action"],
     },
   },
   {

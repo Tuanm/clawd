@@ -1214,6 +1214,11 @@ public class RemoteWorker {
     // -----------------------------------------------------------------------
 
     static volatile ChromeManager chromeManager;
+    static final java.util.concurrent.ConcurrentHashMap<String, String[]> scriptStore = new java.util.concurrent.ConcurrentHashMap<>();
+    // scriptStore maps key -> [code, description]
+    static final int STORE_MAX_SCRIPTS = 100;
+    static final int STORE_MAX_SCRIPT_SIZE = 1_000_000; // 1MB
+    static final int STORE_MAX_KEY_LEN = 256;
     static volatile Config activeConfig;
 
     static String findChromeBinary() {
@@ -1409,6 +1414,7 @@ public class RemoteWorker {
         volatile CdpClient cdp;
         volatile String pageSession;
         final java.util.concurrent.ConcurrentLinkedDeque<Map<String, Object>> dialogQueue = new java.util.concurrent.ConcurrentLinkedDeque<>();
+        final java.util.concurrent.ConcurrentLinkedDeque<Map<String, Object>> authQueue = new java.util.concurrent.ConcurrentLinkedDeque<>();
         final java.util.concurrent.CopyOnWriteArrayList<Map<String, Object>> downloads = new java.util.concurrent.CopyOnWriteArrayList<>();
         volatile String downloadPath;
         private Path tempDir;
@@ -1516,6 +1522,16 @@ public class RemoteWorker {
 
             // Dialog listener
             cdp.on("Page.javascriptDialogOpening", params -> dialogQueue.addLast(params));
+            // Register Fetch handlers BEFORE enabling to avoid race condition
+            cdp.on("Fetch.authRequired", params -> authQueue.addLast(params));
+            cdp.on("Fetch.requestPaused", params -> {
+                // Continue non-auth requests transparently
+                try { cdp.send("Fetch.continueRequest", Map.of("requestId", params.get("requestId")), pageSession); } catch (Exception ignored) {}
+            });
+            // Enable Fetch domain for HTTP auth interception (after handlers registered)
+            try {
+                cdp.send("Fetch.enable", Map.of("handleAuthRequests", true), pageSession);
+            } catch (Exception ignored) {}
 
             // Configure downloads
             new File(downloadPath).mkdirs();
@@ -1559,6 +1575,8 @@ public class RemoteWorker {
             return dialogQueue.pollFirst();
         }
 
+        Map<String, Object> popAuth() { return authQueue.pollFirst(); }
+
         void switchToTarget(String targetId) {
             if (pageSession != null) {
                 try { cdp.send("Target.detachFromTarget", Map.of("sessionId", pageSession)); } catch (Exception ignored) {}
@@ -1568,6 +1586,7 @@ public class RemoteWorker {
             for (String domain : List.of("Page", "DOM", "Runtime", "Network")) {
                 cdp.send(domain + ".enable", Map.of(), pageSession);
             }
+            try { cdp.send("Fetch.enable", Map.of("handleAuthRequests", true), pageSession); } catch (Exception ignored) {}
         }
 
         void shutdown() {
@@ -1858,10 +1877,101 @@ public class RemoteWorker {
     static Map<String, Object> handleBrowserExecute(Map<String, Object> args) {
         try {
             String code = strArg(args, "code", "");
-            if (code.isEmpty()) return toolError("code required");
-            Object result = cdpEvaluate(code, chromeManager.pageSession);
+            String scriptId = strArg(args, "script_id", "");
+            String wrapped;
+            if (!scriptId.isEmpty()) {
+                String[] stored = scriptStore.get(scriptId);
+                if (stored == null) return toolError("Script '" + scriptId + "' not found. Use browser_store action=set first.");
+                String argsJson = "{}";
+                var scriptArgs = args.get("script_args");
+                if (scriptArgs != null) argsJson = Json.serialize(scriptArgs);
+                wrapped = "(async function(){const __args=" + argsJson + ";" + stored[0] + "})()";
+            } else {
+                if (code.isEmpty()) return toolError("Either 'code' or 'script_id' is required");
+                wrapped = "(async()=>{" + code + "})()";
+            }
+            Object result = cdpEvaluate(wrapped, chromeManager.pageSession);
             String output = result instanceof String s ? s : Json.serialize(result);
             return toolOk(output);
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserStore(Map<String, Object> args) {
+        try {
+            String action = strArg(args, "action", "list");
+            if ("set".equals(action)) {
+                String key = strArg(args, "key", "");
+                String value = strArg(args, "value", "");
+                if (key.isEmpty()) return toolError("key is required");
+                if (value.isEmpty()) return toolError("value is required");
+                if (key.length() > STORE_MAX_KEY_LEN) return toolError("key too long (max " + STORE_MAX_KEY_LEN + " chars)");
+                if (value.length() > STORE_MAX_SCRIPT_SIZE) return toolError("script too large (max " + STORE_MAX_SCRIPT_SIZE + " bytes)");
+                if (!scriptStore.containsKey(key) && scriptStore.size() >= STORE_MAX_SCRIPTS) return toolError("store full (max " + STORE_MAX_SCRIPTS + " scripts)");
+                String desc = strArg(args, "description", "");
+                scriptStore.put(key, new String[]{value, desc});
+                return toolOk(Json.serialize(Map.of("stored", true, "key", key)));
+            } else if ("get".equals(action)) {
+                String key = strArg(args, "key", "");
+                if (key.isEmpty()) return toolError("key is required");
+                String[] item = scriptStore.get(key);
+                if (item == null) return toolOk(Json.serialize(Map.of("found", false)));
+                return toolOk(Json.serialize(Map.of("found", true, "key", key, "value", item[0], "description", item[1])));
+            } else if ("list".equals(action)) {
+                var items = new java.util.ArrayList<Map<String,Object>>();
+                scriptStore.forEach((k, v) -> items.add(Map.of("key", k, "description", v[1], "size", v[0].length())));
+                return toolOk(Json.serialize(Map.of("count", items.size(), "items", items)));
+            } else if ("delete".equals(action)) {
+                String key = strArg(args, "key", "");
+                if (key.isEmpty()) return toolError("key is required");
+                boolean deleted = scriptStore.remove(key) != null;
+                return toolOk(Json.serialize(Map.of("deleted", deleted)));
+            } else if ("clear".equals(action)) {
+                int count = scriptStore.size();
+                scriptStore.clear();
+                return toolOk(Json.serialize(Map.of("cleared", count)));
+            }
+            return toolError("Unknown action: " + action);
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
+    static Map<String, Object> handleBrowserAuth(Map<String, Object> args) {
+        try {
+            String action = strArg(args, "action", "status");
+            var cdp = chromeManager.cdp;
+            var sid = chromeManager.pageSession;
+            if ("status".equals(action)) {
+                var auth = chromeManager.authQueue.peekFirst();
+                if (auth == null) return toolOk(Json.serialize(Map.of("pending", false)));
+                @SuppressWarnings("unchecked") var challenge = (Map<String,Object>)auth.getOrDefault("authChallenge", Map.of());
+                @SuppressWarnings("unchecked") var request = (Map<String,Object>)auth.getOrDefault("request", Map.of());
+                return toolOk(Json.serialize(Map.of(
+                    "pending", true,
+                    "url", String.valueOf(request.getOrDefault("url", "")),
+                    "scheme", String.valueOf(challenge.getOrDefault("scheme", "")),
+                    "realm", String.valueOf(challenge.getOrDefault("realm", ""))
+                )));
+            } else if ("provide".equals(action)) {
+                var auth = chromeManager.popAuth();
+                if (auth == null) return toolError("No pending auth challenge");
+                String requestId = String.valueOf(auth.get("requestId"));
+                String username = strArg(args, "username", "");
+                String password = strArg(args, "password", "");
+                cdp.send("Fetch.continueWithAuth", Map.of(
+                    "requestId", requestId,
+                    "authChallengeResponse", Map.of("response", "ProvideCredentials", "username", username, "password", password)
+                ), sid);
+                return toolOk(Json.serialize(Map.of("authenticated", true)));
+            } else if ("cancel".equals(action)) {
+                var auth = chromeManager.popAuth();
+                if (auth == null) return toolError("No pending auth challenge");
+                String requestId = String.valueOf(auth.get("requestId"));
+                cdp.send("Fetch.continueWithAuth", Map.of(
+                    "requestId", requestId,
+                    "authChallengeResponse", Map.of("response", "CancelAuth")
+                ), sid);
+                return toolOk(Json.serialize(Map.of("cancelled", true)));
+            }
+            return toolError("Unknown action: " + action);
         } catch (Exception e) { return toolError(e.getMessage()); }
     }
 
@@ -2032,7 +2142,7 @@ public class RemoteWorker {
     static Map<String, Object> handleBrowserDialog(Map<String, Object> args) {
         try {
             var dialog = chromeManager.popDialog();
-            if (dialog == null) return toolError("No pending dialog");
+            if (dialog == null) return toolOk(Json.serialize(Map.of("handled", false, "message", "No pending dialog")));
             String action = strArg(args, "action", "accept");
             var params = new LinkedHashMap<String, Object>();
             params.put("accept", "accept".equals(action));
@@ -2389,6 +2499,8 @@ public class RemoteWorker {
             case "browser_touch" -> handleBrowserTouch(args);
             case "browser_upload" -> handleBrowserUpload(args);
             case "browser_download" -> handleBrowserDownload(args);
+            case "browser_auth" -> handleBrowserAuth(args);
+            case "browser_store" -> handleBrowserStore(args);
             default -> toolError("Unknown browser tool: " + tool);
         };
     }
@@ -2504,7 +2616,10 @@ public class RemoteWorker {
             Json.obj("name", "browser_tabs", "description", "Manage browser tabs",
                 "inputSchema", Json.obj("type", "object", "properties", Json.obj("action", Json.obj("type", "string"), "url", Json.obj("type", "string"), "targetId", Json.obj("type", "string")), "required", Json.arr())),
             Json.obj("name", "browser_execute", "description", "Execute JavaScript in page context",
-                "inputSchema", Json.obj("type", "object", "properties", Json.obj("code", Json.obj("type", "string")), "required", Json.arr("code"))),
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("code", Json.obj("type", "string"),
+                    "script_id", Json.obj("type", "string", "description", "Key of a stored script (saved via browser_store)"),
+                    "script_args", Json.obj("type", "object", "description", "Arguments passed to stored script as __args")
+                ), "required", List.of())),
             Json.obj("name", "browser_scroll", "description", "Scroll the page or element",
                 "inputSchema", Json.obj("type", "object", "properties", Json.obj("direction", Json.obj("type", "string"), "amount", Json.obj("type", "number"), "selector", Json.obj("type", "string"), "x", Json.obj("type", "number"), "y", Json.obj("type", "number")), "required", Json.arr())),
             Json.obj("name", "browser_keypress", "description", "Press a keyboard key with optional modifiers",
@@ -2562,7 +2677,20 @@ public class RemoteWorker {
                     "path", Json.obj("type", "string", "description", "Download directory (for configure)"),
                     "timeout", Json.obj("type", "number", "description", "Max wait time in ms (for wait, default: 30000)"),
                     "upload", Json.obj("type", "boolean", "description", "Upload completed download to chat server (for wait action)")
-                ), "required", Json.arr()))
+                ), "required", Json.arr())),
+            Json.obj("name", "browser_auth", "description", "Handle HTTP Basic/Digest authentication",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(
+                    "action", Json.obj("type", "string", "enum", Json.arr("status", "provide", "cancel")),
+                    "username", Json.obj("type", "string"),
+                    "password", Json.obj("type", "string")
+                ), "required", Json.arr("action"))),
+            Json.obj("name", "browser_store", "description", "Store and retrieve reusable scripts",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(
+                    "action", Json.obj("type", "string", "enum", List.of("set", "get", "list", "delete", "clear")),
+                    "key", Json.obj("type", "string"),
+                    "value", Json.obj("type", "string"),
+                    "description", Json.obj("type", "string")
+                ), "required", List.of("action")))
         );
     }
 
