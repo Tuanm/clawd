@@ -1975,6 +1975,41 @@ public class RemoteWorker {
         } catch (Exception e) { return toolError(e.getMessage()); }
     }
 
+    static Map<String, Object> handleBrowserPermissions(Map<String, Object> args) {
+        try {
+            String action = strArg(args, "action", "grant");
+            @SuppressWarnings("unchecked")
+            var perms = args.get("permissions") instanceof List<?> l ? (List<String>)(List<?>)l : List.<String>of();
+            String origin = strArg(args, "origin", null);
+            // Map friendly names to CDP PermissionType
+            var permMap = Map.of(
+                "camera", "videoCapture", "microphone", "audioCapture",
+                "clipboard-read", "clipboardReadWrite", "clipboard-write", "clipboardSanitizedWrite",
+                "background-sync", "backgroundSync", "screen-wake-lock", "wakeLockScreen"
+            );
+            var cdpPerms = perms.stream().map(p -> permMap.getOrDefault(p, p)).toList();
+            if ("grant".equals(action)) {
+                if (cdpPerms.isEmpty()) return toolError("permissions array is required");
+                var params = new LinkedHashMap<String, Object>();
+                params.put("permissions", cdpPerms);
+                if (origin != null) params.put("origin", origin);
+                chromeManager.cdp.send("Browser.grantPermissions", params, null);
+                return toolOk(Json.serialize(Map.of("granted", cdpPerms)));
+            } else if ("deny".equals(action)) {
+                var params = new LinkedHashMap<String, Object>();
+                if (origin != null) params.put("origin", origin);
+                chromeManager.cdp.send("Browser.resetPermissions", params, null);
+                return toolOk(Json.serialize(Map.of("denied", cdpPerms, "note", "Permissions reset (CDP has no explicit deny)")));
+            } else if ("reset".equals(action)) {
+                var params = new LinkedHashMap<String, Object>();
+                if (origin != null) params.put("origin", origin);
+                chromeManager.cdp.send("Browser.resetPermissions", params, null);
+                return toolOk(Json.serialize(Map.of("reset", true)));
+            }
+            return toolError("Unknown action: " + action);
+        } catch (Exception e) { return toolError(e.getMessage()); }
+    }
+
     static Map<String, Object> handleBrowserScroll(Map<String, Object> args) {
         try {
             var cdp = chromeManager.cdp;
@@ -2500,6 +2535,7 @@ public class RemoteWorker {
             case "browser_upload" -> handleBrowserUpload(args);
             case "browser_download" -> handleBrowserDownload(args);
             case "browser_auth" -> handleBrowserAuth(args);
+            case "browser_permissions" -> handleBrowserPermissions(args);
             case "browser_store" -> handleBrowserStore(args);
             default -> toolError("Unknown browser tool: " + tool);
         };
@@ -2683,6 +2719,12 @@ public class RemoteWorker {
                     "action", Json.obj("type", "string", "enum", Json.arr("status", "provide", "cancel")),
                     "username", Json.obj("type", "string"),
                     "password", Json.obj("type", "string")
+                ), "required", Json.arr("action"))),
+            Json.obj("name", "browser_permissions", "description", "Grant, deny, or reset browser permissions for a site",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(
+                    "action", Json.obj("type", "string", "enum", Json.arr("grant", "deny", "reset")),
+                    "permissions", Json.obj("type", "array", "items", Json.obj("type", "string")),
+                    "origin", Json.obj("type", "string")
                 ), "required", Json.arr("action"))),
             Json.obj("name", "browser_store", "description", "Store and retrieve reusable scripts",
                 "inputSchema", Json.obj("type", "object", "properties", Json.obj(

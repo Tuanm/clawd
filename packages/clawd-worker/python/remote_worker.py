@@ -2032,6 +2032,44 @@ def handle_browser_auth(args):  # type: (Dict) -> Dict
         return {"success": False, "output": "", "error": str(e)}
 
 
+def handle_browser_permissions(args):  # type: (Dict) -> Dict
+    if not chrome_manager or not chrome_manager.cdp:
+        return {"success": False, "output": "", "error": "Browser not running"}
+    try:
+        action = args.get("action", "grant")
+        perms = args.get("permissions", [])  # type: list
+        origin = args.get("origin")
+        perm_map = {
+            "camera": "videoCapture", "microphone": "audioCapture",
+            "clipboard-read": "clipboardReadWrite", "clipboard-write": "clipboardSanitizedWrite",
+            "background-sync": "backgroundSync", "screen-wake-lock": "wakeLockScreen",
+        }
+        cdp_perms = [perm_map.get(p, p) for p in perms]
+        if action == "grant":
+            if not cdp_perms:
+                return {"success": False, "output": "", "error": "permissions array is required"}
+            params = {"permissions": cdp_perms}  # type: Dict[str, Any]
+            if origin:
+                params["origin"] = origin
+            chrome_manager.cdp.send("Browser.grantPermissions", params)
+            return {"success": True, "output": json.dumps({"granted": cdp_perms})}
+        elif action == "deny":
+            params = {}
+            if origin:
+                params["origin"] = origin
+            chrome_manager.cdp.send("Browser.resetPermissions", params)
+            return {"success": True, "output": json.dumps({"denied": cdp_perms, "note": "Permissions reset (CDP has no explicit deny)"})}
+        elif action == "reset":
+            params = {}
+            if origin:
+                params["origin"] = origin
+            chrome_manager.cdp.send("Browser.resetPermissions", params)
+            return {"success": True, "output": json.dumps({"reset": True})}
+        return {"success": False, "output": "", "error": "Unknown action: " + action}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
 def handle_browser_store(args):  # type: (Dict) -> Dict
     action = args.get("action", "list")
     if action == "set":
@@ -2453,6 +2491,12 @@ BROWSER_TOOL_SCHEMAS = [
          "username": {"type": "string"},
          "password": {"type": "string"},
      }, "required": ["action"]}},
+    {"name": "browser_permissions", "description": "Grant, deny, or reset browser permissions for a site",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["grant", "deny", "reset"]},
+         "permissions": {"type": "array", "items": {"type": "string"}, "description": "Permission names: geolocation, camera, microphone, notifications, clipboard-read, clipboard-write, midi, background-sync, sensors, screen-wake-lock"},
+         "origin": {"type": "string", "description": "Origin to apply permissions to"},
+     }, "required": ["action"]}},
     {"name": "browser_store", "description": "Store and retrieve reusable scripts",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["set", "get", "list", "delete", "clear"]},
@@ -2491,6 +2535,7 @@ def _dispatch_browser_tool(tool, args):  # type: (str, Dict) -> Dict
         "browser_upload": handle_browser_upload,
         "browser_download": handle_browser_download,
         "browser_auth": handle_browser_auth,
+        "browser_permissions": handle_browser_permissions,
         "browser_store": handle_browser_store,
     }
     handler = handlers.get(tool)

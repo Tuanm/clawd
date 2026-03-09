@@ -1156,7 +1156,9 @@ class ChromeManager {
     });
     this.cdp!.on("Fetch.requestPaused", async (params) => {
       // Continue non-auth paused requests transparently
-      try { await this.pageSend("Fetch.continueRequest", { requestId: params.requestId }); } catch {}
+      try {
+        await this.pageSend("Fetch.continueRequest", { requestId: params.requestId });
+      } catch {}
     });
     // Enable Fetch for HTTP auth interception (after handlers registered)
     await this.pageSend("Fetch.enable", { handleAuthRequests: true }).catch(() => {});
@@ -1227,8 +1229,12 @@ class ChromeManager {
   getPendingDialogs() {
     return this.pendingDialogs;
   }
-  getAuthQueue() { return this.authQueue; }
-  popAuth() { return this.authQueue.shift(); }
+  getAuthQueue() {
+    return this.authQueue;
+  }
+  popAuth() {
+    return this.authQueue.shift();
+  }
   getDownloads() {
     return this.downloads;
   }
@@ -1620,20 +1626,34 @@ async function handleBrowserTabs(args: { action?: string; targetId?: string; url
   }
 }
 
-async function handleBrowserExecute(args: { code?: string; script_id?: string; script_args?: any }): Promise<ToolResult> {
+async function handleBrowserExecute(args: {
+  code?: string;
+  script_id?: string;
+  script_args?: any;
+}): Promise<ToolResult> {
   if (!chromeManager) return { success: false, output: "", error: "Browser not available" };
   try {
     let code = args.code || "";
 
     if (args.script_id) {
       const stored = scriptStore.get(args.script_id);
-      if (!stored) return { success: false, output: "", error: `Script '${args.script_id}' not found. Use browser_store action=set first.` };
+      if (!stored)
+        return {
+          success: false,
+          output: "",
+          error: `Script '${args.script_id}' not found. Use browser_store action=set first.`,
+        };
       let argsJson: string;
-      try { argsJson = JSON.stringify(args.script_args ?? {}); } catch { return { success: false, output: "", error: "script_args is not JSON-serializable" }; }
+      try {
+        argsJson = JSON.stringify(args.script_args ?? {});
+      } catch {
+        return { success: false, output: "", error: "script_args is not JSON-serializable" };
+      }
       code = "(async function(){const __args=" + argsJson + ";" + stored.code + "})()";
     }
 
-    if (!code || code.trim() === "") return { success: false, output: "", error: "Either 'code' or 'script_id' is required" };
+    if (!code || code.trim() === "")
+      return { success: false, output: "", error: "Either 'code' or 'script_id' is required" };
 
     // Only wrap inline code (script_id already wrapped above)
     if (!args.script_id) {
@@ -1649,21 +1669,32 @@ async function handleBrowserExecute(args: { code?: string; script_id?: string; s
   }
 }
 
-async function handleBrowserStore(args: { action: string; key?: string; value?: string; description?: string }): Promise<ToolResult> {
+async function handleBrowserStore(args: {
+  action: string;
+  key?: string;
+  value?: string;
+  description?: string;
+}): Promise<ToolResult> {
   const action = args.action || "list";
   if (action === "set") {
     if (!args.key) return { success: false, output: "", error: "key is required" };
     if (!args.value) return { success: false, output: "", error: "value is required" };
-    if (args.key.length > STORE_MAX_KEY_LEN) return { success: false, output: "", error: "key too long (max " + STORE_MAX_KEY_LEN + " chars)" };
-    if (args.value.length > STORE_MAX_SCRIPT_SIZE) return { success: false, output: "", error: "script too large (max " + STORE_MAX_SCRIPT_SIZE + " bytes)" };
-    if (!scriptStore.has(args.key) && scriptStore.size >= STORE_MAX_SCRIPTS) return { success: false, output: "", error: "store full (max " + STORE_MAX_SCRIPTS + " scripts)" };
+    if (args.key.length > STORE_MAX_KEY_LEN)
+      return { success: false, output: "", error: "key too long (max " + STORE_MAX_KEY_LEN + " chars)" };
+    if (args.value.length > STORE_MAX_SCRIPT_SIZE)
+      return { success: false, output: "", error: "script too large (max " + STORE_MAX_SCRIPT_SIZE + " bytes)" };
+    if (!scriptStore.has(args.key) && scriptStore.size >= STORE_MAX_SCRIPTS)
+      return { success: false, output: "", error: "store full (max " + STORE_MAX_SCRIPTS + " scripts)" };
     scriptStore.set(args.key, { code: args.value, description: args.description || "" });
     return { success: true, output: JSON.stringify({ stored: true, key: args.key }) };
   } else if (action === "get") {
     if (!args.key) return { success: false, output: "", error: "key is required" };
     const item = scriptStore.get(args.key);
     if (!item) return { success: true, output: JSON.stringify({ found: false }) };
-    return { success: true, output: JSON.stringify({ found: true, key: args.key, value: item.code, description: item.description }) };
+    return {
+      success: true,
+      output: JSON.stringify({ found: true, key: args.key, value: item.code, description: item.description }),
+    };
   } else if (action === "list") {
     const items: any[] = [];
     for (const [key, val] of scriptStore) {
@@ -1690,13 +1721,20 @@ async function handleBrowserAuth(args: { action: string; username?: string; pass
       const queue = chromeManager.getAuthQueue();
       if (queue.length === 0) return { success: true, output: JSON.stringify({ pending: false }) };
       const auth = queue[0];
-      return { success: true, output: JSON.stringify({ pending: true, url: auth.url, scheme: auth.scheme, realm: auth.realm }) };
+      return {
+        success: true,
+        output: JSON.stringify({ pending: true, url: auth.url, scheme: auth.scheme, realm: auth.realm }),
+      };
     } else if (action === "provide") {
       const auth = chromeManager.popAuth();
       if (!auth) return { success: false, output: "", error: "No pending auth challenge" };
       await chromeManager.pageSend("Fetch.continueWithAuth", {
         requestId: auth.requestId,
-        authChallengeResponse: { response: "ProvideCredentials", username: args.username || "", password: args.password || "" },
+        authChallengeResponse: {
+          response: "ProvideCredentials",
+          username: args.username || "",
+          password: args.password || "",
+        },
       });
       return { success: true, output: JSON.stringify({ authenticated: true }) };
     } else if (action === "cancel") {
@@ -1707,6 +1745,54 @@ async function handleBrowserAuth(args: { action: string; username?: string; pass
         authChallengeResponse: { response: "CancelAuth" },
       });
       return { success: true, output: JSON.stringify({ cancelled: true }) };
+    }
+    return { success: false, output: "", error: "Unknown action: " + action };
+  } catch (e: any) {
+    return { success: false, output: "", error: e.message };
+  }
+}
+
+async function handleBrowserPermissions(args: {
+  action: string;
+  permissions?: string[];
+  origin?: string;
+}): Promise<ToolResult> {
+  if (!chromeManager) return { success: false, output: "", error: "Browser not available" };
+  try {
+    const action = args.action || "grant";
+    const perms = args.permissions || [];
+    if ((action === "grant" || action === "deny") && perms.length === 0) {
+      return { success: false, output: "", error: "permissions array is required" };
+    }
+    // Map friendly names to CDP PermissionType
+    const permMap: Record<string, string> = {
+      camera: "videoCapture",
+      microphone: "audioCapture",
+      "clipboard-read": "clipboardReadWrite",
+      "clipboard-write": "clipboardSanitizedWrite",
+      "background-sync": "backgroundSync",
+      "screen-wake-lock": "wakeLockScreen",
+    };
+    const cdpPerms = perms.map((p) => permMap[p] || p);
+    if (action === "grant") {
+      const params: Record<string, any> = { permissions: cdpPerms };
+      if (args.origin) params.origin = args.origin;
+      await chromeManager.getCdp()!.send("Browser.grantPermissions", params);
+      return { success: true, output: JSON.stringify({ granted: cdpPerms }) };
+    } else if (action === "deny") {
+      // CDP has no "deny" — reset first then grant empty to effectively deny
+      const params: Record<string, any> = {};
+      if (args.origin) params.origin = args.origin;
+      await chromeManager.getCdp()!.send("Browser.resetPermissions", params);
+      return {
+        success: true,
+        output: JSON.stringify({ denied: cdpPerms, note: "Permissions reset (CDP has no explicit deny)" }),
+      };
+    } else if (action === "reset") {
+      const params: Record<string, any> = {};
+      if (args.origin) params.origin = args.origin;
+      await chromeManager.getCdp()!.send("Browser.resetPermissions", params);
+      return { success: true, output: JSON.stringify({ reset: true }) };
     }
     return { success: false, output: "", error: "Unknown action: " + action };
   } catch (e: any) {
@@ -2312,6 +2398,8 @@ async function handleBrowserTool(tool: string, args: any): Promise<ToolResult> {
       return handleBrowserDialog(args);
     case "browser_auth":
       return handleBrowserAuth(args);
+    case "browser_permissions":
+      return handleBrowserPermissions(args);
     case "browser_store":
       return handleBrowserStore(args);
     case "browser_frames":
@@ -2605,7 +2693,8 @@ const BROWSER_TOOL_SCHEMAS: ToolSchema[] = [
   },
   {
     name: "browser_store",
-    description: "Store and retrieve reusable scripts. Save scripts with action=set, run them via browser_execute with script_id.",
+    description:
+      "Store and retrieve reusable scripts. Save scripts with action=set, run them via browser_execute with script_id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2642,6 +2731,25 @@ const BROWSER_TOOL_SCHEMAS: ToolSchema[] = [
         action: { type: "string", enum: ["status", "provide", "cancel"], description: "Auth action" },
         username: { type: "string", description: "Username for authentication" },
         password: { type: "string", description: "Password for authentication" },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "browser_permissions",
+    description:
+      "Grant, deny, or reset browser permissions for a site (camera, microphone, geolocation, notifications, clipboard, etc.)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["grant", "deny", "reset"], description: "Permission action" },
+        permissions: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            'Permission names: "geolocation", "camera", "microphone", "notifications", "clipboard-read", "clipboard-write", "midi", "background-sync", "sensors", "screen-wake-lock"',
+        },
+        origin: { type: "string", description: "Origin to apply permissions to (default: all origins)" },
       },
       required: ["action"],
     },
