@@ -455,15 +455,20 @@ export function callRemoteWorkerTool(
 }
 
 function dispatchCalls(worker: WorkerState) {
+  if (!worker.ws || worker.status !== "connected") return; // bail early if can't send
   while (worker.serverQueue.length > 0 && worker.activeCount < worker.maxConcurrent) {
     const id = worker.serverQueue.shift()!;
     const pending = worker.pendingCalls.get(id);
     if (!pending) continue;
 
-    if (worker.ws && worker.status === "connected") {
+    try {
       worker.ws.send(JSON.stringify({ type: "call", id, tool: pending.tool, args: pending.args }));
       pending.sentToWorker = true;
       worker.activeCount++;
+    } catch {
+      // Send failed — re-queue at front and stop dispatching
+      worker.serverQueue.unshift(id);
+      break;
     }
   }
 }

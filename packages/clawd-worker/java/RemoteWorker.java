@@ -1217,37 +1217,88 @@ public class RemoteWorker {
     static volatile Config activeConfig;
 
     static String findChromeBinary() {
+        // Detect system default browser to prefer it
+        String defaultBrowser = detectDefaultBrowser();
+
         List<String> candidates;
         if (IS_MACOS) {
-            candidates = List.of(
+            candidates = new ArrayList<>(List.of(
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-                "/Applications/Chromium.app/Contents/MacOS/Chromium",
-                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
-            );
+                "/Applications/Chromium.app/Contents/MacOS/Chromium"
+            ));
+            // If default is Chrome, move it first; if Edge, keep Edge first (already default order)
+            if ("chrome".equals(defaultBrowser)) {
+                candidates.remove("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+                candidates.add(0, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+            }
         } else if (IS_WINDOWS) {
             candidates = new ArrayList<>();
+            boolean preferEdge = "edge".equals(defaultBrowser);
             for (String envVar : List.of("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")) {
                 String base = System.getenv(envVar);
                 if (base != null) {
-                    candidates.add(Path.of(base, "Google", "Chrome", "Application", "chrome.exe").toString());
-                    candidates.add(Path.of(base, "Microsoft", "Edge", "Application", "msedge.exe").toString());
+                    String chrome = Path.of(base, "Google", "Chrome", "Application", "chrome.exe").toString();
+                    String edge = Path.of(base, "Microsoft", "Edge", "Application", "msedge.exe").toString();
+                    if (preferEdge) {
+                        candidates.add(edge);
+                        candidates.add(chrome);
+                    } else {
+                        candidates.add(chrome);
+                        candidates.add(edge);
+                    }
                 }
             }
         } else {
-            candidates = List.of(
+            candidates = new ArrayList<>(List.of(
                 "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
                 "/usr/bin/chromium", "/usr/bin/chromium-browser",
                 "/snap/bin/chromium", "/usr/bin/microsoft-edge"
-            );
+            ));
         }
         for (String c : candidates) {
             if (Files.isRegularFile(Path.of(c))) return c;
         }
-        // which fallback
-        for (String name : List.of("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge")) {
+        // which fallback — respect system default preference
+        List<String> fallback;
+        if (IS_WINDOWS) {
+            fallback = "edge".equals(defaultBrowser)
+                ? List.of("msedge", "chrome", "google-chrome", "chromium", "microsoft-edge")
+                : List.of("chrome", "google-chrome", "msedge", "chromium", "microsoft-edge");
+        } else {
+            fallback = List.of("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "msedge");
+        }
+        for (String name : fallback) {
             String path = findExecutable(name);
             if (path != null) return path;
         }
+        return null;
+    }
+
+    /** Detect system default browser: returns "edge", "chrome", or null */
+    static String detectDefaultBrowser() {
+        try {
+            if (IS_WINDOWS) {
+                var proc = new ProcessBuilder("reg", "query",
+                    "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice",
+                    "/v", "ProgId")
+                    .redirectErrorStream(true).start();
+                boolean finished = proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+                if (!finished) { proc.destroyForcibly(); return null; }
+                String output = new String(proc.getInputStream().readAllBytes()).toLowerCase();
+                if (output.contains("chromehtml")) return "chrome";
+                if (output.contains("msedgehtm")) return "edge";
+            } else if (IS_MACOS) {
+                // Use `open -Ra` to find the actual HTTP handler app
+                var proc = new ProcessBuilder("/usr/bin/open", "-Ra", "http://example.com")
+                    .redirectErrorStream(true).start();
+                boolean finished = proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+                if (!finished) { proc.destroyForcibly(); return null; }
+                String output = new String(proc.getInputStream().readAllBytes()).toLowerCase();
+                if (output.contains("microsoft edge")) return "edge";
+                if (output.contains("google chrome")) return "chrome";
+            }
+        } catch (Exception ignored) {}
         return null;
     }
 
@@ -1291,9 +1342,17 @@ public class RemoteWorker {
                     @Override
                     public void onOpen(java.net.http.WebSocket webSocket) { webSocket.request(1); }
                     @Override
-                    public CompletionStage<?> onClose(java.net.http.WebSocket webSocket, int code, String reason) { return null; }
+                    public CompletionStage<?> onClose(java.net.http.WebSocket webSocket, int code, String reason) {
+                        var ex = new RuntimeException("CDP WebSocket closed (code=" + code + ")");
+                        pending.values().forEach(f -> f.completeExceptionally(ex));
+                        pending.clear();
+                        return null;
+                    }
                     @Override
-                    public void onError(java.net.http.WebSocket webSocket, Throwable error) {}
+                    public void onError(java.net.http.WebSocket webSocket, Throwable error) {
+                        pending.values().forEach(f -> f.completeExceptionally(error));
+                        pending.clear();
+                    }
                 }).join();
         }
 
@@ -1506,7 +1565,7 @@ public class RemoteWorker {
             }
             var attach = cdp.send("Target.attachToTarget", Map.of("targetId", targetId, "flatten", true));
             pageSession = String.valueOf(attach.get("sessionId"));
-            for (String domain : List.of("Page", "DOM", "Runtime", "Input")) {
+            for (String domain : List.of("Page", "DOM", "Runtime", "Network", "Input", "Target")) {
                 cdp.send(domain + ".enable", Map.of(), pageSession);
             }
         }
@@ -1543,10 +1602,34 @@ public class RemoteWorker {
         return mgr;
     }
 
+    /** Ensure the browser is running. Lazy-starts if --browser was given but chromeManager is null/dead. */
+    static synchronized ChromeManager ensureBrowser() {
+        if (chromeManager != null && chromeManager.cdp != null) {
+            // Quick health check: try a simple CDP call
+            try {
+                chromeManager.cdp.send("Browser.getVersion", null, null, 3);
+                return chromeManager; // healthy
+            } catch (Exception e) {
+                log("Browser CDP connection lost, restarting...");
+                try { chromeManager.shutdown(); } catch (Exception ignored) {}
+                chromeManager = null;
+            }
+        }
+        if (activeConfig == null || activeConfig.browser() == null) {
+            throw new RuntimeException("Browser not enabled. Start worker with --browser flag.");
+        }
+        var mgr = startChromeManager(activeConfig.browser());
+        if (mgr == null) {
+            throw new RuntimeException("Failed to start browser. Ensure Chrome or Edge is installed.");
+        }
+        return mgr;
+    }
+
     @SuppressWarnings("unchecked")
     static Object cdpEvaluate(String expression, String sessionId) {
-        if (chromeManager == null || chromeManager.cdp == null) throw new RuntimeException("Browser not available");
-        var result = chromeManager.cdp.send("Runtime.evaluate",
+        var cm = chromeManager;
+        if (cm == null || cm.cdp == null) throw new RuntimeException("Browser not available");
+        var result = cm.cdp.send("Runtime.evaluate",
             Map.of("expression", expression, "returnByValue", true, "awaitPromise", true), sessionId);
         var exDetails = result.get("exceptionDetails");
         if (exDetails instanceof Map<?,?> ex) {
@@ -1562,8 +1645,9 @@ public class RemoteWorker {
 
     @SuppressWarnings("unchecked")
     static Map<String, Object> resolveSelector(String selector, String sessionId) {
-        if (chromeManager == null || chromeManager.cdp == null) throw new RuntimeException("Browser not available");
-        var cdp = chromeManager.cdp;
+        var cm = chromeManager;
+        if (cm == null || cm.cdp == null) throw new RuntimeException("Browser not available");
+        var cdp = cm.cdp;
         var doc = cdp.send("DOM.getDocument", Map.of("depth", 0), sessionId);
         var root = (Map<String, Object>) doc.get("root");
         int rootNodeId = ((Number) root.get("nodeId")).intValue();
@@ -1583,7 +1667,6 @@ public class RemoteWorker {
     // -----------------------------------------------------------------------
 
     static Map<String, Object> handleBrowserStatus(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             String url = String.valueOf(cdpEvaluate("window.location.href", chromeManager.pageSession));
             String title = String.valueOf(cdpEvaluate("document.title", chromeManager.pageSession));
@@ -1592,7 +1675,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserNavigate(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         String url = strArg(args, "url", "");
         if (url.isEmpty()) return toolError("url required");
         try {
@@ -1600,22 +1682,24 @@ public class RemoteWorker {
             var sid = chromeManager.pageSession;
             cdp.send("Page.navigate", Map.of("url", url), sid);
             long deadline = System.currentTimeMillis() + 30_000;
+            boolean loaded = false;
             while (System.currentTimeMillis() < deadline) {
                 try {
                     Object state = cdpEvaluate("document.readyState", sid);
-                    if ("complete".equals(state)) break;
+                    if ("complete".equals(state)) { loaded = true; break; }
                 } catch (Exception ignored) {}
                 Thread.sleep(300);
             }
             String title = String.valueOf(cdpEvaluate("document.title", sid));
             String finalUrl = String.valueOf(cdpEvaluate("window.location.href", sid));
-            return toolOk(Json.serialize(Json.obj("url", finalUrl, "title", title)));
+            var result = Json.obj("url", finalUrl, "title", title);
+            if (!loaded) result.put("warning", "Page did not fully load within 30s");
+            return toolOk(Json.serialize(result));
         } catch (Exception e) { return toolError(e.getMessage()); }
     }
 
     @SuppressWarnings("unchecked")
     static Map<String, Object> handleBrowserScreenshot(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var params = new LinkedHashMap<String, Object>();
             params.put("format", "jpeg");
@@ -1642,7 +1726,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserClick(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var cdp = chromeManager.cdp;
             var sid = chromeManager.pageSession;
@@ -1659,6 +1742,10 @@ public class RemoteWorker {
             }
             String btn = strArg(args, "button", "left");
             int clickCount = Boolean.TRUE.equals(args.get("double")) ? 2 : 1;
+            // Move mouse to target first (triggers hover states, mouseenter events)
+            cdp.send("Input.dispatchMouseEvent", Map.of(
+                "type", "mouseMoved", "x", x, "y", y
+            ), sid);
             for (String evtType : List.of("mousePressed", "mouseReleased")) {
                 cdp.send("Input.dispatchMouseEvent", Map.of(
                     "type", evtType, "x", x, "y", y, "button", btn, "clickCount", clickCount
@@ -1669,7 +1756,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserType(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var cdp = chromeManager.cdp;
             var sid = chromeManager.pageSession;
@@ -1699,7 +1785,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserExtract(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var sid = chromeManager.pageSession;
             String mode = strArg(args, "mode", "text");
@@ -1728,7 +1813,6 @@ public class RemoteWorker {
 
     @SuppressWarnings("unchecked")
     static Map<String, Object> handleBrowserTabs(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var cdp = chromeManager.cdp;
             String action = strArg(args, "action", "list");
@@ -1771,7 +1855,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserExecute(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             String code = strArg(args, "code", "");
             if (code.isEmpty()) return toolError("code required");
@@ -1782,7 +1865,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserScroll(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var cdp = chromeManager.cdp;
             var sid = chromeManager.pageSession;
@@ -1828,11 +1910,11 @@ public class RemoteWorker {
 
     @SuppressWarnings("unchecked")
     static Map<String, Object> handleBrowserKeypress(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var cdp = chromeManager.cdp;
             var sid = chromeManager.pageSession;
             String key = strArg(args, "key", "");
+            if (key.isEmpty()) return toolError("key is required");
             var modifiersList = args.get("modifiers") instanceof List<?> l ? l : List.of();
             int modFlags = 0;
             for (var m : modifiersList) {
@@ -1864,7 +1946,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserWaitFor(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             String selector = strArg(args, "selector", "");
             if (selector.isEmpty()) return toolError("selector required");
@@ -1885,7 +1966,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserSelect(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             String selector = strArg(args, "selector", "");
             if (selector.isEmpty()) return toolError("selector required");
@@ -1908,7 +1988,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserHover(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var cdp = chromeManager.cdp;
             var sid = chromeManager.pageSession;
@@ -1931,7 +2010,6 @@ public class RemoteWorker {
 
     @SuppressWarnings("unchecked")
     static Map<String, Object> handleBrowserHistory(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             String action = strArg(args, "action", "back");
             var sid = chromeManager.pageSession;
@@ -1951,7 +2029,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserDialog(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var dialog = chromeManager.popDialog();
             if (dialog == null) return toolError("No pending dialog");
@@ -2075,6 +2152,13 @@ public class RemoteWorker {
             if ("configure".equals(action)) {
                 var path = strArg(args, "path", "");
                 if (path.isEmpty()) return toolError("path is required for configure");
+                // Validate path is under home or temp directory
+                var resolved = Path.of(path).toAbsolutePath().normalize();
+                var home = Path.of(System.getProperty("user.home"));
+                var tmp = Path.of(System.getProperty("java.io.tmpdir"));
+                if (!resolved.startsWith(home) && !resolved.startsWith(tmp)) {
+                    return toolError("Download path must be under home or temp directory");
+                }
                 new File(path).mkdirs();
                 cm.downloadPath = path;
                 cm.cdp.send("Browser.setDownloadBehavior", Map.of(
@@ -2140,7 +2224,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserMouseMove(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var cdp = chromeManager.cdp;
             var sid = chromeManager.pageSession;
@@ -2159,7 +2242,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserDrag(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var cdp = chromeManager.cdp;
             var sid = chromeManager.pageSession;
@@ -2202,7 +2284,6 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> handleBrowserTouch(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var cdp = chromeManager.cdp;
             var sid = chromeManager.pageSession;
@@ -2261,7 +2342,6 @@ public class RemoteWorker {
 
     @SuppressWarnings("unchecked")
     static Map<String, Object> handleBrowserFrames(Map<String, Object> args) {
-        if (chromeManager == null || chromeManager.cdp == null) return toolError("Browser not running");
         try {
             var tree = chromeManager.cdp.send("Page.getFrameTree", Map.of(), chromeManager.pageSession);
             var result = new ArrayList<Map<String, Object>>();
@@ -2283,6 +2363,9 @@ public class RemoteWorker {
     }
 
     static Map<String, Object> dispatchBrowserTool(String tool, Map<String, Object> args) {
+        // Centralized health check + lazy init; returns healthy ChromeManager
+        ChromeManager cm;
+        try { cm = ensureBrowser(); } catch (Exception e) { return toolError(e.getMessage()); }
         return switch (tool) {
             case "browser_status" -> handleBrowserStatus(args);
             case "browser_navigate" -> handleBrowserNavigate(args);
