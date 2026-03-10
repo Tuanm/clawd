@@ -2,11 +2,12 @@
 
 Run a remote worker on any machine to let Claw'd agents execute file tools (`view`, `edit`, `create`, `grep`, `glob`, `bash`) there via a WebSocket reverse tunnel.
 
-Two implementations:
+Three implementations:
 - **TypeScript** — for environments with Bun or Node.js 22.4+
 - **Python** — zero-dependency stdlib-only, for restricted/VDI environments (Python 3.8+)
+- **Java** — zero-dependency single-file, for JVM environments (Java 21+)
 
-Both speak the same protocol and offer identical functionality.
+All three speak the same protocol and offer identical functionality, including 24 browser automation tools when started with `--browser`.
 
 ## Quick Start
 
@@ -29,6 +30,14 @@ CLAWD_WORKER_TOKEN=your-token python3 packages/clawd-worker/python/remote_worker
   --server wss://your-clawd-server.example.com
 ```
 
+### Java
+
+```bash
+javac --source 21 --enable-preview packages/clawd-worker/java/RemoteWorker.java
+CLAWD_WORKER_TOKEN=your-token java --enable-preview -cp packages/clawd-worker/java RemoteWorker \
+  --server wss://your-clawd-server.example.com
+```
+
 ## CLI Options
 
 | Flag | Default | Description |
@@ -38,6 +47,7 @@ CLAWD_WORKER_TOKEN=your-token python3 packages/clawd-worker/python/remote_worker
 | `--project-root <path>` | cwd | Root directory for file operations |
 | `--name <name>` | hostname | Worker display name |
 | `--read-only` | false | Disable `edit`, `create`, `bash` tools |
+| `--browser` | false | Enable remote browser automation via CDP |
 | `--timeout <ms>` | 30000 | Default tool timeout (bash uses 300s) |
 | `--max-concurrent <n>` | 4 | Max parallel tool calls |
 | `--reconnect-max <s>` | 300 | Max reconnect backoff delay |

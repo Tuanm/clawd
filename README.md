@@ -5,12 +5,14 @@ Claw'd is an open-source platform where AI agents operate autonomously through a
 **Key highlights:**
 
 - 🤖 **Multi-agent orchestration** — multiple agents per channel, sub-agent spawning (Spaces), scheduled tasks
-- 🌐 **Browser automation** — Chrome extension with CDP and stealth mode (anti-bot detection bypass)
+- 🌐 **Browser automation** — Chrome extension with CDP and stealth mode; remote browser via workers
 - 🔒 **Sandboxed execution** — bubblewrap (Linux) / sandbox-exec (macOS) for secure tool execution
 - 🧠 **3-tier memory** — session history, knowledge base (FTS5), and long-term agent memories
 - 📦 **Single binary** — compiles to one executable with embedded UI and browser extension
-- 🔌 **Provider-agnostic** — Copilot, OpenAI, Anthropic, Ollama, Minimax
+- 🔌 **Provider-agnostic** — Copilot, OpenAI, Anthropic, Ollama, Minimax, custom providers
 - 🛠️ **MCP support** — both as MCP server (`/mcp` endpoint) and MCP client (external tools)
+- 🧩 **Extensible** — custom tools and skills per project (`{projectRoot}/.clawd/`)
+- 🌍 **Remote workers** — execute tools on remote machines via WebSocket tunnel (TypeScript, Python, Java)
 
 ---
 
@@ -112,48 +114,91 @@ clawd-app [options]
     "CUSTOM_VAR": "value"
   },
 
-  // LLM providers
+  // LLM providers (snake_case fields)
   "providers": {
     "copilot": {
-      "githubToken": "ghu_...",     // Or set GITHUB_TOKEN env
-      "models": {                    // Optional model aliases
-        "fast": "claude-haiku-4.5",
-        "smart": "claude-sonnet-4"
+      "api_key": "github_pat_...",     // Single key
+      // or "api_keys": ["key1", "key2"],  // Key rotation pool
+      "models": {
+        "default": "gpt-4.1",
+        "sonnet": "claude-sonnet-4.6",
+        "opus": "claude-opus-4.6"
       }
     },
-    "anthropic": { "apiKey": "sk-ant-..." },
-    "openai": { "apiKey": "sk-..." },
-    "ollama": { "baseUrl": "http://localhost:11434" },
-    "minimax": { "apiKey": "..." }
+    "anthropic": { "api_key": "sk-ant-..." },
+    "openai": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-..."
+    },
+    "ollama": { "base_url": "https://ollama.com" },
+    "minimax": {
+      "base_url": "https://api.minimax.io/anthropic",
+      "api_key": "sk-..."
+    },
+    // Custom providers (must specify "type")
+    "groq": {
+      "type": "openai",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key": "gsk_...",
+      "models": { "default": "llama-3.3-70b-versatile" }
+    }
+  },
+
+  // MCP (Model Context Protocol) servers — per-channel
+  "mcp_servers": {
+    "my-channel": {
+      "github": {
+        "transport": "http",                     // HTTP transport
+        "url": "https://api.githubcopilot.com/mcp",
+        "headers": { "Authorization": "Bearer ..." }
+      },
+      "filesystem": {
+        "command": "npx",                        // stdio transport
+        "args": ["@modelcontextprotocol/server-filesystem"],
+        "env": { "ROOT_DIR": "/data" },
+        "enabled": true
+      },
+      "slack": {
+        "transport": "http",
+        "url": "https://mcp.slack.com/mcp",
+        "oauth": {                               // OAuth2 auto-login
+          "client_id": "...",
+          "client_secret": "...",
+          "authorize_url": "https://slack.com/oauth/v2_user/authorize",
+          "token_url": "https://slack.com/api/oauth.v2.user.access",
+          "scopes": ["chat:write", "channels:history"]
+        }
+      }
+    }
   },
 
   // Usage quotas
   "quotas": {
-    "daily_image_limit": 50
+    "daily_image_limit": 50       // 0 = unlimited
   },
 
   // Feature flags
   "workspaces": true,                    // Enable workspace isolation
-  "worker": true,                        // Enable remote workers
-  // or: "worker": { "channel": ["token1", "token2"] }
+  // or: ["channel1", "channel2"]       // Specific channels
+
+  "worker": true,                        // Enable remote workers (all channels)
+  // or: { "channel": ["token1", "token2"] }  // Per-channel tokens
 
   // Vision configuration
   "vision": {
-    "provider": "copilot",
-    "model": "gpt-4.1",
     "read_image": { "provider": "copilot", "model": "gpt-4.1" },
-    "generate_image": { "provider": "minimax", "model": "image-01" },
-    "edit_image": { "provider": "minimax", "model": "image-01" }
+    "generate_image": { "provider": "gemini", "model": "gemini-3.1-flash-image" },
+    "edit_image": { "provider": "gemini", "model": "gemini-3.1-flash-image" }
   },
 
   // Browser extension access control
-  "browser": true,                       // All channels
-  // or: ["channel1", "channel2"]        // Specific channels
-  // or: { "channel": ["auth_token"] }   // Token-gated
+  "browser": true,                       // All channels, no auth
+  // or: ["channel1", "channel2"]        // Specific channels, no auth
+  // or: { "channel": ["auth_token"] }   // Per-channel auth tokens
 
   // Agent long-term memory
   "memory": true
-  // or: { "provider": "anthropic", "model": "claude-haiku-4.5", "autoExtract": true }
+  // or: { "provider": "copilot", "model": "gpt-4.1", "autoExtract": true }
 }
 ```
 
@@ -174,20 +219,32 @@ These are injected into the agent sandbox environment. The file is never exposed
 ## System Files & Directories
 
 ```
-~/.clawd/
-├── config.json              # Application configuration
-├── .env                     # Agent environment variables (KEY=VALUE)
+~/.clawd/                        # Global config directory
+├── config.json                  # Application configuration
+├── .env                         # Agent environment variables (KEY=VALUE)
 ├── .ssh/
-│   └── id_ed25519           # SSH key for agent Git operations
-├── .gitconfig               # Git config for agents
-├── bin/                     # Custom binaries added to agent PATH
+│   └── id_ed25519               # SSH key for agent Git operations
+├── .gitconfig                   # Git config for agents
+├── bin/                         # Custom binaries added to agent PATH
+├── skills/                      # Global custom skills
+│   └── {name}/SKILL.md          # Skill folder with SKILL.md
 ├── data/
-│   ├── chat.db              # Chat messages, agents, channels
-│   ├── kanban.db            # Tasks, plans, phases
-│   ├── scheduler.db         # Scheduled jobs and run history
-│   └── attachments/         # Uploaded files and images
-├── memory.db                # Agent session memory, knowledge base, long-term memories
-└── mcp-oauth-tokens.json    # OAuth tokens for external MCP servers
+│   ├── chat.db                  # Chat messages, agents, channels
+│   ├── kanban.db                # Tasks, plans, phases
+│   ├── scheduler.db             # Scheduled jobs and run history
+│   └── attachments/             # Uploaded files and images
+├── memory.db                    # Agent session memory, knowledge base, long-term memories
+└── mcp-oauth-tokens.json        # OAuth tokens for external MCP servers
+
+{projectRoot}/.clawd/            # Project-specific config (not directly accessible by agents)
+├── tools/                       # Custom tools
+│   └── {toolId}/
+│       ├── tool.json            # Tool metadata
+│       └── entrypoint.sh        # Tool script (any supported language)
+└── skills/                      # Project-scoped skills (read-only + execute for agents)
+    └── {name}/
+        ├── SKILL.md             # Skill definition
+        └── *.sh / *.py          # Optional skill scripts
 ```
 
 ### chat.db
@@ -259,12 +316,14 @@ clawd/
 │   ├── server/
 │   │   ├── database.ts           # chat.db schema & migrations
 │   │   ├── websocket.ts          # WebSocket broadcasting
-│   │   └── browser-bridge.ts     # Browser extension WS bridge
+│   │   ├── browser-bridge.ts     # Browser extension WS bridge
+│   │   └── remote-worker.ts      # Remote worker WebSocket bridge
 │   ├── agent/src/
 │   │   ├── agent/agent.ts        # Agent class, reasoning loop, compaction
 │   │   ├── memory/               # Session memory, knowledge base, agent memories
 │   │   ├── session/              # Session manager, checkpoints, summarizer
-│   │   ├── plugins/              # browser-plugin, workspace-plugin, etc.
+│   │   ├── skills/manager.ts     # Custom skill loader (project + global)
+│   │   ├── plugins/              # browser-plugin, workspace-plugin, custom-tool-plugin, etc.
 │   │   ├── mcp/                  # MCP client connections
 │   │   └── utils/sandbox.ts      # Sandbox execution (bwrap/sandbox-exec)
 │   ├── spaces/                   # Sub-agent system
@@ -287,7 +346,11 @@ clawd/
 │   │       ├── content-script.js # DOM extraction
 │   │       ├── shield.js         # Anti-detection patches
 │   │       └── offscreen.js      # Persistent WS connection
-│   └── clawd-worker/            # Remote worker clients (Python/TS/Java)
+│   └── clawd-worker/            # Remote worker clients
+│       ├── README.md             # Remote worker documentation
+│       ├── typescript/           # TypeScript implementation (Bun/Node.js)
+│       ├── python/               # Python implementation (zero-dependency)
+│       └── java/                 # Java implementation (zero-dependency)
 ├── scripts/
 │   ├── embed-ui.ts               # Embed UI assets into binary
 │   └── zip-extension.ts          # Pack extension into binary
@@ -317,7 +380,41 @@ Agents are extended via two interfaces:
 - **ToolPlugin** — adds tools: `getTools()`, `beforeExecute()`, `afterExecute()`
 - **Plugin** — adds lifecycle hooks: `onUserMessage()`, `onToolCall()`, `getSystemContext()`
 
-Built-in plugins: browser, workspace, context-mode, state-persistence, tunnel, spawn-agent, scheduler, memory.
+Built-in plugins: browser, workspace, context-mode, state-persistence, tunnel, spawn-agent, scheduler, memory, custom-tool.
+
+### Custom Skills
+
+Agents can use project-specific and global custom skills. Skills are folders containing a `SKILL.md` file with YAML frontmatter:
+
+```
+{projectRoot}/.clawd/skills/{name}/SKILL.md   # Project-scoped (priority)
+~/.clawd/skills/{name}/SKILL.md                # Global
+```
+
+**SKILL.md format** (compatible with Claude Code):
+
+```markdown
+---
+name: my-skill
+description: Brief description (<200 chars)
+triggers: [keyword1, keyword2]
+allowed-tools: [bash, view]
+---
+# Instructions for the agent
+Detailed steps and guidelines...
+```
+
+Skills can include their own scripts in the folder. Agents can read and execute scripts from project skills in sandbox mode.
+
+### Custom Tools
+
+Agents can create, manage, and use project-specific custom tools via the `custom_tool` tool with 6 modes: `list`, `add`, `edit`, `delete`, `view`, `execute`.
+
+Tools are stored at `{projectRoot}/.clawd/tools/{toolId}/` with:
+- **`tool.json`** — metadata (name, description, parameters, entrypoint, interpreter, timeout)
+- **entrypoint script** — auto-detected interpreter from extension (`.sh`→bash, `.py`→python3, `.ts/.js`→bun)
+
+Tool execution is sandboxed with JSON arguments via stdin, 30s default timeout (max 300s). Once added, the tool is immediately available to the creating agent; other agents in the same project see it in their next session.
 
 ### Memory (3-Tier)
 
@@ -343,9 +440,40 @@ Supports cron, interval, and one-shot jobs:
 
 ---
 
-## Browser Extension
+## Browser Automation
 
-The Chrome MV3 extension provides remote browser automation for agents.
+The Chrome MV3 extension provides remote browser automation for agents. Agents can also use **remote workers** with `--browser` flag for browser automation on remote machines via CDP.
+
+### Browser Tools (26)
+
+| Tool | Description |
+|---|---|
+| `browser_status` | Check extension connection and current tab |
+| `browser_navigate` | Navigate to URL with tab reuse |
+| `browser_screenshot` | Capture JPEG screenshot (CDP or html2canvas) |
+| `browser_click` | Click elements by selector, with file chooser intercept |
+| `browser_type` | Type text into input fields |
+| `browser_extract` | Extract structured DOM content |
+| `browser_tabs` | List, create, close, switch tabs |
+| `browser_execute` | Run JavaScript (supports stored `script_id`) |
+| `browser_scroll` | Scroll page up/down/left/right |
+| `browser_hover` | Hover over elements |
+| `browser_mouse_move` | Move cursor to coordinates |
+| `browser_drag` | Drag elements between positions |
+| `browser_keypress` | Send keyboard shortcuts |
+| `browser_wait_for` | Wait for selector/text to appear |
+| `browser_select` | Select dropdown options |
+| `browser_handle_dialog` | Handle alert/confirm/prompt/beforeunload dialogs |
+| `browser_history` | Navigate back/forward in browser history |
+| `browser_upload_file` | Upload files via file chooser (`browser_upload` on remote workers) |
+| `browser_frames` | List iframes on the page |
+| `browser_touch` | Mobile touch events |
+| `browser_emulate` | Emulate device/user-agent *(extension only)* |
+| `browser_download` | Track and manage file downloads |
+| `browser_auth` | Handle HTTP Basic/Digest auth challenges |
+| `browser_permissions` | Grant/deny/reset browser permissions |
+| `browser_store` | Save and retrieve reusable scripts |
+| `browser_cookies` | Get/set/delete cookies *(extension only)* |
 
 ### Two Operation Modes
 
@@ -387,6 +515,39 @@ All agent tool execution runs in a sandboxed environment:
 | **Read/Write** | `{projectRoot}`, `/tmp`, `~/.clawd` |
 | **Read-only** | `/usr`, `/bin`, `/lib`, `/etc`, `~/.bun`, `~/.cargo`, `~/.deno`, `~/.nvm`, `~/.local` |
 | **Blocked** | `{projectRoot}/.clawd/` (agent config), home directory (except tool dirs) |
+
+---
+
+## Remote Workers
+
+Remote workers allow agents to execute tools (`view`, `edit`, `create`, `grep`, `glob`, `bash`) on remote machines via a WebSocket reverse tunnel. Three zero-dependency implementations:
+
+| Implementation | Runtime | File |
+|---|---|---|
+| **TypeScript** | Bun / Node.js 22.4+ | `packages/clawd-worker/typescript/remote-worker.ts` |
+| **Python** | Python 3.8+ (stdlib only) | `packages/clawd-worker/python/remote_worker.py` |
+| **Java** | Java 21+ | `packages/clawd-worker/java/RemoteWorker.java` |
+
+### Quick Start
+
+```sh
+# TypeScript (Bun)
+CLAWD_WORKER_TOKEN=your-token bun packages/clawd-worker/typescript/remote-worker.ts \
+  --server wss://your-server.example.com
+
+# Python
+CLAWD_WORKER_TOKEN=your-token python3 packages/clawd-worker/python/remote_worker.py \
+  --server wss://your-server.example.com
+
+# Java
+javac --source 21 --enable-preview packages/clawd-worker/java/RemoteWorker.java
+CLAWD_WORKER_TOKEN=your-token java --enable-preview -cp packages/clawd-worker/java RemoteWorker \
+  --server wss://your-server.example.com
+```
+
+Add `--browser` to enable remote browser automation (launches Chrome/Edge via CDP). Remote workers support 24 of the 26 browser tools (`browser_cookies` and `browser_emulate` are extension-only).
+
+See **[packages/clawd-worker/README.md](packages/clawd-worker/README.md)** for full CLI options.
 
 ---
 
