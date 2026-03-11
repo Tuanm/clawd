@@ -55,6 +55,31 @@ RUN ARCH=$(dpkg --print-architecture) && \
       -o /usr/local/bin/cloudflared && \
     chmod +x /usr/local/bin/cloudflared
 
+# Java (11, 17, 21) via Eclipse Adoptium (Temurin) — direct tarball download
+RUN mkdir -p /usr/lib/jvm && \
+    curl -fsSL -L "https://api.adoptium.net/v3/binary/latest/11/ga/linux/x64/jdk/hotspot/normal/eclipse" \
+      | tar xz -C /usr/lib/jvm && \
+    curl -fsSL -L "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse" \
+      | tar xz -C /usr/lib/jvm && \
+    curl -fsSL -L "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse" \
+      | tar xz -C /usr/lib/jvm && \
+    ln -sf /usr/lib/jvm/jdk-21* /usr/lib/jvm/java-21-default
+# Default to Java 21; agents can switch via JAVA_HOME
+ENV JAVA_HOME=/usr/lib/jvm/java-21-default
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Maven
+ARG MAVEN_VERSION=3.9.9
+RUN curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+      | tar xz -C /opt && \
+    ln -s /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
+ENV MAVEN_HOME=/opt/apache-maven-${MAVEN_VERSION}
+
+# Node.js 22 LTS (direct tarball — avoids GPG key setup)
+RUN curl -fsSL "https://nodejs.org/download/release/latest-v22.x/node-v22.22.1-linux-x64.tar.xz" \
+      | tar xJ -C /usr/local --strip-components=1 && \
+    npm install -g npm@latest
+
 # Bun runtime (agents spawn bun for sub-tasks)
 COPY --from=builder /usr/local/bin/bun /usr/local/bin/bun
 RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx
