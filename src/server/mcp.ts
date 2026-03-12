@@ -3,7 +3,8 @@
  *
  * Provides MCP tools over HTTP JSON-RPC for AI agents to interact with the chat system.
  * Tools: chat_poll_and_ack, chat_send_message, chat_send_message_with_files, chat_upload_file,
- *        chat_upload_local_file, chat_download_file, chat_read_file_range, chat_get_message_files, chat_get_history, chat_query_messages
+ *        chat_upload_local_file, chat_download_file, chat_read_file_range, chat_get_message_files,
+ *        chat_get_history, chat_query_messages, convert_to_markdown
  */
 
 import { db, generateTs, getAgent, getMessageSeenBy, type Message, markMessagesSeen, toSlackMessage } from "./database";
@@ -353,16 +354,10 @@ Use this to get all attachments from a message at once.
   },
   {
     name: "chat_download_file",
-    description: `Get file content/metadata by file ID.
+    description: `Download a file attachment and save it locally for the agent to access.
 
 Args:
   - file_id (string): File ID from message attachments
-  - include_content (boolean): Include base64 content (default: false, images return hint instead)
-  - optimize (boolean): For images, return compressed/resized version (default: false)
-  - max_width (number): Max width for optimized images (default: 1280)
-  - max_height (number): Max height for optimized images (default: 720)
-  - quality (number): JPEG quality 1-100 for optimized images (default: 70)
-  - max_bytes (number): Target max file size in bytes (default: 102400 = 100KB)
 
 Returns JSON:
 {
@@ -372,20 +367,17 @@ Returns JSON:
     "name": "...",
     "mimetype": "...",
     "size": number,
-    "content_base64"?: "...",  // Only if include_content=true and file is small enough
-    "original_size"?: number, // Only if optimized
-    "optimized_size"?: number // Only if optimized
-  }
+    "local_path": "..."  // Absolute path where the file was saved
+  },
+  "hint": "..."  // Instructions on how to access the file
 }
 
-Use this to read file attachments from messages.
-For large files (>1MB), use chat_read_file_range instead.
+The file is automatically saved to {projectRoot}/.clawd/files/{filename}.
+File content is NEVER included in the result to avoid context bloat.
+Use the returned local_path to read the file with view, bash, or other tools.
 
-**IMPORTANT FOR IMAGES:**
-- By default (include_content=false), images return a hint instead of base64 content
-- The response will include \`image_hint\` explaining how to read the image
-- For images, use a vision model (e.g., Gemini, GPT-4V) or Claude's native vision instead of base64
-- This avoids context token limits from large image base64 data`,
+**For images:** Use the read_image tool with the file_id instead.
+**For documents (PDF, DOCX, XLSX, PPTX, etc.):** Use convert_to_markdown tool to convert to readable text.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -393,37 +385,11 @@ For large files (>1MB), use chat_read_file_range instead.
           type: "string",
           description: "File ID from message attachments",
         },
-        include_content: {
-          type: "boolean",
-          description: "Include base64 content (false to get image hint instead for vision tools)",
-          default: false,
-        },
-        optimize: {
-          type: "boolean",
-          description: "For images, return compressed/resized version to save context tokens",
-          default: false,
-        },
-        max_width: {
-          type: "number",
-          description: "Max width for optimized images (default: 1280)",
-        },
-        max_height: {
-          type: "number",
-          description: "Max height for optimized images (default: 720)",
-        },
-        quality: {
-          type: "number",
-          description: "JPEG quality 1-100 for optimized images (default: 70)",
-        },
-        max_bytes: {
-          type: "number",
-          description: "Target max file size in bytes for optimized images (default: 102400 = 100KB)",
-        },
       },
       required: ["file_id"],
     },
     annotations: {
-      readOnlyHint: true,
+      readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: true,
@@ -1388,6 +1354,41 @@ Requires: GEMINI_API_KEY in ~/.clawd/config.json, ffmpeg/ffprobe for fallback fr
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
+  {
+    name: "convert_to_markdown",
+    description: `Convert a file (PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML, EPub, etc.) to Markdown text using Microsoft's markitdown.
+
+This tool converts documents to readable Markdown so you can understand their content.
+Supported formats: PDF, Word (.docx), Excel (.xlsx/.xls), PowerPoint (.pptx),
+HTML, CSV, JSON, XML, ZIP, EPub, images (EXIF metadata), and more.
+
+Args:
+  - file_id (string): File ID from the chat system. The file must already be uploaded or downloaded.
+
+Returns JSON:
+{
+  "ok": true,
+  "file": { "id": "...", "name": "...", "mimetype": "...", "size": number },
+  "markdown": "...",      // The converted Markdown text
+  "local_path": "..."     // Path to the saved .md file (if project_root available)
+}
+
+The converted Markdown is returned directly in the result for immediate use.
+If a project root is available, the .md file is also saved to {projectRoot}/.clawd/files/{filename}.md.
+
+Requires: markitdown CLI installed (pip install 'markitdown[all]' or pipx install 'markitdown[all]')`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_id: {
+          type: "string",
+          description: "File ID from the chat system (e.g., F-xxxxx). The file must be a supported document type.",
+        },
+      },
+      required: ["file_id"],
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
 ];
 
 // MCP JSON-RPC handler
@@ -1948,12 +1949,7 @@ async function executeToolCall(
 
       case "chat_download_file": {
         const fileId = args.file_id as string;
-        const includeContent = args.include_content === true;
-        const optimize = args.optimize === true;
-        const maxWidth = (args.max_width as number) || 1280;
-        const maxHeight = (args.max_height as number) || 720;
-        const quality = (args.quality as number) || 70;
-        const maxBytes = (args.max_bytes as number) || 102400; // 100KB default
+        const projectRoot = args._project_root as string | undefined; // Injected by agent plugin
 
         const file = db
           .query<
@@ -1981,21 +1977,49 @@ async function executeToolCall(
             },
           };
 
-          // Images NEVER return base64 — always provide hint to use read_image tool
+          // Images — always provide hint to use read_image tool
           if (file.mimetype.toLowerCase().startsWith("image/")) {
             (response.file as Record<string, unknown>).image_hint =
               `This is an image file (${file.name}, ${file.mimetype}, ${file.size} bytes). ` +
               `To analyze or describe this image, use the read_image tool with file_id="${file.id}". ` +
               `Do NOT attempt to read the image as base64 as it may exceed context limits.`;
           }
-          // Include base64 content if requested and file is small enough (<1MB) — non-images only
-          else if (includeContent && file.size < 1024 * 1024) {
+
+          // Auto-save file to {projectRoot}/.clawd/files/ if project root is available
+          if (projectRoot) {
             try {
-              const fileData = await Bun.file(file.path).arrayBuffer();
-              (response.file as Record<string, unknown>).content_base64 = Buffer.from(fileData).toString("base64");
-            } catch {
-              (response.file as Record<string, unknown>).content_error = "Could not read file content";
+              const { mkdirSync, copyFileSync, existsSync: fsExists } = await import("node:fs");
+              const { join: pathJoin, extname, basename } = await import("node:path");
+
+              const filesDir = pathJoin(projectRoot, ".clawd", "files");
+              mkdirSync(filesDir, { recursive: true });
+
+              // Determine target filename — use original name, deduplicate if needed
+              let targetName = file.name;
+              let targetPath = pathJoin(filesDir, targetName);
+              if (fsExists(targetPath)) {
+                // Add file ID prefix to deduplicate
+                const ext = extname(file.name);
+                const base = basename(file.name, ext);
+                targetName = `${base}-${file.id}${ext}`;
+                targetPath = pathJoin(filesDir, targetName);
+              }
+
+              copyFileSync(file.path, targetPath);
+              (response.file as Record<string, unknown>).local_path = targetPath;
+              response.hint =
+                `File saved to: ${targetPath}\n` +
+                `You can read this file using view("${targetPath}") or bash tools (cat, head, etc.).\n` +
+                `For documents (PDF, DOCX, XLSX, PPTX), use convert_to_markdown(file_id="${file.id}") to get readable text.`;
+            } catch (saveErr: any) {
+              response.hint =
+                `Failed to save file locally: ${saveErr.message}. ` +
+                `Use chat_read_file_range(file_id="${file.id}") to read the file content directly.`;
             }
+          } else {
+            response.hint =
+              `File metadata retrieved. Use chat_read_file_range(file_id="${file.id}") to read the file content. ` +
+              `For documents (PDF, DOCX, XLSX, PPTX), use convert_to_markdown(file_id="${file.id}") to get readable text.`;
           }
 
           resultText = JSON.stringify(response, null, 2);
@@ -2857,6 +2881,102 @@ async function executeToolCall(
             file: { id: file.id, name: file.name, mimetype: file.mimetype },
             ...(result.ok ? { analysis: result.result } : { error: result.error }),
           });
+        }
+        break;
+      }
+
+      case "convert_to_markdown": {
+        const fileId = args.file_id as string;
+        const projectRoot = args._project_root as string | undefined; // Injected by agent plugin
+
+        const file = db
+          .query<
+            { id: string; name: string; mimetype: string; size: number; path: string },
+            [string]
+          >(`SELECT id, name, mimetype, size, path FROM files WHERE id = ?`)
+          .get(fileId);
+
+        if (!file) {
+          resultText = JSON.stringify({ ok: false, error: "File not found" });
+        } else {
+          try {
+            // Find markitdown binary — check common locations
+            const home = homedir();
+            const { existsSync: fsExists } = await import("node:fs");
+            const candidates = [
+              join(home, ".clawd", "venvs", "markitdown", "bin", "markitdown"),
+              join(home, ".local", "bin", "markitdown"),
+              "/usr/local/bin/markitdown",
+              "/usr/bin/markitdown",
+              "markitdown", // fallback to PATH
+            ];
+            let markitdownBin = "markitdown";
+            for (const candidate of candidates) {
+              if (candidate === "markitdown" || fsExists(candidate)) {
+                markitdownBin = candidate;
+                break;
+              }
+            }
+
+            // Run markitdown CLI to convert the file
+            const proc = Bun.spawn([markitdownBin, file.path], {
+              stdout: "pipe",
+              stderr: "pipe",
+              env: {
+                ...process.env,
+                PATH: `${home}/.clawd/venvs/markitdown/bin:${home}/.local/bin:/usr/local/bin:${process.env.PATH}`,
+              },
+            });
+
+            const [stdout, stderr] = await Promise.all([
+              new Response(proc.stdout).text(),
+              new Response(proc.stderr).text(),
+            ]);
+            const exitCode = await proc.exited;
+
+            if (exitCode !== 0) {
+              resultText = JSON.stringify({
+                ok: false,
+                error: `markitdown conversion failed (exit ${exitCode}): ${stderr.trim() || "Unknown error"}`,
+                hint: "Ensure markitdown is installed: pip install 'markitdown[all]' or pipx install 'markitdown[all]'",
+              });
+            } else {
+              const markdown = stdout;
+              const response: Record<string, unknown> = {
+                ok: true,
+                file: { id: file.id, name: file.name, mimetype: file.mimetype, size: file.size },
+                markdown: markdown.length > 50000 ? markdown.slice(0, 50000) + "\n\n[TRUNCATED — content too long]" : markdown,
+              };
+
+              // Save .md file to {projectRoot}/.clawd/files/ if available
+              if (projectRoot) {
+                try {
+                  const { mkdirSync, writeFileSync } = await import("node:fs");
+                  const { join: pathJoin, basename: pathBasename, extname: pathExtname } = await import("node:path");
+
+                  const filesDir = pathJoin(projectRoot, ".clawd", "files");
+                  mkdirSync(filesDir, { recursive: true });
+
+                  const ext = pathExtname(file.name);
+                  const base = pathBasename(file.name, ext);
+                  const mdFilename = `${base}.md`;
+                  const mdPath = pathJoin(filesDir, mdFilename);
+                  writeFileSync(mdPath, markdown, "utf-8");
+                  response.local_path = mdPath;
+                } catch {
+                  // Best-effort save — markdown is still returned in the response
+                }
+              }
+
+              resultText = JSON.stringify(response, null, 2);
+            }
+          } catch (err: any) {
+            resultText = JSON.stringify({
+              ok: false,
+              error: `Failed to run markitdown: ${err.message}`,
+              hint: "Ensure markitdown is installed: pip install 'markitdown[all]' or pipx install 'markitdown[all]'",
+            });
+          }
         }
         break;
       }

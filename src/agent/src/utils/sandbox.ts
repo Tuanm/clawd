@@ -247,6 +247,9 @@ function getBwrapPrefix(options: BwrapOptions): string {
     // Re-mount tools/ read-only so custom tool entrypoints can be executed
     const toolsDir = join(projectClawdDir, "tools");
     if (existsSync(toolsDir)) args.push("--ro-bind", toolsDir, toolsDir);
+    // Re-mount files/ read-only so agents can read downloaded files
+    const filesDir = join(projectClawdDir, "files");
+    if (existsSync(filesDir)) args.push("--ro-bind", filesDir, filesDir);
   }
 
   // Tool paths (read-only) - only mount if they exist
@@ -349,6 +352,10 @@ function getMacOSSandboxProfile(): string {
   (subpath (string-append (param "PROJECT_DIR") "/.clawd/tools")))
 (allow process-exec
   (subpath (string-append (param "PROJECT_DIR") "/.clawd/tools")))
+
+; Allow read for .clawd/files/ (downloaded file attachments)
+(allow file-read*
+  (subpath (string-append (param "PROJECT_DIR") "/.clawd/files")))
 
 ; /tmp (read-write) -- use real path (/private/tmp on macOS)
 (allow file-write*
@@ -573,10 +580,18 @@ function validateWorkingDirectory(cwd: string, projectRoot: string): void {
   const isWithinTmp = resolvedCwd === "/tmp" || resolvedCwd.startsWith("/tmp/");
 
   // Block access to {projectRoot}/.clawd/ — agent config/identity must not be tampered with
+  // Exception: .clawd/skills/, .clawd/tools/, .clawd/files/ are allowed (read-only via sandbox)
   const isClawdDir =
     resolvedCwd === `${resolvedProjectRoot}/.clawd` || resolvedCwd.startsWith(`${resolvedProjectRoot}/.clawd/`);
+  const isAllowedClawdSubdir =
+    resolvedCwd.startsWith(`${resolvedProjectRoot}/.clawd/skills/`) ||
+    resolvedCwd.startsWith(`${resolvedProjectRoot}/.clawd/tools/`) ||
+    resolvedCwd.startsWith(`${resolvedProjectRoot}/.clawd/files/`) ||
+    resolvedCwd === `${resolvedProjectRoot}/.clawd/skills` ||
+    resolvedCwd === `${resolvedProjectRoot}/.clawd/tools` ||
+    resolvedCwd === `${resolvedProjectRoot}/.clawd/files`;
 
-  if (isClawdDir) {
+  if (isClawdDir && !isAllowedClawdSubdir) {
     throw new Error(
       `SANDBOX SECURITY: Working directory "${cwd}" is inside .clawd/ which contains agent configuration. ` +
         `Direct access to .clawd/ is not allowed — use the provided tools instead.`,
