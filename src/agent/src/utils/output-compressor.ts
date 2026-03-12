@@ -16,6 +16,7 @@ const TOOL_CAPS: Record<string, number> = {
   // edit/create: exempt (handled separately)
   chat_get_message_files: 4096,
   chat_download_file: 4096,
+  convert_to_markdown: 20480,
   chat_read_file_range: 10240,
   chat_get_history: 10240,
   chat_get_message: 10240,

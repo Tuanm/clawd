@@ -416,13 +416,17 @@ Example: @msg:1769920081.654768
 When a user attaches a file:
 1. File info appears in the message as files: [{id, name, mimetype, size, url_private}]
 2. Download using: chat_download_file(file_id="Fml3859xab4et")
+   - The file is automatically saved to {projectRoot}/.clawd/files/
+   - The result includes local_path so you can read it with view() or bash tools
 3. Analyze and discuss the file contents as needed
 
 **For images (screenshots, photos):**
-- Use \`optimize=true\` to compress large images and save context space
-- Example: \`chat_download_file(file_id="F123", optimize=true)\`
-- This resizes images to max 1280x720 and compresses to ~100KB JPEG
-- Helps prevent context window overflow from large screenshots
+- Use read_image(file_id="F123") to analyze image content
+- Do NOT attempt to read images as text — use the read_image tool
+
+**For documents (PDF, DOCX, XLSX, PPTX, etc.):**
+- Use convert_to_markdown(file_id="F123") to convert to readable Markdown text
+- The converted text is returned directly and also saved as a .md file
 
 ## Response Guidelines
 
@@ -883,3 +887,4 @@ process.on("SIGTERM", async () => {
 
 // Run
 main().catch(console.error);
+

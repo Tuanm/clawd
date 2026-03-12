@@ -12,6 +12,7 @@
 import type { Plugin, PluginContext } from "../../src/plugins/manager";
 import type { ToolPlugin, ToolRegistration } from "../../src/tools/plugin";
 import { setCurrentAgentId, setCurrentChannel, setChatApiUrl } from "../../src/tools/tools";
+import { getContextProjectRoot } from "../../src/utils/agent-context";
 
 // ============================================================================
 // Types
@@ -723,6 +724,13 @@ LONG-TERM MEMORY:
             user: userId,
           };
         }
+        // Auto-inject project root for tools that need to save files locally
+        if (name === "chat_download_file" || name === "convert_to_markdown") {
+          const projectRoot = getContextProjectRoot();
+          if (projectRoot) {
+            args = { ...args, _project_root: projectRoot };
+          }
+        }
         return args;
       },
 
@@ -966,3 +974,4 @@ chat_send_message_with_files(
     },
   };
 }
+
