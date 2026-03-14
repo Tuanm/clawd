@@ -25,6 +25,19 @@ export interface AppConfig {
   yolo: boolean;
   /** Enable context mode */
   contextMode: boolean;
+  /** Heartbeat monitor configuration for stuck agent recovery */
+  heartbeat?: {
+    /** Enable the heartbeat monitor (default: true) */
+    enabled?: boolean;
+    /** How often to check agent health in ms (default: 30000) */
+    intervalMs?: number;
+    /** Cancel agent processing after this many ms (default: 300000) */
+    processingTimeoutMs?: number;
+    /** Nudge idle space agents after this many ms (default: 60000) */
+    spaceIdleTimeoutMs?: number;
+    /** Max nudge attempts before auto-failing a space (default: 3) */
+    maxNudges?: number;
+  };
 }
 
 /** Parse CLI arguments and build config */
@@ -82,6 +95,7 @@ export function loadConfig(): AppConfig {
     debug: values.debug || file.debug || false,
     yolo: values.yolo || file.yolo || false,
     contextMode: true,
+    heartbeat: file.heartbeat,
   };
 }
 

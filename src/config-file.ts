@@ -94,6 +94,23 @@ export interface ConfigFile {
         /** Enable/disable auto-extraction from responses (default: true when memory enabled) */
         autoExtract?: boolean;
       };
+  /**
+   * Heartbeat monitor for automatic stuck-agent recovery.
+   *
+   * When enabled, periodically checks agent health and:
+   * - Cancels agents stuck processing beyond `processingTimeoutMs`
+   * - Nudges idle space agents with incomplete tasks
+   * - Auto-fails spaces after `maxNudges` recovery attempts
+   *
+   * Example: `"heartbeat": { "enabled": true, "maxNudges": 5 }`
+   */
+  heartbeat?: {
+    enabled?: boolean;
+    intervalMs?: number;
+    processingTimeoutMs?: number;
+    spaceIdleTimeoutMs?: number;
+    maxNudges?: number;
+  };
 }
 
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");

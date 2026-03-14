@@ -9,19 +9,19 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { type ClawdChatConfig, createClawdChatPlugin, createClawdChatToolPlugin } from "./agent/plugins/clawd-chat";
+import { createCopilotAnalyticsPlugin } from "./agent/plugins/copilot-analytics-plugin";
+import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 import { Agent, type AgentConfig } from "./agent/src/agent/agent";
-import { createProvider } from "./agent/src/api/factory";
-import { setProjectHash, runWithAgentContext } from "./agent/src/tools/tools";
-import { initializeSandbox } from "./agent/src/utils/sandbox";
 import { callContext } from "./agent/src/api/call-context";
+import { createProvider } from "./agent/src/api/factory";
+import { createMemoryPlugin, isMemoryEnabled } from "./agent/src/plugins/memory-plugin";
+import { RemoteWorkerBridge } from "./agent/src/plugins/remote-worker-bridge";
+import { runWithAgentContext, setProjectHash } from "./agent/src/tools/tools";
 import { setDebug } from "./agent/src/utils/debug";
+import { initializeSandbox } from "./agent/src/utils/sandbox";
 import { smartTruncate } from "./agent/src/utils/smart-truncation";
 import { loadConfigFile } from "./config-file";
-import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent/plugins/clawd-chat";
-import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
-import { createMemoryPlugin, isMemoryEnabled } from "./agent/src/plugins/memory-plugin";
-import { createCopilotAnalyticsPlugin } from "./agent/plugins/copilot-analytics-plugin";
-import { RemoteWorkerBridge } from "./agent/src/plugins/remote-worker-bridge";
 import type { TrackedSpace } from "./spaces/spawn-plugin";
 
 // Session size limits (in estimated tokens) - tuned for 128k context
@@ -71,6 +71,20 @@ interface PollResult {
   serverLastSeen: string | null;
 }
 
+/** Health snapshot for the centralized heartbeat monitor (pure read, no side effects) */
+export interface AgentHealthSnapshot {
+  processing: boolean;
+  processingDurationMs: number | null;
+  lastActivityAt: number;
+  idleDurationMs: number;
+  nudgeCount: number;
+  sleeping: boolean;
+  running: boolean;
+  isSpaceAgent: boolean;
+  channel: string;
+  agentId: string;
+}
+
 export interface WorkerLoopConfig {
   channel: string;
   agentId: string;
@@ -105,6 +119,11 @@ export class WorkerLoop {
   private stoppedPromise: { resolve: () => void } | null = null;
   private trackedSpaces = new Map<string, TrackedSpace>();
 
+  // Heartbeat health tracking (Phase 1)
+  private lastActivityAt: number = Date.now();
+  private processingStartedAt: number | null = null;
+  private nudgeCount: number = 0;
+
   constructor(config: WorkerLoopConfig) {
     this.config = config;
   }
@@ -125,6 +144,68 @@ export class WorkerLoop {
   setSleeping(sleeping: boolean): void {
     this.sleeping = sleeping;
     this.log(sleeping ? "Agent sleeping" : "Agent awake");
+  }
+
+  /** Expose health snapshot for the centralized heartbeat monitor (pure read, no side effects) */
+  getHealthSnapshot(): AgentHealthSnapshot {
+    const now = Date.now();
+    return {
+      processing: this.isProcessing,
+      processingDurationMs: this.processingStartedAt ? now - this.processingStartedAt : null,
+      lastActivityAt: this.lastActivityAt,
+      idleDurationMs: this.isProcessing ? 0 : now - this.lastActivityAt,
+      nudgeCount: this.nudgeCount,
+      sleeping: this.sleeping,
+      running: this.running,
+      isSpaceAgent: !!this.config.isSpaceAgent,
+      channel: this.config.channel,
+      agentId: this.config.agentId,
+    };
+  }
+
+  /** Cancel hung agent processing (called by WorkerManager heartbeat) */
+  cancelProcessing(): void {
+    try {
+      const agent = this.activeAgent;
+      if (agent) {
+        this.log("Heartbeat: cancelling hung agent");
+        agent.cancel();
+        // Do NOT set isProcessing = false — let executePrompt's finally block handle it
+      }
+    } catch {
+      // Ignore cancel errors (matches existing pattern in stop())
+    }
+  }
+
+  /** Post a nudge message to wake idle space agent (called by WorkerManager heartbeat) */
+  async postNudge(reason: string, maxNudges: number, spaceDescription?: string): Promise<boolean> {
+    if (!this.running || this.sleeping) return false;
+
+    const attempt = this.nudgeCount + 1;
+    const taskContext = spaceDescription ? `\nOriginal task: ${spaceDescription.slice(0, 500)}` : "";
+
+    const nudgeText = `[SYSTEM HEARTBEAT] Your previous task appears incomplete. ${reason}${taskContext}
+
+Please:
+1. Review your progress so far
+2. Continue working on the task
+3. When done, use respond_to_parent() to deliver your result
+4. If stuck, try a different approach
+
+This is automatic recovery attempt ${attempt}/${maxNudges}.`;
+
+    // Post with USYSTEM identity so it passes isRelevant() filter
+    // (agent filters out its own agent_id and bare UBOT messages)
+    const success = await this.sendNudgeMessage(nudgeText);
+    if (success) {
+      this.nudgeCount++;
+    }
+    return success;
+  }
+
+  /** Reset nudge count (called when space completes successfully) */
+  resetNudgeCount(): void {
+    this.nudgeCount = 0;
   }
 
   /**
@@ -230,6 +311,7 @@ export class WorkerLoop {
           }
 
           this.isProcessing = true;
+          this.processingStartedAt = Date.now();
           try {
             let prompt = isContinuation
               ? this.buildContinuationPrompt(result.seenNotProcessed)
@@ -254,6 +336,8 @@ export class WorkerLoop {
             }
           } finally {
             this.isProcessing = false;
+            this.processingStartedAt = null;
+            this.lastActivityAt = Date.now();
             this.stoppedPromise?.resolve();
             this.stoppedPromise = null;
           }
@@ -261,6 +345,8 @@ export class WorkerLoop {
       } catch (error) {
         this.log(`Loop error (continuing): ${error}`);
         this.isProcessing = false;
+        this.processingStartedAt = null;
+        this.lastActivityAt = Date.now();
         this.stoppedPromise?.resolve();
         this.stoppedPromise = null;
       }
@@ -377,7 +463,28 @@ export class WorkerLoop {
     }
   }
 
-  /** Build prompt for new messages */
+  /** Send nudge message with USYSTEM identity (bypasses isRelevant() self-filter) */
+  private async sendNudgeMessage(text: string): Promise<boolean> {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      const res = await fetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: this.config.channel,
+          text,
+          user: "USYSTEM",
+          // No agent_id — ensures isRelevant() returns true for the target agent
+        }),
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
+      const data = (await res.json()) as any;
+      return data.ok;
+    } catch {
+      return false;
+    }
+  }
   private buildPrompt(pending: Message[]): string {
     const { channel, agentId, projectRoot } = this.config;
     const tsFrom = pending[0]?.ts || "none";
@@ -555,9 +662,11 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
               process.stdout.write(token);
             },
             onToolCall: (name, args) => {
+              this.lastActivityAt = Date.now();
               this.log(`Tool: ${name} ${JSON.stringify(args)}`);
             },
             onToolResult: (name, result) => {
+              this.lastActivityAt = Date.now();
               this.log(`Tool result: ${name} ${result.success ? "ok" : "err: " + result.error}`);
             },
           };
