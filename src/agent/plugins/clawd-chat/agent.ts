@@ -669,9 +669,23 @@ LONG-TERM MEMORY:
         // Mark streaming as done
         await setAgentStreaming(false);
 
-        // Mark the message we just processed as seen (updates seen indicator)
+        // Mark the message as processed — but skip on error responses so the
+        // seenNotProcessed continuation mechanism can retry on next poll cycle
         if (currentProcessingTs) {
-          await markProcessed(currentProcessingTs);
+          const responseContent = response.content?.trim() || "";
+          const isErrorResponse =
+            responseContent.includes("[Agent stopped") || responseContent.includes("[stream error");
+          if (!isErrorResponse) {
+            try {
+              await markProcessed(currentProcessingTs);
+              // Update local timestamp only when server confirmed
+              lastProcessedTs = String(Date.now() / 1000);
+            } catch (err) {
+              console.error(`[clawd-chat] markProcessed failed: ${err}`);
+            }
+          } else {
+            console.log("[clawd-chat] Skipping markProcessed — error response detected, enabling continuation retry");
+          }
         }
 
         // Reset ALL state for next user message
@@ -680,9 +694,6 @@ LONG-TERM MEMORY:
         isProcessingMessage = false;
         currentProcessingTs = null;
         injectedTimestamps.clear();
-
-        // Update last processed timestamp
-        lastProcessedTs = String(Date.now() / 1000);
         // Server auto-detects sleeping based on polling activity
       },
 

@@ -1649,6 +1649,7 @@ SUMMARY:`;
     const maxEmptyResponses = 3; // Limit empty retries
     let consecutiveStreamErrors = 0; // Track consecutive stream errors for backoff
     const maxConsecutiveStreamErrors = 5; // Stop after this many consecutive stream errors
+    let toolResultPending = false; // True after tool execution — grants more retries for delivering results to LLM
 
     try {
       // Agentic loop (maxIterations=0 means unlimited)
@@ -2002,12 +2003,11 @@ SUMMARY:`;
           // Track consecutive stream errors and apply backoff
           consecutiveStreamErrors++;
 
-          // Check if we've hit max consecutive errors
-          if (consecutiveStreamErrors >= maxConsecutiveStreamErrors) {
-            console.error(
-              `[Agent] ${maxConsecutiveStreamErrors} consecutive stream errors - stopping to prevent infinite loop`,
-            );
-            finalContent = `[Agent stopped: ${maxConsecutiveStreamErrors} consecutive stream errors. Last error: ${errorMsg}]`;
+          // Check if we've hit max consecutive errors (more retries when tool results are pending)
+          const maxErrors = toolResultPending ? 10 : maxConsecutiveStreamErrors;
+          if (consecutiveStreamErrors >= maxErrors) {
+            console.error(`[Agent] ${maxErrors} consecutive stream errors - stopping to prevent infinite loop`);
+            finalContent = `[Agent stopped: ${maxErrors} consecutive stream errors. Last error: ${errorMsg}]`;
             break;
           }
 
@@ -2017,10 +2017,11 @@ SUMMARY:`;
             console.log(`[Agent] Rate limited, sleeping 30s before retry...`);
             await new Promise((resolve) => setTimeout(resolve, 30000));
           } else if (consecutiveStreamErrors > 1) {
-            // Exponential backoff for non-rate-limit errors: 2s, 4s, 8s, 16s
-            const backoffMs = Math.min(2000 * 2 ** (consecutiveStreamErrors - 2), 16000);
+            // Exponential backoff: 2s, 4s, 8s, 16s (or up to 60s when tool results pending)
+            const maxBackoffMs = toolResultPending ? 60000 : 16000;
+            const backoffMs = Math.min(2000 * 2 ** (consecutiveStreamErrors - 2), maxBackoffMs);
             console.log(
-              `[Agent] Stream error ${consecutiveStreamErrors}/${maxConsecutiveStreamErrors}, backing off ${backoffMs}ms...`,
+              `[Agent] Stream error ${consecutiveStreamErrors}/${maxErrors}${toolResultPending ? " (tool result pending)" : ""}, backing off ${backoffMs}ms...`,
             );
             await new Promise((resolve) => setTimeout(resolve, backoffMs));
           }
@@ -2029,6 +2030,9 @@ SUMMARY:`;
           _needsValidation = true;
           continue;
         }
+
+        // Stream succeeded — clear tool-result-pending flag (canonical reset point)
+        toolResultPending = false;
 
         // If interrupted, save partial content/tool calls and continue with new message
         if (pendingInterrupt) {
@@ -2365,6 +2369,7 @@ SUMMARY:`;
           await checkInterrupt();
           emptyResponseCount = 0; // Reset on successful tool execution
           consecutiveStreamErrors = 0; // Reset on successful tool execution
+          toolResultPending = true; // Tool results need to reach LLM — grant extended retries
 
           continue;
         }
