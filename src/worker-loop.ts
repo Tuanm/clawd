@@ -31,6 +31,7 @@ const COMPACT_KEEP_COUNT = 30;
 
 const POLL_INTERVAL = 200; // 200ms for fast response
 const CONTINUATION_RETRY_DELAY = 2000; // 2s delay before retrying unprocessed
+const MAX_CONTINUATION_RETRIES = 5; // Force-mark after this many retries on the same batch
 const MAX_MESSAGE_LENGTH = 10000;
 const MAX_COMBINED_PROMPT_LENGTH = 40000;
 
@@ -123,6 +124,10 @@ export class WorkerLoop {
   private lastActivityAt: number = Date.now();
   private processingStartedAt: number | null = null;
   private nudgeCount: number = 0;
+
+  // Continuation retry cap (Layer 5 — stream resilience)
+  private continuationRetryCount = 0;
+  private lastContinuationBatchHash: string | null = null;
 
   constructor(config: WorkerLoopConfig) {
     this.config = config;
@@ -233,6 +238,8 @@ export class WorkerLoop {
   start(): void {
     if (this.running) return;
     this.running = true;
+    this.continuationRetryCount = 0;
+    this.lastContinuationBatchHash = null;
     this.abortController = new AbortController();
     this.log("Starting worker loop");
     this.loop();
@@ -296,8 +303,47 @@ export class WorkerLoop {
           const isContinuation = result.unseen.length === 0 && result.seenNotProcessed.length > 0;
 
           if (isContinuation) {
-            this.log(`Waiting ${CONTINUATION_RETRY_DELAY}ms before retrying...`);
+            // Track continuation retries per batch to prevent infinite loops (Layer 5)
+            const batchHash = result.seenNotProcessed.map((m) => m.ts).join(",");
+            if (batchHash === this.lastContinuationBatchHash) {
+              this.continuationRetryCount++;
+            } else {
+              this.continuationRetryCount = 1;
+              this.lastContinuationBatchHash = batchHash;
+            }
+
+            if (this.continuationRetryCount >= MAX_CONTINUATION_RETRIES) {
+              this.log(
+                `Max continuation retries (${MAX_CONTINUATION_RETRIES}) reached for batch, force-marking processed`,
+              );
+              const maxTs = result.seenNotProcessed.reduce((max, m) => (m.ts > max ? m.ts : max), "0");
+              const marked = await this.forceMarkProcessed(maxTs);
+              if (marked) {
+                this.continuationRetryCount = 0;
+                this.lastContinuationBatchHash = null;
+                try {
+                  await this.sendMessage(
+                    `[ERROR] Agent failed to process messages after ${MAX_CONTINUATION_RETRIES} retries. Skipping to avoid infinite loop.`,
+                  );
+                } catch {
+                  /* best-effort notification */
+                }
+              } else {
+                // Backoff before retrying force-mark to avoid tight loop
+                this.log("Force-mark failed, will retry after backoff");
+                await Bun.sleep(CONTINUATION_RETRY_DELAY * 2);
+              }
+              continue;
+            }
+
+            this.log(
+              `Waiting ${CONTINUATION_RETRY_DELAY}ms before retrying (attempt ${this.continuationRetryCount}/${MAX_CONTINUATION_RETRIES})...`,
+            );
             await Bun.sleep(CONTINUATION_RETRY_DELAY);
+          } else if (this.continuationRetryCount > 0) {
+            // Reset continuation counter when we exit continuation mode (new messages arrived or success)
+            this.continuationRetryCount = 0;
+            this.lastContinuationBatchHash = null;
           }
 
           this.isProcessing = true;
@@ -464,9 +510,8 @@ export class WorkerLoop {
         body: JSON.stringify({
           channel: this.config.channel,
           text,
-          user: "USYSTEM",
-          // No agent_id — avoids auto-registering a phantom "System" agent in the DB
-          // while still passing isRelevant() (which only blocks user=UBOT without agent_id)
+          user: "UBOT",
+          agent_id: "System",
         }),
         signal: ctrl.signal,
       }).finally(() => clearTimeout(timer));
@@ -476,6 +521,35 @@ export class WorkerLoop {
       return false;
     }
   }
+
+  /** Force-mark messages as processed via API (Layer 5 — continuation cap) */
+  private async forceMarkProcessed(ts: string): Promise<boolean> {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      const res = await fetch(`${this.config.chatApiUrl}/api/agent.setLastProcessed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agent_id: this.config.agentId,
+          channel: this.config.channel,
+          last_processed_ts: ts,
+        }),
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
+      const data = (await res.json()) as any;
+      if (!data.ok) {
+        this.log(`Force-mark API returned not ok`);
+        return false;
+      }
+      this.log(`Force-marked processed up to ts=${ts}`);
+      return true;
+    } catch (err) {
+      this.log(`Failed to force markProcessed: ${err}`);
+      return false;
+    }
+  }
+
   private buildPrompt(pending: Message[]): string {
     const { channel, agentId, projectRoot } = this.config;
     const tsFrom = pending[0]?.ts || "none";
@@ -601,7 +675,14 @@ Please:
 2. If you already responded to them, just mark them as processed
 3. If not completed, continue and COMPLETE the task
 4. ALWAYS use chat_send_message for ANY response — humans cannot see text output
-5. MUST call: chat_mark_processed(channel="${channel}", timestamp="${targetTs}", agent_id="${agentId}")
+5. MUST call: chat_mark_processed(channel="${channel}", timestamp="${targetTs}", agent_id="${agentId}")${
+      this.config.isSpaceAgent
+        ? `
+6. You are a sub-agent. When your task is complete, you MUST call \`respond_to_parent\` with your final result.
+Do NOT just send a chat message — you MUST use the \`respond_to_parent\` tool to deliver your result.
+If you skip this step, the main agent will never receive your work.`
+        : ""
+    }
 
 DO NOT skip marking as processed - this is why you're being prompted again.`;
   }

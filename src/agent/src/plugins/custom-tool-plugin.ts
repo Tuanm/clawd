@@ -432,6 +432,7 @@ export class CustomToolPlugin implements ToolPlugin {
           },
           required: {
             type: "array",
+            items: { type: "string" },
             description: "List of required parameter names",
           },
           entrypoint_name: {

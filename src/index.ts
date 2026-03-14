@@ -1388,6 +1388,27 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       return json({ ok: true, agent_id: agentId, channel, last_processed_ts: result?.last_processed_ts || null });
     }
 
+    // Set last_processed_ts — used by continuation cap to force-mark messages as processed
+    if (path === "/api/agent.setLastProcessed" && req.method === "POST") {
+      const body = await parseBody(req);
+      const agentId = body.agent_id || "default";
+      const channel = body.channel || "general";
+      const lastProcessedTs = body.last_processed_ts ?? null;
+      if (!lastProcessedTs) return json({ ok: false, error: "last_processed_ts required" }, 400);
+
+      getOrRegisterAgent(agentId, channel);
+      db.run(
+        `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+         VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+         ON CONFLICT(agent_id, channel) DO UPDATE SET
+           last_processed_ts = excluded.last_processed_ts,
+           updated_at = strftime('%s', 'now')`,
+        [agentId, channel, lastProcessedTs, lastProcessedTs],
+      );
+      broadcastUpdate(channel, { type: "agent_processed", agent_id: agentId, last_processed_ts: lastProcessedTs });
+      return json({ ok: true, agent_id: agentId, channel, last_processed_ts: lastProcessedTs });
+    }
+
     // Agent status
     if (path === "/api/agent.setStatus" && req.method === "POST") {
       const body = await parseBody(req);
