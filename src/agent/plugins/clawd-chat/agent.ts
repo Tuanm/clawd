@@ -11,7 +11,7 @@
 
 import type { Plugin, PluginContext } from "../../src/plugins/manager";
 import type { ToolPlugin, ToolRegistration } from "../../src/tools/plugin";
-import { setCurrentAgentId, setCurrentChannel, setChatApiUrl } from "../../src/tools/tools";
+import { setChatApiUrl, setCurrentAgentId, setCurrentChannel } from "../../src/tools/tools";
 import { getContextProjectRoot } from "../../src/utils/agent-context";
 
 // ============================================================================
@@ -974,4 +974,3 @@ chat_send_message_with_files(
     },
   };
 }
-

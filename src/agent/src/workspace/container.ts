@@ -13,14 +13,14 @@
  */
 
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { createConnection } from "node:net";
+import { promisify } from "node:util";
 import {
-  ensureGatewayRunning,
   connectWorkspaceToGateway,
   disconnectWorkspaceFromGateway,
+  ensureGatewayRunning,
   reconcileGatewayRoutes,
 } from "./gateway.js";
 

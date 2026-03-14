@@ -7,16 +7,16 @@
  * Optimized with caching to avoid repeated file reads.
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import type {
-  ProviderConfig,
-  CopilotProviderConfig,
-  OllamaProviderConfig,
   Config,
-  ProviderType,
+  CopilotProviderConfig,
   MCPServerConfig,
+  OllamaProviderConfig,
+  ProviderConfig,
+  ProviderType,
 } from "./providers";
 import { BUILTIN_PROVIDERS } from "./providers";
 export { BUILTIN_PROVIDERS };

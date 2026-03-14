@@ -5,8 +5,8 @@
  * Hooks are user-defined extensions that run before/after tool calls.
  */
 
-import type { ToolResult } from "../tools/tools";
 import { homedir } from "node:os";
+import type { ToolResult } from "../tools/tools";
 
 // ============================================================================
 // Configuration Types (from hooks.json)

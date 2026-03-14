@@ -9,8 +9,8 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
 import { homedir } from "node:os";
+import { dirname, extname, join } from "node:path";
 import { parseArgs } from "node:util";
 
 // Check for --help BEFORE importing other modules (to avoid database initialization)
@@ -83,32 +83,32 @@ Examples:
   process.exit(0);
 }
 
+import { keyPool } from "./agent/src/api/key-pool";
+import {
+  clearConfigCache as clearProviderConfigCache,
+  ensureKeyPoolInitialized,
+} from "./agent/src/api/provider-config";
+import { setDebug } from "./agent/src/utils/debug";
+import {
+  type CallsQueryOptions,
+  queryCalls,
+  queryCallsCount,
+  queryKeyStats,
+  queryModelStats,
+  queryRecentStats,
+  querySummary,
+} from "./analytics";
 // Now import modules (database will initialize)
 import { registerAgentRoutes } from "./api/agents";
 import { registerArticleRoutes } from "./api/articles";
 import { registerMcpServerRoutes } from "./api/mcp-servers";
-import { exchangeOAuthCode, saveOAuthToken, validateOAuthState, escapeHtml } from "./mcp-oauth";
 import { loadConfig, validateConfig } from "./config";
-import { loadConfigFile, reloadConfigFile, isWorkspacesEnabled, isBrowserEnabled } from "./config-file";
+import { isBrowserEnabled, isWorkspacesEnabled, loadConfigFile, reloadConfigFile } from "./config-file";
+import { extensionZipSize, getExtensionZip } from "./embedded-extension";
+import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbeddedUI } from "./embedded-ui";
+import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./mcp-oauth";
 import { upgradeBrowserWs } from "./server/browser-bridge";
-import { getEmbeddedAsset, hasEmbeddedUI, embeddedUIFileCount, embeddedUITotalSize } from "./embedded-ui";
-import { getExtensionZip, extensionZipSize } from "./embedded-extension";
 import { WorkerManager } from "./worker-manager";
-import { setDebug } from "./agent/src/utils/debug";
-import { keyPool } from "./agent/src/api/key-pool";
-import {
-  ensureKeyPoolInitialized,
-  clearConfigCache as clearProviderConfigCache,
-} from "./agent/src/api/provider-config";
-import {
-  queryCalls,
-  queryCallsCount,
-  querySummary,
-  queryKeyStats,
-  queryModelStats,
-  queryRecentStats,
-  type CallsQueryOptions,
-} from "./analytics";
 
 // Load configuration from CLI args + config file
 const config = loadConfig();
@@ -123,6 +123,13 @@ if (!validateConfig(config)) {
   process.exit(1);
 }
 
+import REMOTE_WORKER_JAVA from "../packages/clawd-worker/java/RemoteWorker.java" with { type: "text" };
+import REMOTE_WORKER_PY from "../packages/clawd-worker/python/remote_worker.py" with { type: "text" };
+import REMOTE_WORKER_TS from "../packages/clawd-worker/typescript/remote-worker.ts" with { type: "text" };
+import type { ToolResult } from "./agent/src/tools/tools";
+import { tools as builtinTools } from "./agent/src/tools/tools";
+import { SchedulerManager } from "./scheduler/manager";
+import { initRunner } from "./scheduler/runner";
 // ============================================================================
 // Import clawd-chat server modules
 // ============================================================================
@@ -141,6 +148,8 @@ import {
   toSlackMessage,
 } from "./server/database";
 import { handleMcpRequest, setMcpScheduler } from "./server/mcp";
+// Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
+import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import { createChannel, getChannelInfo, listChannels } from "./server/routes/channels";
 import {
   attachFilesToMessage,
@@ -197,15 +206,6 @@ import {
   handleWebSocketMessage,
   handleWebSocketOpen,
 } from "./server/websocket";
-// Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
-import { upgradeRemoteWorkerWs } from "./server/remote-worker";
-import REMOTE_WORKER_PY from "../packages/clawd-worker/python/remote_worker.py" with { type: "text" };
-import REMOTE_WORKER_TS from "../packages/clawd-worker/typescript/remote-worker.ts" with { type: "text" };
-import REMOTE_WORKER_JAVA from "../packages/clawd-worker/java/RemoteWorker.java" with { type: "text" };
-import { SchedulerManager } from "./scheduler/manager";
-import { initRunner } from "./scheduler/runner";
-import { tools as builtinTools } from "./agent/src/tools/tools";
-import type { ToolResult } from "./agent/src/tools/tools";
 
 // ============================================================================
 // Initialize
@@ -218,6 +218,7 @@ const PORT = config.port;
 
 // Lazy-loaded read-only connection to memory.db (for agent thoughts API)
 import { Database } from "bun:sqlite";
+
 let _memoryDb: InstanceType<typeof Database> | null = null;
 function getMemoryDb(): InstanceType<typeof Database> {
   if (!_memoryDb) {
@@ -1942,11 +1943,10 @@ setTimeout(async () => {
               ? spaceManager.timeoutSpace(space.id)
               : spaceManager.failSpace(space.id, String(controller.signal.reason));
             if (won) {
-              const emoji = isTimeout ? "⏰" : "❌";
               postToChannel(
                 config.chatApiUrl,
                 space.channel,
-                `${emoji} Space ${isTimeout ? "timed_out" : "failed"}: ${space.title}`,
+                `Space ${isTimeout ? "timed_out" : "failed"}: ${space.title}`,
                 agentConfig.agentId,
               ).catch(() => {});
             }
@@ -1985,7 +1985,7 @@ setTimeout(async () => {
                   postToChannel(
                     config.chatApiUrl,
                     space.channel,
-                    `❌ Space failed: ${space.title}`,
+                    `Space failed: ${space.title}`,
                     agentConfig.agentId,
                   ).catch(() => {});
                 spaceWorkerManager.stopSpaceWorker(space.id);

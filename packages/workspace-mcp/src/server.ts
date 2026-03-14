@@ -1,15 +1,13 @@
-import express, { type Request, type Response, type NextFunction } from "express";
-import { registerHealthEndpoint } from "./health";
+import express, { type NextFunction, type Request, type Response } from "express";
 import { getAuthToken } from "./config";
-import { visionClickCoords } from "./tools/vision";
-
+import { registerHealthEndpoint } from "./health";
 // Tool imports
-import { launchBrowserTool, launchAppTool, snapshotTool, waitTool, handleDialogTool } from "./tools/browser";
-import { clickTool, typeTextTool, pressKeyTool, selectOptionTool, dragTool } from "./tools/interact";
-import { screenshotTool, getContextTool } from "./tools/observe";
-import { observeTool } from "./tools/vision";
-import { clipboardTool, totpCodeTool, filedialogTool, windowManageTool } from "./tools/utils";
+import { handleDialogTool, launchAppTool, launchBrowserTool, snapshotTool, waitTool } from "./tools/browser";
 import { pauseForHuman, signalResume } from "./tools/handoff";
+import { clickTool, dragTool, pressKeyTool, selectOptionTool, typeTextTool } from "./tools/interact";
+import { getContextTool, screenshotTool } from "./tools/observe";
+import { clipboardTool, filedialogTool, totpCodeTool, windowManageTool } from "./tools/utils";
+import { observeTool, visionClickCoords } from "./tools/vision";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));

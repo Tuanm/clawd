@@ -3,9 +3,9 @@
  */
 
 import Database from "bun:sqlite";
-import { join } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import type { Message } from "../api/client";
 import { smartTruncate } from "../utils/smart-truncation";
 

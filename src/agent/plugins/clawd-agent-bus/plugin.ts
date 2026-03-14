@@ -22,14 +22,13 @@
  * - checkInterrupt() integration for message delivery
  */
 
-import type { Plugin, PluginContext } from "../../src/plugins/manager";
-import type { ToolPlugin, ToolRegistration, ToolContext } from "../../src/tools/plugin";
-import type { AgentBusConfig, BusMessage, AgentRegistry, AgentRegistryEntry, TopicData, TopicMessage } from "./types";
-
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync, watch } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, watch, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { Plugin, PluginContext } from "../../src/plugins/manager";
+import type { ToolContext, ToolPlugin, ToolRegistration } from "../../src/tools/plugin";
+import type { AgentBusConfig, AgentRegistry, AgentRegistryEntry, BusMessage, TopicData, TopicMessage } from "./types";
 
 // ============================================================================
 // Helpers

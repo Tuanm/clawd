@@ -2,7 +2,7 @@
  * Articles API - CRUD operations for articles
  */
 
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { randomUUID } from "crypto";
 
 interface Article {

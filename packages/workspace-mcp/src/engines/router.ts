@@ -1,5 +1,5 @@
-import { clickByRef, getBrowserContext, getCurrentControlMode } from "./playwright";
 import { execFileSync } from "node:child_process";
+import { clickByRef, getBrowserContext, getCurrentControlMode } from "./playwright";
 
 // Mutex: only one engine operates at a time
 let engineBusy = false;

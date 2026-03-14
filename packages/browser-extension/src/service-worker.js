@@ -2217,7 +2217,7 @@ async function stealthType({ text, selector, tabId, clearFirst, pressEnter }) {
         return null;
       }
 
-      let el = sel ? deepQuery(sel) : document.activeElement;
+      const el = sel ? deepQuery(sel) : document.activeElement;
       if (sel && !el) return { error: `Element not found: ${sel}` };
       if (!el) return { error: "No focused element" };
 

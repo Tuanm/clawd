@@ -3,17 +3,17 @@
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ToolDefinition, ToolCall } from "../api/client";
+import type { ToolCall, ToolDefinition } from "../api/client";
 import { getHookManager } from "../hooks/manager";
 import {
-  getSandboxProjectRoot,
-  setSandboxProjectRoot,
   enableSandbox,
+  getSandboxProjectRoot,
   isSandboxEnabled,
   isSandboxReady,
   runInSandbox,
+  setSandboxProjectRoot,
   wrapCommandForSandbox,
 } from "../utils/sandbox";
 
@@ -88,11 +88,10 @@ function normalizeToolArgs(args: Record<string, any>): Record<string, any> {
 // Path Security - Sandbox Restrictions
 // ============================================================================
 
-// Re-export sandbox functions used by other modules (index.ts, worker-loop.ts, etc.)
-export { setSandboxProjectRoot, getSandboxProjectRoot, enableSandbox } from "../utils/sandbox";
-
 // Re-export agent context functions for worker-loop.ts
-export { runWithAgentContext, getAgentContext, getContextAgentId, getContextChannel } from "../utils/agent-context";
+export { getAgentContext, getContextAgentId, getContextChannel, runWithAgentContext } from "../utils/agent-context";
+// Re-export sandbox functions used by other modules (index.ts, worker-loop.ts, etc.)
+export { enableSandbox, getSandboxProjectRoot, setSandboxProjectRoot } from "../utils/sandbox";
 
 // Import getAgentContext for internal use
 import { getAgentContext, getContextAgentId, getContextChannel } from "../utils/agent-context";
@@ -2913,7 +2912,7 @@ registerTool(
     const socket = getTmuxSocket();
 
     // Convert special key notation
-    let parsedKeys = keys
+    const parsedKeys = keys
       .replace(/C-m/gi, "Enter")
       .replace(/C-i/gi, "Tab")
       .replace(/C-\[/gi, "Escape")

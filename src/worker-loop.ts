@@ -182,20 +182,10 @@ export class WorkerLoop {
     if (!this.running || this.sleeping) return false;
 
     const attempt = this.nudgeCount + 1;
-    const taskContext = spaceDescription ? `\nOriginal task: ${spaceDescription.slice(0, 500)}` : "";
+    const taskContext = spaceDescription ? ` Task: ${spaceDescription.slice(0, 300)}` : "";
 
-    const nudgeText = `[SYSTEM HEARTBEAT] Your previous task appears incomplete. ${reason}${taskContext}
+    const nudgeText = `[HEARTBEAT ${attempt}/${maxNudges}] ${reason}.${taskContext} Continue working, then call respond_to_parent() when done. If stuck, try a different approach.`;
 
-Please:
-1. Review your progress so far
-2. Continue working on the task
-3. When done, use respond_to_parent() to deliver your result
-4. If stuck, try a different approach
-
-This is automatic recovery attempt ${attempt}/${maxNudges}.`;
-
-    // Post with USYSTEM identity so it passes isRelevant() filter
-    // (agent filters out its own agent_id and bare UBOT messages)
     const success = await this.sendNudgeMessage(nudgeText);
     if (success) {
       this.nudgeCount++;
@@ -463,7 +453,7 @@ This is automatic recovery attempt ${attempt}/${maxNudges}.`;
     }
   }
 
-  /** Send nudge message with USYSTEM identity (bypasses isRelevant() self-filter) */
+  /** Send nudge message as "System" agent (bypasses isRelevant() self-filter) */
   private async sendNudgeMessage(text: string): Promise<boolean> {
     try {
       const ctrl = new AbortController();
@@ -475,7 +465,8 @@ This is automatic recovery attempt ${attempt}/${maxNudges}.`;
           channel: this.config.channel,
           text,
           user: "USYSTEM",
-          // No agent_id — ensures isRelevant() returns true for the target agent
+          // No agent_id — avoids auto-registering a phantom "System" agent in the DB
+          // while still passing isRelevant() (which only blocks user=UBOT without agent_id)
         }),
         signal: ctrl.signal,
       }).finally(() => clearTimeout(timer));
@@ -979,7 +970,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
 
 /** Format a tool_result preview into readable text for the agent prompt */
 function formatToolResult(tr: NonNullable<Message["tool_result"]>): string {
-  const status = tr.status === "succeeded" ? "✅ succeeded" : tr.status === "failed" ? "❌ failed" : "⏳ running";
+  const status = tr.status === "succeeded" ? "succeeded" : tr.status === "failed" ? "failed" : "running";
   const lines = [`[Scheduled Tool Call: ${tr.tool_name}] (${status})`, `Description: ${tr.description}`];
   if (tr.args && Object.keys(tr.args).length > 0) {
     lines.push(`Arguments: ${JSON.stringify(tr.args)}`);

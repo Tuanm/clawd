@@ -1,17 +1,17 @@
+import { type Message, updateSubspaceStatus } from "../server/database";
+import { broadcastUpdate } from "../server/websocket";
 import {
+  atomicLockSpace,
+  type CreateSpaceParams,
   createSpaceRecord,
+  deleteSpaceAgents,
+  getActiveSpaces,
   getSpace,
   getSpaceByChannel,
   listSpaces,
-  atomicLockSpace,
-  updateCardTs,
-  getActiveSpaces,
-  deleteSpaceAgents,
   type Space,
-  type CreateSpaceParams,
+  updateCardTs,
 } from "./db";
-import { updateSubspaceStatus, type Message } from "../server/database";
-import { broadcastUpdate } from "../server/websocket";
 
 export class SpaceManager {
   createSpace(params: CreateSpaceParams): Space {

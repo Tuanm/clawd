@@ -4,19 +4,19 @@
  * Creates LLM provider instances based on configuration.
  */
 
-import type { LLMProvider, ProviderType, CompletionRequest, CompletionResponse, StreamEvent } from "./providers";
 import { isDebugEnabled } from "../utils/debug";
+import { CopilotClient } from "./client";
 import {
-  getSelectedProvider,
-  getProviderConfig,
-  getModelForProvider,
   getApiKeyForProvider,
   getBaseUrlForProvider,
   getCopilotToken,
+  getModelForProvider,
+  getProviderConfig,
+  getSelectedProvider,
   mapModelName,
   resolveProviderBaseType,
 } from "./provider-config";
-import { CopilotClient } from "./client";
+import type { CompletionRequest, CompletionResponse, LLMProvider, ProviderType, StreamEvent } from "./providers";
 
 // Stream idle timeout (abort if no data for this duration)
 const STREAM_IDLE_TIMEOUT_MS = 60_000;

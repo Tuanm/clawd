@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, unlinkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { getCurrentControlMode, isExtensionPopupDetected, getCurrentUrl } from "../engines/playwright";
+import { existsSync, unlinkSync } from "node:fs";
+import { getCurrentControlMode, getCurrentUrl, isExtensionPopupDetected } from "../engines/playwright";
 
 export async function screenshotTool(): Promise<{ path: string; width: number; height: number }> {
   const path = `/tmp/ws-screenshot-${randomBytes(8).toString("hex")}.png`;

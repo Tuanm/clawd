@@ -6,7 +6,7 @@
  */
 
 import type { ToolDefinition } from "../api/client";
-import type { ToolResult, ToolHandler } from "./tools";
+import type { ToolHandler, ToolResult } from "./tools";
 
 // ============================================================================
 // Tool Plugin Interface

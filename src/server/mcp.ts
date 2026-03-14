@@ -7,16 +7,25 @@
  *        chat_get_history, chat_query_messages, convert_to_markdown
  */
 
-import { db, generateTs, getAgent, getMessageSeenBy, type Message, markMessagesSeen, toSlackMessage } from "./database";
-import { ATTACHMENTS_DIR, generateId } from "./database";
+import { statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { SchedulerManager } from "../scheduler/manager";
+import {
+  ATTACHMENTS_DIR,
+  db,
+  generateId,
+  generateTs,
+  getAgent,
+  getMessageSeenBy,
+  type Message,
+  markMessagesSeen,
+  toSlackMessage,
+} from "./database";
+import { analyzeImage, analyzeVideo, editImage, generateImage, getImageQuotaStatus } from "./multimodal";
 import { getOptimizedFile } from "./routes/files";
 import { getConversationHistory, getPendingMessages, postMessage } from "./routes/messages";
 import { broadcastMessageSeen, broadcastUpdate } from "./websocket";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { statSync } from "node:fs";
-import type { SchedulerManager } from "../scheduler/manager";
-import { analyzeImage, generateImage, editImage, analyzeVideo, getImageQuotaStatus } from "./multimodal";
 
 // Scheduler reference (set by index.ts after creation)
 let _scheduler: SchedulerManager | null = null;
@@ -2890,10 +2899,9 @@ async function executeToolCall(
         const projectRoot = args._project_root as string | undefined; // Injected by agent plugin
 
         const file = db
-          .query<
-            { id: string; name: string; mimetype: string; size: number; path: string },
-            [string]
-          >(`SELECT id, name, mimetype, size, path FROM files WHERE id = ?`)
+          .query<{ id: string; name: string; mimetype: string; size: number; path: string }, [string]>(
+            `SELECT id, name, mimetype, size, path FROM files WHERE id = ?`,
+          )
           .get(fileId);
 
         if (!file) {
@@ -2945,7 +2953,8 @@ async function executeToolCall(
               const response: Record<string, unknown> = {
                 ok: true,
                 file: { id: file.id, name: file.name, mimetype: file.mimetype, size: file.size },
-                markdown: markdown.length > 50000 ? markdown.slice(0, 50000) + "\n\n[TRUNCATED — content too long]" : markdown,
+                markdown:
+                  markdown.length > 50000 ? markdown.slice(0, 50000) + "\n\n[TRUNCATED — content too long]" : markdown,
               };
 
               // Save .md file to {projectRoot}/.clawd/files/ if available

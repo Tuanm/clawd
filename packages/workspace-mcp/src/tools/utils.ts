@@ -1,5 +1,5 @@
-import { spawn, execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const DISPLAY_ENV = { ...process.env, DISPLAY: process.env.DISPLAY || ":99" };
 

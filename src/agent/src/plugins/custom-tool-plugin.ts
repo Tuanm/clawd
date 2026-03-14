@@ -10,12 +10,12 @@
  * Args are passed as JSON via stdin; stdout is the tool output.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync } from "fs";
-import { join, extname } from "path";
-import type { ToolPlugin, ToolRegistration, ToolParameter, ToolContext } from "../tools/plugin";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { extname, join } from "path";
+import type { ToolContext, ToolParameter, ToolPlugin, ToolRegistration } from "../tools/plugin";
 import type { ToolResult } from "../tools/tools";
-import { runInSandbox } from "../utils/sandbox";
 import { getContextProjectRoot } from "../utils/agent-context";
+import { runInSandbox } from "../utils/sandbox";
 
 // ============================================================================
 // Types

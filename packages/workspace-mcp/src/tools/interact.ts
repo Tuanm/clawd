@@ -1,7 +1,13 @@
-import { typeText, pressKey, selectOption } from "../engines/playwright";
-import { routedClick, xdotoolType, xdotoolKey, type ClickOptions } from "../engines/router";
-import { getCurrentControlMode, isExtensionPopupDetected, clearExtensionPopupFlag } from "../engines/playwright";
-import { execSync, execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
+import {
+  clearExtensionPopupFlag,
+  getCurrentControlMode,
+  isExtensionPopupDetected,
+  pressKey,
+  selectOption,
+  typeText,
+} from "../engines/playwright";
+import { type ClickOptions, routedClick, xdotoolKey, xdotoolType } from "../engines/router";
 
 interface ContextChangedResult {
   context_changed: boolean;

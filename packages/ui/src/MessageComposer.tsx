@@ -1,10 +1,10 @@
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 
 // Copy icon for context menu
 function CopyIcon() {

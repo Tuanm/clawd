@@ -9,8 +9,8 @@
  * in the same chat.db file alongside messages, agents, etc.
  */
 
-import { db } from "./server/database";
 import { getModelMultiplier } from "./agent/src/api/key-pool";
+import { db } from "./server/database";
 
 // ============================================================================
 // Types

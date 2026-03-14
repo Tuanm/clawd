@@ -5,16 +5,16 @@
  * Follows the same pattern as agents.ts.
  */
 
-import type { WorkerManager } from "../worker-manager";
+import { COPILOT_LOGO, isCopilotEnabled, setCopilotEnabled } from "../agent/plugins/copilot-analytics-plugin";
 import {
   getChannelMCPServers,
-  saveChannelMCPServer,
   removeChannelMCPServer as removeFromConfig,
+  saveChannelMCPServer,
   setChannelMCPServerEnabled,
 } from "../agent/src/api/provider-config";
 import type { MCPServerConfig } from "../agent/src/api/providers";
-import { loadOAuthToken, removeOAuthToken, startOAuthFlow, discoverOAuthMetadata } from "../mcp-oauth";
-import { COPILOT_LOGO, isCopilotEnabled, setCopilotEnabled } from "../agent/plugins/copilot-analytics-plugin";
+import { discoverOAuthMetadata, loadOAuthToken, removeOAuthToken, startOAuthFlow } from "../mcp-oauth";
+import type { WorkerManager } from "../worker-manager";
 
 function json(data: any, status = 200): Response {
   return new Response(JSON.stringify(data), {

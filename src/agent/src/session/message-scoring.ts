@@ -217,7 +217,7 @@ function compressToolOutput(content: string): string {
 
   // Keep file path lines
   for (const line of lines) {
-    if (/^[\/\.].*\.(ts|js|py|go|rs|json|yaml|yml|md|txt)/.test(line.trim()) && !kept.includes(line)) {
+    if (/^[/.].*\.(ts|js|py|go|rs|json|yaml|yml|md|txt)/.test(line.trim()) && !kept.includes(line)) {
       kept.push(line);
       if (kept.length > 20) break;
     }

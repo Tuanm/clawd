@@ -9,17 +9,17 @@
 import { spawn } from "node:child_process";
 import {
   existsSync,
-  readFileSync,
-  realpathSync,
-  statSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { tmpdir, homedir } from "node:os";
 import { getEnvVar, loadConfigFile } from "../config-file";
 
 // ============================================================================

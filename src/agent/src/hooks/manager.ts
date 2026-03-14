@@ -8,9 +8,9 @@
  * - Silent failure - hooks never block or crash agent
  */
 
-import { type HookInstance, type HookEvent, HOOK_TIMEOUT_MS } from "./types";
-import { loadHooks, unloadHooks } from "./loader";
 import type { ToolResult } from "../tools/tools";
+import { loadHooks, unloadHooks } from "./loader";
+import { HOOK_TIMEOUT_MS, type HookEvent, type HookInstance } from "./types";
 
 // ============================================================================
 // Debug Logging

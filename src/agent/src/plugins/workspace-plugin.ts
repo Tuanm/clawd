@@ -11,15 +11,15 @@
  * being passed to the container lifecycle manager.
  */
 
+import { execFile } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { promisify } from "node:util";
+import type { MCPManager } from "../mcp/client.js";
 import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
 import type { ToolResult } from "../tools/tools.js";
-import type { MCPManager } from "../mcp/client.js";
-import { spawnWorkspace, destroyWorkspace, listActiveWorkspaces, getWorkspace } from "../workspace/container.js";
 import { getAgentContext } from "../utils/agent-context.js";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { realpathSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { destroyWorkspace, getWorkspace, listActiveWorkspaces, spawnWorkspace } from "../workspace/container.js";
 
 const execFileAsync = promisify(execFile);
 

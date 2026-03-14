@@ -6,18 +6,18 @@
  * - ToolPlugin: memo_save, memo_recall, memo_delete, identity_update
  */
 
-import type { Plugin, PluginHooks, PluginContext } from "./manager";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  type AgentMemory,
+  AgentMemoryStore,
+  extractKeywords,
+  getAgentMemoryStore,
+  type MemoryCategory,
+} from "../memory/agent-memory";
 import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
 import type { ToolResult } from "../tools/tools";
-import {
-  AgentMemoryStore,
-  getAgentMemoryStore,
-  extractKeywords,
-  type MemoryCategory,
-  type AgentMemory,
-} from "../memory/agent-memory";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import type { Plugin, PluginContext, PluginHooks } from "./manager";
 
 // ── Config ─────────────────────────────────────────────────────────
 

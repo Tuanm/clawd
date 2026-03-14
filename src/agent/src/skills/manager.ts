@@ -22,10 +22,10 @@
  */
 
 import Database from "bun:sqlite";
-import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, statSync, unlinkSync, rmSync } from "node:fs";
-import { join, basename } from "node:path";
-import { homedir } from "node:os";
 import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 import { getContextProjectRoot } from "../utils/agent-context";
 
 // ============================================================================
