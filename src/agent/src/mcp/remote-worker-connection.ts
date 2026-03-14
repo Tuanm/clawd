@@ -7,9 +7,8 @@
  */
 
 import { EventEmitter } from "events";
-import type { IMCPConnection } from "./client";
-import type { MCPTool, MCPResource, MCPPrompt } from "./client";
 import { callRemoteWorkerTool } from "../../../server/remote-worker";
+import type { IMCPConnection, MCPPrompt, MCPResource, MCPTool } from "./client";
 
 export class RemoteWorkerMCPConnection extends EventEmitter implements IMCPConnection {
   readonly name: string;

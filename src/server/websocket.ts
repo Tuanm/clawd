@@ -1,24 +1,24 @@
 import type { ServerWebSocket } from "bun";
-import { getAgent, getMessageSeenBy, type Message, type SlackMessage, toSlackMessage } from "./database";
 import { isDebugEnabled } from "../agent/src/utils/debug";
 import {
-  handleWorkspaceWsOpen,
-  handleWorkspaceWsMessage,
-  handleWorkspaceWsClose,
-  type WorkspaceWsData,
-} from "./routes/workspace-proxy";
-import {
-  handleBrowserWsOpen,
-  handleBrowserWsMessage,
-  handleBrowserWsClose,
   type BrowserWsData,
+  handleBrowserWsClose,
+  handleBrowserWsMessage,
+  handleBrowserWsOpen,
 } from "./browser-bridge";
+import { getAgent, getMessageSeenBy, type Message, type SlackMessage, toSlackMessage } from "./database";
 import {
-  handleRemoteWorkerWsOpen,
-  handleRemoteWorkerWsMessage,
   handleRemoteWorkerWsClose,
+  handleRemoteWorkerWsMessage,
+  handleRemoteWorkerWsOpen,
   type RemoteWorkerWsData,
 } from "./remote-worker";
+import {
+  handleWorkspaceWsClose,
+  handleWorkspaceWsMessage,
+  handleWorkspaceWsOpen,
+  type WorkspaceWsData,
+} from "./routes/workspace-proxy";
 
 /** Chat WebSocket data (regular connections) */
 interface ChatWebSocketData {

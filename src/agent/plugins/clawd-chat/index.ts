@@ -16,8 +16,8 @@
  * }
  */
 
-import { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig } from "./agent";
-import { createClawdChatSubAgentPlugin, ClawdChatSubAgentPlugin, type ClawdChatSubAgentConfig } from "./subagent";
+import { type ClawdChatConfig, createClawdChatPlugin, createClawdChatToolPlugin } from "./agent";
+import { type ClawdChatSubAgentConfig, ClawdChatSubAgentPlugin, createClawdChatSubAgentPlugin } from "./subagent";
 
 // Re-export for direct imports
 export { createClawdChatPlugin, createClawdChatToolPlugin, type ClawdChatConfig };

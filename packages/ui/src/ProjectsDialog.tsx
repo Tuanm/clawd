@@ -1,7 +1,7 @@
+import Prism from "prismjs";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { ClawdAvatar } from "./MessageList";
-import Prism from "prismjs";
 import "prismjs/components/prism-typescript";
 import "prismjs/components/prism-javascript";
 import "prismjs/components/prism-jsx";

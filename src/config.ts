@@ -35,7 +35,7 @@ export interface AppConfig {
     processingTimeoutMs?: number;
     /** Nudge idle space agents after this many ms (default: 60000) */
     spaceIdleTimeoutMs?: number;
-    /** Max nudge attempts before auto-failing a space (default: 3) */
+    /** Max nudge attempts before auto-failing a space (default: 5) */
     maxNudges?: number;
   };
 }

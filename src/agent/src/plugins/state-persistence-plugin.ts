@@ -5,22 +5,22 @@
  * Factory pattern: returns { plugin, toolPlugin } sharing WorkingState.
  */
 
-import type { Plugin, PluginContext, PluginHooks } from "./manager";
-import type { ToolPlugin } from "../tools/plugin";
+import { homedir } from "node:os";
+import { createHash } from "crypto";
 import {
-  type WorkingState,
   createEmptyState,
+  formatForContext,
   loadWorkingState,
   saveWorkingState,
   setInception,
-  trackFile,
   trackError,
+  trackFile,
   updateEnvironment,
-  formatForContext,
+  type WorkingState,
 } from "../session/working-state";
-import { createHash } from "crypto";
+import type { ToolPlugin } from "../tools/plugin";
 import { isDebugEnabled } from "../utils/debug";
-import { homedir } from "node:os";
+import type { Plugin, PluginContext, PluginHooks } from "./manager";
 
 interface StatePersistenceConfig {
   contextMode: boolean;

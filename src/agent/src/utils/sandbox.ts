@@ -13,10 +13,10 @@
  * - Environment: wiped clean and rebuilt with only safe variables
  */
 
-import { spawn, execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { execSync, spawn } from "node:child_process";
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, platform, userInfo } from "node:os";
-import { resolve, join, dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { getAgentContext } from "./agent-context";
 
 // ============================================================================

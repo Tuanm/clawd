@@ -10,34 +10,33 @@
  * - Hook system for tool event handling
  */
 
-import type { Message, ToolCall, CompletionRequest } from "../api/client";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { isBrowserEnabled, isWorkspacesEnabled } from "../../../config-file";
+import type { CompletionRequest, Message, ToolCall } from "../api/client";
+import { createProvider } from "../api/factory";
 import { AllKeysSuspendedError } from "../api/key-pool";
 import type { LLMProvider } from "../api/providers";
-import { createProvider } from "../api/factory";
-import { getSessionManager, SessionManager, type Session } from "../session/manager";
-import { CheckpointManager, type Checkpoint } from "../session/checkpoint";
-import { toolDefinitions, executeTools, type ToolResult, getSandboxProjectRoot } from "../tools/tools";
+import { MODEL_TOKEN_LIMITS as CENTRALIZED_MODEL_LIMITS, getThresholds } from "../constants/context-limits";
+import { formatToolResult, parseToolArguments } from "../core/loop";
+import { destroyHooks, initializeHooks } from "../hooks/manager";
 import { MCPManager } from "../mcp/client";
-import { estimateTokens, estimateMessagesTokens } from "../memory/memory";
-import { getSkillManager } from "../skills/manager";
-import { PluginManager, type Plugin } from "../plugins/manager";
-import { ToolPluginManager, type ToolPlugin } from "../tools/plugin";
-import { parseToolArguments, formatToolResult } from "../core/loop";
-import { initializeHooks, destroyHooks } from "../hooks/manager";
-import { isDebugEnabled } from "../utils/debug";
-import { getThresholds, MODEL_TOKEN_LIMITS as CENTRALIZED_MODEL_LIMITS } from "../constants/context-limits";
-import { createStatePersistencePlugin } from "../plugins/state-persistence-plugin";
-import { createContextModePlugin, type ContextModePluginResult } from "../plugins/context-mode-plugin";
-import { WorkspaceToolPlugin } from "../plugins/workspace-plugin";
-import { TunnelPlugin } from "../plugins/tunnel-plugin";
+import { estimateMessagesTokens, estimateTokens } from "../memory/memory";
+import { type ContextModePluginResult, createContextModePlugin } from "../plugins/context-mode-plugin";
 import { CustomToolPlugin } from "../plugins/custom-tool-plugin";
-import { isWorkspacesEnabled } from "../../../config-file";
-import { isBrowserEnabled } from "../../../config-file";
+import { type Plugin, PluginManager } from "../plugins/manager";
+import { createStatePersistencePlugin } from "../plugins/state-persistence-plugin";
+import { TunnelPlugin } from "../plugins/tunnel-plugin";
+import { WorkspaceToolPlugin } from "../plugins/workspace-plugin";
+import { type Checkpoint, CheckpointManager } from "../session/checkpoint";
+import { getSessionManager, type Session, type SessionManager } from "../session/manager";
+import { getSkillManager } from "../skills/manager";
+import { type ToolPlugin, ToolPluginManager } from "../tools/plugin";
+import { executeTools, getSandboxProjectRoot, type ToolResult, toolDefinitions } from "../tools/tools";
 import { getAgentContext, getContextProjectRoot } from "../utils/agent-context";
 import { ContextTracker } from "../utils/context-tracker";
-import { homedir } from "node:os";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { isDebugEnabled } from "../utils/debug";
 
 // ============================================================================
 // Colored Logging Helpers
@@ -2019,7 +2018,7 @@ SUMMARY:`;
             await new Promise((resolve) => setTimeout(resolve, 30000));
           } else if (consecutiveStreamErrors > 1) {
             // Exponential backoff for non-rate-limit errors: 2s, 4s, 8s, 16s
-            const backoffMs = Math.min(2000 * Math.pow(2, consecutiveStreamErrors - 2), 16000);
+            const backoffMs = Math.min(2000 * 2 ** (consecutiveStreamErrors - 2), 16000);
             console.log(
               `[Agent] Stream error ${consecutiveStreamErrors}/${maxConsecutiveStreamErrors}, backing off ${backoffMs}ms...`,
             );

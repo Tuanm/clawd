@@ -12,10 +12,10 @@
  * └── logs/
  */
 
-import { join } from "node:path";
-import { homedir } from "node:os";
-import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Message } from "../api/client";
 
 // ============================================================================

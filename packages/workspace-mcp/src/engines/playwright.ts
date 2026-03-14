@@ -1,6 +1,5 @@
-import { chromium, type BrowserContext, type CDPSession } from "playwright";
-import { existsSync, rmSync } from "node:fs";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { type BrowserContext, type CDPSession, chromium } from "playwright";
 
 let context: BrowserContext | null = null;
 let cdpSession: CDPSession | null = null;

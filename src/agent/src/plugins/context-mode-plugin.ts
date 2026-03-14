@@ -6,11 +6,11 @@
  * NOT via afterExecute (to avoid double-compression).
  */
 
-import type { Plugin, PluginHooks } from "./manager";
-import type { ToolPlugin, ToolRegistration, ToolContext } from "../tools/plugin";
-import type { ToolResult } from "../tools/tools";
 import { KnowledgeBase } from "../memory/knowledge-base";
-import { compressToolOutput, getToolCap, type CompressResult } from "../utils/output-compressor";
+import type { ToolContext, ToolPlugin, ToolRegistration } from "../tools/plugin";
+import type { ToolResult } from "../tools/tools";
+import { type CompressResult, compressToolOutput, getToolCap } from "../utils/output-compressor";
+import type { Plugin, PluginHooks } from "./manager";
 
 // ── Keyword Stop Words (module-level for single compilation) ───────
 

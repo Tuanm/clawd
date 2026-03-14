@@ -70,7 +70,7 @@ export class WorkerManager {
       intervalMs: config.heartbeat?.intervalMs ?? 30_000,
       processingTimeoutMs: config.heartbeat?.processingTimeoutMs ?? 300_000,
       spaceIdleTimeoutMs: config.heartbeat?.spaceIdleTimeoutMs ?? 60_000,
-      maxNudges: config.heartbeat?.maxNudges ?? 3,
+      maxNudges: config.heartbeat?.maxNudges ?? 5,
     };
   }
 
@@ -335,7 +335,13 @@ export class WorkerManager {
     if (health.nudgeCount >= this.heartbeatConfig.maxNudges) {
       // Exhausted nudges — auto-fail the space
       console.log(`[Heartbeat] Max nudges exhausted for ${key}, failing space`);
-      this.autoFailSpace(health.channel, spaceStatus.spaceId);
+      this.autoFailSpace(
+        health.channel,
+        spaceStatus.spaceId,
+        spaceStatus.parentChannel,
+        spaceStatus.title,
+        spaceStatus.agentId,
+      );
       this.broadcastHeartbeatEvent(health.channel, health.agentId, "max_nudges_exhausted");
       return;
     }
@@ -387,7 +393,13 @@ export class WorkerManager {
 
         if (health.nudgeCount >= this.heartbeatConfig.maxNudges) {
           console.log(`[Heartbeat] Max nudges exhausted for ${key}, failing space`);
-          this.autoFailSpace(health.channel, spaceStatus.spaceId);
+          this.autoFailSpace(
+            health.channel,
+            spaceStatus.spaceId,
+            spaceStatus.parentChannel,
+            spaceStatus.title,
+            spaceStatus.agentId,
+          );
           this.broadcastHeartbeatEvent(health.channel, health.agentId, "max_nudges_exhausted");
           continue;
         }
@@ -412,9 +424,15 @@ export class WorkerManager {
   }
 
   /** Get space status by space_channel (direct DB query, no network call) */
-  private getSpaceStatus(
-    spaceChannel: string,
-  ): { spaceId: string; active: boolean; locked: boolean; description: string | null } | null {
+  private getSpaceStatus(spaceChannel: string): {
+    spaceId: string;
+    active: boolean;
+    locked: boolean;
+    description: string | null;
+    parentChannel: string;
+    title: string;
+    agentId: string;
+  } | null {
     const space = getSpaceByChannel(spaceChannel);
     if (!space) return null;
     return {
@@ -422,14 +440,37 @@ export class WorkerManager {
       active: space.status === "active",
       locked: !!space.locked,
       description: space.description,
+      parentChannel: space.channel,
+      title: space.title,
+      agentId: space.agent_id,
     };
   }
 
-  /** Auto-fail a space when nudges are exhausted */
-  private autoFailSpace(_spaceChannel: string, spaceId: string): void {
+  /** Auto-fail a space when nudges are exhausted — sub-agent fails immediately */
+  private autoFailSpace(
+    spaceChannel: string,
+    spaceId: string,
+    parentChannel: string,
+    title: string,
+    agentId: string,
+  ): void {
     if (!this.spaceManager) return;
-    this.spaceManager.failSpace(spaceId, "Heartbeat: agent unresponsive after max recovery attempts");
+    const won = this.spaceManager.failSpace(spaceId, "Heartbeat: agent unresponsive after max recovery attempts");
+    // stopSpaceWorker rejects the space promise, causing the parent agent to see the failure immediately
     this.spaceWorkerManager?.stopSpaceWorker(spaceId);
+    // Notify parent channel so the parent agent knows (matches spawn-plugin onAbort pattern)
+    if (won) {
+      fetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: parentChannel,
+          text: `Sub-space failed (unresponsive): ${title}`,
+          user: "UBOT",
+          agent_id: agentId,
+        }),
+      }).catch(() => {});
+    }
   }
 
   /** Clear streaming DB flag for an agent */

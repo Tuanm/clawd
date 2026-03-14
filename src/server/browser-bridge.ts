@@ -18,8 +18,8 @@
  * Other agents cannot send commands to tabs they don't own.
  */
 
-import type { ServerWebSocket } from "bun";
 import { randomBytes } from "node:crypto";
+import type { ServerWebSocket } from "bun";
 import { getAllBrowserTokens, getChannelsForToken, isBrowserAuthRequired } from "../config-file";
 
 // ============================================================================

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Claw'd Worker - External polling loop for clawd agents
  *
@@ -15,10 +16,10 @@
  * - Crash-proof: always recovers and continues
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { readFileSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { getSessionManager } from "../../src/session/manager";
 
 // Session size limits (in estimated tokens) - tuned for 128k context (claude-opus-4.6)
@@ -887,4 +888,3 @@ process.on("SIGTERM", async () => {
 
 // Run
 main().catch(console.error);
-

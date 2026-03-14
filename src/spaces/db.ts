@@ -1,5 +1,4 @@
-import { db } from "../server/database";
-import { getOrRegisterAgent } from "../server/database";
+import { db, getOrRegisterAgent } from "../server/database";
 
 export interface Space {
   id: string;

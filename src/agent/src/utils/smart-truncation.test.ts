@@ -2,7 +2,7 @@
  * Tests for safeCut fence closure fix
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 // Re-export safeCut for testing (make it public for testing purposes)
 // Since safeCut is not exported, we need to test it through the module or make it public

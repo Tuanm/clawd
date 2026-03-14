@@ -7,20 +7,20 @@
  * - Plugin inheritance
  */
 
-import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { CopilotClient, type Message, type ToolCall, type ToolDefinition } from "../api/client";
 import { getCopilotToken } from "../api/provider-config";
-import { toolDefinitions, executeTool } from "../tools/tools";
-import { PluginManager, type SubAgentPlugin, type PluginContext, type ToolResultInfo } from "./plugin";
 import {
   AgenticLoop,
   type CompletionProvider,
-  type ToolExecutor,
-  type ToolExecutionResult,
-  parseToolArguments,
   formatToolResult,
+  parseToolArguments,
+  type ToolExecutionResult,
+  type ToolExecutor,
 } from "../core/loop";
+import { executeTool, toolDefinitions } from "../tools/tools";
+import { type PluginContext, PluginManager, type SubAgentPlugin, type ToolResultInfo } from "./plugin";
 
 // ============================================================================
 // Types

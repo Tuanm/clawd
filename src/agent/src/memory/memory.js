@@ -2,8 +2,9 @@
  * Memory System - Search, Filter, and Summarize Past Conversations
  */
 import Database from "bun:sqlite";
-import { join } from "node:path";
 import { homedir } from "node:os";
+import { join } from "node:path";
+
 // ============================================================================
 // Token Estimation
 // ============================================================================
@@ -36,7 +37,7 @@ function estimateNonBase64Tokens(charCount, text) {
   if (charCount === 0) return 0;
   const sample = text.slice(0, 2000);
   if (sample.length === 0) return Math.ceil(charCount / 3.5);
-  const codeChars = (sample.match(/[{}\[\];:=<>()]/g) || []).length;
+  const codeChars = (sample.match(/[{}[\];:=<>()]/g) || []).length;
   const codeRatio = codeChars / sample.length;
   let charsPerToken;
   if (codeRatio > 0.08) {

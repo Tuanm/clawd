@@ -3,8 +3,8 @@
  * Connects to external MCP servers and proxies their tools
  */
 
-import { spawn, type Subprocess } from "bun";
 import { EventEmitter } from "node:events";
+import { type Subprocess, spawn } from "bun";
 import { isDebugEnabled } from "../utils/debug";
 
 // ============================================================================

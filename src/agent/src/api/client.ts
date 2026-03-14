@@ -2,12 +2,12 @@
  * Copilot API Client with HTTP/2 and Streaming Support
  */
 
-import http2 from "node:http2";
 import { EventEmitter } from "node:events";
-import { getBaseUrlForProvider, getCopilotToken, ensureKeyPoolInitialized } from "./provider-config";
-import { keyPool, AllKeysSuspendedError } from "./key-pool";
+import http2 from "node:http2";
+import { trackFailure, trackSuccess } from "../../../analytics";
 import { callContext } from "./call-context";
-import { trackSuccess, trackFailure } from "../../../analytics";
+import { AllKeysSuspendedError, keyPool } from "./key-pool";
+import { ensureKeyPoolInitialized, getBaseUrlForProvider, getCopilotToken } from "./provider-config";
 
 const COPILOT_API_URL = "https://api.githubcopilot.com";
 

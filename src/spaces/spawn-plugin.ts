@@ -148,7 +148,7 @@ export function createSpawnAgentPlugin(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channel: space.space_channel,
-          text: `📋 **Task:** ${task}`,
+          text: `**Task:** ${task}`,
           user: "UBOT",
           agent_id: config.agentId,
         }),
@@ -183,13 +183,13 @@ export function createSpawnAgentPlugin(
           ? spaceManager.timeoutSpace(space.id)
           : spaceManager.failSpace(space.id, String(controller.signal.reason));
         if (won) {
-          const emoji = isTimeout ? "⏰" : "❌";
+          const prefix = isTimeout ? "Sub-space timed out" : "Sub-space failed";
           timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               channel: config.channel,
-              text: `${emoji} Sub-space ${isTimeout ? "timed out" : "failed"}: ${sanitizedTitle}`,
+              text: `${prefix}: ${sanitizedTitle}`,
               user: "UWORKER-SUBAGENT",
               agent_id: subAgentId,
             }),

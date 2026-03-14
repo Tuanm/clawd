@@ -12,10 +12,10 @@
  *  - Sync ground-truth quota from GitHub API on startup and every 30 min
  */
 
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import http2 from "node:http2";
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 // ============================================================================
 // Constants

@@ -18,9 +18,7 @@
  * Each section wrapped in try-catch for resilience.
  */
 
-(function () {
-  "use strict";
-
+(() => {
   // Guard: Symbol.for with stable key (Symbol() would be unique per invocation)
   const _gk = Symbol.for("__s_" + 0x7a3c);
   if (window[_gk]) return;
@@ -175,7 +173,7 @@
   // Patch requestAnimationFrame — route through shared monotonic high-water
   const _origRAF = window.requestAnimationFrame;
   const _patchedRAF = function requestAnimationFrame(callback) {
-    return _origRAF.call(window, function (timestamp) {
+    return _origRAF.call(window, (timestamp) => {
       callback(_adjustedPerfNow());
     });
   };
@@ -325,7 +323,7 @@
     if (typeof window.chrome === "object" && window.chrome) {
       if (!window.chrome.csi) {
         var _csiOnloadT = null;
-        window.chrome.csi = function () {
+        window.chrome.csi = () => {
           if (_csiOnloadT === null) _csiOnloadT = _patchedDateNow();
           return {
             onloadT: _csiOnloadT,
@@ -337,7 +335,7 @@
         _registerNative(window.chrome.csi, "csi");
       }
       if (!window.chrome.loadTimes) {
-        window.chrome.loadTimes = function () {
+        window.chrome.loadTimes = () => {
           var now = _patchedDateNow() / 1000;
           return {
             commitLoadTime: now,

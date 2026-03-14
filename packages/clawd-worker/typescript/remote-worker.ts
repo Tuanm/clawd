@@ -1,15 +1,16 @@
 #!/usr/bin/env -S npx tsx
+
 /**
  * Claw'd Remote Worker — single-file TypeScript worker
  * Connects to a Claw'd server via WebSocket and executes file tools on the remote machine.
  * Runs with Bun or Node.js 22.4+. ZERO external dependencies.
  */
 
-import { readFileSync, writeFileSync, existsSync, realpathSync, statSync, readdirSync, lstatSync } from "node:fs";
-import { join, dirname, basename, resolve as pathResolve, delimiter, sep } from "node:path";
-import { execSync, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { type ChildProcess, execSync, type SpawnOptions, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { basename, delimiter, dirname, join, resolve as pathResolve, sep } from "node:path";
 
 // ---------------------------------------------------------------------------
 // 1. Type definitions

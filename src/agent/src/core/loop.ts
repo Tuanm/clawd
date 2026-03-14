@@ -10,7 +10,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { Message, ToolCall, ToolDefinition, CompletionResponse } from "../api/client";
+import type { CompletionResponse, Message, ToolCall, ToolDefinition } from "../api/client";
 import type { ToolResult } from "../tools/tools";
 import { isDebugEnabled } from "../utils/debug";
 

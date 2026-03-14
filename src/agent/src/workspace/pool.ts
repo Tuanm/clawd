@@ -12,10 +12,10 @@
  */
 
 import {
-  spawnWorkspace,
   destroyWorkspace,
   getWorkspace,
   probeTcp,
+  spawnWorkspace,
   type WorkspaceHandle,
   type WorkspaceOptions,
 } from "./container.js";

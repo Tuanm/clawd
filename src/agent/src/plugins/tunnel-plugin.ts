@@ -11,9 +11,9 @@
  *   - tunnel_list    — list all active tunnels
  */
 
+import { type ChildProcess, spawn } from "node:child_process";
 import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
 import type { ToolResult } from "../tools/tools.js";
-import { spawn, type ChildProcess } from "node:child_process";
 
 // ============================================================================
 // Types

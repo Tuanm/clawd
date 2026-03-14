@@ -5,7 +5,7 @@
  * across session compaction. Similar to Copilot CLI's checkpoint system.
  */
 
-import { mkdirSync, existsSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CopilotClient, type Message } from "../api/client";
 

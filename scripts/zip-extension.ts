@@ -8,7 +8,7 @@
  * Usage: bun run scripts/zip-extension.ts
  */
 
-import { statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { $ } from "bun";
 

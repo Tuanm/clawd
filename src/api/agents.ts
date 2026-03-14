@@ -27,12 +27,12 @@
  */
 
 import type { Database } from "bun:sqlite";
-import type { WorkerManager } from "../worker-manager";
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { resolve, join, relative, isAbsolute, basename, dirname } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { listConfiguredProviders, BUILTIN_PROVIDERS } from "../agent/src/api/provider-config";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../agent/src/api/provider-config";
+import type { WorkerManager } from "../worker-manager";
 
 // ============================================================================
 // Security: Sensitive file patterns (blocked from reading)

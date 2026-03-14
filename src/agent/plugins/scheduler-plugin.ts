@@ -7,8 +7,9 @@
  * Tools: schedule_job, schedule_reminder, schedule_tool, schedule_list,
  *        schedule_cancel, schedule_pause, schedule_resume, schedule_history
  */
-import type { ToolPlugin, ToolRegistration } from "../src/tools/plugin";
+
 import type { SchedulerManager } from "../../scheduler/manager";
+import type { ToolPlugin, ToolRegistration } from "../src/tools/plugin";
 
 interface SchedulerPluginConfig {
   scheduler: SchedulerManager;

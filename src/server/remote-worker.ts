@@ -1,7 +1,7 @@
+import type { ServerWebSocket } from "bun";
+import { createHash, randomBytes } from "crypto";
 import { EventEmitter } from "events";
 import { loadConfigFile, reloadConfigFile } from "../config-file";
-import { createHash, randomBytes } from "crypto";
-import type { ServerWebSocket } from "bun";
 
 export interface RemoteWorkerWsData {
   type: "remote-worker";

@@ -6,10 +6,10 @@
  * Listens for worker registration/disconnect events and manages MCP connections.
  */
 
-import { workerEvents, getConnectedWorker, getTokenChannels } from "../../../server/remote-worker";
-import { RemoteWorkerMCPConnection } from "../mcp/remote-worker-connection";
 import { createHash } from "crypto";
+import { getConnectedWorker, getTokenChannels, workerEvents } from "../../../server/remote-worker";
 import type { MCPManager } from "../mcp/client";
+import { RemoteWorkerMCPConnection } from "../mcp/remote-worker-connection";
 
 export class RemoteWorkerBridge {
   private mcpManager: MCPManager;

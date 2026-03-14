@@ -18,7 +18,7 @@
  *   clawd --plugin '{"type":"clawd-agent-bus","agent":"backend-agent","capabilities":["api","db"]}' -p "..."
  */
 
-import { createAgentBusPlugin, type AgentBusPluginResult } from "./plugin";
+import { type AgentBusPluginResult, createAgentBusPlugin } from "./plugin";
 import type { AgentBusConfig } from "./types";
 
 // Re-export for direct imports

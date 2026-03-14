@@ -5,17 +5,17 @@
  * Tools query the copilot_calls table in chat.db for usage stats, cost tracking, etc.
  */
 
-import type { ToolPlugin, ToolRegistration } from "../agent/src/tools/plugin";
-import type { ToolResult } from "../agent/src/tools/tools";
 import {
+  type CallsQueryOptions,
   queryCalls,
   queryCallsCount,
-  querySummary,
-  queryModelStats,
   queryKeyStats,
+  queryModelStats,
   queryRecentStats,
-  type CallsQueryOptions,
+  querySummary,
 } from "../../analytics";
+import type { ToolPlugin, ToolRegistration } from "../agent/src/tools/plugin";
+import type { ToolResult } from "../agent/src/tools/tools";
 
 // ── GitHub Copilot SVG Logo ──────────────────────────────────────────
 

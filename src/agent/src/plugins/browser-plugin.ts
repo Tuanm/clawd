@@ -12,10 +12,10 @@
  * Gated behind: config.json "browser": true
  */
 
-import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
-import type { ToolResult } from "../tools/tools.js";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
+import type { ToolResult } from "../tools/tools.js";
 
 export class BrowserPlugin implements ToolPlugin {
   readonly name = "browser";

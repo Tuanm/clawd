@@ -14,15 +14,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-  type HooksConfig,
-  type HookDefinition,
-  type HookModule,
-  type HookInstance,
-  type HookInitContext,
-  GLOBAL_HOOKS_DIR,
   GLOBAL_HOOKS_CONFIG,
-  PROJECT_HOOKS_DIR,
+  GLOBAL_HOOKS_DIR,
+  type HookDefinition,
+  type HookInitContext,
+  type HookInstance,
+  type HookModule,
+  type HooksConfig,
   PROJECT_HOOKS_CONFIG,
+  PROJECT_HOOKS_DIR,
 } from "./types";
 
 // ============================================================================

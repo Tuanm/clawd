@@ -1,8 +1,8 @@
 import { execSync } from "node:child_process";
-import { readFileSync, unlinkSync, existsSync } from "node:fs";
-import { screenshotTool, cleanupScreenshot } from "./observe";
-import { getVisionConfig, getEnv } from "../config";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { getEnv, getVisionConfig } from "../config";
 import { getCurrentControlMode, isExtensionPopupDetected } from "../engines/playwright";
+import { cleanupScreenshot, screenshotTool } from "./observe";
 
 interface VisionResult {
   description: string;
