@@ -6,15 +6,26 @@
  * add/remove agent requests from the API.
  */
 
-import type { AppConfig } from "./config";
-import type { SchedulerManager } from "./scheduler/manager";
-import { WorkerLoop, type WorkerLoopConfig } from "./worker-loop";
-import { MCPManager } from "./agent/src/mcp/client";
 import { getChannelMCPServers } from "./agent/src/api/provider-config";
+import { MCPManager } from "./agent/src/mcp/client";
+import type { AppConfig } from "./config";
 import { loadOAuthToken } from "./mcp-oauth";
-
+import type { SchedulerManager } from "./scheduler/manager";
+import { setAgentStreaming } from "./server/database";
+import { broadcastUpdate } from "./server/websocket";
+import { getSpaceByChannel } from "./spaces/db";
 import type { SpaceManager } from "./spaces/manager";
 import type { SpaceWorkerManager } from "./spaces/worker";
+import { type AgentHealthSnapshot, WorkerLoop, type WorkerLoopConfig } from "./worker-loop";
+
+/** Resolved heartbeat configuration (all fields required, defaults applied) */
+interface HeartbeatConfig {
+  enabled: boolean;
+  intervalMs: number;
+  processingTimeoutMs: number;
+  spaceIdleTimeoutMs: number;
+  maxNudges: number;
+}
 
 export interface AgentConfig {
   /** Channel ID (e.g., "chat-task") */
@@ -46,9 +57,21 @@ export class WorkerManager {
   /** Pending MCP setup promises to prevent double-creation on concurrent agent starts */
   private channelMcpPending: Map<string, Promise<MCPManager | null>> = new Map();
 
+  // Heartbeat monitor state
+  private heartbeatConfig: HeartbeatConfig;
+  private heartbeatTimer: Timer | null = null;
+  private heartbeatInProgress = false;
+
   constructor(config: AppConfig, scheduler?: SchedulerManager) {
     this.config = config;
     this.scheduler = scheduler;
+    this.heartbeatConfig = {
+      enabled: config.heartbeat?.enabled ?? true,
+      intervalMs: config.heartbeat?.intervalMs ?? 30_000,
+      processingTimeoutMs: config.heartbeat?.processingTimeoutMs ?? 300_000,
+      spaceIdleTimeoutMs: config.heartbeat?.spaceIdleTimeoutMs ?? 60_000,
+      maxNudges: config.heartbeat?.maxNudges ?? 3,
+    };
   }
 
   setSpaceInfra(spaceManager: SpaceManager, spaceWorkerManager: SpaceWorkerManager): void {
@@ -72,11 +95,22 @@ export class WorkerManager {
     }
 
     console.log(`[WorkerManager] ${this.loops.size} worker loop(s) running`);
+
+    // Start heartbeat monitor after all agents are running
+    this.startHeartbeatMonitor();
   }
 
   /** Stop all worker loops */
   async stop(): Promise<void> {
     console.log("[WorkerManager] Stopping all worker loops...");
+
+    // Stop heartbeat monitor first and wait for in-flight check to drain
+    this.stopHeartbeatMonitor();
+    const drainStart = Date.now();
+    while (this.heartbeatInProgress && Date.now() - drainStart < 2000) {
+      await Bun.sleep(50);
+    }
+
     const stopPromises = Array.from(this.loops.values()).map((loop) => loop.stop());
     await Promise.all(stopPromises);
     this.loops.clear();
@@ -209,6 +243,216 @@ export class WorkerManager {
     const key = `${channel}:${agentId}`;
     const loop = this.loops.get(key);
     return loop?.isRunning || false;
+  }
+
+  // ===========================================================================
+  // Heartbeat Monitor — automatic recovery for stuck agents
+  // ===========================================================================
+
+  private startHeartbeatMonitor(): void {
+    if (!this.heartbeatConfig.enabled) return;
+    this.scheduleNextHeartbeat();
+    console.log(
+      `[Heartbeat] Monitor started (interval: ${this.heartbeatConfig.intervalMs}ms, ` +
+        `processingTimeout: ${this.heartbeatConfig.processingTimeoutMs}ms, ` +
+        `spaceIdleTimeout: ${this.heartbeatConfig.spaceIdleTimeoutMs}ms, ` +
+        `maxNudges: ${this.heartbeatConfig.maxNudges})`,
+    );
+  }
+
+  private stopHeartbeatMonitor(): void {
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  /** setTimeout chain (not setInterval) — prevents overlapping async checks */
+  private scheduleNextHeartbeat(): void {
+    this.heartbeatTimer = setTimeout(async () => {
+      await this.runHeartbeatCheck();
+      if (this.heartbeatTimer !== null) {
+        this.scheduleNextHeartbeat();
+      }
+    }, this.heartbeatConfig.intervalMs);
+    // Don't keep the process alive just for heartbeat
+    if (typeof this.heartbeatTimer === "object" && "unref" in this.heartbeatTimer) {
+      (this.heartbeatTimer as any).unref();
+    }
+  }
+
+  /** Main heartbeat check — iterates all main agent loops + space workers */
+  private async runHeartbeatCheck(): Promise<void> {
+    if (this.heartbeatInProgress) return; // Reentrance guard
+    this.heartbeatInProgress = true;
+    try {
+      // Check main channel agent loops
+      for (const [key, loop] of this.loops) {
+        const health = loop.getHealthSnapshot();
+
+        // GUARD: Never touch sleeping agents
+        if (health.sleeping) continue;
+        // GUARD: Skip stopped loops
+        if (!health.running) continue;
+
+        // CHECK 1: Processing timeout — agent has been processing for too long
+        if (
+          health.processing &&
+          health.processingDurationMs !== null &&
+          health.processingDurationMs > this.heartbeatConfig.processingTimeoutMs
+        ) {
+          console.log(`[Heartbeat] Processing timeout: ${key} (${Math.round(health.processingDurationMs / 1000)}s)`);
+          loop.cancelProcessing();
+          this.clearAgentStreamingState(health.channel, health.agentId);
+          this.broadcastHeartbeatEvent(health.channel, health.agentId, "processing_timeout");
+          continue;
+        }
+
+        // CHECK 2: Space agent idle with incomplete task (main loop space agents)
+        if (
+          health.isSpaceAgent &&
+          !health.processing &&
+          health.idleDurationMs > this.heartbeatConfig.spaceIdleTimeoutMs
+        ) {
+          await this.handleIdleSpaceAgent(key, loop, health);
+        }
+      }
+
+      // Check space workers (stored in SpaceWorkerManager, NOT in this.loops)
+      await this.checkSpaceWorkerHealth();
+    } catch (err) {
+      console.error("[Heartbeat] Error during health check:", err);
+    } finally {
+      this.heartbeatInProgress = false;
+    }
+  }
+
+  /** Handle an idle space agent that may need nudging or auto-failing */
+  private async handleIdleSpaceAgent(key: string, loop: WorkerLoop, health: AgentHealthSnapshot): Promise<void> {
+    const spaceStatus = this.getSpaceStatus(health.channel);
+    if (!spaceStatus || !spaceStatus.active || spaceStatus.locked) return;
+
+    if (health.nudgeCount >= this.heartbeatConfig.maxNudges) {
+      // Exhausted nudges — auto-fail the space
+      console.log(`[Heartbeat] Max nudges exhausted for ${key}, failing space`);
+      this.autoFailSpace(health.channel, spaceStatus.spaceId);
+      this.broadcastHeartbeatEvent(health.channel, health.agentId, "max_nudges_exhausted");
+      return;
+    }
+
+    // Post nudge
+    const nudged = await loop.postNudge(
+      "Agent idle with incomplete task",
+      this.heartbeatConfig.maxNudges,
+      spaceStatus.description,
+    );
+    if (nudged) {
+      console.log(
+        `[Heartbeat] Nudged agent: ${key} (attempt ${health.nudgeCount + 1}/${this.heartbeatConfig.maxNudges})`,
+      );
+      this.broadcastHeartbeatEvent(health.channel, health.agentId, "nudge_sent");
+    }
+  }
+
+  /** Check space worker health — the MAIN recovery path for stuck subspace agents */
+  private async checkSpaceWorkerHealth(): Promise<void> {
+    if (!this.spaceWorkerManager) return;
+    const snapshots = this.spaceWorkerManager.getWorkerHealthSnapshots();
+
+    for (const { spaceId, health } of snapshots) {
+      // GUARD: Never touch sleeping agents
+      if (health.sleeping) continue;
+      if (!health.running) continue;
+
+      const key = `space:${spaceId}`;
+
+      // CHECK 1: Processing timeout
+      if (
+        health.processing &&
+        health.processingDurationMs !== null &&
+        health.processingDurationMs > this.heartbeatConfig.processingTimeoutMs
+      ) {
+        console.log(`[Heartbeat] Processing timeout: ${key} (${Math.round(health.processingDurationMs / 1000)}s)`);
+        const loop = this.spaceWorkerManager.getWorkerLoop(spaceId);
+        if (loop) loop.cancelProcessing();
+        this.clearAgentStreamingState(health.channel, health.agentId);
+        this.broadcastHeartbeatEvent(health.channel, health.agentId, "processing_timeout");
+        continue;
+      }
+
+      // CHECK 2: Space agent idle with incomplete task
+      if (!health.processing && health.idleDurationMs > this.heartbeatConfig.spaceIdleTimeoutMs) {
+        const spaceStatus = this.getSpaceStatus(health.channel);
+        if (!spaceStatus || !spaceStatus.active || spaceStatus.locked) continue;
+
+        if (health.nudgeCount >= this.heartbeatConfig.maxNudges) {
+          console.log(`[Heartbeat] Max nudges exhausted for ${key}, failing space`);
+          this.autoFailSpace(health.channel, spaceStatus.spaceId);
+          this.broadcastHeartbeatEvent(health.channel, health.agentId, "max_nudges_exhausted");
+          continue;
+        }
+
+        const loop = this.spaceWorkerManager.getWorkerLoop(spaceId);
+        if (loop) {
+          const nudged = await loop.postNudge(
+            "Agent idle with incomplete task",
+            this.heartbeatConfig.maxNudges,
+            spaceStatus.description,
+          );
+          if (nudged) {
+            console.log(
+              `[Heartbeat] Nudged space agent: ${key} ` +
+                `(attempt ${health.nudgeCount + 1}/${this.heartbeatConfig.maxNudges})`,
+            );
+            this.broadcastHeartbeatEvent(health.channel, health.agentId, "nudge_sent");
+          }
+        }
+      }
+    }
+  }
+
+  /** Get space status by space_channel (direct DB query, no network call) */
+  private getSpaceStatus(
+    spaceChannel: string,
+  ): { spaceId: string; active: boolean; locked: boolean; description: string | null } | null {
+    const space = getSpaceByChannel(spaceChannel);
+    if (!space) return null;
+    return {
+      spaceId: space.id,
+      active: space.status === "active",
+      locked: !!space.locked,
+      description: space.description,
+    };
+  }
+
+  /** Auto-fail a space when nudges are exhausted */
+  private autoFailSpace(_spaceChannel: string, spaceId: string): void {
+    if (!this.spaceManager) return;
+    this.spaceManager.failSpace(spaceId, "Heartbeat: agent unresponsive after max recovery attempts");
+    this.spaceWorkerManager?.stopSpaceWorker(spaceId);
+  }
+
+  /** Clear streaming DB flag for an agent */
+  private clearAgentStreamingState(_channel: string, agentId: string): void {
+    try {
+      setAgentStreaming(agentId, _channel, false);
+    } catch {
+      // Best-effort; streaming state will eventually be cleared by clearStaleStreamingStates()
+    }
+  }
+
+  /** Broadcast heartbeat event via WebSocket for UI awareness */
+  private broadcastHeartbeatEvent(channel: string, agentId: string, event: string): void {
+    try {
+      broadcastUpdate(channel, {
+        type: "agent_heartbeat",
+        agent_id: agentId,
+        event,
+        timestamp: Date.now(),
+      });
+    } catch {
+      // Non-critical: UI just won't see the event
+    }
   }
 
   /** Load agent configs from the chat server database via API */

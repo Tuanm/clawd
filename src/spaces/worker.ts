@@ -1,8 +1,8 @@
-import { WorkerLoop } from "../worker-loop";
-import type { SpaceManager } from "./manager";
-import type { Space } from "./db";
-import { createSpaceToolPlugin } from "./plugin";
 import type { MCPManager } from "../agent/src/mcp/client";
+import { type AgentHealthSnapshot, WorkerLoop } from "../worker-loop";
+import type { Space } from "./db";
+import type { SpaceManager } from "./manager";
+import { createSpaceToolPlugin } from "./plugin";
 
 const MAX_SPACE_WORKERS = 5;
 
@@ -70,6 +70,7 @@ export class SpaceWorkerManager {
             // Stop the worker loop immediately after completion to prevent further processing
             const w = this.workers.get(space.id);
             if (w) {
+              w.loop.resetNudgeCount();
               w.loop.stop();
               this.workers.delete(space.id);
             }
@@ -127,6 +128,19 @@ export class SpaceWorkerManager {
 
   isRunning(spaceId: string): boolean {
     return this.workers.has(spaceId);
+  }
+
+  /** Get health snapshots for all space workers (used by heartbeat monitor) */
+  getWorkerHealthSnapshots(): Array<{ spaceId: string; health: AgentHealthSnapshot }> {
+    return Array.from(this.workers.entries()).map(([spaceId, entry]) => ({
+      spaceId,
+      health: entry.loop.getHealthSnapshot(),
+    }));
+  }
+
+  /** Get the WorkerLoop for a specific space (used by heartbeat to cancel/nudge) */
+  getWorkerLoop(spaceId: string): WorkerLoop | null {
+    return this.workers.get(spaceId)?.loop ?? null;
   }
 
   async stopAll(): Promise<void> {
