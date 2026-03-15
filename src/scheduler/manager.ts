@@ -177,7 +177,7 @@ export class SchedulerManager {
 
     // Parse schedule
     const parsed = parseSchedule(params.schedule);
-    if (!parsed.success) return { success: false, error: parsed.error };
+    if (!parsed.success) return { success: false, error: (parsed as any).error };
 
     // Validate timeout
     const timeout = Math.min(params.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS);

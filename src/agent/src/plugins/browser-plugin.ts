@@ -262,6 +262,7 @@ export class BrowserPlugin implements ToolPlugin {
         parameters: {
           direction: {
             type: "string",
+            description: "Scroll direction",
             enum: ["up", "down", "left", "right"],
           },
           amount: {
@@ -385,6 +386,7 @@ export class BrowserPlugin implements ToolPlugin {
         parameters: {
           selector: {
             type: "string",
+            description: "CSS selector to wait for",
           },
           timeout: {
             type: "number",
@@ -404,6 +406,8 @@ export class BrowserPlugin implements ToolPlugin {
             description: "Override server-side timeout in seconds (default: 60, max: 120). Should be >= timeout/1000.",
           },
         },
+        required: ["selector"],
+        handler: async (args) => this.handleWaitFor(args),
       },
       {
         name: "browser_select",

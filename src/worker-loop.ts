@@ -1102,7 +1102,6 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
 
             // Create and register clawd-chat plugin for chat integration
             const pluginConfig: ClawdChatConfig = {
-              type: "clawd-chat",
               apiUrl: chatApiUrl,
               channel,
               agentId,
@@ -1136,7 +1135,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
             // Register additional plugins (space tools, etc.)
             if (this.config.additionalPlugins) {
               for (const p of this.config.additionalPlugins) {
-                await agent.usePlugin(p);
+                await agent.usePlugin(p as any);
               }
             }
 

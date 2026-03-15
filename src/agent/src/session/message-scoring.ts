@@ -412,7 +412,7 @@ export function repairRoleAlternation(messages: Message[]): Message[] {
     }
 
     // Consecutive same-role (non-tool): insert synthetic gap
-    if (curr.role === prev.role && curr.role !== "tool") {
+    if (curr.role === prev.role && (prev.role as string) !== "tool") {
       if (curr.role === "user") {
         repaired.push({ role: "assistant", content: "[continued]" });
       } else {

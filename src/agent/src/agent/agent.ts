@@ -736,7 +736,7 @@ SUMMARY:`;
         model: this.getModel(),
       });
       // Provide LLM client to plugins for API calls (e.g., summarization)
-      this.plugins.setLLMClient(this.client);
+      this.plugins.setLLMClient(this.client as any);
     }
     if (mainPlugin) {
       await this.plugins.register(mainPlugin);

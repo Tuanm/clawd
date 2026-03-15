@@ -248,7 +248,7 @@ function handleAsync(req: Request, fn: () => Promise<Response>): Response {
   try {
     const result = fn();
     if (result instanceof Promise) {
-      return result.catch((err) => json({ ok: false, error: String(err) }, 500));
+      return result.catch((err) => json({ ok: false, error: String(err) }, 500)) as unknown as Response;
     }
     return result;
   } catch (err) {

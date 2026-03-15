@@ -18,6 +18,8 @@ import {
 } from "./provider-config";
 import type { CompletionRequest, CompletionResponse, LLMProvider, ProviderType, StreamEvent } from "./providers";
 
+type ReadableStreamReadResult<T> = ReadableStreamDefaultReadDoneResult | ReadableStreamDefaultReadValueResult<T>;
+
 // Stream idle timeout (abort if no data for this duration).
 // Default 60s for most models; extended to 120s for slow/thinking models (e.g., Opus)
 // to avoid false-firing during extended thinking phases before the first token arrives.
@@ -255,7 +257,7 @@ class OpenAIProvider implements LLMProvider {
       throw new Error(`OpenAI API error: ${response.status} [key=${truncateKey(activeKey)}] - ${error}`);
     }
 
-    return response.json();
+    return (await response.json()) as CompletionResponse;
   }
 
   async *stream(
@@ -291,7 +293,7 @@ class OpenAIProvider implements LLMProvider {
       return;
     }
 
-    const reader = response.body.getReader();
+    const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
     const decoder = new TextDecoder();
     let buffer = "";
     const toolCallBuffer: Map<number, any> = new Map();
@@ -511,7 +513,7 @@ class AnthropicProvider implements LLMProvider {
 
     // Response started
 
-    const reader = response.body.getReader();
+    const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
     const decoder = new TextDecoder();
     let buffer = "";
     let currentContent = "";
@@ -1009,7 +1011,7 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
       return;
     }
 
-    const reader = response.body.getReader();
+    const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
     const decoder = new TextDecoder();
     let buffer = "";
     const toolCallBuffer: Map<number, { name: string; arguments: string }> = new Map();
@@ -1087,7 +1089,7 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
                   yield {
                     type: "tool_call",
                     toolCall: {
-                      id,
+                      id: String(id),
                       type: "function",
                       function: {
                         name: tc.name,

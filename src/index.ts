@@ -123,8 +123,11 @@ if (!validateConfig(config)) {
   process.exit(1);
 }
 
+// @ts-expect-error — Bun text imports; TypeScript cannot resolve non-TS assets
 import REMOTE_WORKER_JAVA from "../packages/clawd-worker/java/RemoteWorker.java" with { type: "text" };
+// @ts-expect-error — Bun text imports; TypeScript cannot resolve non-TS assets
 import REMOTE_WORKER_PY from "../packages/clawd-worker/python/remote_worker.py" with { type: "text" };
+// @ts-expect-error — Bun text import; remote-worker.ts has no default export
 import REMOTE_WORKER_TS from "../packages/clawd-worker/typescript/remote-worker.ts" with { type: "text" };
 import type { ToolResult } from "./agent/src/tools/tools";
 import { tools as builtinTools } from "./agent/src/tools/tools";
@@ -1645,11 +1648,12 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       if (!body.task_id) return json({ ok: false, error: "task_id required" }, 400);
       const result = updateTask(body.task_id, body);
       if (!result.success) {
-        if (result.error === "not_found") return json({ ok: false, error: "task_not_found" }, 404);
-        if (result.error === "already_claimed")
-          return json({ ok: false, error: "already_claimed", claimed_by: result.claimed_by }, 409);
+        const r = result as { success: false; error: string; claimed_by?: string };
+        if (r.error === "not_found") return json({ ok: false, error: "task_not_found" }, 404);
+        if (r.error === "already_claimed")
+          return json({ ok: false, error: "already_claimed", claimed_by: r.claimed_by }, 409);
       }
-      return json({ ok: true, task: result.task });
+      return json({ ok: true, task: (result as { success: true; task: unknown }).task });
     }
 
     if (path === "/api/tasks.delete" && req.method === "POST") {
@@ -1739,7 +1743,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     if ((path === "/api/plans.addPhase" || path === "/api/phases.add") && req.method === "POST") {
       const body = await parseBody(req);
       if (!body.plan_id || !body.name) return json({ ok: false, error: "plan_id and name required" }, 400);
-      const phase = addPhase(body.plan_id, body);
+      const phase = addPhase(body.plan_id, body as { name: string; description?: string; agent_in_charge?: string });
       if (!phase) return json({ ok: false, error: "plan_not_found" }, 404);
       return json({ ok: true, phase });
     }
