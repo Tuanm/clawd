@@ -107,6 +107,14 @@ export function getActiveSpaces(): Space[] {
   return db.query<Space, []>(`SELECT * FROM spaces WHERE status = 'active' AND locked = 0`).all();
 }
 
+export function resetSpaceForRetask(id: string): boolean {
+  const result = db.run(
+    `UPDATE spaces SET locked = 0, status = 'active', completed_at = NULL, result_summary = NULL WHERE id = ? AND status = 'completed'`,
+    [id],
+  );
+  return result.changes > 0;
+}
+
 export function deleteSpaceAgents(spaceChannel: string): void {
   db.run(`DELETE FROM agents WHERE channel = ?`, [spaceChannel]);
 }

@@ -76,6 +76,8 @@ export interface AgentConfig {
   compactKeepCount?: number; // Messages to keep after compaction (default: 30)
   onCompaction?: (deleted: number, remaining: number) => void; // Called after compaction
   contextMode?: boolean;
+  /** Fast model for tool-routing iterations (default: "claude-haiku-4.5") */
+  fastModel?: string;
   /** Shared MCP manager for channel-scoped MCP servers (owned by WorkerManager, NOT disconnected on agent close) */
   sharedMcpManager?: import("../mcp/client").MCPManager;
 }
@@ -278,6 +280,84 @@ export class Agent {
     }
     // Fall back to config model (from CLI args)
     return this.config.model || "claude-sonnet-4.5";
+  }
+
+  /**
+   * Determine the model to use for the current iteration.
+   * Downgrades to fastModel for pure tool-routing iterations to reduce costs.
+   *
+   * Downgrade conditions (ALL must be true):
+   * - iteration > 2 (first 2 always use full model for task understanding)
+   * - toolResultPending is false (full model needed to process tool results)
+   * - afterCompaction is false (need full model to re-orient after compaction)
+   * - userMessage does not contain reasoning keywords
+   * - last N iterations were ALL pure tool calls (no substantive text content)
+   */
+  private getIterationModel(
+    iteration: number,
+    iterationContentHistory: string[],
+    toolResultPending: boolean,
+    afterCompaction: boolean,
+    userMessage: string,
+  ): string {
+    const fullModel = this.getModel();
+    const fastModel = this.config.fastModel || "claude-haiku-4.5";
+
+    // Always use full model for first 2 iterations
+    if (iteration <= 2) {
+      if (this.config.verbose) {
+        console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
+      }
+      return fullModel;
+    }
+
+    // Always use full model when tool results are pending
+    if (toolResultPending) {
+      if (this.config.verbose) {
+        console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
+      }
+      return fullModel;
+    }
+
+    // Always use full model immediately after compaction
+    if (afterCompaction) {
+      if (this.config.verbose) {
+        console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
+      }
+      return fullModel;
+    }
+
+    // Always use full model for reasoning-heavy requests
+    const reasoningKeywords = /\b(explain|why|analyze|analyse|design|understand|reason|think|consider|evaluate)\b/i;
+    if (reasoningKeywords.test(userMessage)) {
+      if (this.config.verbose) {
+        console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
+      }
+      return fullModel;
+    }
+
+    // Check if last N iterations were pure tool calls (no substantive text >50 chars)
+    const PURE_TOOL_WINDOW = 3;
+    const recentHistory = iterationContentHistory.slice(-PURE_TOOL_WINDOW);
+    if (recentHistory.length < PURE_TOOL_WINDOW) {
+      if (this.config.verbose) {
+        console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
+      }
+      return fullModel;
+    }
+
+    const allPureToolCalls = recentHistory.every((c) => c.length < 50);
+    if (allPureToolCalls) {
+      if (this.config.verbose) {
+        console.log(`[Agent] Model: ${fastModel} (downgraded: tool-routing)`);
+      }
+      return fastModel;
+    }
+
+    if (this.config.verbose) {
+      console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
+    }
+    return fullModel;
   }
 
   // ============================================================================
@@ -1713,6 +1793,10 @@ SUMMARY:`;
     let consecutiveStreamErrors = 0; // Track consecutive stream errors for backoff
     const maxConsecutiveStreamErrors = 5; // Stop after this many consecutive stream errors
     let toolResultPending = false; // True after tool execution — grants more retries for delivering results to LLM
+    /** Per-iteration text content lengths for model tiering (pure tool call = content <50 chars) */
+    const iterationContentHistory: string[] = [];
+    /** True immediately after context compaction — use full model to re-orient */
+    let afterCompaction = false;
 
     try {
       // Agentic loop (maxIterations=0 means unlimited)
@@ -1767,6 +1851,7 @@ SUMMARY:`;
             // after compaction (line 2110 check: toolCallHistory.length > 0 && iterations > 1)
             toolCallHistory = [];
             emptyResponseCount = 0;
+            afterCompaction = true; // Use full model on next iteration to re-orient
           }
         }
 
@@ -1796,8 +1881,18 @@ SUMMARY:`;
         if (isDebugEnabled()) {
           console.log(`[Tools] Total: ${tools.length}, Filtered: ${filteredTools.length} - ${toolNames.join(", ")}`);
         }
+        const iterationModel = this.getIterationModel(
+          iterations,
+          iterationContentHistory,
+          toolResultPending,
+          afterCompaction,
+          userMessage,
+        );
+        // Reset afterCompaction flag now that we've used full model for re-orientation
+        afterCompaction = false;
+
         const request: CompletionRequest = {
-          model: this.getModel(),
+          model: iterationModel,
           messages,
           tools: filteredTools,
           tool_choice: "auto",
@@ -2125,6 +2220,10 @@ SUMMARY:`;
 
         // Stream succeeded — clear tool-result-pending flag (canonical reset point)
         toolResultPending = false;
+
+        // Record content length for model tiering (used by getIterationModel)
+        // Pure tool-call iteration = content is empty or very short (<50 chars)
+        iterationContentHistory.push(content);
 
         // If interrupted, save partial content/tool calls and continue with new message
         if (pendingInterrupt) {

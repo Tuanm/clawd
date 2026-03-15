@@ -37,6 +37,7 @@ export interface TrackedSpace {
   result?: string;
   error?: string;
   status: "running" | "completed" | "failed";
+  evictionTimer?: ReturnType<typeof setTimeout>;
 }
 
 export function createSpawnAgentPlugin(
@@ -86,9 +87,17 @@ export function createSpawnAgentPlugin(
             return { success: true, output: JSON.stringify({ count: agents.length, agents }, null, 2) };
           },
         },
-        // NOTE: retask_agent deferred to separate PR — requires DB migration
-        // (resetSpaceForRetask), full lifecycle management (timeout, cleanup),
-        // and resolution of .finally() race conditions with the original spawn.
+        {
+          name: "retask_agent",
+          description:
+            "Re-use a completed sub-agent by resetting it and posting a new follow-up task. Only works on agents with status 'completed'.",
+          parameters: {
+            agent_id: { type: "string", description: "The ID of the completed sub-agent to retask" },
+            task: { type: "string", description: "The new follow-up task to assign" },
+          },
+          required: ["agent_id", "task"],
+          handler: async (args) => handleRetaskAgent(args),
+        },
       ];
     },
   };
@@ -249,6 +258,9 @@ export function createSpawnAgentPlugin(
           // Evict from memory after 30 minutes (DB fallback still works)
           const evictTimer = setTimeout(() => trackedSpaces.delete(spaceId), 30 * 60 * 1000);
           if (typeof evictTimer === "object" && "unref" in evictTimer) (evictTimer as any).unref();
+          // Store so retask_agent can cancel this eviction
+          const t = trackedSpaces.get(spaceId);
+          if (t) t.evictionTimer = evictTimer;
         });
 
       trackedSpaces.set(spaceId, tracked);
@@ -272,6 +284,162 @@ export function createSpawnAgentPlugin(
       } catch {
         /* best-effort cleanup */
       }
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  async function handleRetaskAgent(args: Record<string, any>): Promise<ToolResult> {
+    const agentId = args.agent_id as string;
+    const task = args.task as string;
+
+    if (!agentId || !task) {
+      return { success: false, output: "", error: "Missing required parameters: agent_id, task" };
+    }
+
+    const tracked = trackedSpaces.get(agentId);
+    if (!tracked) {
+      return { success: false, output: "", error: `No tracked agent with id '${agentId}'` };
+    }
+    if (tracked.status !== "completed") {
+      return {
+        success: false,
+        output: "",
+        error: `Agent '${agentId}' is not completed (status: ${tracked.status}). Can only retask completed agents.`,
+      };
+    }
+
+    // Cancel the pending eviction so the space stays in memory
+    if (tracked.evictionTimer !== undefined) {
+      clearTimeout(tracked.evictionTimer);
+      tracked.evictionTimer = undefined;
+    }
+
+    // Reset the space in DB (only succeeds if status is 'completed')
+    const reset = spaceManager.resetSpace(agentId);
+    if (!reset) {
+      return {
+        success: false,
+        output: "",
+        error: `Failed to reset space '${agentId}' — it may no longer be in 'completed' state`,
+      };
+    }
+
+    const space = spaceManager.getSpace(agentId);
+    if (!space) {
+      return { success: false, output: "", error: `Space '${agentId}' not found after reset` };
+    }
+
+    try {
+      const agentConfig = await getAgentConfig(config.channel);
+      if (!agentConfig) {
+        return { success: false, output: "", error: `No agent configured for channel ${config.channel}` };
+      }
+
+      const subAgentId = `Agent-${agentId.slice(0, 8)}`;
+
+      // Post follow-up task to space channel
+      const taskRes = await timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: space.space_channel,
+          text: `**Task:** ${task}`,
+          user: "UBOT",
+          agent_id: config.agentId,
+        }),
+      });
+
+      if (!taskRes.ok) {
+        spaceManager.failSpace(space.id, "Failed to post retask to space channel");
+        return { success: false, output: "", error: "Failed to post retask to space channel" };
+      }
+
+      // Restart space worker
+      let completionPromise: Promise<string>;
+      try {
+        completionPromise = spaceWorkerManager.startSpaceWorker(space, { ...agentConfig, agentId: subAgentId });
+      } catch (workerErr: any) {
+        spaceManager.failSpace(space.id, workerErr.message);
+        return { success: false, output: "", error: `Failed to start worker: ${workerErr.message}` };
+      }
+
+      // Set up timeout controller
+      const timeoutMs = (space.timeout_seconds || 600) * 1000;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+      if (typeof timer === "object" && "unref" in timer) (timer as any).unref();
+      let settled = false;
+
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        const isTimeout = controller.signal.reason === "timeout";
+        const won = isTimeout
+          ? spaceManager.timeoutSpace(space.id)
+          : spaceManager.failSpace(space.id, String(controller.signal.reason));
+        if (won) {
+          const prefix = isTimeout ? "Sub-space timed out" : "Sub-space failed";
+          timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              channel: config.channel,
+              text: `${prefix}: ${tracked.name}`,
+              user: "UWORKER-SUBAGENT",
+              agent_id: subAgentId,
+            }),
+          }).catch(() => {});
+        }
+        spaceWorkerManager.stopSpaceWorker(space.id);
+      };
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+
+      // Reset tracked entry for the new run
+      tracked.promise = completionPromise;
+      tracked.startedAt = Date.now();
+      tracked.status = "running";
+      tracked.result = undefined;
+      tracked.error = undefined;
+
+      completionPromise
+        .then((summary) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+          }
+          tracked.status = "completed";
+          tracked.result = summary;
+        })
+        .catch((err) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            spaceManager.failSpace(agentId, (err as Error).message);
+          }
+          tracked.status = "failed";
+          tracked.error = (err as Error).message;
+        })
+        .finally(() => {
+          controller.signal.removeEventListener("abort", onAbort);
+          spaceWorkerManager.stopSpaceWorker(space.id);
+          spaceManager.cleanupSpaceAgents(space.id);
+          const evictTimer = setTimeout(() => trackedSpaces.delete(agentId), 30 * 60 * 1000);
+          if (typeof evictTimer === "object" && "unref" in evictTimer) (evictTimer as any).unref();
+          const t = trackedSpaces.get(agentId);
+          if (t) t.evictionTimer = evictTimer;
+        });
+
+      return {
+        success: true,
+        output: JSON.stringify({
+          agent_id: agentId,
+          name: tracked.name,
+          status: "retasked",
+          space_channel: space.space_channel,
+          message: "Sub-agent retasked. It will respond directly to this channel when done.",
+        }),
+      };
+    } catch (err: any) {
       return { success: false, output: "", error: err.message };
     }
   }

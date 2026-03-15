@@ -22,6 +22,9 @@ import { setDebug } from "./agent/src/utils/debug";
 import { initializeSandbox } from "./agent/src/utils/sandbox";
 import { smartTruncate } from "./agent/src/utils/smart-truncation";
 import { loadConfigFile } from "./config-file";
+import { db, getOrRegisterAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
+import { getPendingMessages, postMessage } from "./server/routes/messages";
+import { broadcastAgentStreaming, broadcastMessageSeen, broadcastUpdate } from "./server/websocket";
 import type { TrackedSpace } from "./spaces/spawn-plugin";
 import { timedFetch } from "./utils/timed-fetch";
 
@@ -122,6 +125,19 @@ export interface WorkerLoopConfig {
   }>;
   /** Shared MCPManager for channel-scoped MCP servers (owned by WorkerManager) */
   channelMcpManager?: import("./agent/src/mcp/client").MCPManager;
+  /**
+   * WebSocket URL for push notifications (e.g. ws://localhost:3000/ws).
+   * Derived from chatApiUrl by replacing http:// with ws://.
+   * When provided, the loop subscribes to its channel and skips idle sleep
+   * on push events — falling back to poll-only when WS is unavailable.
+   */
+  wsUrl?: string;
+  /**
+   * Use direct DB function calls instead of HTTP self-calls for polling and writes.
+   * Default true for in-process agents; set false for external/remote workers that
+   * must go through the HTTP API (e.g. workerToken-based remote workers).
+   */
+  directDb?: boolean;
 }
 
 export class WorkerLoop {
@@ -143,9 +159,18 @@ export class WorkerLoop {
   private continuationRetryCount = 0;
   private lastContinuationBatchHash: string | null = null;
 
-  // Idle backoff: ramp poll interval when no messages pending (200ms → 2s)
+  // Idle backoff: ramp poll interval when no messages pending (200ms → 5s)
+  // With WS push, 5s fallback is safe: push events skip the sleep entirely.
   private idlePollMs = POLL_INTERVAL;
-  private static readonly MAX_IDLE_POLL = 2000;
+  private static readonly MAX_IDLE_POLL = 5000;
+
+  // WebSocket push notification state
+  private ws: WebSocket | null = null;
+  private wsReconnectTimer: Timer | null = null;
+  private wsReconnectDelay = 1000; // ms, doubles on each failure (max 5s)
+  private static readonly WS_MAX_RECONNECT = 5000;
+  /** Set to true by WS push handler; cleared after each poll. */
+  private hasNewMessages = false;
 
   // Skip redundant markSeen writes
   private lastMarkedSeenTs: string | null = null;
@@ -284,6 +309,7 @@ export class WorkerLoop {
     this.wasCancelledByHeartbeat = false;
     this.abortController = new AbortController();
     this.log("Starting worker loop");
+    this.connectWebSocket();
     this.loop();
   }
 
@@ -292,6 +318,7 @@ export class WorkerLoop {
     if (!this.running) return;
     this.log("Stopping worker loop");
     this.running = false;
+    this.disconnectWebSocket();
     this.abortController?.abort();
     // Cancel the active agent if one is running
     if (this.activeAgent) {
@@ -310,6 +337,89 @@ export class WorkerLoop {
       this.stoppedPromise = null;
     }
     await this.clearStreamingState();
+  }
+
+  // ===========================================================================
+  // WebSocket push notification — reduces idle polling latency
+  // ===========================================================================
+
+  /**
+   * Open a WebSocket connection to the chat server and subscribe to this
+   * agent's channel. On receiving a `message` event for the channel, sets
+   * `hasNewMessages = true` so the poll loop skips its idle sleep and picks
+   * up the message immediately.
+   *
+   * Reconnects automatically with exponential backoff (max 5 s).
+   * Fails gracefully: if WS is unavailable the loop continues in poll-only mode.
+   */
+  private connectWebSocket(): void {
+    const wsUrl = this.config.wsUrl;
+    if (!wsUrl) return;
+
+    const { channel, agentId } = this.config;
+    const url = `${wsUrl}?user=UBOT&agent_id=${encodeURIComponent(agentId)}`;
+
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      this.log(`WS: failed to create connection (poll-only mode): ${err}`);
+      return;
+    }
+
+    this.ws = ws;
+
+    ws.onopen = () => {
+      this.wsReconnectDelay = 1000; // Reset backoff on successful connect
+      ws.send(JSON.stringify({ type: "subscribe", channel }));
+      this.log(`WS: connected and subscribed to channel ${channel}`);
+    };
+
+    ws.onmessage = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(typeof event.data === "string" ? event.data : event.data.toString());
+        if (data.type === "message" && data.channel === channel) {
+          this.hasNewMessages = true;
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    };
+
+    ws.onerror = () => {
+      // onclose fires right after onerror; reconnect is handled there
+    };
+
+    ws.onclose = () => {
+      this.ws = null;
+      if (!this.running) return; // Stopped intentionally — don't reconnect
+      this.scheduleWsReconnect();
+    };
+  }
+
+  /** Tear down the WebSocket connection and cancel any pending reconnect timer */
+  private disconnectWebSocket(): void {
+    if (this.wsReconnectTimer !== null) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+  }
+
+  /** Schedule a reconnect attempt with exponential backoff (max 5 s) */
+  private scheduleWsReconnect(): void {
+    const delay = this.wsReconnectDelay;
+    this.wsReconnectDelay = Math.min(this.wsReconnectDelay * 2, WorkerLoop.WS_MAX_RECONNECT);
+    this.log(`WS: reconnecting in ${delay}ms`);
+    this.wsReconnectTimer = setTimeout(() => {
+      this.wsReconnectTimer = null;
+      if (this.running) this.connectWebSocket();
+    }, delay);
   }
 
   /** Main polling loop */
@@ -452,9 +562,14 @@ export class WorkerLoop {
       // Skip first poll delay for freshly spawned agents (task already posted)
       if (this.firstPoll) {
         this.firstPoll = false;
+      } else if (this.hasNewMessages) {
+        // WS push arrived — skip idle sleep and poll immediately, then reset flag.
+        this.hasNewMessages = false;
+        this.idlePollMs = POLL_INTERVAL; // Snap back to fast polling
       } else {
         // Idle backoff: sleep using current interval, then ramp up if idle.
-        // idlePollMs snaps back to POLL_INTERVAL when messages are found (line 336).
+        // WS push events make the higher max (5s) safe — push triggers immediate poll.
+        // idlePollMs snaps back to POLL_INTERVAL when messages are found (above).
         await Bun.sleep(this.idlePollMs);
         if (!this.isProcessing) {
           this.idlePollMs = Math.min(this.idlePollMs * 2, WorkerLoop.MAX_IDLE_POLL);
@@ -465,8 +580,131 @@ export class WorkerLoop {
     this.config.onLoopExit?.();
   }
 
-  /** Poll for pending messages */
+  /** Poll for pending messages — delegates to direct DB or HTTP based on config */
   private async pollPending(): Promise<PollResult> {
+    if (this.config.directDb !== false) {
+      return this.pollPendingDirect();
+    }
+    return this.pollPendingHttp();
+  }
+
+  /** Direct DB poll — eliminates TCP/HTTP/JSON overhead for in-process agents */
+  private pollPendingDirect(): PollResult {
+    const { agentId, channel } = this.config;
+    const empty: PollResult = {
+      ok: false,
+      messages: [],
+      pending: [],
+      unseen: [],
+      seenNotProcessed: [],
+      serverLastProcessed: null,
+      serverLastSeen: null,
+    };
+
+    try {
+      // Single query replaces two HTTP round-trips (getLastSeen + getLastProcessed)
+      const seenRow = db
+        .query<{ last_seen_ts: string | null; last_processed_ts: string | null }, [string, string]>(
+          `SELECT last_seen_ts, last_processed_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
+        )
+        .get(agentId, channel);
+
+      const serverLastSeen = seenRow?.last_seen_ts ?? null;
+      const serverLastProcessed = seenRow?.last_processed_ts ?? null;
+
+      // Fetch pending messages directly
+      const pendingData = getPendingMessages(channel, serverLastProcessed ?? undefined, true, 50);
+      if (!pendingData.ok) return { ...empty, serverLastProcessed, serverLastSeen };
+
+      const messages = pendingData.messages as Message[];
+
+      const isRelevant = (m: Message) => {
+        if (m.agent_id === agentId) return false;
+        if (m.user === "UBOT" && !m.agent_id) return false;
+        return true;
+      };
+
+      const unseen = messages.filter((m) => {
+        if (!isRelevant(m)) return false;
+        return !serverLastSeen || m.ts > serverLastSeen;
+      });
+
+      const seenNotProcessed = messages.filter((m) => {
+        if (!isRelevant(m)) return false;
+        const afterProcessed = !serverLastProcessed || m.ts > serverLastProcessed;
+        const beforeOrEqualSeen = serverLastSeen && m.ts <= serverLastSeen;
+        return afterProcessed && beforeOrEqualSeen;
+      });
+
+      const pending = messages.filter((m) => {
+        if (!isRelevant(m)) return false;
+        return !serverLastProcessed || m.ts > serverLastProcessed;
+      });
+
+      // Mark all messages as seen — skip write when maxTs hasn't changed
+      if (messages.length > 0) {
+        const maxTs = messages.reduce((max, m) => (m.ts > max ? m.ts : max), "0");
+        if (maxTs !== this.lastMarkedSeenTs) {
+          this.markSeenDirect(agentId, channel, maxTs);
+          this.lastMarkedSeenTs = maxTs;
+        }
+      }
+
+      return { ok: true, messages, pending, unseen, seenNotProcessed, serverLastProcessed, serverLastSeen };
+    } catch (error) {
+      this.log(`Poll error (direct): ${error}`);
+      return empty;
+    }
+  }
+
+  /** Write markSeen directly to DB (mirrors agent.markSeen route logic) */
+  private markSeenDirect(agentId: string, channel: string, lastSeenTs: string): void {
+    const nowTs = Math.floor(Date.now() / 1000);
+    getOrRegisterAgent(agentId, channel);
+    db.run(
+      `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_poll_ts, updated_at)
+       VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+       ON CONFLICT(agent_id, channel) DO UPDATE SET
+         last_seen_ts = excluded.last_seen_ts,
+         last_poll_ts = excluded.last_poll_ts,
+         updated_at = strftime('%s', 'now')`,
+      [agentId, channel, lastSeenTs, nowTs],
+    );
+
+    // Mark individual messages seen in message_seen table
+    const messagesToMark = db
+      .query<{ ts: string }, [string, string, string, number]>(
+        `SELECT ts FROM messages WHERE channel = ? AND ts <= ? AND (agent_id IS NULL OR agent_id != ?) ORDER BY ts DESC LIMIT ?`,
+      )
+      .all(channel, lastSeenTs, agentId, 200);
+    if (messagesToMark.length > 0) {
+      markMessagesSeen(
+        channel,
+        agentId,
+        messagesToMark.map((m) => m.ts),
+      );
+    }
+
+    // Wake agent from hibernate
+    db.run(
+      `UPDATE agent_status SET status = 'ready', hibernate_until = NULL, updated_at = strftime('%s', 'now')
+       WHERE agent_id = ? AND channel = ? AND status = 'hibernate'`,
+      [agentId, channel],
+    );
+
+    // Broadcast UI events
+    broadcastUpdate(channel, { type: "agent_seen", agent_id: agentId, last_seen_ts: lastSeenTs });
+    const lastNonSelfMsg = db
+      .query<{ ts: string }, [string, string, string]>(
+        `SELECT ts FROM messages WHERE channel = ? AND ts <= ? AND (agent_id IS NULL OR agent_id != ?) ORDER BY ts DESC LIMIT 1`,
+      )
+      .get(channel, lastSeenTs, agentId);
+    if (lastNonSelfMsg) broadcastMessageSeen(channel, lastNonSelfMsg.ts, agentId);
+    broadcastUpdate(channel, { type: "agent_status", agent_id: agentId, status: "ready", hibernate_until: null });
+  }
+
+  /** HTTP poll — fallback for external/remote workers that cannot access DB directly */
+  private async pollPendingHttp(): Promise<PollResult> {
     const { chatApiUrl, agentId, channel } = this.config;
     const empty: PollResult = {
       ok: false,
@@ -546,6 +784,22 @@ export class WorkerLoop {
 
   /** Send a message to the channel */
   private async sendMessage(text: string): Promise<boolean> {
+    if (this.config.directDb !== false) {
+      try {
+        const result = postMessage({
+          channel: this.config.channel,
+          text,
+          user: "UBOT",
+          agent_id: this.config.agentId,
+        });
+        if (result.ok && result.message) {
+          broadcastUpdate(this.config.channel, result.message);
+        }
+        return result.ok;
+      } catch {
+        return false;
+      }
+    }
     try {
       const res = await timedFetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
         method: "POST",
@@ -566,6 +820,22 @@ export class WorkerLoop {
 
   /** Send nudge message as "System" agent (bypasses isRelevant() self-filter) */
   private async sendNudgeMessage(text: string): Promise<boolean> {
+    if (this.config.directDb !== false) {
+      try {
+        const result = postMessage({
+          channel: this.config.channel,
+          text,
+          user: "UBOT",
+          agent_id: "System",
+        });
+        if (result.ok && result.message) {
+          broadcastUpdate(this.config.channel, result.message);
+        }
+        return result.ok;
+      } catch {
+        return false;
+      }
+    }
     try {
       const res = await timedFetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
         method: "POST",
@@ -584,8 +854,28 @@ export class WorkerLoop {
     }
   }
 
-  /** Force-mark messages as processed via API (Layer 5 — continuation cap) */
+  /** Force-mark messages as processed (Layer 5 — continuation cap) */
   private async forceMarkProcessed(ts: string): Promise<boolean> {
+    if (this.config.directDb !== false) {
+      try {
+        const { agentId, channel } = this.config;
+        getOrRegisterAgent(agentId, channel);
+        db.run(
+          `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+           VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+           ON CONFLICT(agent_id, channel) DO UPDATE SET
+             last_processed_ts = excluded.last_processed_ts,
+             updated_at = strftime('%s', 'now')`,
+          [agentId, channel, ts, ts],
+        );
+        broadcastUpdate(channel, { type: "agent_processed", agent_id: agentId, last_processed_ts: ts });
+        this.log(`Force-marked processed up to ts=${ts}`);
+        return true;
+      } catch (err) {
+        this.log(`Failed to force markProcessed (direct): ${err}`);
+        return false;
+      }
+    }
     try {
       const res = await timedFetch(`${this.config.chatApiUrl}/api/agent.setLastProcessed`, {
         method: "POST",
@@ -1074,6 +1364,14 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
 
   /** Clear streaming state on shutdown */
   private async clearStreamingState(): Promise<void> {
+    if (this.config.directDb !== false) {
+      try {
+        const { agentId, channel } = this.config;
+        const success = setAgentStreaming(agentId, channel, false);
+        if (success) broadcastAgentStreaming(channel, agentId, false);
+      } catch {}
+      return;
+    }
     try {
       await timedFetch(
         `${this.config.chatApiUrl}/api/agent.setStreaming`,
