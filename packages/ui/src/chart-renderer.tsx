@@ -54,6 +54,14 @@ function normalizeSpec(raw: ChartSpec): ChartSpec {
       dataKey: s.dataKey || s.key,
     }));
   }
+  // Auto-infer series from data keys when absent (except for pie charts which use dataKey/nameKey)
+  if ((!raw.series || raw.series.length === 0) && raw.type !== "pie") {
+    const xKey = raw.xAxis?.dataKey ?? raw.xKey ?? "name";
+    const sample = Array.isArray(raw.data) && raw.data.length > 0 ? raw.data[0] : {};
+    raw.series = Object.keys(sample as Record<string, unknown>)
+      .filter((k) => k !== xKey && typeof (sample as Record<string, unknown>)[k] === "number")
+      .map((k) => ({ dataKey: k }));
+  }
   return raw;
 }
 
@@ -71,7 +79,9 @@ const DEFAULT_COLORS = [
 ];
 
 function parseChartSpec(content: string): ChartSpec {
-  const spec = JSON.parse(content) as Record<string, unknown>;
+  // Strip optional ```json ... ``` wrapper that LLMs commonly produce around JSON
+  const stripped = content.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/m, "$1").trim();
+  const spec = JSON.parse(stripped) as Record<string, unknown>;
   if (!spec.type || !Array.isArray(spec.data)) {
     throw new Error("Chart spec requires 'type' and 'data' array");
   }
