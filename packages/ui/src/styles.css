@@ -6580,3 +6580,244 @@ textarea {
   font-size: 12px;
   color: hsl(0 65% 60%);
 }
+
+/* ── Inline artifact rendering (chart / svg) ──────────────────── */
+.message-inline-artifact {
+  margin: 8px 0;
+  border: 1px solid hsl(var(--text) / 10%);
+  border-radius: 8px;
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.message-inline-artifact-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: hsl(var(--text) / 60%);
+  border-bottom: 1px solid hsl(var(--text) / 8%);
+  background: hsl(var(--text) / 3%);
+}
+
+.message-inline-artifact-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-inline-artifact-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.message-inline-artifact:hover .message-inline-artifact-actions {
+  opacity: 1;
+}
+
+.message-inline-artifact-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  border: 1px solid hsl(var(--text) / 15%);
+  border-radius: 4px;
+  background: transparent;
+  color: hsl(var(--text) / 60%);
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+
+.message-inline-artifact-action-btn:hover {
+  background: hsl(var(--text) / 8%);
+  color: hsl(var(--text) / 90%);
+}
+
+.message-inline-artifact-body {
+  padding: 12px;
+}
+
+.message-inline-artifact-loading {
+  padding: 24px;
+  text-align: center;
+  color: hsl(var(--text) / 50%);
+  font-size: 13px;
+}
+
+/* Streaming skeleton pulse for inline chart/SVG */
+.message-inline-artifact--streaming .message-inline-artifact-body {
+  min-height: 120px;
+  background: linear-gradient(90deg, hsl(var(--text) / 4%) 25%, hsl(var(--text) / 8%) 50%, hsl(var(--text) / 4%) 75%);
+  background-size: 200% 100%;
+  animation: inline-artifact-skeleton 1.5s ease-in-out infinite;
+}
+
+@keyframes inline-artifact-skeleton {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* ── Sidebar Panel ────────────────────────────────────────────────────────── */
+.sidebar-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 50vw;
+  min-width: 400px;
+  max-width: 800px;
+  height: 100vh;
+  z-index: 200;
+  background: hsl(var(--bg));
+  border-left: 1px solid hsl(var(--text) / 12%);
+  box-shadow: -4px 0 20px hsl(0 0% 0% / 10%);
+  transform: translateX(100%);
+  transition: transform 0.3s ease;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.sidebar-panel.open {
+  transform: translateX(0);
+}
+
+.sidebar-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid hsl(var(--text) / 10%);
+  background: hsl(var(--bg));
+  flex-shrink: 0;
+  gap: 12px;
+  min-height: 52px;
+}
+
+.sidebar-panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.sidebar-panel-type-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+}
+
+.sidebar-panel-type-badge--embed {
+  background: hsl(220 70% 55%);
+}
+
+.sidebar-panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-panel-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.sidebar-panel-close-btn:hover {
+  background: hsl(var(--text) / 8%);
+  color: var(--text-primary);
+}
+
+.sidebar-panel-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.sidebar-panel-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.sidebar-panel-artifact {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+/* ── Sidebar Toggle Button ───────────────────────────────────────────────── */
+.sidebar-toggle-btn {
+  position: fixed;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 190;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid hsl(var(--text) / 15%);
+  background: hsl(var(--bg-center));
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: -2px 0 8px hsl(0 0% 0% / 8%);
+  transition:
+    background 0.15s,
+    color 0.15s,
+    box-shadow 0.15s;
+}
+
+.sidebar-toggle-btn:hover {
+  background: hsl(var(--bg-center));
+  color: var(--text-primary);
+  box-shadow: -2px 0 12px hsl(0 0% 0% / 14%);
+}
+
+/* When sidebar is open, button shifts left to be visible at the sidebar edge */
+.sidebar-toggle-btn.open {
+  right: calc(50vw + 8px);
+}
+
+/* Embed artifact card variant */
+.artifact-preview-card--embed {
+  cursor: pointer;
+}
