@@ -24,6 +24,7 @@ import "prismjs/components/prism-c";
 import "prismjs/components/prism-cpp";
 import "prismjs/components/prism-csharp";
 import "prismjs/components/prism-ruby";
+import "prismjs/components/prism-markup-templating"; // required by prism-php
 import "prismjs/components/prism-php";
 import "prismjs/components/prism-docker";
 import "prismjs/components/prism-nginx";
