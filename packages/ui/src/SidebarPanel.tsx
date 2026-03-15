@@ -3,7 +3,8 @@
 //   "iframe" — sandboxed iframe for external URLs (Google Docs, Figma, Atlassian, etc.)
 //   "artifact" — ArtifactRenderer for html/react/csv/markdown/code content
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, Fragment } from "react";
+import { createPortal } from "react-dom";
 import FullArtifactRenderer from "./artifact-renderer";
 import { type ArtifactType, TYPE_CONFIG } from "./artifact-types";
 
@@ -19,24 +20,6 @@ export interface SidebarPanelContent {
 interface SidebarPanelProps extends SidebarPanelContent {
   isOpen: boolean;
   onClose: () => void;
-}
-
-// Chevron icon — points left when panel is open (to indicate close), right when closed
-function ChevronIcon({ direction }: { direction: "left" | "right" }) {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {direction === "left" ? <polyline points="15 18 9 12 15 6" /> : <polyline points="9 18 15 12 9 6" />}
-    </svg>
-  );
 }
 
 function CloseIcon() {
@@ -89,65 +72,47 @@ export default function SidebarPanel({
   const config = artifactType ? (TYPE_CONFIG[artifactType] ?? TYPE_CONFIG.code) : null;
 
   return (
-    <div
-      ref={panelRef}
-      className={`sidebar-panel${isOpen ? " open" : ""}`}
-      role="complementary"
-      aria-label={`${title} panel`}
-      tabIndex={-1}
-    >
-      <div className="sidebar-panel-header">
-        <div className="sidebar-panel-header-left">
-          {config && (
-            <span className="sidebar-panel-type-badge" style={{ background: config.color }}>
-              {config.icon}
-            </span>
-          )}
-          {type === "iframe" && !config && (
-            <span className="sidebar-panel-type-badge sidebar-panel-type-badge--embed">{"</>"}</span>
-          )}
-          <span className="sidebar-panel-title">{title}</span>
-        </div>
-        <button className="sidebar-panel-close-btn" onClick={onClose} aria-label="Close sidebar" title="Close (Esc)">
-          <CloseIcon />
-        </button>
-      </div>
-      <div className="sidebar-panel-body">
-        {isOpen && type === "iframe" && url && (
-          <iframe
-            src={url}
-            title={title}
-            className="sidebar-panel-iframe"
-            sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"
-          />
-        )}
-        {isOpen && type === "artifact" && content !== undefined && artifactType && (
-          <div className="sidebar-panel-artifact">
-            <FullArtifactRenderer artifactType={artifactType} content={content} language={language} />
+    <Fragment>
+      {isOpen && createPortal(<div className="sidebar-backdrop" onClick={onClose} aria-hidden="true" />, document.body)}
+      <div
+        ref={panelRef}
+        className={`sidebar-panel${isOpen ? " open" : ""}`}
+        role="complementary"
+        aria-label={`${title} panel`}
+        tabIndex={-1}
+      >
+        <div className="sidebar-panel-header">
+          <div className="sidebar-panel-header-left">
+            {config && (
+              <span className="sidebar-panel-type-badge" style={{ background: config.color }}>
+                {config.icon}
+              </span>
+            )}
+            {type === "iframe" && !config && (
+              <span className="sidebar-panel-type-badge sidebar-panel-type-badge--embed">{"</>"}</span>
+            )}
+            <span className="sidebar-panel-title">{title}</span>
           </div>
-        )}
+          <button className="sidebar-panel-close-btn" onClick={onClose} aria-label="Close sidebar" title="Close (Esc)">
+            <CloseIcon />
+          </button>
+        </div>
+        <div className="sidebar-panel-body">
+          {isOpen && type === "iframe" && url && (
+            <iframe
+              src={url}
+              title={title}
+              className="sidebar-panel-iframe"
+              sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+            />
+          )}
+          {isOpen && type === "artifact" && content !== undefined && artifactType && (
+            <div className="sidebar-panel-artifact">
+              <FullArtifactRenderer artifactType={artifactType} content={content} language={language} />
+            </div>
+          )}
+        </div>
       </div>
-    </div>
-  );
-}
-
-// Toggle button shown on the right border of the chat area when sidebar has content
-interface SidebarToggleButtonProps {
-  isOpen: boolean;
-  hasContent: boolean;
-  onToggle: () => void;
-}
-
-export function SidebarToggleButton({ isOpen, hasContent, onToggle }: SidebarToggleButtonProps) {
-  if (!hasContent) return null;
-  return (
-    <button
-      className={`sidebar-toggle-btn${isOpen ? " open" : ""}`}
-      onClick={onToggle}
-      aria-label={isOpen ? "Close sidebar" : "Open sidebar"}
-      title={isOpen ? "Close sidebar" : "Open sidebar"}
-    >
-      <ChevronIcon direction={isOpen ? "right" : "left"} />
-    </button>
+    </Fragment>
   );
 }

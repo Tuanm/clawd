@@ -15,7 +15,7 @@ import { highlightCode } from "./prism-setup";
 import FilePreview, { isPreviewableMimetype } from "./file-preview";
 import LazyViewport from "./lazy-viewport";
 import { markdownSanitizeSchema } from "./sanitize-schema";
-import { CopyIcon, PreBlock } from "./ui-primitives";
+import { CopyIcon, CheckIcon, PreBlock } from "./ui-primitives";
 import { ArtifactPreviewCard, StreamingArtifactCard, type ArtifactType } from "./artifact-card";
 
 // Lazy-load ChartRenderer (Recharts) for inline chart rendering in messages
@@ -162,7 +162,7 @@ function EditIcon() {
 }
 
 // Re-export for backward compat (ArticlePage imports CopyIcon from here)
-export { CopyIcon } from "./ui-primitives";
+export { CopyIcon, CheckIcon } from "./ui-primitives";
 
 // Arrow down icon
 function ArrowDownIcon() {
@@ -215,7 +215,13 @@ export { PreBlock };
 // Mermaid diagram component — memoized to avoid re-rendering when chart content unchanged.
 // Keeps the previous SVG visible while a new render is in progress (prevents flash).
 // Uses per-instance render ID (useId) so two identical diagrams never stomp each other's DOM.
-export const MermaidDiagram = React.memo(function MermaidDiagram({ chart }: { chart: string }) {
+export const MermaidDiagram = React.memo(function MermaidDiagram({
+  chart,
+  onZoom,
+}: {
+  chart: string;
+  onZoom?: (svg: string) => void;
+}) {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   // Per-instance stable ID — prevents two equal charts from clobbering each other's SVG node
@@ -272,7 +278,14 @@ export const MermaidDiagram = React.memo(function MermaidDiagram({ chart }: { ch
 
   if (!svg) return null;
 
-  return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
+  return (
+    <div
+      className={`mermaid-diagram${onZoom ? " mermaid-diagram--zoomable" : ""}`}
+      dangerouslySetInnerHTML={{ __html: svg }}
+      onClick={onZoom ? () => onZoom(svg) : undefined}
+      style={onZoom ? { cursor: "zoom-in" } : undefined}
+    />
+  );
 });
 
 // ── Message block types ───────────────────────────────────────────────────────
@@ -285,6 +298,14 @@ type MessageBlock =
   | { type: "artifact"; artifactType: ArtifactType; title: string; content: string; language?: string }
   | { type: "streaming-artifact"; artifactType: ArtifactType; title: string; partialContent: string }
   | { type: "embed"; title: string; url: string };
+
+// YouTube embed hostnames allowed in iframes
+const YOUTUBE_EMBED_HOSTS = new Set([
+  "www.youtube.com",
+  "youtube.com",
+  "www.youtube-nocookie.com",
+  "youtube-nocookie.com",
+]);
 
 // Validates that a URL is safe (http/https or relative /api/ path) to prevent XSS
 function isSafeUrl(url: string): boolean {
@@ -300,6 +321,17 @@ function isSafeUrl(url: string): boolean {
   try {
     const p = new URL(url);
     return p.protocol === "https:" || p.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+// Returns true if the URL is a YouTube embed (needs allow-same-origin in sandbox)
+function isYouTubeEmbedUrl(url: string): boolean {
+  try {
+    const p = new URL(url);
+    if (!YOUTUBE_EMBED_HOSTS.has(p.hostname)) return false;
+    return p.pathname.startsWith("/embed/");
   } catch {
     return false;
   }
@@ -353,6 +385,10 @@ function IframePreviewCard({
     return () => window.removeEventListener("message", handleMessage);
   }, [iframeId]);
 
+  const sandboxAttr = isYouTubeEmbedUrl(src)
+    ? "allow-scripts allow-same-origin allow-popups"
+    : "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox";
+
   return (
     <div className="message-iframe-card" style={{ height: `${height}px` }}>
       <iframe
@@ -361,7 +397,7 @@ function IframePreviewCard({
         id={iframeId || undefined}
         title="Embedded content"
         style={{ width: "100%", height: "100%", border: "none", display: "block" }}
-        sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+        sandbox={sandboxAttr}
       />
     </div>
   );
@@ -1389,6 +1425,33 @@ function StreamEntryView({ entry }: { entry: StreamEntry }) {
   return null;
 }
 
+// Small copy button with icon + transient "copied" feedback for inline artifact headers
+function InlineArtifactCopyBtn({ content, title = "Copy" }: { content: string; title?: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch {
+      // Fallback for non-HTTPS or restricted contexts
+      const ta = document.createElement("textarea");
+      ta.value = content;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <button className="message-inline-artifact-action-btn" title={copied ? "Copied!" : title} onClick={handleCopy}>
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </button>
+  );
+}
+
 export default function MessageList({
   messages,
   pendingMessages = [],
@@ -1438,6 +1501,9 @@ export default function MessageList({
 
   // Lightbox state for image preview
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null);
+
+  // Mermaid zoom modal state
+  const [mermaidZoom, setMermaidZoom] = useState<string | null>(null); // stores rendered SVG content
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -2157,13 +2223,23 @@ export default function MessageList({
                                       height={200}
                                       fallback={<div className="mermaid-placeholder">Loading diagram...</div>}
                                     >
-                                      <MermaidDiagram chart={block.content} />
+                                      <MermaidDiagram chart={block.content} onZoom={(svg) => setMermaidZoom(svg)} />
                                     </LazyViewport>
                                   </div>
                                 );
                               case "image":
                                 return (
-                                  <div key={`block-${i}`} className="message-block message-image-card">
+                                  <div
+                                    key={`block-${i}`}
+                                    className="message-block message-image-card"
+                                    onClick={() => setLightboxImage({ src: block.src, alt: block.alt || "" })}
+                                    onKeyDown={(e) =>
+                                      e.key === "Enter" && setLightboxImage({ src: block.src, alt: block.alt || "" })
+                                    }
+                                    role="button"
+                                    tabIndex={0}
+                                    style={{ cursor: "pointer" }}
+                                  >
                                     <img src={block.src} alt={block.alt} />
                                     {block.alt && <p className="image-card-alt">{block.alt}</p>}
                                   </div>
@@ -2229,13 +2305,7 @@ export default function MessageList({
                                         <div className="message-inline-artifact-header">
                                           <span className="message-inline-artifact-title">{block.title}</span>
                                           <div className="message-inline-artifact-actions">
-                                            <button
-                                              className="message-inline-artifact-action-btn"
-                                              title="Copy"
-                                              onClick={() => navigator.clipboard.writeText(block.content)}
-                                            >
-                                              Copy
-                                            </button>
+                                            <InlineArtifactCopyBtn content={block.content} />
                                           </div>
                                         </div>
                                         <div className="message-inline-artifact-body">
@@ -2262,13 +2332,7 @@ export default function MessageList({
                                         <div className="message-inline-artifact-header">
                                           <span className="message-inline-artifact-title">{block.title}</span>
                                           <div className="message-inline-artifact-actions">
-                                            <button
-                                              className="message-inline-artifact-action-btn"
-                                              title="Copy SVG"
-                                              onClick={() => navigator.clipboard.writeText(block.content)}
-                                            >
-                                              Copy
-                                            </button>
+                                            <InlineArtifactCopyBtn content={block.content} title="Copy SVG" />
                                           </div>
                                         </div>
                                         <div
@@ -2276,6 +2340,28 @@ export default function MessageList({
                                           dangerouslySetInnerHTML={{ __html: sanitizedSvg }}
                                         />
                                       </div>
+                                    </div>
+                                  );
+                                }
+                                // Code artifacts render inline like code fences (not sidebar)
+                                if (block.artifactType === "code") {
+                                  const codeHl = block.language ? highlightCode(block.content, block.language) : null;
+                                  return (
+                                    <div key={`block-${i}`} className="message-block">
+                                      <PreBlock>
+                                        {codeHl ? (
+                                          <code
+                                            className={`language-${block.language}`}
+                                            dangerouslySetInnerHTML={{ __html: codeHl }}
+                                          />
+                                        ) : (
+                                          <code
+                                            className={block.language ? `language-${block.language}` : "language-text"}
+                                          >
+                                            {block.content}
+                                          </code>
+                                        )}
+                                      </PreBlock>
                                     </div>
                                   );
                                 }
@@ -2572,6 +2658,34 @@ export default function MessageList({
             >
               Open in new tab ↗
             </a>
+          </div>,
+          document.body,
+        )}
+      {/* Mermaid zoom modal */}
+      {mermaidZoom &&
+        createPortal(
+          <div
+            className="lightbox-overlay"
+            onClick={() => setMermaidZoom(null)}
+            onKeyDown={(e) => e.key === "Escape" && setMermaidZoom(null)}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Diagram zoom"
+            tabIndex={-1}
+          >
+            <button className="lightbox-close" onClick={() => setMermaidZoom(null)} aria-label="Close">
+              ×
+            </button>
+            <div
+              className="lightbox-mermaid"
+              dangerouslySetInnerHTML={{
+                __html: DOMPurify.sanitize(mermaidZoom, {
+                  USE_PROFILES: { svg: true, svgFilters: true },
+                  ADD_TAGS: ["use"],
+                }),
+              }}
+              onClick={(e) => e.stopPropagation()}
+            />
           </div>,
           document.body,
         )}

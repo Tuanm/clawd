@@ -7,7 +7,7 @@ import MessageList, { StreamOutputDialog } from "./MessageList";
 import PlanModal from "./PlanModal";
 import ProjectsDialog from "./ProjectsDialog";
 import SearchModal from "./SearchModal";
-import SidebarPanel, { SidebarToggleButton } from "./SidebarPanel";
+import SidebarPanel from "./SidebarPanel";
 import { UnreadBadge } from "./UnreadBadge";
 
 interface SeenByAgent {
@@ -522,6 +522,8 @@ export default function App({ channel: initialChannel }: Props) {
 
   const closeSidebar = useCallback(() => {
     setSidebarOpen(false);
+    // Clear content after slide-out animation (300ms matches CSS transition)
+    setTimeout(() => setSidebarContent(null), 300);
   }, []);
 
   // Helper to get current channel state
@@ -2006,11 +2008,6 @@ export default function App({ channel: initialChannel }: Props) {
           onOpenSidebar={openSidebar}
         />
       </div>
-      <SidebarToggleButton
-        isOpen={sidebarOpen}
-        hasContent={sidebarContent !== null}
-        onToggle={() => setSidebarOpen((v) => !v)}
-      />
       {sidebarContent && (
         <SidebarPanel
           isOpen={sidebarOpen}

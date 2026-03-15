@@ -57,7 +57,8 @@ export interface ArtifactPreviewCardProps {
 }
 
 // Sidebar target types — these open in the sidebar panel instead of the modal
-const SIDEBAR_ARTIFACT_TYPES: ArtifactType[] = ["html", "react", "csv", "markdown", "code"];
+// Code artifacts render inline (like code fences), not in sidebar
+const SIDEBAR_ARTIFACT_TYPES: ArtifactType[] = ["html", "react", "csv", "markdown"];
 
 // Compact card always shown in-message; click opens ArtifactModal overlay or sidebar
 export function ArtifactPreviewCard({
