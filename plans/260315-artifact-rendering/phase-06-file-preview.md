@@ -371,7 +371,7 @@ import FilePreview, { isPreviewableMimetype } from "./file-preview";
 - CSV artifacts render as scrollable tables with sticky headers
 - PDF attachments preview inline
 - Audio/video play in-browser with native controls
-- Zero new npm dependencies
+- Zero new dependencies
 - Dark mode compatible
 
 ## Risk Assessment

@@ -5814,24 +5814,76 @@ textarea {
   }
 }
 
-.token.comment, .token.prolog, .token.doctype, .token.cdata { color: var(--prism-comment); font-style: italic; }
-.token.keyword, .token.control, .token.directive { color: var(--prism-keyword); }
-.token.string, .token.char, .token.template-string, .token.url { color: var(--prism-string); }
-.token.function { color: var(--prism-function); }
-.token.number, .token.boolean { color: var(--prism-number); }
-.token.operator, .token.entity { color: var(--prism-operator); }
-.token.class-name, .token.maybe-class-name { color: var(--prism-class); }
-.token.punctuation { color: var(--prism-punctuation); }
-.token.property, .token.constant, .token.variable { color: var(--prism-property); }
-.token.tag { color: var(--prism-tag); }
-.token.attr-name { color: var(--prism-attr-name); }
-.token.attr-value { color: var(--prism-attr-value); }
-.token.builtin, .token.symbol { color: var(--prism-builtin); }
-.token.inserted { color: var(--prism-inserted); }
-.token.deleted { color: var(--prism-deleted); }
-.token.changed { color: var(--prism-changed); }
-.token.important, .token.bold { font-weight: bold; }
-.token.italic { font-style: italic; }
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: var(--prism-comment);
+  font-style: italic;
+}
+.token.keyword,
+.token.control,
+.token.directive {
+  color: var(--prism-keyword);
+}
+.token.string,
+.token.char,
+.token.template-string,
+.token.url {
+  color: var(--prism-string);
+}
+.token.function {
+  color: var(--prism-function);
+}
+.token.number,
+.token.boolean {
+  color: var(--prism-number);
+}
+.token.operator,
+.token.entity {
+  color: var(--prism-operator);
+}
+.token.class-name,
+.token.maybe-class-name {
+  color: var(--prism-class);
+}
+.token.punctuation {
+  color: var(--prism-punctuation);
+}
+.token.property,
+.token.constant,
+.token.variable {
+  color: var(--prism-property);
+}
+.token.tag {
+  color: var(--prism-tag);
+}
+.token.attr-name {
+  color: var(--prism-attr-name);
+}
+.token.attr-value {
+  color: var(--prism-attr-value);
+}
+.token.builtin,
+.token.symbol {
+  color: var(--prism-builtin);
+}
+.token.inserted {
+  color: var(--prism-inserted);
+}
+.token.deleted {
+  color: var(--prism-deleted);
+}
+.token.changed {
+  color: var(--prism-changed);
+}
+.token.important,
+.token.bold {
+  font-weight: bold;
+}
+.token.italic {
+  font-style: italic;
+}
 
 /* ── CSV table ─────────────────────────────────────────────────────────────── */
 .artifact-csv-table {
@@ -5953,8 +6005,13 @@ textarea {
 }
 
 @keyframes lazy-pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 0.7; }
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+  }
 }
 
 .mermaid-placeholder {
@@ -6288,12 +6345,19 @@ textarea {
 }
 
 @keyframes artifact-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes artifact-pulse {
-  0%, 100% { border-color: var(--accent-color); }
-  50% { border-color: hsl(var(--text) / 12%); }
+  0%,
+  100% {
+    border-color: var(--accent-color);
+  }
+  50% {
+    border-color: hsl(var(--text) / 12%);
+  }
 }
 
 /* Entrance animation when streaming ends and full card appears */
@@ -6302,8 +6366,14 @@ textarea {
 }
 
 @keyframes artifact-appear {
-  from { opacity: 0.6; transform: scale(0.99); }
-  to   { opacity: 1;   transform: scale(1); }
+  from {
+    opacity: 0.6;
+    transform: scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 /* ── Artifact Modal (fullscreen overlay) ─────────────────────────────── */

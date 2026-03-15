@@ -46,11 +46,7 @@ export default function SandboxedIframe({ type, content }: SandboxedIframeProps)
 
   return (
     <div className="artifact-iframe-container">
-      {error && (
-        <div className="artifact-error-banner">
-          Runtime error: {error}
-        </div>
-      )}
+      {error && <div className="artifact-error-banner">Runtime error: {error}</div>}
       <iframe
         ref={iframeRef}
         srcDoc={srcDoc}

@@ -1,9 +1,22 @@
 import React, { useMemo } from "react";
 import {
-  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
-  AreaChart, Area, ScatterChart, Scatter,
+  LineChart,
+  Line,
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  AreaChart,
+  Area,
+  ScatterChart,
+  Scatter,
   ComposedChart,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
   ResponsiveContainer,
 } from "recharts";
 
@@ -45,8 +58,16 @@ function normalizeSpec(raw: ChartSpec): ChartSpec {
 }
 
 const DEFAULT_COLORS = [
-  "#8884d8", "#82ca9d", "#ffc658", "#ff7c7c", "#8dd1e1",
-  "#a4de6c", "#d0ed57", "#ffa07a", "#dda0dd", "#87ceeb",
+  "#8884d8",
+  "#82ca9d",
+  "#ffc658",
+  "#ff7c7c",
+  "#8dd1e1",
+  "#a4de6c",
+  "#d0ed57",
+  "#ffa07a",
+  "#dda0dd",
+  "#87ceeb",
 ];
 
 function parseChartSpec(content: string): ChartSpec {
@@ -66,9 +87,7 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
     />
   );
   const yAxis = (
-    <YAxis
-      label={spec.yAxis?.label ? { value: spec.yAxis.label, angle: -90, position: "insideLeft" } : undefined}
-    />
+    <YAxis label={spec.yAxis?.label ? { value: spec.yAxis.label, angle: -90, position: "insideLeft" } : undefined} />
   );
   const tooltip = <Tooltip />;
   const legend = <Legend />;
@@ -77,7 +96,11 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
     case "line":
       return (
         <LineChart data={spec.data}>
-          {grid}{xAxis}{yAxis}{tooltip}{legend}
+          {grid}
+          {xAxis}
+          {yAxis}
+          {tooltip}
+          {legend}
           {series.map((s, i) => (
             <Line
               key={s.dataKey}
@@ -93,7 +116,11 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
     case "bar":
       return (
         <BarChart data={spec.data}>
-          {grid}{xAxis}{yAxis}{tooltip}{legend}
+          {grid}
+          {xAxis}
+          {yAxis}
+          {tooltip}
+          {legend}
           {series.map((s, i) => (
             <Bar
               key={s.dataKey}
@@ -108,7 +135,11 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
     case "area":
       return (
         <AreaChart data={spec.data}>
-          {grid}{xAxis}{yAxis}{tooltip}{legend}
+          {grid}
+          {xAxis}
+          {yAxis}
+          {tooltip}
+          {legend}
           {series.map((s, i) => {
             const color = s.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length];
             return (
@@ -129,7 +160,11 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
     case "scatter":
       return (
         <ScatterChart>
-          {grid}{xAxis}{yAxis}{tooltip}{legend}
+          {grid}
+          {xAxis}
+          {yAxis}
+          {tooltip}
+          {legend}
           {series.map((s, i) => (
             <Scatter
               key={s.dataKey}
@@ -158,14 +193,19 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
               <Cell key={`cell-${i}`} fill={DEFAULT_COLORS[i % DEFAULT_COLORS.length]} />
             ))}
           </Pie>
-          {tooltip}{legend}
+          {tooltip}
+          {legend}
         </PieChart>
       );
 
     case "composed":
       return (
         <ComposedChart data={spec.data}>
-          {grid}{xAxis}{yAxis}{tooltip}{legend}
+          {grid}
+          {xAxis}
+          {yAxis}
+          {tooltip}
+          {legend}
           {series.map((s, i) => {
             const color = s.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length];
             const name = s.name ?? s.dataKey;
@@ -185,15 +225,7 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
                   />
                 );
               default:
-                return (
-                  <Line
-                    key={s.dataKey}
-                    type="monotone"
-                    dataKey={s.dataKey}
-                    stroke={color}
-                    name={name}
-                  />
-                );
+                return <Line key={s.dataKey} type="monotone" dataKey={s.dataKey} stroke={color} name={name} />;
             }
           })}
         </ComposedChart>

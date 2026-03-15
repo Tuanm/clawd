@@ -31,12 +31,7 @@ export default function MarkdownContent({ content }: MarkdownContentProps) {
 
           const highlighted = lang ? highlightCode(code, lang) : null;
           if (highlighted) {
-            return (
-              <code
-                className={className}
-                dangerouslySetInnerHTML={{ __html: highlighted }}
-              />
-            );
+            return <code className={className} dangerouslySetInnerHTML={{ __html: highlighted }} />;
           }
 
           return <code className={className}>{children}</code>;

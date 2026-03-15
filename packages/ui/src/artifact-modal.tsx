@@ -9,15 +9,7 @@ import FullArtifactRenderer from "./artifact-renderer";
 
 // Renders artifact content at full size inside the modal body.
 // Phase 4 will replace this with sandboxed renderers per type.
-function ArtifactRenderer({
-  type,
-  content,
-  language,
-}: {
-  type: ArtifactType;
-  content: string;
-  language?: string;
-}) {
+function ArtifactRenderer({ type, content, language }: { type: ArtifactType; content: string; language?: string }) {
   // Delegate to the full ArtifactRenderer which has sandboxed iframe, charts, CSV, etc.
   return <FullArtifactRenderer artifactType={type} content={content} language={language} />;
 }
@@ -87,7 +79,7 @@ export function ArtifactModal({ type, title, content, language, onClose }: Artif
       }
       if (e.key === "Tab") {
         const focusable = modalRef.current?.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
         );
         if (focusable && focusable.length > 0) {
           const first = focusable[0];
@@ -161,12 +153,7 @@ export function ArtifactModal({ type, title, content, language, onClose }: Artif
       aria-modal="true"
       aria-label={`${title} artifact`}
     >
-      <div
-        className="artifact-modal-content"
-        onClick={(e) => e.stopPropagation()}
-        ref={modalRef}
-        tabIndex={-1}
-      >
+      <div className="artifact-modal-content" onClick={(e) => e.stopPropagation()} ref={modalRef} tabIndex={-1}>
         {/* Toolbar */}
         <div className="artifact-modal-toolbar">
           <span className="artifact-modal-badge" style={{ background: config.color }}>
@@ -180,12 +167,7 @@ export function ArtifactModal({ type, title, content, language, onClose }: Artif
             <button onClick={downloadContent} aria-label="Download file" title="Download">
               <DownloadIcon />
             </button>
-            <button
-              onClick={onClose}
-              aria-label="Close"
-              title="Close"
-              className="artifact-modal-close"
-            >
+            <button onClick={onClose} aria-label="Close" title="Close" className="artifact-modal-close">
               <CloseIcon />
             </button>
           </div>

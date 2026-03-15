@@ -14,12 +14,7 @@ interface LazyViewportProps {
  * Uses IntersectionObserver with rootMargin="200px" to pre-load before visible.
  * Once visible, stays rendered (no unmounting on scroll away).
  */
-export default function LazyViewport({
-  children,
-  fallback,
-  height = 100,
-  rootMargin = "200px",
-}: LazyViewportProps) {
+export default function LazyViewport({ children, fallback, height = 100, rootMargin = "200px" }: LazyViewportProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
 
