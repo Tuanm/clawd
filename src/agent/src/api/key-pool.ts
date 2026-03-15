@@ -245,7 +245,7 @@ class KeyPool {
       });
       const pool = viable.length > 0 ? viable : available; // fallback if all at limit
       best = pool.sort(
-        (a, b) => PREMIUM_LIMIT_PER_KEY - b.premiumUnitsUsedCycle - (PREMIUM_LIMIT_PER_KEY - a.premiumUnitsUsedCycle),
+        (a, b) => a.premiumUnitsUsedCycle - b.premiumUnitsUsedCycle, // least premium usage first
       )[0];
     } else {
       // Prefer key with fewest RPM requests + inFlight (least loaded)
@@ -328,10 +328,12 @@ class KeyPool {
     record.window60s.push(now);
     // Prune stale entries to prevent unbounded growth
     record.window60s = record.window60s.filter((t) => t > now - RPM_WINDOW_MS);
-    // Reset suspend strikes on successful request — prevents permanent 24h backoff
-    // after transient 403s (e.g., Copilot service hiccups).
+    // Decay suspend strikes on successful request — prevents permanent 24h backoff
+    // after transient 403s, while avoiding oscillation where a single success between
+    // 429s resets strikes to 0 (creating a detectable ping-429-3min-ping pattern).
+    // Requires multiple consecutive successes to fully recover.
     if (record.suspendStrikes > 0) {
-      record.suspendStrikes = 0;
+      record.suspendStrikes = Math.max(0, record.suspendStrikes - 1);
     }
     if (initiator === "user") {
       record.userInitiatorSentToday++;
@@ -490,7 +492,7 @@ class KeyPool {
     if (initiator === "user") {
       return (
         available.sort(
-          (a, b) => PREMIUM_LIMIT_PER_KEY - b.premiumUnitsUsedCycle - (PREMIUM_LIMIT_PER_KEY - a.premiumUnitsUsedCycle),
+          (a, b) => a.premiumUnitsUsedCycle - b.premiumUnitsUsedCycle, // least premium usage first
         )[0]?.token ?? null
       );
     }
