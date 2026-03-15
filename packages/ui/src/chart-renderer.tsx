@@ -80,7 +80,10 @@ const DEFAULT_COLORS = [
 
 function parseChartSpec(content: string): ChartSpec {
   // Strip optional ```json ... ``` wrapper that LLMs commonly produce around JSON
-  const stripped = content.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/m, "$1").trim();
+  const stripped = content
+    .trim()
+    .replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/m, "$1")
+    .trim();
   const spec = JSON.parse(stripped) as Record<string, unknown>;
   if (!spec.type || !Array.isArray(spec.data)) {
     throw new Error("Chart spec requires 'type' and 'data' array");
