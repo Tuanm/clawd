@@ -117,13 +117,13 @@ export class SkillManager {
     // Build skill directories in indexing order (lowest priority first, highest last).
     // Later entries override earlier ones via INSERT OR REPLACE in SQLite.
     this.skillDirs = [
-      { path: join(homedir(), ".claude", "skills"), source: "global" as const },   // Claude Code global
-      { path: join(homedir(), ".clawd", "skills"), source: "global" as const },    // Claw'd global
+      { path: join(homedir(), ".claude", "skills"), source: "global" as const }, // Claude Code global
+      { path: join(homedir(), ".clawd", "skills"), source: "global" as const }, // Claw'd global
     ];
     if (projectRoot) {
       this.skillDirs.push(
         { path: join(projectRoot, ".claude", "skills"), source: "project" as const }, // Claude Code project
-        { path: join(projectRoot, ".clawd", "skills"), source: "project" as const },  // Claw'd project (highest)
+        { path: join(projectRoot, ".clawd", "skills"), source: "project" as const }, // Claw'd project (highest)
       );
     }
 

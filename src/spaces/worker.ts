@@ -79,7 +79,6 @@ export class SpaceWorkerManager {
             // Stop the worker loop immediately after completion to prevent further processing
             const w = this.workers.get(space.id);
             if (w) {
-              w.loop.resetNudgeCount();
               w.loop.stop();
               this.workers.delete(space.id);
             }
@@ -153,7 +152,7 @@ export class SpaceWorkerManager {
     }));
   }
 
-  /** Get the WorkerLoop for a specific space (used by heartbeat to cancel/nudge) */
+  /** Get the WorkerLoop for a specific space (used by heartbeat to cancel/inject heartbeat) */
   getWorkerLoop(spaceId: string): WorkerLoop | null {
     return this.workers.get(spaceId)?.loop ?? null;
   }

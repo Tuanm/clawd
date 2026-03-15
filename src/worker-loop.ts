@@ -93,7 +93,7 @@ export interface AgentHealthSnapshot {
   processingDurationMs: number | null;
   lastActivityAt: number;
   idleDurationMs: number;
-  nudgeCount: number;
+  lastHeartbeatAt: number;
   sleeping: boolean;
   running: boolean;
   isSpaceAgent: boolean;
@@ -138,6 +138,8 @@ export interface WorkerLoopConfig {
    * must go through the HTTP API (e.g. workerToken-based remote workers).
    */
   directDb?: boolean;
+  /** Per-agent heartbeat interval in seconds (0 or undefined = disabled) */
+  heartbeatInterval?: number;
 }
 
 export class WorkerLoop {
@@ -150,10 +152,11 @@ export class WorkerLoop {
   private stoppedPromise: { resolve: () => void } | null = null;
   private trackedSpaces = new Map<string, TrackedSpace>();
 
-  // Heartbeat health tracking (Phase 1)
+  // Heartbeat health tracking
   private lastActivityAt: number = Date.now();
   private processingStartedAt: number | null = null;
-  private nudgeCount: number = 0;
+  private lastHeartbeatAt: number = Date.now();
+  private heartbeatPending = false;
 
   // Continuation retry cap (Layer 5 — stream resilience)
   private continuationRetryCount = 0;
@@ -220,7 +223,7 @@ export class WorkerLoop {
       processingDurationMs: this.processingStartedAt ? now - this.processingStartedAt : null,
       lastActivityAt: this.lastActivityAt,
       idleDurationMs: this.isProcessing ? 0 : now - this.lastActivityAt,
-      nudgeCount: this.nudgeCount,
+      lastHeartbeatAt: this.lastHeartbeatAt,
       sleeping: this.sleeping,
       running: this.running,
       isSpaceAgent: !!this.config.isSpaceAgent,
@@ -228,6 +231,11 @@ export class WorkerLoop {
       agentId: this.config.agentId,
       lastExecutionHadError: this.lastExecutionHadError,
     };
+  }
+
+  /** Expose the configured heartbeat interval for this agent (seconds, 0 = disabled) */
+  get heartbeatInterval(): number {
+    return this.config.heartbeatInterval || 0;
   }
 
   /** Cancel hung agent processing (called by WorkerManager heartbeat) */
@@ -245,32 +253,15 @@ export class WorkerLoop {
     }
   }
 
-  /** Post a nudge message to wake idle space agent (called by WorkerManager heartbeat) */
-  async postNudge(reason: string, maxNudges: number, spaceDescription?: string): Promise<boolean> {
-    if (!this.running || this.sleeping) return false;
-
-    const attempt = this.nudgeCount + 1;
-    const taskContext = spaceDescription ? ` Task: ${spaceDescription.slice(0, 300)}` : "";
-
-    const nudgeText = `[HEARTBEAT ${attempt}/${maxNudges}] ${reason}.${taskContext} Continue working, then call respond_to_parent() when done. If stuck, try a different approach.`;
-
-    const success = await this.sendNudgeMessage(nudgeText);
-    if (success) {
-      this.nudgeCount++;
-      // Clear error flag so we don't nudge again until next execution completes
-      this.lastExecutionHadError = false;
-    }
-    return success;
-  }
-
-  /** Reset nudge count (called when space completes successfully) */
-  resetNudgeCount(): void {
-    this.nudgeCount = 0;
-  }
-
-  /** Clear error flag (called when heartbeat gives up after max nudges) */
-  clearLastExecutionError(): void {
-    this.lastExecutionHadError = false;
+  /**
+   * Inject a heartbeat signal into the agent's poll loop.
+   * The heartbeat is sent as a synthetic user-role message to the LLM (not posted to chat).
+   * Only fires when agent is idle (not processing, not sleeping).
+   */
+  injectHeartbeat(): void {
+    if (!this.running || this.sleeping || this.isProcessing) return;
+    this.heartbeatPending = true;
+    this.lastHeartbeatAt = Date.now();
   }
 
   /**
@@ -307,6 +298,8 @@ export class WorkerLoop {
     this.lastContinuationBatchHash = null;
     this.lastExecutionHadError = false;
     this.wasCancelledByHeartbeat = false;
+    this.heartbeatPending = false;
+    this.lastHeartbeatAt = Date.now();
     this.abortController = new AbortController();
     this.log("Starting worker loop");
     this.connectWebSocket();
@@ -441,6 +434,34 @@ export class WorkerLoop {
           continue;
         }
 
+        // If a heartbeat is pending, inject as synthetic prompt.
+        // Skip if real messages are waiting (hasNewMessages from WS push) — prioritize real work.
+        if (this.heartbeatPending && !this.hasNewMessages) {
+          this.heartbeatPending = false;
+          const heartbeatPrompt =
+            "[HEARTBEAT] You have been idle. Check for pending work or continue your current task.";
+          this.isProcessing = true;
+          this.processingStartedAt = Date.now();
+          this.wasCancelledByHeartbeat = false;
+          try {
+            const execResult = await this.executePrompt(heartbeatPrompt, this.sessionName);
+            const output = execResult.output || "";
+            this.lastExecutionHadError =
+              !execResult.success ||
+              this.wasCancelledByHeartbeat ||
+              output.includes("[Agent stopped") ||
+              output.includes("[stream error");
+            this.wasCancelledByHeartbeat = false;
+          } finally {
+            this.isProcessing = false;
+            this.processingStartedAt = null;
+            this.lastActivityAt = Date.now();
+            this.stoppedPromise?.resolve();
+            this.stoppedPromise = null;
+          }
+          continue;
+        }
+
         const result = await this.pollPending();
 
         if (result.ok && result.pending.length > 0) {
@@ -529,12 +550,6 @@ export class WorkerLoop {
               output.includes("[Agent stopped") ||
               output.includes("[stream error");
             this.wasCancelledByHeartbeat = false;
-
-            // Reset nudge counter after successful execution so main agents aren't
-            // permanently stuck at maxNudges from earlier transient failures
-            if (!this.lastExecutionHadError) {
-              this.nudgeCount = 0;
-            }
 
             if (!execResult.success) {
               this.log("Prompt execution failed");
@@ -809,42 +824,6 @@ export class WorkerLoop {
           text,
           user: "UBOT",
           agent_id: this.config.agentId,
-        }),
-      });
-      const data = (await res.json()) as any;
-      return data.ok;
-    } catch {
-      return false;
-    }
-  }
-
-  /** Send nudge message as "System" agent (bypasses isRelevant() self-filter) */
-  private async sendNudgeMessage(text: string): Promise<boolean> {
-    if (this.config.directDb !== false) {
-      try {
-        const result = postMessage({
-          channel: this.config.channel,
-          text,
-          user: "UBOT",
-          agent_id: "System",
-        });
-        if (result.ok && result.message) {
-          broadcastUpdate(this.config.channel, result.message);
-        }
-        return result.ok;
-      } catch {
-        return false;
-      }
-    }
-    try {
-      const res = await timedFetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: this.config.channel,
-          text,
-          user: "UBOT",
-          agent_id: "System",
         }),
       });
       const data = (await res.json()) as any;

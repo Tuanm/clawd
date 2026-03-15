@@ -14,6 +14,7 @@ interface Agent {
   sleeping: boolean;
   running: boolean;
   avatar_color: string | null;
+  heartbeat_interval: number;
 }
 
 interface ProviderOption {
@@ -99,7 +100,20 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const [newModel, setNewModel] = useState("default");
   const [newProject, setNewProject] = useState("");
   const [newWorkerToken, setNewWorkerToken] = useState("");
+  const [newHeartbeat, setNewHeartbeat] = useState(0);
   const [saving, setSaving] = useState(false);
+
+  // Edit state for existing agent fields
+  const [editProvider, setEditProvider] = useState("");
+  const [editModel, setEditModel] = useState("");
+  const [editProject, setEditProject] = useState("");
+  const [editHeartbeat, setEditHeartbeat] = useState(0);
+  const [savedEditProvider, setSavedEditProvider] = useState("");
+  const [savedEditModel, setSavedEditModel] = useState("");
+  const [savedEditProject, setSavedEditProject] = useState("");
+  const [savedEditHeartbeat, setSavedEditHeartbeat] = useState(0);
+  const [fieldsDirty, setFieldsDirty] = useState(false);
+  const [fieldsSaving, setFieldsSaving] = useState(false);
 
   // Identity state
   const [identity, setIdentity] = useState("");
@@ -170,6 +184,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       });
       setNewModel("default");
       setNewProject("");
+      setNewHeartbeat(0);
       setShowFolderBrowser(false);
       setIdentity("");
       setSavedIdentity("");
@@ -204,6 +219,33 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     return () => controller.abort();
   }, [selectedAgentId, showAddForm, channel]);
 
+  // Populate edit state when selected agent changes
+  useEffect(() => {
+    if (!selectedAgentId || showAddForm) {
+      setEditProvider("");
+      setEditModel("");
+      setEditProject("");
+      setEditHeartbeat(0);
+      setSavedEditProvider("");
+      setSavedEditModel("");
+      setSavedEditProject("");
+      setSavedEditHeartbeat(0);
+      setFieldsDirty(false);
+      return;
+    }
+    const agent = agents.find((a) => a.agent_id === selectedAgentId);
+    if (!agent) return;
+    setEditProvider(agent.provider || "");
+    setEditModel(agent.model || "");
+    setEditProject(agent.project || "");
+    setEditHeartbeat(agent.heartbeat_interval ?? 0);
+    setSavedEditProvider(agent.provider || "");
+    setSavedEditModel(agent.model || "");
+    setSavedEditProject(agent.project || "");
+    setSavedEditHeartbeat(agent.heartbeat_interval ?? 0);
+    setFieldsDirty(false);
+  }, [selectedAgentId, showAddForm]);
+
   // Update project default when channel changes
   useEffect(() => {
     if (channel) {
@@ -217,6 +259,15 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setTimeout(() => nameInputRef.current?.focus(), 100);
     }
   }, [showAddForm]);
+
+  const checkFieldsDirty = (provider: string, model: string, project: string, heartbeat: number) => {
+    return (
+      provider !== savedEditProvider ||
+      model !== savedEditModel ||
+      project !== savedEditProject ||
+      heartbeat !== savedEditHeartbeat
+    );
+  };
 
   const loadAgents = useCallback(async () => {
     try {
@@ -245,6 +296,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           model: newModel.trim() || "default",
           project: newProject.trim(),
           worker_token: newWorkerToken.trim() || undefined,
+          heartbeat_interval: newHeartbeat,
         }),
       });
       const data = await res.json();
@@ -258,6 +310,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
         setNewModel("default");
         setNewProject(`/tmp/clawd/spaces/${channel}`);
         setNewWorkerToken("");
+        setNewHeartbeat(0);
         setShowAddForm(false);
         setSelectedAgentId(newName.trim());
         await loadAgents();
@@ -269,7 +322,44 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [channel, newName, newProvider, newModel, newProject, newWorkerToken, loadAgents]);
+  }, [channel, newName, newProvider, newModel, newProject, newWorkerToken, newHeartbeat, loadAgents]);
+
+  const handleSaveAgent = useCallback(
+    async (agentId: string) => {
+      setFieldsSaving(true);
+      setError(null);
+      try {
+        const res = await fetch(`${API_URL}/api/app.agents.update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel,
+            agent_id: agentId,
+            provider: editProvider.trim().toLowerCase(),
+            model: editModel.trim() || "default",
+            project: editProject.trim(),
+            heartbeat_interval: editHeartbeat,
+          }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          setSavedEditProvider(editProvider);
+          setSavedEditModel(editModel);
+          setSavedEditProject(editProject);
+          setSavedEditHeartbeat(editHeartbeat);
+          setFieldsDirty(false);
+          await loadAgents();
+        } else {
+          setError(data.error || "Failed to save agent settings");
+        }
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setFieldsSaving(false);
+      }
+    },
+    [channel, editProvider, editModel, editProject, editHeartbeat, loadAgents],
+  );
 
   const handleRemoveAgent = useCallback(
     async (agentId: string) => {
@@ -385,6 +475,8 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           {agents.map((agent) => {
             const isActive = selectedAgentId === agent.agent_id && !showAddForm;
             const color = agent.avatar_color || "#D97853";
+            const hbInterval = agent.heartbeat_interval ?? 0;
+            const hbLabel = hbInterval > 0 ? `${hbInterval}s` : "off";
             return (
               <button
                 key={agent.agent_id}
@@ -401,6 +493,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   {agent.running && !agent.sleeping && <span className="stream-agent-avatar-dot" />}
                 </span>
                 <span className="stream-agent-avatar-name">{agent.agent_id}</span>
+                <span className="stream-agent-avatar-hb" title={`Heartbeat: ${hbLabel}`}>
+                  {hbLabel}
+                </span>
               </button>
             );
           })}
@@ -432,7 +527,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
             </div>
           )}
 
-          {/* Selected agent details -- same input layout as Add, but readonly */}
+          {/* Selected agent details -- editable fields */}
           {selectedAgent && !showAddForm && (
             <div className="agent-fields">
               <input
@@ -446,26 +541,44 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 type="text"
                 className="agent-field-input"
                 placeholder="Provider"
-                value={(() => {
-                  const name = selectedAgent.provider || "copilot";
-                  const found = providers.find((p) => p.name === name);
-                  return found?.is_custom ? `${name} (${found.type})` : name;
-                })()}
-                readOnly
+                value={editProvider}
+                onChange={(e) => {
+                  setEditProvider(e.target.value);
+                  setFieldsDirty(checkFieldsDirty(e.target.value, editModel, editProject, editHeartbeat));
+                }}
               />
               <input
                 type="text"
                 className="agent-field-input"
                 placeholder="Model"
-                value={selectedAgent.model}
-                readOnly
+                value={editModel}
+                onChange={(e) => {
+                  setEditModel(e.target.value);
+                  setFieldsDirty(checkFieldsDirty(editProvider, e.target.value, editProject, editHeartbeat));
+                }}
               />
               <input
                 type="text"
                 className="agent-field-input"
                 placeholder="Project"
-                value={selectedAgent.project || ""}
-                readOnly
+                value={editProject}
+                onChange={(e) => {
+                  setEditProject(e.target.value);
+                  setFieldsDirty(checkFieldsDirty(editProvider, editModel, e.target.value, editHeartbeat));
+                }}
+              />
+              <input
+                type="number"
+                className="agent-field-input"
+                placeholder="Heartbeat interval (seconds, 0=disabled)"
+                value={editHeartbeat}
+                min={0}
+                step={1}
+                onChange={(e) => {
+                  const val = Math.max(0, parseInt(e.target.value) || 0);
+                  setEditHeartbeat(val);
+                  setFieldsDirty(checkFieldsDirty(editProvider, editModel, editProject, val));
+                }}
               />
               <textarea
                 className="agent-field-input agent-identity-input"
@@ -477,6 +590,15 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 }}
               />
               <div className="agent-buttons">
+                {fieldsDirty && (
+                  <button
+                    className="agent-action-btn agent-action-btn--accent"
+                    onClick={() => handleSaveAgent(selectedAgent.agent_id)}
+                    disabled={fieldsSaving}
+                  >
+                    {fieldsSaving ? "Saving..." : "Save"}
+                  </button>
+                )}
                 {identityDirty && (
                   <button
                     className="agent-action-btn agent-action-btn--accent"
@@ -607,6 +729,18 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   </div>
                 </div>
               )}
+              <input
+                type="number"
+                className="agent-field-input"
+                placeholder="Heartbeat interval (seconds, 0=disabled)"
+                value={newHeartbeat}
+                min={0}
+                step={1}
+                onChange={(e) => setNewHeartbeat(Math.max(0, parseInt(e.target.value) || 0))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAddAgent();
+                }}
+              />
               <input
                 className="agent-field-input"
                 type="password"

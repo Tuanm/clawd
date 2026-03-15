@@ -361,6 +361,13 @@ export function initAgentsTable(db: Database): void {
   } catch {
     // Column already exists
   }
+
+  // Add heartbeat_interval column if table already exists without it
+  try {
+    db.exec(`ALTER TABLE channel_agents ADD COLUMN heartbeat_interval INTEGER NOT NULL DEFAULT 0`);
+  } catch {
+    // Column already exists
+  }
 }
 
 /** Register agent management API routes */
@@ -417,7 +424,7 @@ export function registerAgentRoutes(
     if (path === "/api/app.agents.add" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
-        const { channel, agent_id, provider, model, project, worker_token } = body;
+        const { channel, agent_id, provider, model, project, worker_token, heartbeat_interval } = body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
@@ -445,19 +452,22 @@ export function registerAgentRoutes(
 
         const agentProject = project || "";
         const agentWorkerToken = worker_token || null;
+        const agentHeartbeatInterval =
+          typeof heartbeat_interval === "number" ? Math.max(0, Math.round(heartbeat_interval)) : 0;
 
         try {
           db.run(
-            `INSERT INTO channel_agents (channel, agent_id, provider, model, project, active, worker_token)
-             VALUES (?, ?, ?, ?, ?, 1, ?)
+            `INSERT INTO channel_agents (channel, agent_id, provider, model, project, active, worker_token, heartbeat_interval)
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?)
              ON CONFLICT(channel, agent_id) DO UPDATE SET
                provider = excluded.provider,
                model = excluded.model,
                project = excluded.project,
                worker_token = excluded.worker_token,
+               heartbeat_interval = excluded.heartbeat_interval,
                active = 1,
                updated_at = strftime('%s', 'now')`,
-            [channel, agent_id, agentProvider, agentModel, agentProject, agentWorkerToken],
+            [channel, agent_id, agentProvider, agentModel, agentProject, agentWorkerToken, agentHeartbeatInterval],
           );
         } catch (error) {
           return json({ ok: false, error: String(error) }, 500);
@@ -472,6 +482,7 @@ export function registerAgentRoutes(
           active: true,
           project: agentProject,
           workerToken: agentWorkerToken || undefined,
+          heartbeatInterval: agentHeartbeatInterval,
         });
 
         return json({
@@ -484,6 +495,7 @@ export function registerAgentRoutes(
             project: agentProject,
             active: true,
             running: true,
+            heartbeat_interval: agentHeartbeatInterval,
           },
         });
       });
@@ -513,7 +525,8 @@ export function registerAgentRoutes(
     if (path === "/api/app.agents.update" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
-        const { channel, agent_id, model, active, project, sleeping, provider, worker_token } = body;
+        const { channel, agent_id, model, active, project, sleeping, provider, worker_token, heartbeat_interval } =
+          body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
@@ -559,6 +572,10 @@ export function registerAgentRoutes(
           updates.push("worker_token = ?");
           params.push(worker_token || null);
         }
+        if (heartbeat_interval !== undefined) {
+          updates.push("heartbeat_interval = ?");
+          params.push(typeof heartbeat_interval === "number" ? Math.max(0, Math.round(heartbeat_interval)) : 0);
+        }
 
         if (updates.length === 0) {
           return json({ ok: false, error: "nothing to update" }, 400);
@@ -578,13 +595,14 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "agent_not_found" }, 404);
         }
 
-        // Restart worker if model, provider, project, or worker_token changed, or active state changed
+        // Restart worker if model, provider, project, worker_token, or heartbeat_interval changed, or active state changed
         if (
           model !== undefined ||
           provider !== undefined ||
           active !== undefined ||
           project !== undefined ||
-          worker_token !== undefined
+          worker_token !== undefined ||
+          heartbeat_interval !== undefined
         ) {
           if (agent.active === 1) {
             await workerManager.restartAgent({
@@ -595,6 +613,7 @@ export function registerAgentRoutes(
               active: true,
               project: agent.project || "",
               workerToken: agent.worker_token || undefined,
+              heartbeatInterval: agent.heartbeat_interval || 0,
             });
           } else {
             await workerManager.stopAgent(channel, agent_id);

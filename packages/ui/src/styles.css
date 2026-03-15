@@ -3000,6 +3000,19 @@ body {
   animation: sending-pulse 1.5s ease-in-out infinite;
 }
 
+.stream-agent-avatar-hb {
+  font-size: 9px;
+  font-weight: 500;
+  color: hsl(var(--text) / 30%);
+  letter-spacing: 0.02em;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.stream-agent-avatar-btn.active .stream-agent-avatar-hb {
+  color: hsl(var(--text) / 50%);
+}
+
 .stream-dialog-placeholder {
   color: hsl(var(--text) / 35%);
   text-align: center;
