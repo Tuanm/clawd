@@ -272,7 +272,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
       setExpanded(new Set());
 
       try {
-        const res = await fetch(
+        const res = await authFetch(
           `${API_URL}/api/app.project.tree?channel=${encodeURIComponent(channel)}&agent_id=${encodeURIComponent(agentId)}`,
         );
         const data = await res.json();
@@ -297,7 +297,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
 
       setFileLoading(true);
       try {
-        const res = await fetch(
+        const res = await authFetch(
           `${API_URL}/api/app.project.readFile?channel=${encodeURIComponent(channel)}&agent_id=${encodeURIComponent(selectedAgentId)}&path=${encodeURIComponent(path)}`,
         );
         const data = await res.json();
@@ -356,7 +356,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
       setLoadingDirs((prev) => new Set(prev).add(dirPath));
 
       try {
-        const res = await fetch(
+        const res = await authFetch(
           `${API_URL}/api/app.project.listDir?channel=${encodeURIComponent(channel)}&agent_id=${encodeURIComponent(selectedAgentId)}&path=${encodeURIComponent(dirPath)}`,
         );
         const data = await res.json();
