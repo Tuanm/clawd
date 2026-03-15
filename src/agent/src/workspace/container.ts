@@ -443,36 +443,6 @@ export function listActiveWorkspaces(): WorkspaceHandle[] {
   return Array.from(activeWorkspaces.values());
 }
 
-export async function cleanupOrphanedWorkspaces(): Promise<number> {
-  let cleaned = 0;
-  try {
-    const { stdout } = await execFileAsync("docker", [
-      "ps",
-      "-a",
-      "--filter",
-      "name=clawd-ws-",
-      "--format",
-      "{{.Names}}\t{{.Status}}",
-    ]);
-    const lines = stdout.trim().split("\n").filter(Boolean);
-    for (const line of lines) {
-      const [name, status] = line.split("\t");
-      if (status?.includes("Exited") || status?.includes("Dead")) {
-        // Extract id from container name (clawd-ws-<id>)
-        const id = name?.replace(/^clawd-ws-/, "");
-        await execFileAsync("docker", ["rm", name]).catch(() => {});
-        // Also clean up associated volume and network
-        if (id) {
-          execFileAsync("docker", ["volume", "rm", `clawd-ws-data-${id}`]).catch(() => {});
-          execFileAsync("docker", ["network", "rm", `clawd-ws-net-${id}`]).catch(() => {});
-        }
-        cleaned++;
-      }
-    }
-  } catch {}
-  return cleaned;
-}
-
 /**
  * Destroy all orphaned clawd-ws-* workspace containers and networks from previous
  * clawd-app runs. Called once at startup before any new workspaces are spawned.

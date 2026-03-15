@@ -2741,7 +2741,7 @@ registerTool(
   async ({ session, command, cwd }) => {
     // Validate session name
     if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
-      return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)" };
+      return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
     }
 
     const projectRoot = getSandboxProjectRoot();
@@ -2760,7 +2760,7 @@ registerTool(
       // Create new session and send command
       const createResult = await execTmux(["-L", socket, "new-session", "-d", "-s", session, cdCmd]);
       if (!createResult.success) {
-        return { success: false, error: createResult.error || "Failed to create session" };
+        return { success: false, error: createResult.error || "Failed to create session", output: "" };
       }
       return {
         success: true,
@@ -2775,7 +2775,7 @@ registerTool(
       // Send command to existing session (run in the default pane)
       const sendResult = await execTmux(["-L", socket, "send-keys", "-t", session, cdCmd, "C-m"]);
       if (!sendResult.success) {
-        return { success: false, error: sendResult.error || "Failed to send command" };
+        return { success: false, error: sendResult.error || "Failed to send command", output: "" };
       }
       return {
         success: true,
@@ -2847,7 +2847,7 @@ registerTool(
     const result = await execTmux(["-L", socket, "kill-session", "-t", session]);
 
     if (!result.success) {
-      return { success: false, error: result.error || "Failed to kill session" };
+      return { success: false, error: result.error || "Failed to kill session", output: "" };
     }
 
     return {
@@ -2880,7 +2880,7 @@ registerTool(
     const result = await execTmux(captureArgs);
 
     if (!result.success) {
-      return { success: false, error: result.error || "Failed to capture pane" };
+      return { success: false, error: result.error || "Failed to capture pane", output: "" };
     }
 
     return {
@@ -2923,7 +2923,7 @@ registerTool(
     const result = await execTmux(["-L", socket, "send-keys", "-t", session, parsedKeys, "Enter"]);
 
     if (!result.success) {
-      return { success: false, error: result.error || "Failed to send keys" };
+      return { success: false, error: result.error || "Failed to send keys", output: "" };
     }
 
     return {
@@ -2959,7 +2959,7 @@ registerTool(
     const result = await execTmux(args);
 
     if (!result.success) {
-      return { success: false, error: result.error || "Failed to create window" };
+      return { success: false, error: result.error || "Failed to create window", output: "" };
     }
 
     return {
@@ -2990,7 +2990,7 @@ registerTool(
     const result = await execTmux(["-L", socket, "kill-window", "-t", `${session}:${window}`]);
 
     if (!result.success) {
-      return { success: false, error: result.error || "Failed to kill window" };
+      return { success: false, error: result.error || "Failed to kill window", output: "" };
     }
 
     return {
@@ -3039,7 +3039,7 @@ registerTool(
           published: published || false,
         }),
       });
-      const data = await res.json();
+      const data = (await res.json()) as any;
       if (data.ok) {
         return {
           success: true,
@@ -3051,9 +3051,9 @@ registerTool(
           }),
         };
       }
-      return { success: false, error: data.error || "Failed to create article" };
+      return { success: false, error: data.error || "Failed to create article", output: "" };
     } catch (err) {
-      return { success: false, error: String(err) };
+      return { success: false, error: String(err), output: "" };
     }
   },
 );
@@ -3079,7 +3079,7 @@ registerTool(
       url.searchParams.set("published", String(published_only));
 
       const res = await toolFetch(url.toString());
-      const data = await res.json();
+      const data = (await res.json()) as any;
       if (data.ok) {
         return {
           success: true,
@@ -3095,9 +3095,9 @@ registerTool(
           }),
         };
       }
-      return { success: false, error: data.error || "Failed to list articles" };
+      return { success: false, error: data.error || "Failed to list articles", output: "" };
     } catch (err) {
-      return { success: false, error: String(err) };
+      return { success: false, error: String(err), output: "" };
     }
   },
 );
@@ -3112,7 +3112,7 @@ registerTool(
   async ({ id }) => {
     try {
       const res = await toolFetch(`${chatApiUrl}/api/articles.get?id=${encodeURIComponent(id)}`);
-      const data = await res.json();
+      const data = (await res.json()) as any;
       if (data.ok) {
         return {
           success: true,
@@ -3130,9 +3130,9 @@ registerTool(
           }),
         };
       }
-      return { success: false, error: data.error || "Article not found" };
+      return { success: false, error: data.error || "Article not found", output: "" };
     } catch (err) {
-      return { success: false, error: String(err) };
+      return { success: false, error: String(err), output: "" };
     }
   },
 );
@@ -3165,7 +3165,7 @@ registerTool(
           ...(published !== undefined && { published }),
         }),
       });
-      const data = await res.json();
+      const data = (await res.json()) as any;
       if (data.ok) {
         return {
           success: true,
@@ -3176,9 +3176,9 @@ registerTool(
           }),
         };
       }
-      return { success: false, error: data.error || "Failed to update article" };
+      return { success: false, error: data.error || "Failed to update article", output: "" };
     } catch (err) {
-      return { success: false, error: String(err) };
+      return { success: false, error: String(err), output: "" };
     }
   },
 );
@@ -3197,13 +3197,13 @@ registerTool(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
       });
-      const data = await res.json();
+      const data = (await res.json()) as any;
       if (data.ok) {
         return { success: true, output: JSON.stringify({ id, deleted: true }) };
       }
-      return { success: false, error: data.error || "Failed to delete article" };
+      return { success: false, error: data.error || "Failed to delete article", output: "" };
     } catch (err) {
-      return { success: false, error: String(err) };
+      return { success: false, error: String(err), output: "" };
     }
   },
 );
@@ -3221,16 +3221,16 @@ registerTool(
     const agentId = getContextAgentId() || "agent";
 
     if (!currentChannel) {
-      return { success: false, error: "Channel not specified" };
+      return { success: false, error: "Channel not specified", output: "" };
     }
 
     try {
       // First get the article details
       const articleRes = await toolFetch(`${chatApiUrl}/api/articles.get?id=${encodeURIComponent(article_id)}`);
-      const articleData = await articleRes.json();
+      const articleData = (await articleRes.json()) as any;
 
       if (!articleData.ok || !articleData.article) {
-        return { success: false, error: "Article not found" };
+        return { success: false, error: "Article not found", output: "" };
       }
 
       const article = articleData.article;
@@ -3254,7 +3254,7 @@ registerTool(
           }),
         }),
       });
-      const msgData = await msgRes.json();
+      const msgData = (await msgRes.json()) as any;
 
       if (msgData.ok) {
         return {
@@ -3266,9 +3266,9 @@ registerTool(
           }),
         };
       }
-      return { success: false, error: msgData.error || "Failed to send article message" };
+      return { success: false, error: msgData.error || "Failed to send article message", output: "" };
     } catch (err) {
-      return { success: false, error: String(err) };
+      return { success: false, error: String(err), output: "" };
     }
   },
 );

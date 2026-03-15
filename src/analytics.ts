@@ -181,9 +181,9 @@ export function trackFailure(opts: {
 // Read — synchronous SQLite queries (fast, used by API endpoints)
 // ============================================================================
 
-function buildWhere(opts: CallsQueryOptions): { sql: string; params: unknown[] } {
+function buildWhere(opts: CallsQueryOptions): { sql: string; params: any[] } {
   const clauses: string[] = [];
-  const params: unknown[] = [];
+  const params: any[] = [];
 
   if (opts.from != null) {
     clauses.push("ts >= ?");

@@ -501,7 +501,7 @@ function runCommand(cmd: string, args: string[]): Promise<ToolResult> {
 
 async function handleView(args: { path: string; start_line?: number; end_line?: number }): Promise<ToolResult> {
   const v = validatePath(args.path, config.projectRoot);
-  if (!v.ok) return { success: false, output: "", error: v.error };
+  if (!v.ok) return { success: false, output: "", error: (v as any).error };
 
   const resolved = v.resolved;
 
@@ -560,7 +560,7 @@ async function handleEdit(args: { path: string; old_str: string; new_str: string
   if (config.readOnly) return { success: false, output: "", error: "Read-only mode: edit is disabled" };
 
   const v = validatePath(args.path, config.projectRoot);
-  if (!v.ok) return { success: false, output: "", error: v.error };
+  if (!v.ok) return { success: false, output: "", error: (v as any).error };
 
   const resolved = v.resolved;
 
@@ -638,7 +638,7 @@ async function handleCreate(args: { path: string; content: string }): Promise<To
   if (config.readOnly) return { success: false, output: "", error: "Read-only mode: create is disabled" };
 
   const v = validatePath(args.path, config.projectRoot);
-  if (!v.ok) return { success: false, output: "", error: v.error };
+  if (!v.ok) return { success: false, output: "", error: (v as any).error };
 
   const resolved = v.resolved;
 
@@ -669,7 +669,7 @@ async function handleGrep(args: {
 }): Promise<ToolResult> {
   const searchPath = args.path || config.projectRoot;
   const v = validatePath(searchPath, config.projectRoot);
-  if (!v.ok) return { success: false, output: "", error: v.error };
+  if (!v.ok) return { success: false, output: "", error: (v as any).error };
 
   const resolved = v.resolved;
   const ctx = args.context ?? 0;
@@ -708,7 +708,7 @@ async function handleGrep(args: {
 async function handleGlob(args: { pattern: string; path?: string }): Promise<ToolResult> {
   const searchPath = args.path || config.projectRoot;
   const v = validatePath(searchPath, config.projectRoot);
-  if (!v.ok) return { success: false, output: "", error: v.error };
+  if (!v.ok) return { success: false, output: "", error: (v as any).error };
 
   const resolved = v.resolved;
 
@@ -851,7 +851,7 @@ async function handleBash(
 
   const cwd = args.cwd || config.projectRoot;
   const cwdValidation = validatePath(cwd, config.projectRoot);
-  if (!cwdValidation.ok) return { success: false, output: "", error: cwdValidation.error };
+  if (!cwdValidation.ok) return { success: false, output: "", error: (cwdValidation as any).error };
 
   // H4: Default bash timeout to 5 minutes, not config.timeout (30s)
   const timeoutMs = args.timeout || 300_000;

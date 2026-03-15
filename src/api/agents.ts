@@ -872,7 +872,7 @@ export function registerAgentRoutes(
       // Security: validate path using sandbox-style validation
       const validation = validateProjectPath(projectRoot, relativePath, { allowSensitive: false });
       if (!validation.valid) {
-        return json({ ok: false, error: validation.error }, 400);
+        return json({ ok: false, error: (validation as any).error }, 400);
       }
 
       const fullPath = validation.fullPath;
@@ -963,7 +963,7 @@ export function registerAgentRoutes(
       // Security: validate path using sandbox-style validation (block sensitive files)
       const validation = validateProjectPath(projectRoot, relativePath, { allowSensitive: false });
       if (!validation.valid) {
-        return json({ ok: false, error: validation.error }, 400);
+        return json({ ok: false, error: (validation as any).error }, 400);
       }
 
       const fullPath = validation.fullPath;

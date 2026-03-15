@@ -215,7 +215,7 @@ describe("safeCut fence closure", () => {
     expect(result.length).toBeLessThanOrEqual(14);
 
     const fenceCount = (result.match(/```/g) || []).length;
-    if (maxLength > 4) {
+    if (14 > 4) {
       expect(fenceCount % 2).toBe(0);
     }
 
