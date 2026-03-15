@@ -71,9 +71,11 @@ export default function SidebarPanel({
 
   const config = artifactType ? (TYPE_CONFIG[artifactType] ?? TYPE_CONFIG.code) : null;
 
-  return (
+  // Portal both backdrop and panel to document.body to ensure correct z-index stacking.
+  // Backdrop (z-index 199) must come BEFORE panel (z-index 200) in DOM order.
+  return createPortal(
     <Fragment>
-      {isOpen && createPortal(<div className="sidebar-backdrop" onClick={onClose} aria-hidden="true" />, document.body)}
+      {isOpen && <div className="sidebar-backdrop" onClick={onClose} aria-hidden="true" />}
       <div
         ref={panelRef}
         className={`sidebar-panel${isOpen ? " open" : ""}`}
@@ -113,6 +115,7 @@ export default function SidebarPanel({
           )}
         </div>
       </div>
-    </Fragment>
+    </Fragment>,
+    document.body,
   );
 }

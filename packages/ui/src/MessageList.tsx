@@ -278,13 +278,17 @@ export const MermaidDiagram = React.memo(function MermaidDiagram({
           <span>Diagram preview unavailable</span>
           <button
             className="mermaid-retry-btn"
+            title="Retry rendering"
             onClick={() => {
               setError(null);
               setSvg("");
               setRetryCount((c) => c + 1);
             }}
           >
-            Retry
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M1 4v6h6" />
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+            </svg>
           </button>
         </div>
         <details className="mermaid-error-details">
@@ -1526,6 +1530,10 @@ export default function MessageList({
 
   // Shared zoom level for lightbox (image + mermaid)
   const [lightboxZoom, setLightboxZoom] = useState(1);
+  // Drag-to-pan state for mermaid zoom (supports high zoom levels)
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -2737,30 +2745,59 @@ export default function MessageList({
           </div>,
           document.body,
         )}
-      {/* Mermaid zoom modal */}
+      {/* Mermaid zoom modal — supports 20x zoom + drag-to-pan */}
       {mermaidZoom &&
         createPortal(
           <div
             className="lightbox-overlay"
             onClick={() => {
-              setMermaidZoom(null);
-              setLightboxZoom(1);
+              if (!isDragging) {
+                setMermaidZoom(null);
+                setLightboxZoom(1);
+                setDragOffset({ x: 0, y: 0 });
+              }
             }}
-            onKeyDown={(e) => e.key === "Escape" && (setMermaidZoom(null), setLightboxZoom(1))}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setMermaidZoom(null);
+                setLightboxZoom(1);
+                setDragOffset({ x: 0, y: 0 });
+              }
+            }}
             onWheel={(e) => {
               e.preventDefault();
-              setLightboxZoom((z) => Math.min(4, Math.max(0.25, z + (e.deltaY > 0 ? -0.1 : 0.1))));
+              setLightboxZoom((z) => Math.min(20, Math.max(0.25, z + (e.deltaY > 0 ? -0.25 : 0.25))));
             }}
+            onMouseDown={(e) => {
+              if (lightboxZoom > 1 && e.button === 0) {
+                setIsDragging(true);
+                dragStart.current = { x: e.clientX, y: e.clientY, ox: dragOffset.x, oy: dragOffset.y };
+                e.preventDefault();
+              }
+            }}
+            onMouseMove={(e) => {
+              if (isDragging) {
+                setDragOffset({
+                  x: dragStart.current.ox + (e.clientX - dragStart.current.x),
+                  y: dragStart.current.oy + (e.clientY - dragStart.current.y),
+                });
+              }
+            }}
+            onMouseUp={() => setIsDragging(false)}
+            onMouseLeave={() => setIsDragging(false)}
             role="dialog"
             aria-modal="true"
             aria-label="Diagram zoom"
             tabIndex={-1}
+            style={{ cursor: lightboxZoom > 1 ? (isDragging ? "grabbing" : "grab") : "default" }}
           >
             <button
               className="lightbox-close"
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 setMermaidZoom(null);
                 setLightboxZoom(1);
+                setDragOffset({ x: 0, y: 0 });
               }}
               aria-label="Close"
             >
@@ -2768,9 +2805,9 @@ export default function MessageList({
             </button>
             <div
               style={{
-                transform: `scale(${lightboxZoom})`,
+                transform: `scale(${lightboxZoom}) translate(${dragOffset.x / lightboxZoom}px, ${dragOffset.y / lightboxZoom}px)`,
                 transformOrigin: "center center",
-                transition: "transform 0.2s",
+                transition: isDragging ? "none" : "transform 0.2s",
               }}
             >
               <div
@@ -2787,7 +2824,7 @@ export default function MessageList({
             <div className="lightbox-toolbar" onClick={(e) => e.stopPropagation()}>
               <button
                 className="lightbox-btn"
-                onClick={() => setLightboxZoom((z) => Math.max(0.25, z - 0.25))}
+                onClick={() => setLightboxZoom((z) => Math.max(0.25, z - 0.5))}
                 title="Zoom out"
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -2799,7 +2836,7 @@ export default function MessageList({
               <span className="lightbox-zoom-level">{Math.round(lightboxZoom * 100)}%</span>
               <button
                 className="lightbox-btn"
-                onClick={() => setLightboxZoom((z) => Math.min(4, z + 0.25))}
+                onClick={() => setLightboxZoom((z) => Math.min(20, z + 0.5))}
                 title="Zoom in"
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -2809,7 +2846,14 @@ export default function MessageList({
                   <line x1="21" y1="21" x2="16.65" y2="16.65" />
                 </svg>
               </button>
-              <button className="lightbox-btn" onClick={() => setLightboxZoom(1)} title="Reset zoom">
+              <button
+                className="lightbox-btn"
+                onClick={() => {
+                  setLightboxZoom(1);
+                  setDragOffset({ x: 0, y: 0 });
+                }}
+                title="Reset zoom & position"
+              >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M1 4v6h6M23 20v-6h-6" />
                   <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
