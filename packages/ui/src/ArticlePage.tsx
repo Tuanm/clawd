@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import MarkdownContent from "./MarkdownContent";
-import { CopyIcon } from "./MessageList";
+import { CopyIcon } from "./ui-primitives";
 
 interface ContextMenuState {
   visible: boolean;

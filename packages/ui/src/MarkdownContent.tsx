@@ -1,10 +1,13 @@
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import { Callout, MermaidDiagram, PreBlock } from "./MessageList";
+import { highlightCode } from "./prism-setup";
+import { markdownSanitizeSchema } from "./sanitize-schema";
 
 interface MarkdownContentProps {
   content: string;
@@ -14,7 +17,7 @@ export default function MarkdownContent({ content }: MarkdownContentProps) {
   return (
     <Markdown
       remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex, rehypeRaw]}
+      rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSanitizeSchema], rehypeKatex]}
       components={{
         pre: ({ children }) => <PreBlock>{children}</PreBlock>,
         code: ({ className, children }) => {
@@ -24,6 +27,16 @@ export default function MarkdownContent({ content }: MarkdownContentProps) {
 
           if (lang === "mermaid") {
             return <MermaidDiagram chart={code} />;
+          }
+
+          const highlighted = lang ? highlightCode(code, lang) : null;
+          if (highlighted) {
+            return (
+              <code
+                className={className}
+                dangerouslySetInnerHTML={{ __html: highlighted }}
+              />
+            );
           }
 
           return <code className={className}>{children}</code>;

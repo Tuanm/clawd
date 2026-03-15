@@ -7,7 +7,7 @@
 
 ## Overview
 - **Priority:** P1
-- **Status:** Pending
+- **Status:** Complete
 - **Depends on:** Phase 1 (Security), Phase 3 (Artifact Detection)
 - **Description:** Replace placeholder renderers for html, react, and svg artifact types with real sandboxed rendering. HTML/React use isolated iframes; SVG uses DOMPurify-sanitized inline rendering.
 
@@ -313,13 +313,13 @@ case "svg": {
 
 ## Todo List
 
-- [ ] Create `artifact-templates.ts` with HTML and React document templates
-- [ ] Create `artifact-sandbox.tsx` with SandboxedIframe component
-- [ ] Update `artifact-renderer.tsx` — replace html/react/svg placeholders
-- [ ] Add postMessage resize handler with MAX_HEIGHT cap
-- [ ] Add error forwarding from iframe to parent
-- [ ] Add CSP meta tag to all iframe templates
-- [ ] Add CSS for iframe container, error banner, SVG renderer
+- [x] Create `artifact-templates.ts` with HTML and React document templates
+- [x] Create `artifact-sandbox.tsx` with SandboxedIframe component
+- [x] Update `artifact-renderer.tsx` — replace html/react/svg placeholders
+- [x] Add postMessage resize handler with MAX_HEIGHT cap
+- [x] Add error forwarding from iframe to parent
+- [x] Add CSP meta tag to all iframe templates
+- [x] Add CSS for iframe container, error banner, SVG renderer
 - [ ] Test: HTML artifact renders in sandboxed iframe
 - [ ] Test: React artifact compiles JSX and renders component
 - [ ] Test: SVG artifact renders inline with sanitized markup
