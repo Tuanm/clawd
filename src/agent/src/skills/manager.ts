@@ -1,10 +1,12 @@
 /**
- * Skill System - Project-scoped + global skills with Claude Code-compatible format
+ * Skill System - Multi-source skills with Claude Code-compatible format
  *
- * Skills are stored in two locations (project takes priority):
- *   1. {projectRoot}/.clawd/skills/{name}/SKILL.md  (project-scoped, folder format)
- *   2. ~/.clawd/skills/{name}/SKILL.md               (global, folder format)
- *   3. ~/.clawd/skills/{name}.md                      (global, legacy single-file)
+ * Skills are loaded from four directories (higher priority overrides lower):
+ *   1. {projectRoot}/.clawd/skills/{name}/SKILL.md   (project Claw'd — highest priority)
+ *   2. {projectRoot}/.claude/skills/{name}/SKILL.md   (project Claude Code)
+ *   3. ~/.clawd/skills/{name}/SKILL.md                (global Claw'd)
+ *   4. ~/.claude/skills/{name}/SKILL.md                (global Claude Code — lowest priority)
+ *   Legacy: ~/.clawd/skills/{name}.md                  (global, single-file)
  *
  * SKILL.md format:
  *   ---
@@ -99,6 +101,9 @@ const SKILL_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 export class SkillManager {
   private db: Database;
+  /** Skill directories in priority order (highest first). Later entries override earlier by name. */
+  private skillDirs: Array<{ path: string; source: "project" | "global" }>;
+  /** Primary project skills dir (for save/delete operations) */
   private projectSkillsDir: string | null;
   private globalSkillsDir: string;
   private cache = new Map<string, Skill>();
@@ -108,6 +113,19 @@ export class SkillManager {
   constructor(projectRoot?: string) {
     this.globalSkillsDir = join(homedir(), ".clawd", "skills");
     this.projectSkillsDir = projectRoot ? join(projectRoot, ".clawd", "skills") : null;
+
+    // Build skill directories in indexing order (lowest priority first, highest last).
+    // Later entries override earlier ones via INSERT OR REPLACE in SQLite.
+    this.skillDirs = [
+      { path: join(homedir(), ".claude", "skills"), source: "global" as const },   // Claude Code global
+      { path: join(homedir(), ".clawd", "skills"), source: "global" as const },    // Claw'd global
+    ];
+    if (projectRoot) {
+      this.skillDirs.push(
+        { path: join(projectRoot, ".claude", "skills"), source: "project" as const }, // Claude Code project
+        { path: join(projectRoot, ".clawd", "skills"), source: "project" as const },  // Claw'd project (highest)
+      );
+    }
 
     // Ensure global dir exists
     if (!existsSync(this.globalSkillsDir)) {
@@ -166,12 +184,12 @@ export class SkillManager {
 
     let indexed = 0;
 
-    // Index global skills first (lower priority)
-    indexed += this.indexDirectory(this.globalSkillsDir, "global");
-
-    // Index project skills second (overrides global by same name via INSERT OR REPLACE)
-    if (this.projectSkillsDir && existsSync(this.projectSkillsDir)) {
-      indexed += this.indexDirectory(this.projectSkillsDir, "project");
+    // Index all skill directories in priority order (lowest first).
+    // Later directories override earlier ones by name via INSERT OR REPLACE.
+    for (const { path, source } of this.skillDirs) {
+      if (existsSync(path)) {
+        indexed += this.indexDirectory(path, source);
+      }
     }
 
     this.lastIndexedAt = Date.now();
