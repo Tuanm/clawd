@@ -7,14 +7,17 @@
 
 import type { ToolPlugin, ToolRegistration } from "../agent/src/tools/plugin";
 import type { ToolResult } from "../agent/src/tools/tools";
+import { timedFetch } from "../utils/timed-fetch";
 import type { SpaceManager } from "./manager";
 import type { SpaceWorkerManager } from "./worker";
 
-// Fetch with timeout to prevent hangs on self-calls
-function timedFetch(url: string, options: RequestInit = {}, ms = 10000): Promise<Response> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+/** Surrogate-safe string slice — avoids cutting UTF-16 surrogate pairs */
+function surrogateSlice(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s;
+  let cut = maxLen;
+  const code = s.charCodeAt(cut - 1);
+  if (code >= 0xd800 && code <= 0xdbff) cut--;
+  return s.slice(0, cut);
 }
 
 export interface SpawnPluginConfig {
@@ -57,6 +60,11 @@ export function createSpawnAgentPlugin(
           parameters: {
             task: { type: "string", description: "The task for the sub-agent" },
             name: { type: "string", description: "Optional friendly name" },
+            context: {
+              type: "string",
+              description:
+                "Optional context to seed the sub-agent with (project structure, file contents, findings). Reduces cold-start time.",
+            },
           },
           required: ["task"],
           handler: async (args) => handleSpawnAgent(args),
@@ -78,6 +86,9 @@ export function createSpawnAgentPlugin(
             return { success: true, output: JSON.stringify({ count: agents.length, agents }, null, 2) };
           },
         },
+        // NOTE: retask_agent deferred to separate PR — requires DB migration
+        // (resetSpaceForRetask), full lifecycle management (timeout, cleanup),
+        // and resolution of .finally() race conditions with the original spawn.
       ];
     },
   };
@@ -85,6 +96,7 @@ export function createSpawnAgentPlugin(
   async function handleSpawnAgent(args: Record<string, any>): Promise<ToolResult> {
     const task = args.task as string;
     const name = (args.name as string) || `sub-${Date.now()}`;
+    const context = (args.context as string) || "";
 
     if (!task) {
       return { success: false, output: "", error: "Missing required parameter: task" };
@@ -115,44 +127,46 @@ export function createSpawnAgentPlugin(
         timeout_seconds: 600,
       });
 
-      // 2. Post preview card to main channel (use main agent ID as author)
-      const cardRes = await timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: config.channel,
-          text: "",
-          user: config.agentId,
-          agent_id: config.agentId,
-          subtype: "subspace",
-          subspace_json: JSON.stringify({
-            id: space.id,
-            title: space.title,
-            description: space.description,
-            agent_id: space.agent_id,
-            agent_color: space.agent_color,
-            status: space.status,
-            channel: space.channel,
+      // 2+3. Post preview card and task in parallel (no data dependency)
+      const [cardRes, taskRes] = await Promise.all([
+        // Preview card to main channel
+        timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel: config.channel,
+            text: "",
+            user: config.agentId,
+            agent_id: config.agentId,
+            subtype: "subspace",
+            subspace_json: JSON.stringify({
+              id: space.id,
+              title: space.title,
+              description: space.description,
+              agent_id: space.agent_id,
+              agent_color: space.agent_color,
+              status: space.status,
+              channel: space.channel,
+            }),
           }),
         }),
-      });
+        // Task to space channel
+        timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel: space.space_channel,
+            text: context ? `**Context:**\n${surrogateSlice(context, 4000)}\n\n**Task:** ${task}` : `**Task:** ${task}`,
+            user: "UBOT",
+            agent_id: config.agentId,
+          }),
+        }),
+      ]);
+
       if (cardRes.ok) {
         const cardData = (await cardRes.json()) as any;
         if (cardData.ts) spaceManager.updateCardTs(space.id, cardData.ts);
       }
-
-      // 3. Post task to space channel (use main agent ID so it shows correct avatar;
-      //    worker picks it up because agent_id !== worker's own agentId)
-      const taskRes = await timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: space.space_channel,
-          text: `**Task:** ${task}`,
-          user: "UBOT",
-          agent_id: config.agentId,
-        }),
-      });
       if (!taskRes.ok) {
         spaceManager.failSpace(space.id, "Failed to post task to space channel");
         return { success: false, output: "", error: "Failed to post task to space channel" };
@@ -250,6 +264,14 @@ export function createSpawnAgentPlugin(
         }),
       };
     } catch (err: any) {
+      // If a space was created before the error, mark it as failed to prevent orphans
+      try {
+        const activeSpaces = spaceManager.listSpaces(config.channel, "active");
+        const orphan = activeSpaces.find((s) => s.description === task.slice(0, 500));
+        if (orphan) spaceManager.failSpace(orphan.id, err.message);
+      } catch {
+        /* best-effort cleanup */
+      }
       return { success: false, output: "", error: err.message };
     }
   }

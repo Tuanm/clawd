@@ -295,14 +295,13 @@ export class SchedulerManager {
         if (this.runningJobs.size >= MAX_CONCURRENT) break;
         if (this.runningJobs.has(job.id)) continue; // S16: same job already running
 
-        // Advance next_run BEFORE execution (prevents re-trigger)
+        // Calculate next run time
         const nextRun = this.calculateNextRun(job);
-        if (nextRun !== null) {
-          updateJobNextRun(job.id, nextRun);
-        } else if (
-          job.type === "cron" ||
-          job.type === "interval" ||
-          (job.type === "reminder" && (job.cron_expr || job.interval_ms))
+        if (
+          nextRun === null &&
+          (job.type === "cron" ||
+            job.type === "interval" ||
+            (job.type === "reminder" && (job.cron_expr || job.interval_ms)))
         ) {
           // Null next_run for recurring job means schedule is invalid — mark failed to prevent infinite loop
           console.error(`[Scheduler] Cannot calculate next run for ${job.type} job ${job.id}, marking failed`);
@@ -310,18 +309,34 @@ export class SchedulerManager {
           continue;
         }
 
+        // Insert run record BEFORE advancing next_run to prevent silent job loss
+        // on crash. If the process dies between these two operations, the run record
+        // exists as evidence, and the job's next_run hasn't advanced yet (so it will
+        // re-trigger on restart).
+        const runId = crypto.randomUUID();
+        insertRun(runId, job.id);
+
+        // Now advance next_run (safe — run record already exists)
+        if (nextRun !== null) {
+          updateJobNextRun(job.id, nextRun);
+        }
+
         // Reserve slot in runningJobs BEFORE async execution (prevents race with next tick)
         const controller = new AbortController();
         this.runningJobs.set(job.id, controller);
 
-        // Fire and forget
+        // Fire and forget — .finally() ensures the runningJobs slot is always released,
+        // even if the method throws before entering its internal try block.
         if (job.type === "reminder") {
-          // Error handling is inside executeReminder — no outer .catch() needed (prevents double counting)
-          this.executeReminder(job).finally(() => this.runningJobs.delete(job.id));
+          this.executeReminder(job, runId).finally(() => this.runningJobs.delete(job.id));
         } else if (job.type === "tool_call") {
-          this.executeToolCall(job, controller).catch((e) => this.handleJobError(job, e));
+          this.executeToolCall(job, controller, runId)
+            .catch((e) => this.handleJobError(job, e))
+            .finally(() => this.runningJobs.delete(job.id));
         } else {
-          this.executeJob(job, controller).catch((e) => this.handleJobError(job, e));
+          this.executeJob(job, controller, runId)
+            .catch((e) => this.handleJobError(job, e))
+            .finally(() => this.runningJobs.delete(job.id));
         }
       }
     } catch (err) {
@@ -331,9 +346,8 @@ export class SchedulerManager {
     }
   }
 
-  private async executeReminder(job: ScheduledJob): Promise<void> {
-    const runId = crypto.randomUUID();
-    insertRun(runId, job.id);
+  private async executeReminder(job: ScheduledJob, runId: string): Promise<void> {
+    // Run record already inserted by tick()
 
     try {
       if (this.reminderExecutor) {
@@ -351,15 +365,12 @@ export class SchedulerManager {
     }
   }
 
-  private async executeJob(job: ScheduledJob, controller: AbortController): Promise<void> {
+  private async executeJob(job: ScheduledJob, controller: AbortController, runId: string): Promise<void> {
     if (!this.jobExecutor) {
       console.warn("[Scheduler] No job executor set, skipping job:", job.id);
-      this.runningJobs.delete(job.id);
-      return;
+      return; // Outer .finally() handles runningJobs cleanup
     }
-
-    const runId = crypto.randomUUID();
-    insertRun(runId, job.id);
+    // Run record already inserted by tick()
 
     // Timeout
     const timeout = setTimeout(
@@ -385,19 +396,16 @@ export class SchedulerManager {
       this.handleJobError(job, err, wasAborted);
     } finally {
       clearTimeout(timeout);
-      this.runningJobs.delete(job.id);
+      // runningJobs cleanup handled by outer .finally() in tick()
     }
   }
 
-  private async executeToolCall(job: ScheduledJob, controller: AbortController): Promise<void> {
+  private async executeToolCall(job: ScheduledJob, controller: AbortController, runId: string): Promise<void> {
     if (!this.toolCallExecutor) {
       console.warn("[Scheduler] No tool call executor set, skipping:", job.id);
-      this.runningJobs.delete(job.id);
-      return;
+      return; // Outer .finally() handles runningJobs cleanup
     }
-
-    const runId = crypto.randomUUID();
-    insertRun(runId, job.id);
+    // Run record already inserted by tick()
 
     const timeout = setTimeout(
       () => {
@@ -422,7 +430,7 @@ export class SchedulerManager {
       this.handleJobError(job, err, wasAborted);
     } finally {
       clearTimeout(timeout);
-      this.runningJobs.delete(job.id);
+      // runningJobs cleanup handled by outer .finally() in tick()
     }
   }
 

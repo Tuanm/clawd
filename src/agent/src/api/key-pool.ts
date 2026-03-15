@@ -328,6 +328,11 @@ class KeyPool {
     record.window60s.push(now);
     // Prune stale entries to prevent unbounded growth
     record.window60s = record.window60s.filter((t) => t > now - RPM_WINDOW_MS);
+    // Reset suspend strikes on successful request — prevents permanent 24h backoff
+    // after transient 403s (e.g., Copilot service hiccups).
+    if (record.suspendStrikes > 0) {
+      record.suspendStrikes = 0;
+    }
     if (initiator === "user") {
       record.userInitiatorSentToday++;
       const cost = getModelMultiplier(model);
@@ -365,11 +370,16 @@ class KeyPool {
       // Destroy the H2 session for this key (fresh connection for new key)
       this.destroySession(token);
     } else {
-      // 429 rate limited
-      const delay = retryAfterMs ?? COOLDOWN_429_DEFAULT_MS;
+      // 429 rate limited — escalate backoff on repeated rate limits.
+      // Server-provided Retry-After always takes precedence; otherwise
+      // use exponential backoff: 3min → 10min → 30min → 30min (capped).
+      const rateLimitDelays = [COOLDOWN_429_DEFAULT_MS, 10 * 60_000, 30 * 60_000];
+      const strikes = record.suspendStrikes;
+      const delay = retryAfterMs ?? rateLimitDelays[Math.min(strikes, rateLimitDelays.length - 1)];
       record.cooldownUntil = Date.now() + delay;
+      record.suspendStrikes++;
       console.log(
-        `[KEY POOL] key=${record.fingerprint} cooling=true until=${new Date(record.cooldownUntil).toISOString()} reason=429 delay=${Math.round(delay / 1000)}s`,
+        `[KEY POOL] key=${record.fingerprint} cooling=true until=${new Date(record.cooldownUntil).toISOString()} reason=429 strikes=${record.suspendStrikes} delay=${Math.round(delay / 1000)}s`,
       );
     }
     this.schedulePersist();
@@ -423,8 +433,16 @@ class KeyPool {
     record.sessionPending = this.createH2Session(baseUrl);
     try {
       record.session = await record.sessionPending;
-      record.session.on("close", () => {
-        record.session = null;
+      // Capture reference so stale handlers don't null a newer session
+      const thisSession = record.session;
+      thisSession.on("close", () => {
+        if (record.session === thisSession) record.session = null;
+      });
+      // Handle post-connect errors (GOAWAY, protocol errors) to prevent
+      // unhandled 'error' events from crashing the process.
+      thisSession.on("error", (err) => {
+        console.warn(`[KEY POOL] H2 session error key=${record.fingerprint}: ${err.message}`);
+        if (record.session === thisSession) record.session = null;
       });
       return record.session;
     } finally {

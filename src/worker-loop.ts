@@ -23,17 +23,29 @@ import { initializeSandbox } from "./agent/src/utils/sandbox";
 import { smartTruncate } from "./agent/src/utils/smart-truncation";
 import { loadConfigFile } from "./config-file";
 import type { TrackedSpace } from "./spaces/spawn-plugin";
+import { timedFetch } from "./utils/timed-fetch";
 
-// Session size limits (in estimated tokens) - tuned for 128k context
-const TOKEN_LIMIT_CRITICAL = 70000;
-const TOKEN_LIMIT_WARNING = 50000;
-const COMPACT_KEEP_COUNT = 30;
+// Session size limits (in estimated tokens) — tuned for 128k model context windows.
+// WARNING threshold triggers compaction; CRITICAL triggers emergency reset.
+const TOKEN_LIMIT_CRITICAL = 70000; // ~55% of 128k — headroom for system prompt + tools
+const TOKEN_LIMIT_WARNING = 50000; // ~39% of 128k — start compacting before critical
+const COMPACT_KEEP_COUNT = 30; // Recent messages preserved after compaction
 
-const POLL_INTERVAL = 200; // 200ms for fast response
-const CONTINUATION_RETRY_DELAY = 2000; // 2s delay before retrying unprocessed
-const MAX_CONTINUATION_RETRIES = 5; // Force-mark after this many retries on the same batch
+// Polling and retry constants.
+// POLL_INTERVAL: 200ms balances responsiveness vs CPU; agents check for new messages at this cadence.
+const POLL_INTERVAL = 200;
+// CONTINUATION_RETRY_DELAY: wait before re-processing seen-but-unprocessed messages (agent may still be writing).
+const CONTINUATION_RETRY_DELAY = 2000;
+// MAX_CONTINUATION_RETRIES: force-mark as processed after this many retries to prevent infinite loops.
+const MAX_CONTINUATION_RETRIES = 5;
+// MAX_MESSAGE_LENGTH: individual message truncation limit (chars) — keeps per-message context bounded.
 const MAX_MESSAGE_LENGTH = 10000;
+// MAX_COMBINED_PROMPT_LENGTH: total prompt size cap (chars) — prevents context overflow for batched messages.
+// ~40k chars ≈ ~10k tokens, well within model limits even with system prompt overhead.
 const MAX_COMBINED_PROMPT_LENGTH = 40000;
+// MAX_SYSTEM_INSTRUCTIONS_LENGTH: CLAWD.md + agent identity truncation limit (chars).
+// Keeps system instructions bounded so they don't consume too much of the context window.
+const MAX_SYSTEM_INSTRUCTIONS_LENGTH = 4000;
 
 // Agent identity configuration from .clawd/agents.json
 interface AgentIdentityConfig {
@@ -84,6 +96,8 @@ export interface AgentHealthSnapshot {
   isSpaceAgent: boolean;
   channel: string;
   agentId: string;
+  /** True when the last agent execution ended with stream errors or abnormal termination */
+  lastExecutionHadError: boolean;
 }
 
 export interface WorkerLoopConfig {
@@ -129,6 +143,21 @@ export class WorkerLoop {
   private continuationRetryCount = 0;
   private lastContinuationBatchHash: string | null = null;
 
+  // Idle backoff: ramp poll interval when no messages pending (200ms → 2s)
+  private idlePollMs = POLL_INTERVAL;
+  private static readonly MAX_IDLE_POLL = 2000;
+
+  // Skip redundant markSeen writes
+  private lastMarkedSeenTs: string | null = null;
+
+  // Skip first poll delay for freshly spawned agents
+  private firstPoll = true;
+
+  // Track whether last execution ended abnormally (for heartbeat idle-agent detection)
+  private lastExecutionHadError = false;
+  // Set by cancelProcessing() so error detection survives the cancel→return flow
+  private wasCancelledByHeartbeat = false;
+
   constructor(config: WorkerLoopConfig) {
     this.config = config;
   }
@@ -145,9 +174,16 @@ export class WorkerLoop {
     return this.sleeping;
   }
 
+  /** Canonical session name for this agent (shared between loop and resetSession) */
+  private get sessionName(): string {
+    return `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
+  }
+
   /** Set sleeping state */
   setSleeping(sleeping: boolean): void {
     this.sleeping = sleeping;
+    // Reset idle backoff when waking so the agent polls immediately at full speed
+    if (!sleeping) this.idlePollMs = POLL_INTERVAL;
     this.log(sleeping ? "Agent sleeping" : "Agent awake");
   }
 
@@ -165,6 +201,7 @@ export class WorkerLoop {
       isSpaceAgent: !!this.config.isSpaceAgent,
       channel: this.config.channel,
       agentId: this.config.agentId,
+      lastExecutionHadError: this.lastExecutionHadError,
     };
   }
 
@@ -175,6 +212,7 @@ export class WorkerLoop {
       if (agent) {
         this.log("Heartbeat: cancelling hung agent");
         agent.cancel();
+        this.wasCancelledByHeartbeat = true;
         // Do NOT set isProcessing = false — let executePrompt's finally block handle it
       }
     } catch {
@@ -194,6 +232,8 @@ export class WorkerLoop {
     const success = await this.sendNudgeMessage(nudgeText);
     if (success) {
       this.nudgeCount++;
+      // Clear error flag so we don't nudge again until next execution completes
+      this.lastExecutionHadError = false;
     }
     return success;
   }
@@ -201,6 +241,11 @@ export class WorkerLoop {
   /** Reset nudge count (called when space completes successfully) */
   resetNudgeCount(): void {
     this.nudgeCount = 0;
+  }
+
+  /** Clear error flag (called when heartbeat gives up after max nudges) */
+  clearLastExecutionError(): void {
+    this.lastExecutionHadError = false;
   }
 
   /**
@@ -213,22 +258,17 @@ export class WorkerLoop {
         this.activeAgent.cancel();
       } catch {}
     }
-    // Delete the session from memory.db so history is gone
+    // Delete the session via the SessionManager singleton to avoid
+    // opening a second SQLite connection (which risks SQLITE_BUSY
+    // if the singleton is mid-write).
     try {
-      const { join } = await import("node:path");
-      const { homedir } = await import("node:os");
-      const { Database } = await import("bun:sqlite");
-      const memoryDb = new Database(join(homedir(), ".clawd", "memory.db"));
-      const sessionName = `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
-      const session = memoryDb
-        .query<{ id: string }, [string]>("SELECT id FROM sessions WHERE name = ? ORDER BY updated_at DESC LIMIT 1")
-        .get(sessionName);
+      const { getSessionManager } = await import("./agent/src/session/manager");
+      const sm = getSessionManager();
+      const session = sm.getSession(this.sessionName);
       if (session) {
-        memoryDb.run("DELETE FROM messages WHERE session_id = ?", [session.id]);
-        memoryDb.run("DELETE FROM sessions WHERE id = ?", [session.id]);
-        this.log(`Session reset: deleted session ${session.id} (${sessionName})`);
+        sm.deleteSession(session.id);
+        this.log(`Session reset: deleted session ${session.id} (${this.sessionName})`);
       }
-      memoryDb.close();
     } catch (err) {
       this.log(`Session reset error: ${err}`);
     }
@@ -240,6 +280,8 @@ export class WorkerLoop {
     this.running = true;
     this.continuationRetryCount = 0;
     this.lastContinuationBatchHash = null;
+    this.lastExecutionHadError = false;
+    this.wasCancelledByHeartbeat = false;
     this.abortController = new AbortController();
     this.log("Starting worker loop");
     this.loop();
@@ -273,9 +315,8 @@ export class WorkerLoop {
   /** Main polling loop */
   private async loop(): Promise<void> {
     const { channel, agentId } = this.config;
-    const sessionName = `${channel}-${agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
 
-    this.log(`Session: ${sessionName}`);
+    this.log(`Session: ${this.sessionName}`);
 
     while (this.running) {
       try {
@@ -284,15 +325,18 @@ export class WorkerLoop {
           continue;
         }
 
-        // Skip if agent is sleeping
+        // Skip if agent is sleeping — poll much less frequently (5s vs 200ms)
         if (this.sleeping) {
-          await Bun.sleep(POLL_INTERVAL);
+          await Bun.sleep(5000);
           continue;
         }
 
         const result = await this.pollPending();
 
         if (result.ok && result.pending.length > 0) {
+          // Snap back to fast polling when messages arrive
+          this.idlePollMs = POLL_INTERVAL;
+
           if (result.unseen.length > 0) {
             this.log(`Found ${result.unseen.length} new message(s)`);
           }
@@ -348,6 +392,7 @@ export class WorkerLoop {
 
           this.isProcessing = true;
           this.processingStartedAt = Date.now();
+          this.wasCancelledByHeartbeat = false;
           try {
             let prompt = isContinuation
               ? this.buildContinuationPrompt(result.seenNotProcessed)
@@ -364,7 +409,22 @@ export class WorkerLoop {
               prompt = prompt.slice(0, cutPoint) + suffix;
             }
 
-            const execResult = await this.executePrompt(prompt, sessionName);
+            const execResult = await this.executePrompt(prompt, this.sessionName);
+
+            // Track whether this execution ended with an error (for heartbeat idle-agent detection)
+            const output = execResult.output || "";
+            this.lastExecutionHadError =
+              !execResult.success ||
+              this.wasCancelledByHeartbeat ||
+              output.includes("[Agent stopped") ||
+              output.includes("[stream error");
+            this.wasCancelledByHeartbeat = false;
+
+            // Reset nudge counter after successful execution so main agents aren't
+            // permanently stuck at maxNudges from earlier transient failures
+            if (!this.lastExecutionHadError) {
+              this.nudgeCount = 0;
+            }
 
             if (!execResult.success) {
               this.log("Prompt execution failed");
@@ -383,11 +443,23 @@ export class WorkerLoop {
         this.isProcessing = false;
         this.processingStartedAt = null;
         this.lastActivityAt = Date.now();
+        this.lastExecutionHadError = true;
+        this.wasCancelledByHeartbeat = false;
         this.stoppedPromise?.resolve();
         this.stoppedPromise = null;
       }
 
-      await Bun.sleep(POLL_INTERVAL);
+      // Skip first poll delay for freshly spawned agents (task already posted)
+      if (this.firstPoll) {
+        this.firstPoll = false;
+      } else {
+        // Idle backoff: sleep using current interval, then ramp up if idle.
+        // idlePollMs snaps back to POLL_INTERVAL when messages are found (line 336).
+        await Bun.sleep(this.idlePollMs);
+        if (!this.isProcessing) {
+          this.idlePollMs = Math.min(this.idlePollMs * 2, WorkerLoop.MAX_IDLE_POLL);
+        }
+      }
     }
     // Notify that the loop has exited (used by space workers to settle promises)
     this.config.onLoopExit?.();
@@ -407,15 +479,9 @@ export class WorkerLoop {
     };
 
     try {
-      const fetchWithTimeout = (url: string, ms = 10000) => {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), ms);
-        return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(timer));
-      };
-
       const [lastSeenRes, lastProcessedRes] = await Promise.all([
-        fetchWithTimeout(`${chatApiUrl}/api/agent.getLastSeen?agent_id=${agentId}&channel=${channel}`),
-        fetchWithTimeout(`${chatApiUrl}/api/agent.getLastProcessed?agent_id=${agentId}&channel=${channel}`),
+        timedFetch(`${chatApiUrl}/api/agent.getLastSeen?agent_id=${agentId}&channel=${channel}`),
+        timedFetch(`${chatApiUrl}/api/agent.getLastProcessed?agent_id=${agentId}&channel=${channel}`),
       ]);
 
       const lastSeenData = (await lastSeenRes.json()) as any;
@@ -424,9 +490,11 @@ export class WorkerLoop {
       const serverLastSeen = lastSeenData.ok ? lastSeenData.last_seen_ts : null;
       const serverLastProcessed = lastProcessedData.ok ? lastProcessedData.last_processed_ts : null;
 
-      const res = await fetchWithTimeout(
-        `${chatApiUrl}/api/messages.pending?channel=${channel}&include_bot=true&limit=50`,
-      );
+      // Pass last_processed_ts to avoid fetching already-processed messages (95% payload reduction when idle)
+      const pendingUrl = serverLastProcessed
+        ? `${chatApiUrl}/api/messages.pending?channel=${channel}&include_bot=true&limit=50&last_ts=${serverLastProcessed}`
+        : `${chatApiUrl}/api/messages.pending?channel=${channel}&include_bot=true&limit=50`;
+      const res = await timedFetch(pendingUrl);
       const data = (await res.json()) as any;
 
       if (!data.ok) return { ...empty, serverLastProcessed, serverLastSeen };
@@ -456,17 +524,17 @@ export class WorkerLoop {
         return !serverLastProcessed || m.ts > serverLastProcessed;
       });
 
-      // Mark all messages as seen
+      // Mark all messages as seen — skip write when maxTs hasn't changed
       if (messages.length > 0) {
         const maxTs = messages.reduce((max, m) => (m.ts > max ? m.ts : max), "0");
-        const markCtrl = new AbortController();
-        const markTimer = setTimeout(() => markCtrl.abort(), 10000);
-        await fetch(`${chatApiUrl}/api/agent.markSeen`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agent_id: agentId, channel, last_seen_ts: maxTs }),
-          signal: markCtrl.signal,
-        }).finally(() => clearTimeout(markTimer));
+        if (maxTs !== this.lastMarkedSeenTs) {
+          await timedFetch(`${chatApiUrl}/api/agent.markSeen`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ agent_id: agentId, channel, last_seen_ts: maxTs }),
+          });
+          this.lastMarkedSeenTs = maxTs;
+        }
       }
 
       return { ok: true, messages, pending, unseen, seenNotProcessed, serverLastProcessed, serverLastSeen };
@@ -479,9 +547,7 @@ export class WorkerLoop {
   /** Send a message to the channel */
   private async sendMessage(text: string): Promise<boolean> {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 10000);
-      const res = await fetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
+      const res = await timedFetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -490,8 +556,7 @@ export class WorkerLoop {
           user: "UBOT",
           agent_id: this.config.agentId,
         }),
-        signal: ctrl.signal,
-      }).finally(() => clearTimeout(timer));
+      });
       const data = (await res.json()) as any;
       return data.ok;
     } catch {
@@ -502,9 +567,7 @@ export class WorkerLoop {
   /** Send nudge message as "System" agent (bypasses isRelevant() self-filter) */
   private async sendNudgeMessage(text: string): Promise<boolean> {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 10000);
-      const res = await fetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
+      const res = await timedFetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -513,8 +576,7 @@ export class WorkerLoop {
           user: "UBOT",
           agent_id: "System",
         }),
-        signal: ctrl.signal,
-      }).finally(() => clearTimeout(timer));
+      });
       const data = (await res.json()) as any;
       return data.ok;
     } catch {
@@ -525,9 +587,7 @@ export class WorkerLoop {
   /** Force-mark messages as processed via API (Layer 5 — continuation cap) */
   private async forceMarkProcessed(ts: string): Promise<boolean> {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 10000);
-      const res = await fetch(`${this.config.chatApiUrl}/api/agent.setLastProcessed`, {
+      const res = await timedFetch(`${this.config.chatApiUrl}/api/agent.setLastProcessed`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -535,8 +595,7 @@ export class WorkerLoop {
           channel: this.config.channel,
           last_processed_ts: ts,
         }),
-        signal: ctrl.signal,
-      }).finally(() => clearTimeout(timer));
+      });
       const data = (await res.json()) as any;
       if (!data.ok) {
         this.log(`Force-mark API returned not ok`);
@@ -819,11 +878,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
                 async (ch: string) => {
                   // Fetch agent config for the channel
                   try {
-                    const ctrl = new AbortController();
-                    const timer = setTimeout(() => ctrl.abort(), 10000);
-                    const res = await fetch(`${chatApiUrl}/api/app.agents.list`, { signal: ctrl.signal }).finally(() =>
-                      clearTimeout(timer),
-                    );
+                    const res = await timedFetch(`${chatApiUrl}/api/app.agents.list`);
                     const data = (await res.json()) as any;
                     if (data.ok && Array.isArray(data.agents)) {
                       const agent = data.agents.find((a: any) => a.channel === ch && a.active !== false);
@@ -1005,9 +1060,9 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
     }
 
     const result = contexts.join("\n\n---\n\n");
-    if (result.length > 4000) {
+    if (result.length > MAX_SYSTEM_INSTRUCTIONS_LENGTH) {
       const suffix = "\n\n[TRUNCATED — CLAWD instructions truncated for context budget]";
-      let cutPoint = 4000 - suffix.length;
+      let cutPoint = MAX_SYSTEM_INSTRUCTIONS_LENGTH - suffix.length;
       if (cutPoint > 0 && cutPoint < result.length) {
         const code = result.charCodeAt(cutPoint - 1);
         if (code >= 0xd800 && code <= 0xdbff) cutPoint--;
@@ -1020,18 +1075,19 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
   /** Clear streaming state on shutdown */
   private async clearStreamingState(): Promise<void> {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 3000);
-      await fetch(`${this.config.chatApiUrl}/api/agent.setStreaming`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agent_id: this.config.agentId,
-          channel: this.config.channel,
-          is_streaming: false,
-        }),
-        signal: ctrl.signal,
-      }).finally(() => clearTimeout(timer));
+      await timedFetch(
+        `${this.config.chatApiUrl}/api/agent.setStreaming`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            agent_id: this.config.agentId,
+            channel: this.config.channel,
+            is_streaming: false,
+          }),
+        },
+        3000,
+      );
     } catch {}
   }
 

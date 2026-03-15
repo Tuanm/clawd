@@ -9,8 +9,9 @@
 
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { CopilotClient, type Message, type ToolCall, type ToolDefinition } from "../api/client";
-import { getCopilotToken } from "../api/provider-config";
+import type { Message, ToolCall, ToolDefinition } from "../api/client";
+import { createProvider } from "../api/factory";
+import type { LLMProvider } from "../api/providers";
 import {
   AgenticLoop,
   type CompletionProvider,
@@ -30,6 +31,8 @@ export type SubAgentStatus = "created" | "running" | "waiting" | "completed" | "
 
 export interface SubAgentConfig {
   name?: string;
+  /** Provider type (e.g., "copilot", "openai", "anthropic"). Uses parent's provider if set. */
+  provider?: string;
   model?: string;
   systemPrompt?: string;
   maxIterations?: number;
@@ -71,10 +74,10 @@ export const TOOL_CATEGORIES: Record<string, string[] | null> = {
 // ============================================================================
 
 class SubAgentCompletionProvider implements CompletionProvider {
-  constructor(private client: CopilotClient) {}
+  constructor(private provider: LLMProvider) {}
 
   async complete(messages: Message[], tools: ToolDefinition[], model: string) {
-    const response = await this.client.complete({
+    const response = await this.provider.complete({
       model,
       messages,
       tools: tools.length > 0 ? tools : undefined,
@@ -227,7 +230,8 @@ export class SubAgent extends EventEmitter {
   readonly depth: number;
   readonly allowSubAgents: boolean;
 
-  private client: CopilotClient;
+  private llmProvider: LLMProvider;
+  private providerType: string | undefined;
   private model: string;
   private systemPrompt: string;
   private maxIterations: number;
@@ -244,6 +248,7 @@ export class SubAgent extends EventEmitter {
     this.id = randomUUID();
     this.parentId = config.parentId;
     this.name = config.name || `agent-${this.id.slice(0, 8)}`;
+    this.providerType = config.provider;
     this.model = config.model || "claude-sonnet-4.5";
     this.maxIterations = config.maxIterations || 20;
     this.depth = config.depth || 0;
@@ -259,11 +264,9 @@ ${this.allowSubAgents ? "You can spawn sub-agents to parallelize work." : ""}
 Be concise and efficient.
 If chat tools (chat_send_message) are available, you MUST use them for ALL user-facing communication. NEVER output plain text meant for users.`;
 
-    const token = getCopilotToken();
-    if (!token) {
-      throw new Error("No GitHub token found in ~/.clawd/config.json");
-    }
-    this.client = new CopilotClient(token);
+    // Use provider-agnostic factory instead of hardcoding CopilotClient.
+    // This respects the parent agent's configured provider (OpenAI, Anthropic, etc.).
+    this.llmProvider = createProvider(config.provider, this.model);
   }
 
   // ============================================================================
@@ -295,7 +298,7 @@ If chat tools (chat_send_message) are available, you MUST use them for ALL user-
     this.emit("status", this.status);
 
     // Create loop with providers
-    const completionProvider = new SubAgentCompletionProvider(this.client);
+    const completionProvider = new SubAgentCompletionProvider(this.llmProvider);
     const toolExecutor = new SubAgentToolExecutor(this, this.toolConfig);
 
     this.loop = new AgenticLoop(
@@ -383,6 +386,7 @@ If chat tools (chat_send_message) are available, you MUST use them for ALL user-
   }): Promise<string> {
     const subAgent = new SubAgent({
       name: args.name,
+      provider: this.providerType, // Inherit parent's provider
       model: this.model,
       parentId: this.id,
       allowSubAgents: true,
@@ -444,6 +448,14 @@ If chat tools (chat_send_message) are available, you MUST use them for ALL user-
 
     await this.pluginManager.onTerminate(this.getPluginContext());
     await this.pluginManager.destroy();
+
+    // Close provider connections (e.g., HTTP/2 sessions).
+    // Errors ignored — provider may already be closed during teardown.
+    try {
+      this.llmProvider.close();
+    } catch {
+      /* ignore close errors */
+    }
   }
 
   isAborted(): boolean {

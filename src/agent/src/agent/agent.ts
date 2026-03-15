@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isBrowserEnabled, isWorkspacesEnabled } from "../../../config-file";
-import type { CompletionRequest, Message, ToolCall } from "../api/client";
+import type { CompletionRequest, Message, ToolCall, ToolDefinition } from "../api/client";
 import { createProvider } from "../api/factory";
 import { AllKeysSuspendedError } from "../api/key-pool";
 import type { LLMProvider } from "../api/providers";
@@ -98,42 +98,7 @@ export type InterruptChecker = () => Promise<string | null>; // Returns new mess
 const DEFAULT_SYSTEM_PROMPT = `IMPORTANT: You MUST use chat_send_message tool to respond to users. Never respond with plain text.
 
 You are Claw'd, an autonomous AI assistant that can execute tasks using tools.
-
-## Available Tools
-You have access to the following tools:
-- **bash**: Execute shell commands (sandboxed)
-- **view**: Read files or list directories
-- **edit**: Edit files by replacing text
-- **create**: Create new files
-- **grep**: Search for patterns in files
-- **glob**: Find files by pattern
-- **git_status**: Show working tree status
-- **git_diff**: Show changes between commits or working tree
-- **git_log**: Show commit history
-- **git_branch**: List, create, or delete branches
-- **git_checkout**: Switch branches or restore files
-- **git_add**: Stage files for commit
-- **git_commit**: Record changes to the repository
-- **git_push**: Push commits to remote
-- **git_pull**: Fetch and merge from remote
-- **git_fetch**: Download objects from remote
-- **git_stash**: Stash working directory changes
-- **git_reset**: Reset HEAD to specified state
-- **git_show**: Show commit details
-- **memory_search**: Search past conversations by keywords, time range, or role
-- **memory_summary**: Get a summary of a conversation session
-- **job_submit**: Run long tasks in the background
-- **job_status**: Check status of background jobs
-- **job_cancel**: Cancel a running job
-- **job_wait**: Wait for a job to complete
-- **skill_list**: List available skills
-- **skill_search**: Search for relevant skills
-- **skill_activate**: Load a skill to guide your work
-- **task_add**: Add task to your kanban board
-- **task_list**: View your kanban board
-- **task_update**: Update task status/priority
-- **task_complete**: Mark task as done
-- **task_next**: Get highest-priority todo task
+You have access to tools defined in the tool schema — use them as needed.
 
 ## Guidelines
 1. At the start of a new session, always call get_project_root to know your working directory before doing anything else
@@ -243,6 +208,11 @@ export class Agent {
   private maxContextTokens: number;
   private abortController: AbortController | null = null;
   private _cancelled = false;
+  /** Measured system prompt + tool definitions token count (updated each run) */
+  private _systemPromptOverhead = 12000; // Default fallback, updated with real measurement
+  /** Track which tools the agent actually uses for smart filtering after warmup */
+  private _usedTools = new Set<string>();
+  private _toolFilterWarmupIterations = 5; // Send all tools for first N iterations
   private plugins: PluginManager | null = null;
   private toolPluginManager: ToolPluginManager = new ToolPluginManager();
   private mcpManager: MCPManager = new MCPManager();
@@ -342,9 +312,9 @@ export class Agent {
 
     // Re-check stats after inline compression
     const freshStats = this.config.contextMode ? this.sessions.getSessionStats(this.session.id) : stats;
-    // Add overhead for system prompt + tool definitions (not stored in session DB)
-    const SYSTEM_PROMPT_OVERHEAD = 12000;
-    const tokens = (freshStats?.estimatedTokens ?? stats.estimatedTokens) + SYSTEM_PROMPT_OVERHEAD;
+    // Add overhead for system prompt + tool definitions (not stored in session DB).
+    // Uses measured value from last run() call, falling back to 12K default.
+    const tokens = (freshStats?.estimatedTokens ?? stats.estimatedTokens) + this._systemPromptOverhead;
 
     // Critical: aggressive compaction (keep minimal context, avoid full wipe)
     if (tokens >= this.tokenLimitCritical) {
@@ -809,6 +779,89 @@ SUMMARY:`;
   }
 
   /**
+   * Filter tools after warmup period to reduce token overhead.
+   * Always includes: tools the agent has used, chat/system tools, and plugin tools.
+   * After warmup, unused built-in tools are removed (saving 4-10K tokens/call).
+   */
+  /** Tool categories — if any tool in a category is used, keep the entire category */
+  private static readonly TOOL_CATEGORIES: Record<string, string[]> = {
+    file: ["view", "edit", "create", "grep", "glob"],
+    git: [
+      "git_status",
+      "git_diff",
+      "git_log",
+      "git_branch",
+      "git_checkout",
+      "git_add",
+      "git_commit",
+      "git_push",
+      "git_pull",
+      "git_fetch",
+      "git_stash",
+      "git_reset",
+      "git_show",
+    ],
+    task: ["task_add", "task_list", "task_update", "task_complete", "task_next"],
+    job: ["job_submit", "job_status", "job_cancel", "job_wait"],
+    memory: ["memory_search", "memory_summary"],
+  };
+
+  /** Count of consecutive text-only responses (no tool calls) for re-expansion trigger */
+  private _consecutiveTextOnlyResponses = 0;
+
+  private filterToolsByUsage(tools: ToolDefinition[], iteration: number): ToolDefinition[] {
+    if (iteration <= this._toolFilterWarmupIterations || this._usedTools.size === 0) {
+      return tools; // Send all tools during warmup
+    }
+
+    // Re-expand to full tool set if agent appears stuck (2+ text-only responses may
+    // indicate it lost access to a needed tool after filtering)
+    if (this._consecutiveTextOnlyResponses >= 2) {
+      this._consecutiveTextOnlyResponses = 0;
+      return tools;
+    }
+
+    // Always-include set: chat tools, system tools
+    const alwaysInclude = new Set([
+      "chat_send_message",
+      "chat_mark_processed",
+      "get_project_root",
+      "respond_to_parent",
+      "spawn_agent",
+      "list_agents",
+      "report_progress",
+      "knowledge_search",
+      "skill_activate",
+      "skill_search",
+    ]);
+
+    // Build category-expanded used-tools set: if any tool in a category was used, keep all
+    const expandedUsed = new Set(this._usedTools);
+    for (const [, categoryTools] of Object.entries(Agent.TOOL_CATEGORIES)) {
+      if (categoryTools.some((t) => this._usedTools.has(t))) {
+        for (const t of categoryTools) expandedUsed.add(t);
+      }
+    }
+
+    // Cache builtin names for O(1) lookup
+    const builtinNames = new Set(toolDefinitions.map((td) => td.function.name));
+
+    return tools.filter((t) => {
+      const name = t.function.name;
+      if (expandedUsed.has(name)) return true;
+      if (alwaysInclude.has(name)) return true;
+      // Keep all non-builtin tools (MCP, plugin, custom)
+      if (!builtinNames.has(name)) return true;
+      return false;
+    });
+  }
+
+  /** Record that a tool was used (for filtering after warmup) */
+  private recordToolUsage(name: string): void {
+    this._usedTools.add(name);
+  }
+
+  /**
    * Execute a single tool call (used for interruptible execution)
    */
   private async executeSingleToolCall(toolCall: ToolCall): Promise<{ args: Record<string, any>; result: ToolResult }> {
@@ -820,6 +873,9 @@ SUMMARY:`;
         result: { success: false, output: "", error: parseError },
       };
     }
+
+    // Track tool usage for smart filtering after warmup
+    this.recordToolUsage(toolCall.function.name);
 
     // Allow plugins to transform tool arguments before execution
     const transformedArgs = this.plugins ? await this.plugins.transformToolArgs(toolCall.function.name, args) : args;
@@ -1552,6 +1608,13 @@ SUMMARY:`;
     // Get tools (including MCP) - refreshed each iteration to pick up dynamic connections
     let tools = this.getTools();
 
+    // Measure actual system prompt + tool definitions overhead for compaction accuracy.
+    // This replaces the hardcoded 12K estimate with a real measurement.
+    const systemPromptTokens = estimateTokens(finalSystemPrompt);
+    let lastToolCount = tools.length;
+    let toolsTokenEstimate = estimateTokens(JSON.stringify(tools));
+    this._systemPromptOverhead = systemPromptTokens + toolsTokenEstimate;
+
     // Check for interrupt periodically (from interruptChecker and plugins)
     // Returns true if new message was injected (should continue loop)
     let pendingInterrupt = false; // Flag to track if interrupt happened
@@ -1662,6 +1725,12 @@ SUMMARY:`;
 
         // Refresh tools each iteration to pick up dynamically added MCP connections (e.g. remote workers)
         tools = this.getTools();
+        // Re-measure overhead when tool count changes (new MCP server connected)
+        if (tools.length !== lastToolCount) {
+          lastToolCount = tools.length;
+          toolsTokenEstimate = estimateTokens(JSON.stringify(tools));
+          this._systemPromptOverhead = systemPromptTokens + toolsTokenEstimate;
+        }
 
         iterations++;
 
@@ -1721,15 +1790,16 @@ SUMMARY:`;
         // This is critical to prevent 400 errors from corrupted state
         messages = this.validateToolCallPairs(messages);
 
-        // Make request
-        const toolNames = tools.map((t) => t.function.name);
+        // Filter tools after warmup to reduce token overhead (saves 4-10K tokens/call)
+        const filteredTools = this.filterToolsByUsage(tools, iterations);
+        const toolNames = filteredTools.map((t) => t.function.name);
         if (isDebugEnabled()) {
-          console.log(`[Tools] Total tools for API: ${toolNames.length} - ${toolNames.join(", ")}`);
+          console.log(`[Tools] Total: ${tools.length}, Filtered: ${filteredTools.length} - ${toolNames.join(", ")}`);
         }
         const request: CompletionRequest = {
           model: this.getModel(),
           messages,
-          tools,
+          tools: filteredTools,
           tool_choice: "auto",
           stream: true,
         };
@@ -2003,6 +2073,23 @@ SUMMARY:`;
           // Track consecutive stream errors and apply backoff
           consecutiveStreamErrors++;
 
+          // Classify non-retriable errors — break immediately instead of wasting retries.
+          // Regex anchored to known API-level phrases to avoid false positives on transient tool errors.
+          const isPermanent =
+            /content.?filter|content.?policy|invalid.?request|model.?not.?found|does not exist|model.?not.?supported/i.test(
+              errorMsg,
+            );
+          if (isPermanent) {
+            if (toolResultPending) {
+              console.warn(
+                `[Agent] Permanent error with tool results pending — results will not reach LLM: ${errorMsg}`,
+              );
+            }
+            console.error(`[Agent] Permanent error (no retry): ${errorMsg}`);
+            finalContent = `[Agent stopped: non-retriable error: ${errorMsg}]`;
+            break;
+          }
+
           // Check if we've hit max consecutive errors (more retries when tool results are pending)
           const maxErrors = toolResultPending ? 10 : maxConsecutiveStreamErrors;
           if (consecutiveStreamErrors >= maxErrors) {
@@ -2011,11 +2098,16 @@ SUMMARY:`;
             break;
           }
 
-          // Backoff for rate limits (30s fixed) or other errors (exponential)
+          // Backoff for rate limits — use Retry-After from error if available, else 30s
           const isRateLimit = errorMsg.includes("429") || errorMsg.toLowerCase().includes("rate");
           if (isRateLimit) {
-            console.log(`[Agent] Rate limited, sleeping 30s before retry...`);
-            await new Promise((resolve) => setTimeout(resolve, 30000));
+            const retryAfterMatch = errorMsg.match(/retry.?after[:\s]*(\d+)/i);
+            // Floor at 1s to prevent tight retry loops on Retry-After: 0
+            const retryMs = retryAfterMatch
+              ? Math.max(Math.min(Number(retryAfterMatch[1]) * 1000, 120_000), 1000)
+              : 30_000;
+            console.log(`[Agent] Rate limited, sleeping ${Math.round(retryMs / 1000)}s before retry...`);
+            await new Promise((resolve) => setTimeout(resolve, retryMs));
           } else if (consecutiveStreamErrors > 1) {
             // Exponential backoff: 2s, 4s, 8s, 16s (or up to 60s when tool results pending)
             const maxBackoffMs = toolResultPending ? 60000 : 16000;
@@ -2102,6 +2194,7 @@ SUMMARY:`;
           finalContent = content;
           emptyResponseCount = 0; // Reset on successful response
           consecutiveStreamErrors = 0; // Reset on successful response
+          this._consecutiveTextOnlyResponses++; // Track for tool re-expansion
 
           // Save assistant response
           try {
@@ -2119,6 +2212,7 @@ SUMMARY:`;
         if (toolCalls.length > 0) {
           emptyResponseCount = 0; // Reset on successful response
           consecutiveStreamErrors = 0; // Reset on successful response
+          this._consecutiveTextOnlyResponses = 0; // Reset — agent is using tools
 
           // Save assistant message with tool calls
           try {

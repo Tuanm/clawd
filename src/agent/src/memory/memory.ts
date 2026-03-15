@@ -49,7 +49,8 @@ const BASE64_PATTERN = /(?:data:[a-z]+\/[a-z0-9.+-]+;base64,)?[A-Za-z0-9+/=]{500
 export function estimateTokens(text: string): number {
   if (!text) return 0;
 
-  // Detect base64 content — tokenizes ~1:1 (not 4:1)
+  // Detect base64 content — tokenizes at ~3.5 chars per token (byte-pair encoding
+  // maps base64 alphabet chars to common BPE tokens, not 1:1 as previously assumed).
   const base64Matches = text.match(BASE64_PATTERN);
   if (base64Matches) {
     let base64Chars = 0;
@@ -65,7 +66,7 @@ export function estimateTokens(text: string): number {
     if (base64Chars > 0) {
       const nonBase64Text = text.replace(BASE64_PATTERN, "");
       const nonBase64Chars = nonBase64Text.length;
-      return Math.ceil(base64Chars / 1.0) + estimateNonBase64Tokens(nonBase64Chars, nonBase64Text);
+      return Math.ceil(base64Chars / 3.5) + estimateNonBase64Tokens(nonBase64Chars, nonBase64Text);
     }
   }
 
@@ -225,10 +226,14 @@ export class MemoryManager {
     }
 
     if (query.keywords && query.keywords.length > 0) {
-      // Use FTS for keyword search
-      const ftsQuery = query.keywords.map((k) => `"${k}"`).join(" OR ");
-      sql += ` AND m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)`;
-      params.push(ftsQuery);
+      // Use FTS for keyword search — strip quotes to prevent FTS5 syntax injection,
+      // then filter empty keywords that would produce invalid FTS5 syntax.
+      const safeKeywords = query.keywords.map((k) => k.replace(/["']/g, "")).filter((k) => k.length > 0);
+      if (safeKeywords.length > 0) {
+        const ftsQuery = safeKeywords.map((k) => `"${k}"`).join(" OR ");
+        sql += ` AND m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)`;
+        params.push(ftsQuery);
+      }
     }
 
     sql += " ORDER BY m.created_at DESC";

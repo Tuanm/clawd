@@ -174,7 +174,10 @@ export class ApiResponseError extends Error {
 // Timeout constants
 const CONNECT_TIMEOUT_MS = 10_000; // 10s to establish HTTP/2 connection
 const REQUEST_TIMEOUT_MS = 120_000; // 120s for non-streaming requests (LLM can be slow)
-const STREAM_IDLE_TIMEOUT_MS = 60_000; // 60s idle timeout for streaming (no data received)
+const STREAM_IDLE_TIMEOUT_DEFAULT_MS = 60_000; // 60s idle timeout for most models
+const STREAM_IDLE_TIMEOUT_SLOW_MS = 120_000; // 120s for slow/thinking models (Opus, o1, o3)
+/** Models with extended thinking that may delay first token >60s */
+const SLOW_MODEL_PATTERN = /\bopus\b|\bo[13]\b/i;
 
 /** Show first 4 + last 4 characters of an API key for debugging failed requests. */
 function truncateKey(key: string): string {
@@ -533,17 +536,20 @@ export class CopilotClient extends EventEmitter {
     let resolver: (() => void) | null = null;
     let aborted = false;
 
-    // Idle timeout: if no data received for STREAM_IDLE_TIMEOUT_MS, abort
+    // Idle timeout: if no data received, abort. Extended for slow/thinking models.
+    const idleTimeoutMs = SLOW_MODEL_PATTERN.test(request.model)
+      ? STREAM_IDLE_TIMEOUT_SLOW_MS
+      : STREAM_IDLE_TIMEOUT_DEFAULT_MS;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     const resetIdleTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
         if (!done && !aborted) {
-          error = new Error(`Stream idle timeout after ${STREAM_IDLE_TIMEOUT_MS}ms`);
+          error = new Error(`Stream idle timeout after ${idleTimeoutMs}ms`);
           req.close();
           resolver?.();
         }
-      }, STREAM_IDLE_TIMEOUT_MS);
+      }, idleTimeoutMs);
     };
     resetIdleTimer(); // Start initial idle timer (waiting for first data)
 

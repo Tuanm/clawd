@@ -143,7 +143,10 @@ export function createContextModePlugin(config: ContextModeConfig): ContextModeP
       const query = args.query as string;
       if (!query) return { success: false, output: "", error: "query is required" };
 
-      const scope = (args.scope as string) || "session";
+      // Default to "global" scope to enable cross-agent knowledge sharing.
+      // Agents benefit from each other's indexed tool outputs across sessions.
+      // Note: no project-level isolation exists yet — "global" searches all sessions.
+      const scope = (args.scope as string) || "global";
       const limit = Math.min(args.limit || 10, 50);
 
       const sessionId = scope === "session" ? config.sessionId : undefined;
@@ -283,9 +286,9 @@ export function createContextModePlugin(config: ContextModeConfig): ContextModeP
             query: { type: "string", description: "Search query (keywords or phrases)" },
             scope: {
               type: "string",
-              description: 'Search scope: "session" (current) or "all" (cross-session)',
-              enum: ["session", "all"],
-              default: "session",
+              description: 'Search scope: "session" (current only) or "global" (all sessions, default)',
+              enum: ["session", "global"],
+              default: "global",
             },
             limit: {
               type: "number",

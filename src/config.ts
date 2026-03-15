@@ -37,6 +37,8 @@ export interface AppConfig {
     spaceIdleTimeoutMs?: number;
     /** Max nudge attempts before auto-failing a space (default: 5) */
     maxNudges?: number;
+    /** Nudge main channel agents after error idle for this many ms (default: 20000) */
+    mainAgentErrorIdleTimeoutMs?: number;
   };
 }
 

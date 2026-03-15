@@ -16,6 +16,7 @@ import { broadcastUpdate } from "./server/websocket";
 import { getSpaceByChannel } from "./spaces/db";
 import type { SpaceManager } from "./spaces/manager";
 import type { SpaceWorkerManager } from "./spaces/worker";
+import { timedFetch } from "./utils/timed-fetch";
 import { type AgentHealthSnapshot, WorkerLoop, type WorkerLoopConfig } from "./worker-loop";
 
 /** Resolved heartbeat configuration (all fields required, defaults applied) */
@@ -24,6 +25,8 @@ interface HeartbeatConfig {
   intervalMs: number;
   processingTimeoutMs: number;
   spaceIdleTimeoutMs: number;
+  /** Idle timeout for main channel agents after error (shorter than space agents) */
+  mainAgentErrorIdleTimeoutMs: number;
   maxNudges: number;
 }
 
@@ -70,6 +73,7 @@ export class WorkerManager {
       intervalMs: config.heartbeat?.intervalMs ?? 30_000,
       processingTimeoutMs: config.heartbeat?.processingTimeoutMs ?? 300_000,
       spaceIdleTimeoutMs: config.heartbeat?.spaceIdleTimeoutMs ?? 60_000,
+      mainAgentErrorIdleTimeoutMs: config.heartbeat?.mainAgentErrorIdleTimeoutMs ?? 20_000,
       maxNudges: config.heartbeat?.maxNudges ?? 5,
     };
   }
@@ -286,6 +290,10 @@ export class WorkerManager {
     if (this.heartbeatInProgress) return; // Reentrance guard
     this.heartbeatInProgress = true;
     try {
+      // Collect async nudge actions to run in parallel (bounded concurrency).
+      // Synchronous actions (cancelProcessing, clearError) run inline.
+      const nudgeActions: Array<() => Promise<void>> = [];
+
       // Check main channel agent loops
       for (const [key, loop] of this.loops) {
         const health = loop.getHealthSnapshot();
@@ -314,9 +322,42 @@ export class WorkerManager {
           !health.processing &&
           health.idleDurationMs > this.heartbeatConfig.spaceIdleTimeoutMs
         ) {
-          await this.handleIdleSpaceAgent(key, loop, health);
+          nudgeActions.push(() => this.handleIdleSpaceAgent(key, loop, health));
+          continue;
+        }
+
+        // CHECK 3: Main channel agent idle after error — nudge to retry
+        // Uses shorter timeout than space agents (20s vs 60s) for faster recovery
+        if (
+          !health.isSpaceAgent &&
+          !health.processing &&
+          health.lastExecutionHadError &&
+          health.idleDurationMs > this.heartbeatConfig.mainAgentErrorIdleTimeoutMs
+        ) {
+          if (health.nudgeCount >= this.heartbeatConfig.maxNudges) {
+            console.log(`[Heartbeat] Max nudges exhausted for ${key} after error, giving up`);
+            loop.clearLastExecutionError();
+            this.broadcastHeartbeatEvent(health.channel, health.agentId, "max_nudges_exhausted");
+            continue;
+          }
+          nudgeActions.push(async () => {
+            const nudged = await loop.postNudge(
+              "Agent idle after stream error — retrying",
+              this.heartbeatConfig.maxNudges,
+            );
+            if (nudged) {
+              console.log(
+                `[Heartbeat] Nudged idle agent after error: ${key} (attempt ${health.nudgeCount + 1}/${this.heartbeatConfig.maxNudges})`,
+              );
+              this.broadcastHeartbeatEvent(health.channel, health.agentId, "nudge_sent");
+            }
+          });
         }
       }
+
+      // Run collected nudge actions with bounded concurrency (max 5 parallel)
+      // to prevent a large number of agents from flooding the event loop.
+      await this.runWithConcurrencyLimit(nudgeActions, 5);
 
       // Check space workers (stored in SpaceWorkerManager, NOT in this.loops)
       await this.checkSpaceWorkerHealth();
@@ -324,6 +365,16 @@ export class WorkerManager {
       console.error("[Heartbeat] Error during health check:", err);
     } finally {
       this.heartbeatInProgress = false;
+    }
+  }
+
+  /** Run async actions with bounded concurrency */
+  private async runWithConcurrencyLimit(actions: Array<() => Promise<void>>, limit: number): Promise<void> {
+    if (actions.length === 0) return;
+    // Process in batches of `limit`
+    for (let i = 0; i < actions.length; i += limit) {
+      const batch = actions.slice(i, i + limit);
+      await Promise.allSettled(batch.map((fn) => fn()));
     }
   }
 
@@ -364,6 +415,7 @@ export class WorkerManager {
   private async checkSpaceWorkerHealth(): Promise<void> {
     if (!this.spaceWorkerManager) return;
     const snapshots = this.spaceWorkerManager.getWorkerHealthSnapshots();
+    const nudgeActions: Array<() => Promise<void>> = [];
 
     for (const { spaceId, health } of snapshots) {
       // GUARD: Never touch sleeping agents
@@ -372,7 +424,7 @@ export class WorkerManager {
 
       const key = `space:${spaceId}`;
 
-      // CHECK 1: Processing timeout
+      // CHECK 1: Processing timeout (synchronous — no backpressure concern)
       if (
         health.processing &&
         health.processingDurationMs !== null &&
@@ -406,21 +458,26 @@ export class WorkerManager {
 
         const loop = this.spaceWorkerManager.getWorkerLoop(spaceId);
         if (loop) {
-          const nudged = await loop.postNudge(
-            "Agent idle with incomplete task",
-            this.heartbeatConfig.maxNudges,
-            spaceStatus.description,
-          );
-          if (nudged) {
-            console.log(
-              `[Heartbeat] Nudged space agent: ${key} ` +
-                `(attempt ${health.nudgeCount + 1}/${this.heartbeatConfig.maxNudges})`,
+          nudgeActions.push(async () => {
+            const nudged = await loop.postNudge(
+              "Agent idle with incomplete task",
+              this.heartbeatConfig.maxNudges,
+              spaceStatus.description,
             );
-            this.broadcastHeartbeatEvent(health.channel, health.agentId, "nudge_sent");
-          }
+            if (nudged) {
+              console.log(
+                `[Heartbeat] Nudged space agent: ${key} ` +
+                  `(attempt ${health.nudgeCount + 1}/${this.heartbeatConfig.maxNudges})`,
+              );
+              this.broadcastHeartbeatEvent(health.channel, health.agentId, "nudge_sent");
+            }
+          });
         }
       }
     }
+
+    // Run space nudges with bounded concurrency (same limit as main agent nudges)
+    await this.runWithConcurrencyLimit(nudgeActions, 5);
   }
 
   /** Get space status by space_channel (direct DB query, no network call) */
@@ -460,7 +517,7 @@ export class WorkerManager {
     this.spaceWorkerManager?.stopSpaceWorker(spaceId);
     // Notify parent channel so the parent agent knows (matches spawn-plugin onAbort pattern)
     if (won) {
-      fetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
+      timedFetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -499,11 +556,7 @@ export class WorkerManager {
   /** Load agent configs from the chat server database via API */
   private async loadAgentsFromDb(): Promise<AgentConfig[]> {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 10000);
-      const res = await fetch(`${this.config.chatApiUrl}/api/app.agents.list?internal=1`, {
-        signal: ctrl.signal,
-      }).finally(() => clearTimeout(timer));
+      const res = await timedFetch(`${this.config.chatApiUrl}/api/app.agents.list?internal=1`);
       const data = (await res.json()) as any;
 
       if (data.ok && Array.isArray(data.agents)) {

@@ -84,8 +84,7 @@ export class SessionManager {
     this.db.exec("PRAGMA cache_size = -64000"); // 64MB cache
     // Enable memory-mapped I/O for better read performance
     this.db.exec("PRAGMA mmap_size = 268435456"); // 256MB mmap
-    // Use IMMEDIATE transaction mode to reduce lock contention
-    this.db.exec("PRAGMA read_uncommitted = ON");
+    // WAL mode already provides excellent read concurrency without dirty reads
   }
 
   private init() {
