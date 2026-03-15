@@ -372,7 +372,7 @@ export class AgentMemoryStore {
     if (keywords.length === 0) return null;
 
     // Sanitize for FTS5 safety
-    const safeKeywords = keywords.slice(0, 5).map((k) => k.replace(/"/g, ""));
+    const safeKeywords = keywords.slice(0, 5).map((k) => k.replace(/["']/g, ""));
     const ftsQuery = safeKeywords
       .filter((k) => k.length > 0)
       .map((k) => `"${k}"`)

@@ -1,4 +1,5 @@
 import type { ToolPlugin, ToolRegistration } from "../agent/src/tools/plugin";
+import { timedFetch } from "../utils/timed-fetch";
 import type { SpaceManager } from "./manager";
 
 interface SpacePluginConfig {
@@ -11,7 +12,11 @@ interface SpacePluginConfig {
   onComplete?: () => void;
 }
 
+// Rate limit progress reports (minimum 10s between posts per space)
+const PROGRESS_MIN_INTERVAL_MS = 10_000;
+
 export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: SpaceManager): ToolPlugin {
+  let lastProgressTs = 0;
   return {
     name: "space-tools",
     getTools(): ToolRegistration[] {
@@ -39,9 +44,7 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
                 result.length > 10000
                   ? result.slice(0, 10000) + "\n\n[Result truncated — full result available in sub-space]"
                   : result;
-              const ctrl = new AbortController();
-              const timer = setTimeout(() => ctrl.abort(), 10000);
-              await fetch(`${config.apiUrl}/api/chat.postMessage`, {
+              await timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -50,8 +53,7 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
                   user: "UWORKER-SUBAGENT",
                   agent_id: config.agentId,
                 }),
-                signal: ctrl.signal,
-              }).finally(() => clearTimeout(timer));
+              });
             } catch {}
 
             // Update card status
@@ -62,6 +64,61 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
             config.onComplete?.();
 
             return { success: true, output: "Result sent to parent channel. Sub-space locked." };
+          },
+        },
+        {
+          name: "report_progress",
+          description:
+            "Report progress on the current task to the parent channel. Non-terminal — does NOT complete the sub-space. Use this to keep the parent informed about your progress.",
+          parameters: {
+            percent: {
+              type: "number",
+              description: "Progress percentage (0-100)",
+            },
+            status: {
+              type: "string",
+              description: "Brief status message (e.g., 'Running tests', 'Analyzing 3/5 files')",
+            },
+          },
+          required: ["status"],
+          handler: async (args: Record<string, unknown>): Promise<{ success: boolean; output: string }> => {
+            // Guard: don't report progress on locked/completed spaces
+            const space = spaceManager.getSpace(config.spaceId);
+            if (space && space.status !== "active") {
+              return { success: true, output: "Space already completed. Progress not reported." };
+            }
+
+            // Rate limit: minimum 10s between progress posts
+            const now = Date.now();
+            if (now - lastProgressTs < PROGRESS_MIN_INTERVAL_MS) {
+              return { success: true, output: "Progress throttled. Try again in a few seconds." };
+            }
+            lastProgressTs = now;
+
+            // Clamp and validate percent
+            const rawPercent = typeof args.percent === "number" && Number.isFinite(args.percent) ? args.percent : null;
+            const percent = rawPercent !== null ? Math.round(Math.min(100, Math.max(0, rawPercent))) : null;
+            const status = String(args.status || "Working...");
+            const progressText = percent !== null ? `[${percent}%] ${status}` : status;
+
+            // Post progress update to parent channel (non-terminal, best-effort)
+            try {
+              await timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  channel: config.mainChannel,
+                  text: `[Progress: ${config.agentId}] ${progressText}`,
+                  user: "UWORKER-SUBAGENT",
+                  agent_id: config.agentId,
+                  subtype: "progress",
+                }),
+              });
+            } catch {
+              /* best-effort */
+            }
+
+            return { success: true, output: `Progress reported: ${progressText}` };
           },
         },
         {

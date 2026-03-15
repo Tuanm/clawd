@@ -128,6 +128,12 @@ class AgentBus {
       this.watcher = null;
     }
 
+    // Clear debounce timer
+    if (this.watchDebounceTimer) {
+      clearTimeout(this.watchDebounceTimer);
+      this.watchDebounceTimer = null;
+    }
+
     // Stop heartbeat
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
@@ -186,12 +192,21 @@ class AgentBus {
   // Inbox Watching
   // ============================================================================
 
+  /** Debounce timer for fs.watch — coalesces rapid-fire events into a single scanInbox() call */
+  private watchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly WATCH_DEBOUNCE_MS = 100;
+
   private startWatching(): void {
     try {
       this.watcher = watch(this.inboxDir, (eventType, filename) => {
         if (eventType === "rename" && filename && filename.endsWith(".json")) {
-          // New file appeared - scan inbox
-          this.scanInbox();
+          // Debounce: fs.watch() fires multiple events per write on most OSes.
+          // Coalesce into a single scan to avoid duplicate message processing.
+          if (this.watchDebounceTimer) clearTimeout(this.watchDebounceTimer);
+          this.watchDebounceTimer = setTimeout(() => {
+            this.watchDebounceTimer = null;
+            this.scanInbox();
+          }, AgentBus.WATCH_DEBOUNCE_MS);
         }
       });
     } catch (err) {

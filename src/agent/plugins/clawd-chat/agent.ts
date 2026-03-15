@@ -9,10 +9,16 @@
  * - Interrupt on full messages only (not streaming responses)
  */
 
+import { timedFetch as _sharedTimedFetch } from "../../../utils/timed-fetch";
 import type { Plugin, PluginContext } from "../../src/plugins/manager";
 import type { ToolPlugin, ToolRegistration } from "../../src/tools/plugin";
 import { setChatApiUrl, setCurrentAgentId, setCurrentChannel } from "../../src/tools/tools";
 import { getContextProjectRoot } from "../../src/utils/agent-context";
+
+// Module-scoped wrapper with 15s default for chat API calls (longer than the shared 10s default
+// because chat plugin calls include streaming setup and file uploads that need more headroom).
+const timedFetch = (url: string, options: RequestInit = {}, ms = 15000): Promise<Response> =>
+  _sharedTimedFetch(url, options, ms);
 
 // ============================================================================
 // Types
@@ -75,13 +81,6 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
 
   // Determine user ID based on whether this is a worker/sub-agent
   const userId = config.isWorker || config.isSpaceAgent ? `UWORKER-${config.agentId}` : "UBOT";
-
-  // Fetch with timeout to prevent hangs on self-calls to localhost
-  const timedFetch = (url: string, options: RequestInit = {}, ms = 15000): Promise<Response> => {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), ms);
-    return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
-  };
 
   // ============================================================================
   // API Helpers

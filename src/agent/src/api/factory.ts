@@ -18,8 +18,20 @@ import {
 } from "./provider-config";
 import type { CompletionRequest, CompletionResponse, LLMProvider, ProviderType, StreamEvent } from "./providers";
 
-// Stream idle timeout (abort if no data for this duration)
+// Stream idle timeout (abort if no data for this duration).
+// Default 60s for most models; extended to 120s for slow/thinking models (e.g., Opus)
+// to avoid false-firing during extended thinking phases before the first token arrives.
 const STREAM_IDLE_TIMEOUT_MS = 60_000;
+const STREAM_IDLE_TIMEOUT_SLOW_MS = 120_000;
+
+/** Models known to have extended thinking phases that may delay first token >60s.
+ *  Uses word boundaries to avoid false positives (e.g., "proto1" won't match). */
+const SLOW_THINKING_MODELS = /\bopus\b|\bo[13]\b/i;
+
+/** Get the appropriate idle timeout for a model */
+export function getStreamIdleTimeout(model: string): number {
+  return SLOW_THINKING_MODELS.test(model) ? STREAM_IDLE_TIMEOUT_SLOW_MS : STREAM_IDLE_TIMEOUT_MS;
+}
 
 /** Show first 4 + last 4 characters of an API key for debugging failed requests. */
 function truncateKey(key: string): string {
@@ -283,7 +295,7 @@ class OpenAIProvider implements LLMProvider {
     const decoder = new TextDecoder();
     let buffer = "";
     const toolCallBuffer: Map<number, any> = new Map();
-    const readNext = readWithIdleTimeout(reader, signal);
+    const readNext = readWithIdleTimeout(reader, signal, getStreamIdleTimeout(request.model));
 
     try {
       while (true) {
@@ -495,7 +507,7 @@ class AnthropicProvider implements LLMProvider {
     let buffer = "";
     let currentContent = "";
     const toolCallBuffer: Map<number, { id: string; name: string; arguments: string }> = new Map();
-    const readNext = readWithIdleTimeout(reader, signal);
+    const readNext = readWithIdleTimeout(reader, signal, getStreamIdleTimeout(request.model));
 
     try {
       while (true) {
@@ -972,7 +984,7 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
     const decoder = new TextDecoder();
     let buffer = "";
     const toolCallBuffer: Map<number, { name: string; arguments: string }> = new Map();
-    const readNext = readWithIdleTimeout(reader, signal);
+    const readNext = readWithIdleTimeout(reader, signal, getStreamIdleTimeout(request.model));
 
     try {
       while (true) {
