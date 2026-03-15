@@ -85,7 +85,7 @@ Conducted systematic research on modern patterns and libraries for rendering ric
 
 ### Phase 1: Security (Do First — 3 hours)
 ```bash
-npm install dompurify @types/dompurify --save
+bun add dompurify @types/dompurify
 ```
 - Add DOMPurify to markdown renderer
 - Sanitize any HTML blocks before rehypeRaw
@@ -95,7 +95,7 @@ npm install dompurify @types/dompurify --save
 
 ### Phase 2: Quick Visualization Wins (8 hours)
 ```bash
-npm install recharts @tanstack/react-table recharts-json-parser --save
+bun add recharts @tanstack/react-table recharts-json-parser
 ```
 - Detect `language-chart-json` code blocks
 - Render as interactive Recharts
@@ -104,7 +104,7 @@ npm install recharts @tanstack/react-table recharts-json-parser --save
 
 ### Phase 3: UX Improvements (7 hours)
 ```bash
-npm install yet-another-react-lightbox --save
+bun add yet-another-react-lightbox
 ```
 - Integrate lightbox for images
 - Extend `StreamOutputDialog` for artifact types
@@ -112,14 +112,14 @@ npm install yet-another-react-lightbox --save
 
 ### Phase 4: File Support (Optional)
 ```bash
-npm install react-pdf --save
+bun add react-pdf
 ```
 - PDF preview in modal
 - File download tracking
 
 ### Phase 5: Performance (Only if needed)
 ```bash
-npm install react-virtuoso --save
+bun add react-virtuoso
 ```
 - Measure at 500+ messages
 - Implement virtualization if needed

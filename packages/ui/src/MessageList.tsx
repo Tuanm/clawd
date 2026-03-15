@@ -457,9 +457,7 @@ function parseMessageBlocks(text: string, isStreaming?: boolean, isAgent?: boole
         const titleM = /\btitle=["']([^"']*)["']/.exec(attrs);
         const langM = /\blanguage=["']([^"']*)["']/.exec(attrs);
         const rawType = typeM?.[1] ?? "code";
-        const artifactType = (ARTIFACT_VALID_TYPES as string[]).includes(rawType)
-          ? (rawType as ArtifactType)
-          : "code";
+        const artifactType = (ARTIFACT_VALID_TYPES as string[]).includes(rawType) ? (rawType as ArtifactType) : "code";
         candidates.push({
           index: am.index,
           end: am.index + am[0].length,
@@ -567,12 +565,7 @@ const MARKDOWN_COMPONENTS = {
     if (lang === "mermaid") return <MermaidDiagram chart={code} />;
     const highlighted = lang ? highlightCode(code, lang) : null;
     if (highlighted) {
-      return (
-        <code
-          className={className}
-          dangerouslySetInnerHTML={{ __html: highlighted }}
-        />
-      );
+      return <code className={className} dangerouslySetInnerHTML={{ __html: highlighted }} />;
     }
     return <code className={className}>{children}</code>;
   },
@@ -627,24 +620,104 @@ function HtmlPreview({ html }: { html: string }) {
 </head>
 <body>${DOMPurify.sanitize(html, {
       ALLOWED_TAGS: [
-        "h1","h2","h3","h4","h5","h6","p","br","hr","div","span",
-        "ul","ol","li","dl","dt","dd","table","thead","tbody","tr","th","td",
-        "a","img","pre","code","blockquote","em","strong","del","ins",
-        "sub","sup","kbd","mark","abbr","details","summary","figure","figcaption",
-        "svg","path","rect","circle","line","polyline","polygon","text","g","defs",
-        "clipPath","use","symbol","title",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "p",
+        "br",
+        "hr",
+        "div",
+        "span",
+        "ul",
+        "ol",
+        "li",
+        "dl",
+        "dt",
+        "dd",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+        "a",
+        "img",
+        "pre",
+        "code",
+        "blockquote",
+        "em",
+        "strong",
+        "del",
+        "ins",
+        "sub",
+        "sup",
+        "kbd",
+        "mark",
+        "abbr",
+        "details",
+        "summary",
+        "figure",
+        "figcaption",
+        "svg",
+        "path",
+        "rect",
+        "circle",
+        "line",
+        "polyline",
+        "polygon",
+        "text",
+        "g",
+        "defs",
+        "clipPath",
+        "use",
+        "symbol",
+        "title",
       ],
       ALLOWED_ATTR: [
-        "href","src","alt","title","width","height","class","style","id",
-        "colspan","rowspan","align","valign","target","rel",
+        "href",
+        "src",
+        "alt",
+        "title",
+        "width",
+        "height",
+        "class",
+        "style",
+        "id",
+        "colspan",
+        "rowspan",
+        "align",
+        "valign",
+        "target",
+        "rel",
         // SVG attributes
-        "viewBox","xmlns","fill","stroke","stroke-width","d","cx","cy","r",
-        "x","y","x1","y1","x2","y2","points","transform","opacity",
-        "font-size","text-anchor","dominant-baseline",
+        "viewBox",
+        "xmlns",
+        "fill",
+        "stroke",
+        "stroke-width",
+        "d",
+        "cx",
+        "cy",
+        "r",
+        "x",
+        "y",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "points",
+        "transform",
+        "opacity",
+        "font-size",
+        "text-anchor",
+        "dominant-baseline",
       ],
       ALLOW_DATA_ATTR: false,
       ADD_TAGS: ["style"],
-      FORBID_TAGS: ["script","iframe","object","embed","form","input","textarea","select"],
+      FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "input", "textarea", "select"],
     })}</body>
 </html>`;
     const blob = new Blob([wrapped], { type: "text/html" });
@@ -2055,7 +2128,10 @@ export default function MessageList({
                               case "mermaid":
                                 return (
                                   <div key={`block-${i}`} className="message-block message-mermaid-card">
-                                    <LazyViewport height={200} fallback={<div className="mermaid-placeholder">Loading diagram...</div>}>
+                                    <LazyViewport
+                                      height={200}
+                                      fallback={<div className="mermaid-placeholder">Loading diagram...</div>}
+                                    >
                                       <MermaidDiagram chart={block.content} />
                                     </LazyViewport>
                                   </div>
@@ -2214,12 +2290,7 @@ export default function MessageList({
                           <img src={file.url_private} alt={file.name} className="message-image" />
                         </div>
                       ) : file.mimetype && isPreviewableMimetype(file.mimetype) ? (
-                        <FilePreview
-                          key={file.id}
-                          url={file.url_private}
-                          name={file.name}
-                          mimetype={file.mimetype}
-                        />
+                        <FilePreview key={file.id} url={file.url_private} name={file.name} mimetype={file.mimetype} />
                       ) : (
                         <a
                           key={file.id}

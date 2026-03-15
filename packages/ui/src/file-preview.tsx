@@ -1,4 +1,3 @@
-
 interface FilePreviewProps {
   url: string;
   name: string;
@@ -53,9 +52,5 @@ export default function FilePreview({ url, name, mimetype }: FilePreviewProps) {
  * Images are excluded — handled by existing lightbox code in MessageList.
  */
 export function isPreviewableMimetype(mimetype: string): boolean {
-  return (
-    mimetype === "application/pdf" ||
-    mimetype.startsWith("audio/") ||
-    mimetype.startsWith("video/")
-  );
+  return mimetype === "application/pdf" || mimetype.startsWith("audio/") || mimetype.startsWith("video/");
 }

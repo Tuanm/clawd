@@ -31,12 +31,7 @@ export default function ArtifactRenderer({ artifactType, content, language }: Ar
         USE_PROFILES: { svg: true, svgFilters: true },
         ADD_TAGS: ["use"],
       });
-      return (
-        <div
-          className="artifact-renderer-svg"
-          dangerouslySetInnerHTML={{ __html: sanitized }}
-        />
-      );
+      return <div className="artifact-renderer-svg" dangerouslySetInnerHTML={{ __html: sanitized }} />;
     }
 
     case "chart":
@@ -66,7 +61,11 @@ export default function ArtifactRenderer({ artifactType, content, language }: Ar
           </pre>
         );
       }
-      return <pre><code>{content}</code></pre>;
+      return (
+        <pre>
+          <code>{content}</code>
+        </pre>
+      );
     }
 
     default:

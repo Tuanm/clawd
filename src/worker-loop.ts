@@ -742,8 +742,12 @@ export class WorkerLoop {
 
     try {
       const [lastSeenRes, lastProcessedRes] = await Promise.all([
-        timedFetch(`${chatApiUrl}/api/agent.getLastSeen?agent_id=${agentId}&channel=${channel}`, { headers: this.authHeaders() }),
-        timedFetch(`${chatApiUrl}/api/agent.getLastProcessed?agent_id=${agentId}&channel=${channel}`, { headers: this.authHeaders() }),
+        timedFetch(`${chatApiUrl}/api/agent.getLastSeen?agent_id=${agentId}&channel=${channel}`, {
+          headers: this.authHeaders(),
+        }),
+        timedFetch(`${chatApiUrl}/api/agent.getLastProcessed?agent_id=${agentId}&channel=${channel}`, {
+          headers: this.authHeaders(),
+        }),
       ]);
 
       const lastSeenData = (await lastSeenRes.json()) as any;

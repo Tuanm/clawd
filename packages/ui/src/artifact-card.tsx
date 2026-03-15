@@ -11,13 +11,7 @@ export type { ArtifactType };
 export { ARTIFACT_EXTENSION_MAP };
 
 // Type-specific thumbnail preview shown in the compact card
-function ArtifactThumbnail({
-  type,
-  content,
-}: {
-  type: ArtifactType;
-  content: string;
-}) {
+function ArtifactThumbnail({ type, content }: { type: ArtifactType; content: string }) {
   switch (type) {
     case "code":
       return (
@@ -32,12 +26,7 @@ function ArtifactThumbnail({
       return <span className="artifact-preview-badge-interactive">Interactive</span>;
     case "svg": {
       const safe = DOMPurify.sanitize(content, { USE_PROFILES: { svg: true } });
-      return (
-        <div
-          className="artifact-preview-svg"
-          dangerouslySetInnerHTML={{ __html: safe }}
-        />
-      );
+      return <div className="artifact-preview-svg" dangerouslySetInnerHTML={{ __html: safe }} />;
     }
     case "csv": {
       const lines = content.trim().split("\n");
@@ -49,11 +38,7 @@ function ArtifactThumbnail({
       );
     }
     case "markdown":
-      return (
-        <span className="artifact-preview-meta">
-          {content.split("\n")[0]}
-        </span>
-      );
+      return <span className="artifact-preview-meta">{content.split("\n")[0]}</span>;
     default:
       return null;
   }
@@ -143,11 +128,7 @@ export interface StreamingArtifactCardProps {
 // Live preview card shown while artifact is still streaming in
 const PREVIEW_TAIL_LIMIT = 5000;
 
-export function StreamingArtifactCard({
-  artifactType,
-  title,
-  partialContent,
-}: StreamingArtifactCardProps) {
+export function StreamingArtifactCard({ artifactType, title, partialContent }: StreamingArtifactCardProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const config = TYPE_CONFIG[artifactType] ?? TYPE_CONFIG.code;
 
@@ -164,10 +145,7 @@ export function StreamingArtifactCard({
   return (
     <div className="artifact-card artifact-card--streaming">
       <div className="artifact-card-header artifact-card-header--streaming">
-        <span
-          className="artifact-card-type-badge"
-          style={{ backgroundColor: config.color }}
-        >
+        <span className="artifact-card-type-badge" style={{ backgroundColor: config.color }}>
           {config.label}
         </span>
         <span className="artifact-card-title">{title}</span>

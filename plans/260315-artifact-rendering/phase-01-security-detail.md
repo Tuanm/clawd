@@ -16,7 +16,7 @@ created: 2026-03-15
 ### New Dependency
 
 ```bash
-npm install rehype-sanitize dompurify @types/dompurify
+bun add rehype-sanitize dompurify @types/dompurify
 ```
 
 ### Sanitize Schema Definition
@@ -518,7 +518,7 @@ Both require `unsafe-eval` in CSP (they generate code strings and execute them).
 **Implementation:**
 
 ```bash
-npm install sucrase
+bun add sucrase
 # No need for @babel/standalone
 ```
 

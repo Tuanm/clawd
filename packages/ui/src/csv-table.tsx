@@ -28,10 +28,10 @@ function parseCsv(text: string): string[][] {
     } else {
       if (ch === '"') {
         inQuotes = true;
-      } else if (ch === ',') {
+      } else if (ch === ",") {
         row.push(cell);
         cell = "";
-      } else if (ch === '\n') {
+      } else if (ch === "\n") {
         row.push(cell);
         cell = "";
         rows.push(row);
@@ -43,7 +43,7 @@ function parseCsv(text: string): string[][] {
   }
   // Last cell/row
   row.push(cell);
-  if (row.some(c => c !== "")) rows.push(row);
+  if (row.some((c) => c !== "")) rows.push(row);
   return rows;
 }
 
