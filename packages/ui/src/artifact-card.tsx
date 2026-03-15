@@ -52,9 +52,14 @@ export interface ArtifactPreviewCardProps {
   isStreaming?: boolean;
   lineCount?: number;
   language?: string;
+  // When provided, clicking opens the sidebar instead of the modal
+  onOpenSidebar?: (title: string, type: ArtifactType, content: string, language?: string) => void;
 }
 
-// Compact card always shown in-message; click opens ArtifactModal overlay
+// Sidebar target types — these open in the sidebar panel instead of the modal
+const SIDEBAR_ARTIFACT_TYPES: ArtifactType[] = ["html", "react", "csv", "markdown", "code"];
+
+// Compact card always shown in-message; click opens ArtifactModal overlay or sidebar
 export function ArtifactPreviewCard({
   type,
   title,
@@ -62,12 +67,19 @@ export function ArtifactPreviewCard({
   isStreaming = false,
   lineCount,
   language,
+  onOpenSidebar,
 }: ArtifactPreviewCardProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const config = TYPE_CONFIG[type] ?? TYPE_CONFIG.code;
 
   const handleClick = () => {
-    if (!isStreaming) setModalOpen(true);
+    if (isStreaming) return;
+    // Open in sidebar if callback provided and type is sidebar-eligible
+    if (onOpenSidebar && SIDEBAR_ARTIFACT_TYPES.includes(type)) {
+      onOpenSidebar(title, type, content, language);
+    } else {
+      setModalOpen(true);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

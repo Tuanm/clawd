@@ -7,6 +7,7 @@ import MessageList, { StreamOutputDialog } from "./MessageList";
 import PlanModal from "./PlanModal";
 import ProjectsDialog from "./ProjectsDialog";
 import SearchModal from "./SearchModal";
+import SidebarPanel, { SidebarToggleButton } from "./SidebarPanel";
 import { UnreadBadge } from "./UnreadBadge";
 
 interface SeenByAgent {
@@ -509,6 +510,19 @@ export default function App({ channel: initialChannel }: Props) {
   const [isActiveChannelAtBottom, setIsActiveChannelAtBottom] = useState(true);
   const [streamDialogOpen, setStreamDialogOpen] = useState(false);
   const [streamDialogAgentId, setStreamDialogAgentId] = useState<string | null>(null);
+
+  // Sidebar panel state
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarContent, setSidebarContent] = useState<import("./SidebarPanel").SidebarPanelContent | null>(null);
+
+  const openSidebar = useCallback((content: import("./SidebarPanel").SidebarPanelContent) => {
+    setSidebarContent(content);
+    setSidebarOpen(true);
+  }, []);
+
+  const closeSidebar = useCallback(() => {
+    setSidebarOpen(false);
+  }, []);
 
   // Helper to get current channel state
   const currentState = channelStates.get(activeChannel) || defaultChannelState;
@@ -1989,8 +2003,26 @@ export default function App({ channel: initialChannel }: Props) {
           }}
           onScrollAtBottomChange={setIsActiveChannelAtBottom}
           hasActiveChannelUnread={hasActiveChannelUnread}
+          onOpenSidebar={openSidebar}
         />
       </div>
+      <SidebarToggleButton
+        isOpen={sidebarOpen}
+        hasContent={sidebarContent !== null}
+        onToggle={() => setSidebarOpen((v) => !v)}
+      />
+      {sidebarContent && (
+        <SidebarPanel
+          isOpen={sidebarOpen}
+          onClose={closeSidebar}
+          title={sidebarContent.title}
+          type={sidebarContent.type}
+          url={sidebarContent.url}
+          content={sidebarContent.content}
+          artifactType={sidebarContent.artifactType}
+          language={sidebarContent.language}
+        />
+      )}
       <MessageComposer
         onSend={sendMessage}
         channel={activeChannel}

@@ -18,6 +18,9 @@ import { markdownSanitizeSchema } from "./sanitize-schema";
 import { CopyIcon, PreBlock } from "./ui-primitives";
 import { ArtifactPreviewCard, StreamingArtifactCard, type ArtifactType } from "./artifact-card";
 
+// Lazy-load ChartRenderer (Recharts) for inline chart rendering in messages
+const LazyChartRenderer = React.lazy(() => import("./chart-renderer"));
+
 // Initialize mermaid with dark-aware theme
 const prefersDark = typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
 mermaid.initialize({
@@ -121,6 +124,8 @@ interface Props {
   onJumpComplete?: () => void; // Called after jumping to a message
   onScrollAtBottomChange?: (atBottom: boolean) => void; // Notifies parent when scroll position changes relative to bottom
   hasActiveChannelUnread?: boolean; // Whether the active channel has unread messages (for scroll button red dot)
+  // Sidebar integration — open rich content in the sidebar panel
+  onOpenSidebar?: (content: import("./SidebarPanel").SidebarPanelContent) => void;
 }
 
 // Link icon component (for message reference)
@@ -278,7 +283,8 @@ type MessageBlock =
   | { type: "image"; src: string; alt: string }
   | { type: "iframe"; src: string; rawHtml: string; height?: string; width?: string }
   | { type: "artifact"; artifactType: ArtifactType; title: string; content: string; language?: string }
-  | { type: "streaming-artifact"; artifactType: ArtifactType; title: string; partialContent: string };
+  | { type: "streaming-artifact"; artifactType: ArtifactType; title: string; partialContent: string }
+  | { type: "embed"; title: string; url: string };
 
 // Validates that a URL is safe (http/https or relative /api/ path) to prevent XSS
 function isSafeUrl(url: string): boolean {
@@ -362,6 +368,8 @@ function IframePreviewCard({
 }
 
 const ARTIFACT_VALID_TYPES: ArtifactType[] = ["html", "react", "svg", "chart", "csv", "markdown", "code"];
+// embed is a special pseudo-type that opens a URL in the sidebar (not an ArtifactType)
+const ARTIFACT_EMBED_TYPE = "embed";
 
 // ── Scanner-based block splitter ──────────────────────────────────────────────
 // Returns blocks in source order so the rendered output mirrors original document flow.
@@ -456,19 +464,35 @@ function parseMessageBlocks(text: string, isStreaming?: boolean, isAgent?: boole
         const typeM = /\btype=["']([^"']*)["']/.exec(attrs);
         const titleM = /\btitle=["']([^"']*)["']/.exec(attrs);
         const langM = /\blanguage=["']([^"']*)["']/.exec(attrs);
+        const urlM = /\burl=["']([^"']*)["']/.exec(attrs);
         const rawType = typeM?.[1] ?? "code";
-        const artifactType = (ARTIFACT_VALID_TYPES as string[]).includes(rawType) ? (rawType as ArtifactType) : "code";
-        candidates.push({
-          index: am.index,
-          end: am.index + am[0].length,
-          block: {
-            type: "artifact",
-            artifactType,
-            title: titleM?.[1] ?? "Artifact",
-            content: am[2].trim(),
-            language: langM?.[1],
-          },
-        });
+        // embed type: opens external URL in sidebar
+        if (rawType === ARTIFACT_EMBED_TYPE && urlM && isSafeUrl(urlM[1])) {
+          candidates.push({
+            index: am.index,
+            end: am.index + am[0].length,
+            block: {
+              type: "embed",
+              title: titleM?.[1] ?? "Embed",
+              url: urlM[1],
+            },
+          });
+        } else {
+          const artifactType = (ARTIFACT_VALID_TYPES as string[]).includes(rawType)
+            ? (rawType as ArtifactType)
+            : "code";
+          candidates.push({
+            index: am.index,
+            end: am.index + am[0].length,
+            block: {
+              type: "artifact",
+              artifactType,
+              title: titleM?.[1] ?? "Artifact",
+              content: am[2].trim(),
+              language: langM?.[1],
+            },
+          });
+        }
       }
 
       // Partial/streaming artifact — opening tag without closing tag
@@ -1389,6 +1413,7 @@ export default function MessageList({
   onJumpComplete,
   onScrollAtBottomChange,
   hasActiveChannelUnread = false,
+  onOpenSidebar,
 }: Props) {
   // agentSleeping: when all agents are sleeping, override per-message is_sleeping
 
@@ -2154,7 +2179,106 @@ export default function MessageList({
                                     />
                                   </div>
                                 );
+                              case "embed":
+                                return (
+                                  <div key={`block-${i}`} className="message-block">
+                                    <div
+                                      className="artifact-preview-card artifact-preview-card--embed"
+                                      role="button"
+                                      tabIndex={0}
+                                      aria-label={`Embedded content: ${block.title}. Click to open`}
+                                      onClick={() =>
+                                        onOpenSidebar?.({
+                                          title: block.title,
+                                          type: "iframe",
+                                          url: block.url,
+                                        })
+                                      }
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter" || e.key === " ") {
+                                          e.preventDefault();
+                                          onOpenSidebar?.({
+                                            title: block.title,
+                                            type: "iframe",
+                                            url: block.url,
+                                          });
+                                        }
+                                      }}
+                                    >
+                                      <div
+                                        className="artifact-preview-badge"
+                                        style={{ background: "hsl(220 70% 55%)" }}
+                                      >
+                                        {"<>"}
+                                      </div>
+                                      <div className="artifact-preview-content">
+                                        <div className="artifact-preview-title">{block.title}</div>
+                                        <div className="artifact-preview-thumbnail">
+                                          <span className="artifact-preview-meta">{block.url}</span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
                               case "artifact":
+                                // chart and svg render inline; all other types use preview card + modal
+                                if (block.artifactType === "chart") {
+                                  return (
+                                    <div key={`block-${i}`} className="message-block">
+                                      <div className="message-inline-artifact">
+                                        <div className="message-inline-artifact-header">
+                                          <span className="message-inline-artifact-title">{block.title}</span>
+                                          <div className="message-inline-artifact-actions">
+                                            <button
+                                              className="message-inline-artifact-action-btn"
+                                              title="Copy"
+                                              onClick={() => navigator.clipboard.writeText(block.content)}
+                                            >
+                                              Copy
+                                            </button>
+                                          </div>
+                                        </div>
+                                        <div className="message-inline-artifact-body">
+                                          <React.Suspense
+                                            fallback={
+                                              <div className="message-inline-artifact-loading">Loading chart...</div>
+                                            }
+                                          >
+                                            <LazyChartRenderer content={block.content} />
+                                          </React.Suspense>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                }
+                                if (block.artifactType === "svg") {
+                                  const sanitizedSvg = DOMPurify.sanitize(block.content, {
+                                    USE_PROFILES: { svg: true, svgFilters: true },
+                                    ADD_TAGS: ["use"],
+                                  });
+                                  return (
+                                    <div key={`block-${i}`} className="message-block">
+                                      <div className="message-inline-artifact">
+                                        <div className="message-inline-artifact-header">
+                                          <span className="message-inline-artifact-title">{block.title}</span>
+                                          <div className="message-inline-artifact-actions">
+                                            <button
+                                              className="message-inline-artifact-action-btn"
+                                              title="Copy SVG"
+                                              onClick={() => navigator.clipboard.writeText(block.content)}
+                                            >
+                                              Copy
+                                            </button>
+                                          </div>
+                                        </div>
+                                        <div
+                                          className="message-inline-artifact-body artifact-renderer-svg"
+                                          dangerouslySetInnerHTML={{ __html: sanitizedSvg }}
+                                        />
+                                      </div>
+                                    </div>
+                                  );
+                                }
                                 return (
                                   <div key={`block-${i}`} className="message-block">
                                     <LazyViewport height={60}>
@@ -2163,11 +2287,38 @@ export default function MessageList({
                                         title={block.title}
                                         content={block.content}
                                         language={block.language}
+                                        onOpenSidebar={
+                                          onOpenSidebar
+                                            ? (t, at, c, lang) =>
+                                                onOpenSidebar({
+                                                  title: t,
+                                                  type: "artifact",
+                                                  artifactType: at,
+                                                  content: c,
+                                                  language: lang,
+                                                })
+                                            : undefined
+                                        }
                                       />
                                     </LazyViewport>
                                   </div>
                                 );
                               case "streaming-artifact":
+                                // chart and svg streaming: show skeleton header + animated body
+                                if (block.artifactType === "chart" || block.artifactType === "svg") {
+                                  return (
+                                    <div key={`block-${i}`} className="message-block">
+                                      <div className="message-inline-artifact message-inline-artifact--streaming">
+                                        <div className="message-inline-artifact-header">
+                                          <span className="message-inline-artifact-title">
+                                            {block.title || "Generating..."}
+                                          </span>
+                                        </div>
+                                        <div className="message-inline-artifact-body" />
+                                      </div>
+                                    </div>
+                                  );
+                                }
                                 return (
                                   <div key={`block-${i}`} className="message-block">
                                     <StreamingArtifactCard
