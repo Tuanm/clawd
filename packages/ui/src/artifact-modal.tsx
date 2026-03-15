@@ -4,18 +4,8 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { AlertIcon, CheckIcon, CloseIcon, CopyIcon, DownloadIcon, PreBlock } from "./ui-primitives";
-import { ARTIFACT_EXTENSION_MAP, type ArtifactType } from "./artifact-card";
+import { type ArtifactType, TYPE_CONFIG, ARTIFACT_EXTENSION_MAP } from "./artifact-types";
 import FullArtifactRenderer from "./artifact-renderer";
-
-const TYPE_CONFIG: Record<ArtifactType, { label: string; icon: string; color: string }> = {
-  html:     { label: "HTML",     icon: "</>", color: "hsl(15 80% 55%)" },
-  react:    { label: "React",    icon: "R",   color: "hsl(200 80% 55%)" },
-  svg:      { label: "SVG",      icon: "S",   color: "hsl(45 80% 50%)" },
-  chart:    { label: "Chart",    icon: "C",   color: "hsl(160 60% 45%)" },
-  csv:      { label: "CSV",      icon: "T",   color: "hsl(280 50% 55%)" },
-  markdown: { label: "Markdown", icon: "M",   color: "hsl(220 15% 50%)" },
-  code:     { label: "Code",     icon: "#",   color: "hsl(35 80% 50%)" },
-};
 
 // Renders artifact content at full size inside the modal body.
 // Phase 4 will replace this with sandboxed renderers per type.
@@ -88,10 +78,29 @@ export function ArtifactModal({ type, title, content, language, onClose }: Artif
   const modalRef = useRef<HTMLDivElement>(null);
   const config = TYPE_CONFIG[type] ?? TYPE_CONFIG.code;
 
-  // Close on Escape key
+  // Close on Escape key + focus trap
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key === "Tab") {
+        const focusable = modalRef.current?.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusable && focusable.length > 0) {
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
@@ -110,8 +119,20 @@ export function ArtifactModal({ type, title, content, language, onClose }: Artif
     };
   }, []);
 
-  const copyContent = () => {
-    navigator.clipboard.writeText(content);
+  const copyContent = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch {
+      // Fallback for non-HTTPS or restricted contexts
+      const textarea = document.createElement("textarea");
+      textarea.value = content;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

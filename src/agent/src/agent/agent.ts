@@ -186,7 +186,7 @@ Supported types:
 - html: Raw HTML (rendered in sandboxed iframe)
 - react: JSX/React component with Tailwind CSS (rendered in sandboxed iframe)
 - svg: SVG markup (rendered inline, sanitized)
-- chart: Recharts JSON spec with type, data, xKey, series fields (rendered as interactive chart)
+- chart: Recharts JSON spec (rendered as interactive chart). Types: line, bar, pie, area, scatter, composed
 - csv: CSV data with header row (rendered as sortable table)
 - markdown: Rich markdown content (rendered with full pipeline)
 - code: Source code with optional language attribute (rendered with syntax highlighting)
@@ -196,7 +196,9 @@ Guidelines:
 - Use artifacts when content benefits from rich rendering — dashboards, charts, diagrams, interactive UIs, data tables, formatted documents
 - Do NOT use artifacts for: simple text responses, short inline code snippets, or regular conversational messages
 - Content inside artifacts must NOT contain literal </artifact> tags (use &lt;/artifact&gt; if needed)
-- For chart type, content must be valid JSON matching: {"type":"line|bar|pie|area|scatter","data":[...],"xKey":"...","series":[{"key":"...","color":"#hex"}]}
+- For chart type, content must be valid JSON: {"type":"line|bar|pie|area|scatter|composed","data":[...],"xKey":"month","series":[{"key":"value","color":"#hex","name":"Label"}]}
+- For pie charts: {"type":"pie","data":[{"name":"A","value":100}],"dataKey":"value","nameKey":"name"}
+- For composed charts: series items can have "type":"line"|"bar"|"area" to mix chart types
 - For react type, export a top-level App function component; React and Tailwind are available in the sandbox
 - Keep artifacts focused — one concept per artifact; use multiple artifacts for distinct pieces
 

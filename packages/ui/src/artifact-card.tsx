@@ -5,29 +5,10 @@
 import DOMPurify from "dompurify";
 import React, { useEffect, useRef, useState } from "react";
 import { ArtifactModal } from "./artifact-modal";
+import { type ArtifactType, TYPE_CONFIG, ARTIFACT_EXTENSION_MAP } from "./artifact-types";
 
-export type ArtifactType = "html" | "react" | "svg" | "chart" | "csv" | "markdown" | "code";
-
-const TYPE_CONFIG: Record<ArtifactType, { label: string; icon: string; color: string }> = {
-  html:     { label: "HTML",     icon: "</>", color: "hsl(15 80% 55%)" },
-  react:    { label: "React",    icon: "R",   color: "hsl(200 80% 55%)" },
-  svg:      { label: "SVG",      icon: "S",   color: "hsl(45 80% 50%)" },
-  chart:    { label: "Chart",    icon: "C",   color: "hsl(160 60% 45%)" },
-  csv:      { label: "CSV",      icon: "T",   color: "hsl(280 50% 55%)" },
-  markdown: { label: "Markdown", icon: "M",   color: "hsl(220 15% 50%)" },
-  code:     { label: "Code",     icon: "#",   color: "hsl(35 80% 50%)" },
-};
-
-// Extension map for download filenames
-export const ARTIFACT_EXTENSION_MAP: Record<ArtifactType, string> = {
-  html:     ".html",
-  react:    ".tsx",
-  svg:      ".svg",
-  chart:    ".json",
-  csv:      ".csv",
-  markdown: ".md",
-  code:     ".txt",
-};
+export type { ArtifactType };
+export { ARTIFACT_EXTENSION_MAP };
 
 // Type-specific thumbnail preview shown in the compact card
 function ArtifactThumbnail({

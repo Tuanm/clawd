@@ -33,7 +33,11 @@ markers and renders them as interactive visual cards with copy, download, and fu
 }
 ```
 
-Chart types: `line`, `bar`, `pie`, `area`, `scatter`. Max 1000 data points, 10 series.
+Chart types: `line`, `bar`, `pie`, `area`, `scatter`, `composed`. Max 1000 data points, 10 series.
+
+**Pie chart** uses different fields: `{"type":"pie","data":[{"name":"A","value":100}],"dataKey":"value","nameKey":"name"}`
+
+**Composed chart** mixes types: series items can have `"type":"line"|"bar"|"area"` to overlay different chart types on the same axes.
 
 ## When to Use Artifacts
 

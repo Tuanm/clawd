@@ -140,6 +140,8 @@ export interface WorkerLoopConfig {
   directDb?: boolean;
   /** Per-agent heartbeat interval in seconds (0 or undefined = disabled) */
   heartbeatInterval?: number;
+  /** Auth token for internal HTTP self-calls (Authorization: Bearer <token>) */
+  authToken?: string;
 }
 
 export class WorkerLoop {
@@ -188,6 +190,13 @@ export class WorkerLoop {
 
   constructor(config: WorkerLoopConfig) {
     this.config = config;
+  }
+
+  /** Build Authorization header for internal HTTP self-calls, if auth is configured. */
+  private authHeaders(): Record<string, string> {
+    const token = this.config.authToken;
+    if (!token) return {};
+    return { Authorization: `Bearer ${token}` };
   }
 
   get key(): string {
@@ -733,8 +742,8 @@ export class WorkerLoop {
 
     try {
       const [lastSeenRes, lastProcessedRes] = await Promise.all([
-        timedFetch(`${chatApiUrl}/api/agent.getLastSeen?agent_id=${agentId}&channel=${channel}`),
-        timedFetch(`${chatApiUrl}/api/agent.getLastProcessed?agent_id=${agentId}&channel=${channel}`),
+        timedFetch(`${chatApiUrl}/api/agent.getLastSeen?agent_id=${agentId}&channel=${channel}`, { headers: this.authHeaders() }),
+        timedFetch(`${chatApiUrl}/api/agent.getLastProcessed?agent_id=${agentId}&channel=${channel}`, { headers: this.authHeaders() }),
       ]);
 
       const lastSeenData = (await lastSeenRes.json()) as any;
@@ -747,7 +756,7 @@ export class WorkerLoop {
       const pendingUrl = serverLastProcessed
         ? `${chatApiUrl}/api/messages.pending?channel=${channel}&include_bot=true&limit=50&last_ts=${serverLastProcessed}`
         : `${chatApiUrl}/api/messages.pending?channel=${channel}&include_bot=true&limit=50`;
-      const res = await timedFetch(pendingUrl);
+      const res = await timedFetch(pendingUrl, { headers: this.authHeaders() });
       const data = (await res.json()) as any;
 
       if (!data.ok) return { ...empty, serverLastProcessed, serverLastSeen };
@@ -783,7 +792,7 @@ export class WorkerLoop {
         if (maxTs !== this.lastMarkedSeenTs) {
           await timedFetch(`${chatApiUrl}/api/agent.markSeen`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...this.authHeaders() },
             body: JSON.stringify({ agent_id: agentId, channel, last_seen_ts: maxTs }),
           });
           this.lastMarkedSeenTs = maxTs;
@@ -818,7 +827,7 @@ export class WorkerLoop {
     try {
       const res = await timedFetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...this.authHeaders() },
         body: JSON.stringify({
           channel: this.config.channel,
           text,
@@ -858,7 +867,7 @@ export class WorkerLoop {
     try {
       const res = await timedFetch(`${this.config.chatApiUrl}/api/agent.setLastProcessed`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...this.authHeaders() },
         body: JSON.stringify({
           agent_id: this.config.agentId,
           channel: this.config.channel,
@@ -1146,7 +1155,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
                 async (ch: string) => {
                   // Fetch agent config for the channel
                   try {
-                    const res = await timedFetch(`${chatApiUrl}/api/app.agents.list`);
+                    const res = await timedFetch(`${chatApiUrl}/api/app.agents.list`, { headers: this.authHeaders() });
                     const data = (await res.json()) as any;
                     if (data.ok && Array.isArray(data.agents)) {
                       const agent = data.agents.find((a: any) => a.channel === ch && a.active !== false);
@@ -1355,7 +1364,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
         `${this.config.chatApiUrl}/api/agent.setStreaming`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...this.authHeaders() },
           body: JSON.stringify({
             agent_id: this.config.agentId,
             channel: this.config.channel,

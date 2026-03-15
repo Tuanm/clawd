@@ -109,6 +109,16 @@ export interface ConfigFile {
     processingTimeoutMs?: number;
     spaceIdleTimeoutMs?: number;
   };
+  /**
+   * API authentication configuration.
+   * When set, all API requests must include `Authorization: Bearer <token>`.
+   * When omitted, auth is disabled (backward compatible).
+   *
+   * Example: `"auth": { "token": "your-secret-token-here" }`
+   */
+  auth?: {
+    token?: string;
+  };
 }
 
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");
@@ -246,6 +256,15 @@ export function getBrowserTokensForChannel(channel: string): string[] | null {
   const tokens = br[channel];
   if (!Array.isArray(tokens)) return [];
   return tokens.filter((t) => typeof t === "string" && t.length > 0);
+}
+
+/**
+ * Get the API auth token from config, or null if auth is disabled.
+ */
+export function getAuthToken(): string | null {
+  const config = loadConfigFile();
+  const token = config.auth?.token;
+  return typeof token === "string" && token.length > 0 ? token : null;
 }
 
 /**

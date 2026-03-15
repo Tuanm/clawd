@@ -9,6 +9,7 @@
 import { getChannelMCPServers } from "./agent/src/api/provider-config";
 import { MCPManager } from "./agent/src/mcp/client";
 import type { AppConfig } from "./config";
+import { getAuthToken } from "./config-file";
 import { loadOAuthToken } from "./mcp-oauth";
 import type { SchedulerManager } from "./scheduler/manager";
 import { setAgentStreaming } from "./server/database";
@@ -162,6 +163,8 @@ export class WorkerManager {
       // Remote workers go through the HTTP API; in-process agents use direct DB access
       directDb: !agent.workerToken,
       heartbeatInterval: agent.heartbeatInterval,
+      // Pass auth token so internal HTTP self-calls include Authorization header
+      authToken: getAuthToken() ?? undefined,
     };
 
     const loop = new WorkerLoop(loopConfig);
@@ -491,7 +494,11 @@ export class WorkerManager {
   /** Load agent configs from the chat server database via API */
   private async loadAgentsFromDb(): Promise<AgentConfig[]> {
     try {
-      const res = await timedFetch(`${this.config.chatApiUrl}/api/app.agents.list?internal=1`);
+      const authToken = getAuthToken();
+      const res = await timedFetch(
+        `${this.config.chatApiUrl}/api/app.agents.list?internal=1`,
+        authToken ? { headers: { Authorization: `Bearer ${authToken}` } } : {},
+      );
       const data = (await res.json()) as any;
 
       if (data.ok && Array.isArray(data.agents)) {

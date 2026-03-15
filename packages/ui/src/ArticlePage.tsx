@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { authFetch } from "./auth-fetch";
 import MarkdownContent from "./MarkdownContent";
 import { CopyIcon } from "./ui-primitives";
 
@@ -82,7 +83,7 @@ export default function ArticlePage({ articleId }: Props) {
   useEffect(() => {
     async function loadArticle() {
       try {
-        const res = await fetch(`/api/articles.get?id=${encodeURIComponent(articleId)}`);
+        const res = await authFetch(`/api/articles.get?id=${encodeURIComponent(articleId)}`);
         const data = await res.json();
         if (data.ok) {
           setArticle(data.article);

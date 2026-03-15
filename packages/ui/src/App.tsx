@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import AgentDialog from "./AgentDialog";
+import { authFetch, getStoredAuthToken, setStoredAuthToken } from "./auth-fetch";
 import McpDialog, { McpIcon } from "./McpDialog";
 import MessageComposer from "./MessageComposer";
 import MessageList, { StreamOutputDialog } from "./MessageList";
@@ -54,6 +55,8 @@ interface Props {
 }
 
 const API_URL = "";
+
+// Auth helpers imported from ./auth-fetch
 
 // Header Clawd SVG (smaller version)
 function ClawdLogo({ sleeping = false, hasUnread = false }: { sleeping?: boolean; hasUnread?: boolean }) {
@@ -403,6 +406,40 @@ function ChannelDialogSwipeRow({
   );
 }
 
+function LoginPrompt({ onLogin }: { onLogin: (token: string) => void }) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState("");
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const t = value.trim();
+    if (!t) {
+      setError("Please enter a token.");
+      return;
+    }
+    onLogin(t);
+  };
+
+  return (
+    <div className="login-prompt-overlay">
+      <form className="login-prompt" onSubmit={handleSubmit}>
+        <ClawdLogo />
+        <h2>Authentication Required</h2>
+        <p>Enter your Claw'd access token to continue.</p>
+        <input
+          type="password"
+          placeholder="Bearer token"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          autoFocus
+        />
+        {error && <span className="login-error">{error}</span>}
+        <button type="submit">Connect</button>
+      </form>
+    </div>
+  );
+}
+
 export default function App({ channel: initialChannel }: Props) {
   // Active channel (can be switched without page reload)
   const [activeChannel, setActiveChannel] = useState(initialChannel);
@@ -421,6 +458,7 @@ export default function App({ channel: initialChannel }: Props) {
 
   // Global state
   const [connected, setConnected] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
   const [validProject, setValidProject] = useState<boolean | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
     "Notification" in window ? Notification.permission : "denied",
@@ -624,7 +662,7 @@ export default function App({ channel: initialChannel }: Props) {
       await Promise.all(
         openChannels.map(async (ch) => {
           try {
-            const res = await fetch(`${API_URL}/api/agents.list?channel=${ch}`);
+            const res = await authFetch(`${API_URL}/api/agents.list?channel=${ch}`);
             const data = await res.json();
             if (data.ok && data.agents) {
               result[ch] = data.agents
@@ -656,7 +694,7 @@ export default function App({ channel: initialChannel }: Props) {
   // Fetch space info when in space mode
   useEffect(() => {
     if (!isSpaceChannel || !spaceId) return;
-    fetch(`/api/spaces.get?id=${spaceId}`)
+    authFetch(`/api/spaces.get?id=${spaceId}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.space)
@@ -680,7 +718,7 @@ export default function App({ channel: initialChannel }: Props) {
 
       for (const channel of storedChannels) {
         try {
-          const res = await fetch(`${API_URL}/api/conversations.history?channel=${channel}`);
+          const res = await authFetch(`${API_URL}/api/conversations.history?channel=${channel}`);
           const data = await res.json();
           // Channel is accessible if API returns ok with messages or ok without error
           if (data.ok && data.messages && data.messages.length > 0) {
@@ -745,7 +783,7 @@ export default function App({ channel: initialChannel }: Props) {
   const fetchAgentLastSeen = useCallback(
     async (channelId: string) => {
       try {
-        const res = await fetch(`${API_URL}/api/agent.getLastSeen?agent_id=${channelId}&channel=${channelId}`);
+        const res = await authFetch(`${API_URL}/api/agent.getLastSeen?agent_id=${channelId}&channel=${channelId}`);
         const data = await res.json();
         if (data.ok && data.last_seen_ts) {
           updateChannelState(channelId, { agentLastSeenTs: data.last_seen_ts });
@@ -760,7 +798,7 @@ export default function App({ channel: initialChannel }: Props) {
   const fetchAgentStatus = useCallback(
     async (channelId: string) => {
       try {
-        const res = await fetch(`${API_URL}/api/channel.status?channel=${channelId}`);
+        const res = await authFetch(`${API_URL}/api/channel.status?channel=${channelId}`);
         const data = await res.json();
         if (data.ok) {
           const isOffline = data.status === "offline";
@@ -783,7 +821,7 @@ export default function App({ channel: initialChannel }: Props) {
   const fetchUserLastSeen = useCallback(
     async (channelId: string) => {
       try {
-        const res = await fetch(`${API_URL}/api/user.getLastSeen?channel=${channelId}`);
+        const res = await authFetch(`${API_URL}/api/user.getLastSeen?channel=${channelId}`);
         const data = await res.json();
         if (data.ok) {
           updateChannelState(channelId, { userLastSeenTs: data.last_seen_ts });
@@ -799,7 +837,7 @@ export default function App({ channel: initialChannel }: Props) {
   const fetchUnreadCounts = useCallback(async () => {
     if (openChannels.length === 0) return;
     try {
-      const res = await fetch(`${API_URL}/api/user.getUnreadCounts?channels=${openChannels.join(",")}`);
+      const res = await authFetch(`${API_URL}/api/user.getUnreadCounts?channels=${openChannels.join(",")}`);
       const data = await res.json();
       if (data.ok) {
         console.log("[UnreadCounts] Updated:", data.counts);
@@ -813,7 +851,7 @@ export default function App({ channel: initialChannel }: Props) {
   // Fetch and sync agent streaming status from server
   const fetchAgentStreamingStatus = useCallback(async (channelId: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/agents.list?channel=${channelId}`);
+      const res = await authFetch(`${API_URL}/api/agents.list?channel=${channelId}`);
       const data = await res.json();
       if (data.ok && data.agents) {
         setChannelStates((prev) => {
@@ -859,7 +897,11 @@ export default function App({ channel: initialChannel }: Props) {
   const fetchMessages = useCallback(
     async (channelId: string, background = false) => {
       try {
-        const res = await fetch(`${API_URL}/api/conversations.history?channel=${channelId}`);
+        const res = await authFetch(`${API_URL}/api/conversations.history?channel=${channelId}`);
+        if (res.status === 401) {
+          setAuthRequired(true);
+          return;
+        }
         const data = await res.json();
         if (data.ok) {
           if (data.messages.length === 0) {
@@ -1007,7 +1049,7 @@ export default function App({ channel: initialChannel }: Props) {
     updateChannelState(activeChannel, { loadingOlder: true });
     try {
       const oldestTs = current.messages[0].ts;
-      const res = await fetch(`${API_URL}/api/conversations.history?channel=${activeChannel}&oldest=${oldestTs}`);
+      const res = await authFetch(`${API_URL}/api/conversations.history?channel=${activeChannel}&oldest=${oldestTs}`);
       const data = await res.json();
 
       if (data.ok && data.messages.length > 0) {
@@ -1039,7 +1081,7 @@ export default function App({ channel: initialChannel }: Props) {
     updateChannelState(activeChannel, { loadingNewer: true });
     try {
       const newestTs = current.messages[current.messages.length - 1].ts;
-      const res = await fetch(`${API_URL}/api/conversations.newer?channel=${activeChannel}&newest=${newestTs}`);
+      const res = await authFetch(`${API_URL}/api/conversations.newer?channel=${activeChannel}&newest=${newestTs}`);
       const data = await res.json();
 
       if (data.ok && data.messages.length > 0) {
@@ -1076,7 +1118,7 @@ export default function App({ channel: initialChannel }: Props) {
 
       // Message not in DOM - fetch messages around this timestamp
       try {
-        const res = await fetch(`${API_URL}/api/conversations.around?channel=${activeChannel}&ts=${ts}`);
+        const res = await authFetch(`${API_URL}/api/conversations.around?channel=${activeChannel}&ts=${ts}`);
         const data = await res.json();
 
         if (data.ok && data.messages.length > 0) {
@@ -1113,7 +1155,7 @@ export default function App({ channel: initialChannel }: Props) {
   // Jump to latest messages (scroll to bottom button)
   const jumpToLatest = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/conversations.history?channel=${activeChannel}&limit=100`);
+      const res = await authFetch(`${API_URL}/api/conversations.history?channel=${activeChannel}&limit=100`);
       const data = await res.json();
 
       if (data.ok) {
@@ -1144,7 +1186,9 @@ export default function App({ channel: initialChannel }: Props) {
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws?user=UHUMAN`;
+    const token = getStoredAuthToken();
+    const wsToken = token ? `&token=${encodeURIComponent(token)}` : "";
+    const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws?user=UHUMAN${wsToken}`;
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
@@ -1540,7 +1584,7 @@ export default function App({ channel: initialChannel }: Props) {
           formData.append("file", file);
           formData.append("channel", activeChannel);
 
-          const uploadRes = await fetch(`${API_URL}/api/files.upload`, {
+          const uploadRes = await authFetch(`${API_URL}/api/files.upload`, {
             method: "POST",
             body: formData,
           });
@@ -1551,7 +1595,7 @@ export default function App({ channel: initialChannel }: Props) {
         }
       }
 
-      const res = await fetch(`${API_URL}/api/chat.postMessage`, {
+      const res = await authFetch(`${API_URL}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1665,7 +1709,7 @@ export default function App({ channel: initialChannel }: Props) {
 
       // Fetch historical thoughts from server
       try {
-        const res = await fetch(
+        const res = await authFetch(
           `/api/agent.getThoughts?agent_id=${encodeURIComponent(agentId)}&channel=${encodeURIComponent(activeChannel)}&limit=200`,
         );
         const data = await res.json();
@@ -1690,6 +1734,20 @@ export default function App({ channel: initialChannel }: Props) {
 
   // Redirect to home if project is invalid
   // (We no longer redirect -- channels with no messages still show the channel UI)
+
+  // Auth gate — show login prompt if server returned 401
+  if (authRequired) {
+    return (
+      <LoginPrompt
+        onLogin={(token) => {
+          setStoredAuthToken(token);
+          setAuthRequired(false);
+          // Re-trigger initial load
+          setValidProject(null);
+        }}
+      />
+    );
+  }
 
   // Loading state - Clawd running to header position
   if (validProject === null) {
@@ -1912,7 +1970,7 @@ export default function App({ channel: initialChannel }: Props) {
               // Optimistically update state immediately
               updateChannelState(activeChannel, { userLastSeenTs: ts });
               // Then sync to server
-              fetch(`${API_URL}/api/user.markSeen`, {
+              authFetch(`${API_URL}/api/user.markSeen`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ channel: activeChannel, ts }),

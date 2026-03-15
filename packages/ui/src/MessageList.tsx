@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import mermaid from "mermaid";
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { authFetch } from "./auth-fetch";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -663,7 +664,7 @@ function HtmlPreview({ html }: { html: string }) {
       <iframe
         ref={iframeRef}
         className="html-preview-frame"
-        srcDoc={html}
+        srcDoc={DOMPurify.sanitize(html, { ADD_TAGS: ["style"], WHOLE_DOCUMENT: true })}
         sandbox="allow-scripts"
         title="HTML Preview"
       />
@@ -947,7 +948,7 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
       // Extract title from content (first line or first 50 chars)
       const title = menu.content.split("\n")[0].slice(0, 50) || "Shared message";
       // Create article
-      const res = await fetch("/api/articles.create", {
+      const res = await authFetch("/api/articles.create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1994,6 +1995,10 @@ export default function MessageList({
                       : (() => {
                           const parsed = parseMessageBlocks(decodedText, isStreaming, isAgentMessage(msg));
                           blockParseCacheRef.current.set(msg.ts, { key: blockCacheKey, blocks: parsed });
+                          if (blockParseCacheRef.current.size > 500) {
+                            const firstKey = blockParseCacheRef.current.keys().next().value;
+                            if (firstKey) blockParseCacheRef.current.delete(firstKey);
+                          }
                           return parsed;
                         })();
                   // For multi-block messages: no collapsing needed — each block is already compact.

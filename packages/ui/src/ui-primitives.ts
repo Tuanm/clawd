@@ -69,10 +69,22 @@ export function PreBlock({ children }: { children: React.ReactNode }): React.Rea
     return "";
   };
 
-  const copyCode = () => {
+  const copyCode = async () => {
     const code = getCodeText();
     if (code) {
-      navigator.clipboard.writeText(code);
+      try {
+        await navigator.clipboard.writeText(code);
+      } catch {
+        // Fallback for non-HTTPS or restricted contexts
+        const textarea = document.createElement("textarea");
+        textarea.value = code;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
