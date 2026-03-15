@@ -404,6 +404,7 @@ class AnthropicProvider implements LLMProvider {
       "Content-Type": "application/json",
       "x-api-key": activeKey || this.getActiveApiKey(),
       "anthropic-version": "2023-06-01",
+      "anthropic-beta": "prompt-caching-2024-07-31",
     };
   }
 
@@ -446,7 +447,15 @@ class AnthropicProvider implements LLMProvider {
       throw new Error(`Anthropic API error: ${response.status} [key=${truncateKey(activeKey)}] - ${error}`);
     }
 
-    const responseJson = await response.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const responseJson: any = await response.json();
+
+    // Log cache metrics when available (Anthropic prompt caching)
+    const cacheCreate = responseJson.usage?.cache_creation_input_tokens;
+    const cacheRead = responseJson.usage?.cache_read_input_tokens;
+    if (cacheCreate !== undefined || cacheRead !== undefined) {
+      console.log(`[Provider] Cache: created=${cacheCreate ?? 0} read=${cacheRead ?? 0} tokens`);
+    }
 
     // Debug logging
     if (isDebugEnabled()) {
@@ -573,6 +582,20 @@ class AnthropicProvider implements LLMProvider {
                 };
               }
               toolCallBuffer.delete(idx);
+            } else if (event.type === "message_delta" && event.usage) {
+              // Log cache metrics from streaming usage (Anthropic prompt caching)
+              const cacheCreate = event.usage.cache_creation_input_tokens;
+              const cacheRead = event.usage.cache_read_input_tokens;
+              if (cacheCreate !== undefined || cacheRead !== undefined) {
+                console.log(`[Provider] Cache: created=${cacheCreate ?? 0} read=${cacheRead ?? 0} tokens`);
+              }
+            } else if (event.type === "message_start" && event.message?.usage) {
+              // Log cache metrics from message_start (Anthropic sends input token counts here)
+              const cacheCreate = event.message.usage.cache_creation_input_tokens;
+              const cacheRead = event.message.usage.cache_read_input_tokens;
+              if (cacheCreate !== undefined || cacheRead !== undefined) {
+                console.log(`[Provider] Cache: created=${cacheCreate ?? 0} read=${cacheRead ?? 0} tokens`);
+              }
             } else if (event.type === "message_stop") {
               yield { type: "done" };
             }
@@ -651,6 +674,12 @@ class AnthropicProvider implements LLMProvider {
       }));
     }
 
+    // Format system as array with cache_control on the last (only) block so
+    // Anthropic caches the full system prompt prefix across calls.
+    const systemField = systemContent
+      ? [{ type: "text", text: systemContent, cache_control: { type: "ephemeral" } }]
+      : undefined;
+
     return {
       model: request.model,
       messages,
@@ -658,7 +687,7 @@ class AnthropicProvider implements LLMProvider {
       stream: stream || undefined,
       temperature: request.temperature,
       tools,
-      ...(systemContent && { system: systemContent }),
+      ...(systemField && { system: systemField }),
     };
   }
 

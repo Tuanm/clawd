@@ -9,6 +9,7 @@ import {
   getSpace,
   getSpaceByChannel,
   listSpaces,
+  resetSpaceForRetask,
   type Space,
   updateCardTs,
 } from "./db";
@@ -79,5 +80,9 @@ export class SpaceManager {
   cleanupSpaceAgents(spaceId: string): void {
     const space = getSpace(spaceId);
     if (space) deleteSpaceAgents(space.space_channel);
+  }
+
+  resetSpace(spaceId: string): boolean {
+    return resetSpaceForRetask(spaceId);
   }
 }

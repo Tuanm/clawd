@@ -153,6 +153,7 @@ export class WorkerManager {
       model: agent.model,
       projectRoot: agent.project || this.config.projectRoot,
       chatApiUrl: this.config.chatApiUrl,
+      wsUrl: this.config.chatApiUrl.replace(/^http(s?):\/\//, "ws$1://"),
       debug: this.config.debug,
       yolo: this.config.yolo,
       contextMode: this.config.contextMode,
@@ -161,6 +162,8 @@ export class WorkerManager {
       spaceWorkerManager: this.spaceWorkerManager,
       channelMcpManager: channelMcpManager || undefined,
       workerToken: agent.workerToken,
+      // Remote workers go through the HTTP API; in-process agents use direct DB access
+      directDb: !agent.workerToken,
     };
 
     const loop = new WorkerLoop(loopConfig);
