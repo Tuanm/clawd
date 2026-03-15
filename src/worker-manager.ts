@@ -25,9 +25,6 @@ interface HeartbeatConfig {
   intervalMs: number;
   processingTimeoutMs: number;
   spaceIdleTimeoutMs: number;
-  /** Idle timeout for main channel agents after error (shorter than space agents) */
-  mainAgentErrorIdleTimeoutMs: number;
-  maxNudges: number;
 }
 
 export interface AgentConfig {
@@ -47,6 +44,8 @@ export interface AgentConfig {
   sleeping?: boolean;
   /** Worker token for remote worker binding */
   workerToken?: string;
+  /** Per-agent heartbeat interval in seconds (0 = disabled) */
+  heartbeatInterval?: number;
 }
 
 export class WorkerManager {
@@ -73,8 +72,6 @@ export class WorkerManager {
       intervalMs: config.heartbeat?.intervalMs ?? 30_000,
       processingTimeoutMs: config.heartbeat?.processingTimeoutMs ?? 300_000,
       spaceIdleTimeoutMs: config.heartbeat?.spaceIdleTimeoutMs ?? 60_000,
-      mainAgentErrorIdleTimeoutMs: config.heartbeat?.mainAgentErrorIdleTimeoutMs ?? 20_000,
-      maxNudges: config.heartbeat?.maxNudges ?? 5,
     };
   }
 
@@ -164,6 +161,7 @@ export class WorkerManager {
       workerToken: agent.workerToken,
       // Remote workers go through the HTTP API; in-process agents use direct DB access
       directDb: !agent.workerToken,
+      heartbeatInterval: agent.heartbeatInterval,
     };
 
     const loop = new WorkerLoop(loopConfig);
@@ -262,8 +260,7 @@ export class WorkerManager {
     console.log(
       `[Heartbeat] Monitor started (interval: ${this.heartbeatConfig.intervalMs}ms, ` +
         `processingTimeout: ${this.heartbeatConfig.processingTimeoutMs}ms, ` +
-        `spaceIdleTimeout: ${this.heartbeatConfig.spaceIdleTimeoutMs}ms, ` +
-        `maxNudges: ${this.heartbeatConfig.maxNudges})`,
+        `spaceIdleTimeout: ${this.heartbeatConfig.spaceIdleTimeoutMs}ms)`,
     );
   }
 
@@ -293,9 +290,10 @@ export class WorkerManager {
     if (this.heartbeatInProgress) return; // Reentrance guard
     this.heartbeatInProgress = true;
     try {
-      // Collect async nudge actions to run in parallel (bounded concurrency).
-      // Synchronous actions (cancelProcessing, clearError) run inline.
-      const nudgeActions: Array<() => Promise<void>> = [];
+      const now = Date.now();
+      // Collect async heartbeat inject actions to run in parallel (bounded concurrency).
+      // Synchronous actions (cancelProcessing) run inline.
+      const heartbeatActions: Array<() => Promise<void>> = [];
 
       // Check main channel agent loops
       for (const [key, loop] of this.loops) {
@@ -325,42 +323,25 @@ export class WorkerManager {
           !health.processing &&
           health.idleDurationMs > this.heartbeatConfig.spaceIdleTimeoutMs
         ) {
-          nudgeActions.push(() => this.handleIdleSpaceAgent(key, loop, health));
+          heartbeatActions.push(() => this.handleIdleSpaceAgent(key, loop, health));
           continue;
         }
 
-        // CHECK 3: Main channel agent idle after error — nudge to retry
-        // Uses shorter timeout than space agents (20s vs 60s) for faster recovery
-        if (
-          !health.isSpaceAgent &&
-          !health.processing &&
-          health.lastExecutionHadError &&
-          health.idleDurationMs > this.heartbeatConfig.mainAgentErrorIdleTimeoutMs
-        ) {
-          if (health.nudgeCount >= this.heartbeatConfig.maxNudges) {
-            console.log(`[Heartbeat] Max nudges exhausted for ${key} after error, giving up`);
-            loop.clearLastExecutionError();
-            this.broadcastHeartbeatEvent(health.channel, health.agentId, "max_nudges_exhausted");
-            continue;
+        // CHECK 3: Per-agent heartbeat interval — inject heartbeat for idle agents with configured interval
+        if (!health.processing && loop.heartbeatInterval > 0) {
+          const timeSinceLastHeartbeat = now - health.lastHeartbeatAt;
+          if (timeSinceLastHeartbeat > loop.heartbeatInterval * 1000) {
+            heartbeatActions.push(async () => {
+              loop.injectHeartbeat();
+              console.log(`[Heartbeat] Injected heartbeat for agent: ${key} (interval: ${loop.heartbeatInterval}s)`);
+              this.broadcastHeartbeatEvent(health.channel, health.agentId, "heartbeat_sent");
+            });
           }
-          nudgeActions.push(async () => {
-            const nudged = await loop.postNudge(
-              "Agent idle after stream error — retrying",
-              this.heartbeatConfig.maxNudges,
-            );
-            if (nudged) {
-              console.log(
-                `[Heartbeat] Nudged idle agent after error: ${key} (attempt ${health.nudgeCount + 1}/${this.heartbeatConfig.maxNudges})`,
-              );
-              this.broadcastHeartbeatEvent(health.channel, health.agentId, "nudge_sent");
-            }
-          });
         }
       }
 
-      // Run collected nudge actions with bounded concurrency (max 5 parallel)
-      // to prevent a large number of agents from flooding the event loop.
-      await this.runWithConcurrencyLimit(nudgeActions, 5);
+      // Run collected heartbeat actions with bounded concurrency (max 5 parallel)
+      await this.runWithConcurrencyLimit(heartbeatActions, 5);
 
       // Check space workers (stored in SpaceWorkerManager, NOT in this.loops)
       await this.checkSpaceWorkerHealth();
@@ -381,44 +362,44 @@ export class WorkerManager {
     }
   }
 
-  /** Handle an idle space agent that may need nudging or auto-failing */
+  /** Max consecutive heartbeats for a space agent before auto-failing (circuit breaker) */
+  private static readonly MAX_SPACE_HEARTBEATS = 10;
+  /** Track consecutive heartbeat count per space (resets on activity) */
+  private spaceHeartbeatCounts = new Map<string, number>();
+
+  /** Handle an idle space agent that may need a heartbeat */
   private async handleIdleSpaceAgent(key: string, loop: WorkerLoop, health: AgentHealthSnapshot): Promise<void> {
     const spaceStatus = this.getSpaceStatus(health.channel);
     if (!spaceStatus || !spaceStatus.active || spaceStatus.locked) return;
 
-    if (health.nudgeCount >= this.heartbeatConfig.maxNudges) {
-      // Exhausted nudges — auto-fail the space
-      console.log(`[Heartbeat] Max nudges exhausted for ${key}, failing space`);
-      this.autoFailSpace(
-        health.channel,
-        spaceStatus.spaceId,
-        spaceStatus.parentChannel,
-        spaceStatus.title,
-        spaceStatus.agentId,
-      );
-      this.broadcastHeartbeatEvent(health.channel, health.agentId, "max_nudges_exhausted");
+    // Circuit breaker: auto-fail space after too many consecutive heartbeats
+    const count = (this.spaceHeartbeatCounts.get(key) || 0) + 1;
+    this.spaceHeartbeatCounts.set(key, count);
+
+    if (count > WorkerManager.MAX_SPACE_HEARTBEATS) {
+      console.log(`[Heartbeat] Space agent ${key} unresponsive after ${count} heartbeats, failing space`);
+      if (this.spaceManager) {
+        this.spaceManager.failSpace(spaceStatus.spaceId, "Heartbeat: agent unresponsive after max heartbeat attempts");
+        this.spaceWorkerManager?.stopSpaceWorker(spaceStatus.spaceId);
+      }
+      this.spaceHeartbeatCounts.delete(key);
+      this.broadcastHeartbeatEvent(health.channel, health.agentId, "space_auto_failed");
       return;
     }
 
-    // Post nudge
-    const nudged = await loop.postNudge(
-      "Agent idle with incomplete task",
-      this.heartbeatConfig.maxNudges,
-      spaceStatus.description,
+    // Inject heartbeat to wake idle space agent
+    loop.injectHeartbeat();
+    console.log(
+      `[Heartbeat] Injected heartbeat for idle space agent: ${key} (${count}/${WorkerManager.MAX_SPACE_HEARTBEATS})`,
     );
-    if (nudged) {
-      console.log(
-        `[Heartbeat] Nudged agent: ${key} (attempt ${health.nudgeCount + 1}/${this.heartbeatConfig.maxNudges})`,
-      );
-      this.broadcastHeartbeatEvent(health.channel, health.agentId, "nudge_sent");
-    }
+    this.broadcastHeartbeatEvent(health.channel, health.agentId, "heartbeat_sent");
   }
 
   /** Check space worker health — the MAIN recovery path for stuck subspace agents */
   private async checkSpaceWorkerHealth(): Promise<void> {
     if (!this.spaceWorkerManager) return;
     const snapshots = this.spaceWorkerManager.getWorkerHealthSnapshots();
-    const nudgeActions: Array<() => Promise<void>> = [];
+    const heartbeatActions: Array<() => Promise<void>> = [];
 
     for (const { spaceId, health } of snapshots) {
       // GUARD: Never touch sleeping agents
@@ -441,46 +422,24 @@ export class WorkerManager {
         continue;
       }
 
-      // CHECK 2: Space agent idle with incomplete task
+      // CHECK 2: Space agent idle with incomplete task — inject heartbeat
       if (!health.processing && health.idleDurationMs > this.heartbeatConfig.spaceIdleTimeoutMs) {
         const spaceStatus = this.getSpaceStatus(health.channel);
         if (!spaceStatus || !spaceStatus.active || spaceStatus.locked) continue;
 
-        if (health.nudgeCount >= this.heartbeatConfig.maxNudges) {
-          console.log(`[Heartbeat] Max nudges exhausted for ${key}, failing space`);
-          this.autoFailSpace(
-            health.channel,
-            spaceStatus.spaceId,
-            spaceStatus.parentChannel,
-            spaceStatus.title,
-            spaceStatus.agentId,
-          );
-          this.broadcastHeartbeatEvent(health.channel, health.agentId, "max_nudges_exhausted");
-          continue;
-        }
-
         const loop = this.spaceWorkerManager.getWorkerLoop(spaceId);
         if (loop) {
-          nudgeActions.push(async () => {
-            const nudged = await loop.postNudge(
-              "Agent idle with incomplete task",
-              this.heartbeatConfig.maxNudges,
-              spaceStatus.description,
-            );
-            if (nudged) {
-              console.log(
-                `[Heartbeat] Nudged space agent: ${key} ` +
-                  `(attempt ${health.nudgeCount + 1}/${this.heartbeatConfig.maxNudges})`,
-              );
-              this.broadcastHeartbeatEvent(health.channel, health.agentId, "nudge_sent");
-            }
+          heartbeatActions.push(async () => {
+            loop.injectHeartbeat();
+            console.log(`[Heartbeat] Injected heartbeat for idle space agent: ${key}`);
+            this.broadcastHeartbeatEvent(health.channel, health.agentId, "heartbeat_sent");
           });
         }
       }
     }
 
-    // Run space nudges with bounded concurrency (same limit as main agent nudges)
-    await this.runWithConcurrencyLimit(nudgeActions, 5);
+    // Run space heartbeat actions with bounded concurrency
+    await this.runWithConcurrencyLimit(heartbeatActions, 5);
   }
 
   /** Get space status by space_channel (direct DB query, no network call) */
@@ -504,33 +463,6 @@ export class WorkerManager {
       title: space.title,
       agentId: space.agent_id,
     };
-  }
-
-  /** Auto-fail a space when nudges are exhausted — sub-agent fails immediately */
-  private autoFailSpace(
-    spaceChannel: string,
-    spaceId: string,
-    parentChannel: string,
-    title: string,
-    agentId: string,
-  ): void {
-    if (!this.spaceManager) return;
-    const won = this.spaceManager.failSpace(spaceId, "Heartbeat: agent unresponsive after max recovery attempts");
-    // stopSpaceWorker rejects the space promise, causing the parent agent to see the failure immediately
-    this.spaceWorkerManager?.stopSpaceWorker(spaceId);
-    // Notify parent channel so the parent agent knows (matches spawn-plugin onAbort pattern)
-    if (won) {
-      timedFetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: parentChannel,
-          text: `Sub-space failed (unresponsive): ${title}`,
-          user: "UBOT",
-          agent_id: agentId,
-        }),
-      }).catch(() => {});
-    }
   }
 
   /** Clear streaming DB flag for an agent */
@@ -572,6 +504,7 @@ export class WorkerManager {
           project: a.project || "",
           sleeping: a.sleeping === true,
           workerToken: a.worker_token || undefined,
+          heartbeatInterval: a.heartbeat_interval || 0,
         }));
       }
     } catch (error) {

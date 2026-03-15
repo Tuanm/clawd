@@ -33,12 +33,8 @@ export interface AppConfig {
     intervalMs?: number;
     /** Cancel agent processing after this many ms (default: 300000) */
     processingTimeoutMs?: number;
-    /** Nudge idle space agents after this many ms (default: 60000) */
+    /** Inject heartbeat for idle space agents after this many ms (default: 60000) */
     spaceIdleTimeoutMs?: number;
-    /** Max nudge attempts before auto-failing a space (default: 5) */
-    maxNudges?: number;
-    /** Nudge main channel agents after error idle for this many ms (default: 20000) */
-    mainAgentErrorIdleTimeoutMs?: number;
   };
 }
 

@@ -99,17 +99,15 @@ export interface ConfigFile {
    *
    * When enabled, periodically checks agent health and:
    * - Cancels agents stuck processing beyond `processingTimeoutMs`
-   * - Nudges idle space agents with incomplete tasks
-   * - Auto-fails spaces after `maxNudges` recovery attempts
+   * - Injects [HEARTBEAT] signals for idle agents with a configured heartbeat_interval
    *
-   * Example: `"heartbeat": { "enabled": true, "maxNudges": 5 }`
+   * Example: `"heartbeat": { "enabled": true, "intervalMs": 10000 }`
    */
   heartbeat?: {
     enabled?: boolean;
     intervalMs?: number;
     processingTimeoutMs?: number;
     spaceIdleTimeoutMs?: number;
-    maxNudges?: number;
   };
 }
 
