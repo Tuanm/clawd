@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { authFetch } from "./auth-fetch";
 
 interface Message {
   ts: string;
@@ -127,7 +128,7 @@ export default function SearchModal({ messages, isOpen, onClose, onJumpToMessage
         });
         if (before) params.append("before_ts", before);
 
-        const res = await fetch(`${API_URL}/api/conversations.search?${params}`);
+        const res = await authFetch(`${API_URL}/api/conversations.search?${params}`);
         const data = await res.json();
 
         if (data.ok) {

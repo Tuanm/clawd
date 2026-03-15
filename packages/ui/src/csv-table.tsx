@@ -7,37 +7,43 @@ interface CsvTableProps {
 
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const cells: string[] = [];
-    let current = "";
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (inQuotes) {
-        if (ch === '"' && line[i + 1] === '"') {
-          current += '"';
-          i++;
-        } else if (ch === '"') {
-          inQuotes = false;
+  let row: string[] = [];
+  let cell = "";
+  let inQuotes = false;
+  const chars = text.replace(/\r\n/g, "\n");
+
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (chars[i + 1] === '"') {
+          cell += '"';
+          i++; // skip escaped quote
         } else {
-          current += ch;
+          inQuotes = false;
         }
       } else {
-        if (ch === '"') {
-          inQuotes = true;
-        } else if (ch === ",") {
-          cells.push(current.trim());
-          current = "";
-        } else {
-          current += ch;
-        }
+        cell += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',') {
+        row.push(cell);
+        cell = "";
+      } else if (ch === '\n') {
+        row.push(cell);
+        cell = "";
+        rows.push(row);
+        row = [];
+      } else {
+        cell += ch;
       }
     }
-    cells.push(current.trim());
-    rows.push(cells);
   }
+  // Last cell/row
+  row.push(cell);
+  if (row.some(c => c !== "")) rows.push(row);
   return rows;
 }
 

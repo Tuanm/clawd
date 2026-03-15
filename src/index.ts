@@ -103,7 +103,7 @@ import { registerAgentRoutes } from "./api/agents";
 import { registerArticleRoutes } from "./api/articles";
 import { registerMcpServerRoutes } from "./api/mcp-servers";
 import { loadConfig, validateConfig } from "./config";
-import { isBrowserEnabled, isWorkspacesEnabled, loadConfigFile, reloadConfigFile } from "./config-file";
+import { getAuthToken, isBrowserEnabled, isWorkspacesEnabled, loadConfigFile, reloadConfigFile } from "./config-file";
 import { extensionZipSize, getExtensionZip } from "./embedded-extension";
 import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbeddedUI } from "./embedded-ui";
 import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./mcp-oauth";
@@ -586,6 +586,16 @@ const server = Bun.serve({
 
     // WebSocket upgrade — chat (/ws) or workspace noVNC proxy (/workspace/:id/novnc/websockify)
     if (path === "/ws") {
+      const authToken = getAuthToken();
+      if (authToken) {
+        const wsToken = url.searchParams.get("token");
+        if (wsToken !== authToken) {
+          return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      }
       const userId = url.searchParams.get("user") || "UHUMAN";
       if (server.upgrade(req, { data: { userId } })) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
@@ -663,6 +673,20 @@ const server = Bun.serve({
 
     // API routes
     if (path.startsWith("/api/") || path === "/mcp" || path === "/health") {
+      // Auth check for /api/ routes (not /mcp or /health which are internal/monitoring)
+      if (path.startsWith("/api/")) {
+        const authToken = getAuthToken();
+        if (authToken) {
+          const authHeader = req.headers.get("authorization");
+          const bearer = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+          if (bearer !== authToken) {
+            return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
+              status: 401,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+      }
       return handleRequest(req, url, path, server);
     }
 

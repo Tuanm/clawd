@@ -5,10 +5,9 @@ import remarkGfm from "remark-gfm";
 import SandboxedIframe from "./artifact-sandbox";
 import CsvTable from "./csv-table";
 import { highlightCode } from "./prism-setup";
+import { type ArtifactType } from "./artifact-types";
 
-// ArtifactType mirrors the union defined in Phase 3's MessageList extension.
-// Keep in sync with ArtifactType in MessageList.tsx once Phase 3 lands.
-export type ArtifactType = "html" | "react" | "svg" | "chart" | "csv" | "markdown" | "code";
+export type { ArtifactType };
 
 export interface ArtifactRendererProps {
   artifactType: ArtifactType;

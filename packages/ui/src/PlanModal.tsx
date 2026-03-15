@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { authFetch } from "./auth-fetch";
 
 // Agent avatar component (small Clawd icon)
 function AgentAvatar({ color = "#D97853" }: { color?: string }) {
@@ -176,7 +177,7 @@ export default function PlanModal({ channel, isOpen, onClose }: Props) {
 
     try {
       // Get all plans for channel
-      const res = await fetch(`${API_URL}/api/plans.list?channel=${encodeURIComponent(channel)}`);
+      const res = await authFetch(`${API_URL}/api/plans.list?channel=${encodeURIComponent(channel)}`);
       const data = await res.json();
 
       if (!data.ok) {
@@ -195,7 +196,7 @@ export default function PlanModal({ channel, isOpen, onClose }: Props) {
       }
 
       // Get full plan details
-      const planRes = await fetch(`${API_URL}/api/plans.get?plan_id=${active.id}`);
+      const planRes = await authFetch(`${API_URL}/api/plans.get?plan_id=${active.id}`);
       const planData = await planRes.json();
 
       if (!planData.ok) {
@@ -214,7 +215,7 @@ export default function PlanModal({ channel, isOpen, onClose }: Props) {
       setExpandedPhases(activePhaseIds);
 
       // Get tasks for plan
-      const tasksRes = await fetch(`${API_URL}/api/plans.getTasks?plan_id=${active.id}`);
+      const tasksRes = await authFetch(`${API_URL}/api/plans.getTasks?plan_id=${active.id}`);
       const tasksData = await tasksRes.json();
 
       if (tasksData.ok) {
@@ -247,7 +248,7 @@ export default function PlanModal({ channel, isOpen, onClose }: Props) {
 
   const handleTaskClick = async (taskId: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/tasks.get?task_id=${taskId}`);
+      const res = await authFetch(`${API_URL}/api/tasks.get?task_id=${taskId}`);
       const data = await res.json();
       if (data.ok) {
         setSelectedTask(data.task);

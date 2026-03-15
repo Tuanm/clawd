@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { authFetch } from "./auth-fetch";
 import { ClawdAvatar } from "./MessageList";
 
 const API_URL = "";
@@ -144,7 +145,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   useEffect(() => {
     if (!isOpen) return;
     const controller = new AbortController();
-    fetch(`${API_URL}/api/app.providers.list`, { signal: controller.signal })
+    authFetch(`${API_URL}/api/app.providers.list`, { signal: controller.signal })
       .then((r) => r.json())
       .then((data) => {
         if (data.ok && Array.isArray(data.providers) && data.providers.length > 0) {
@@ -201,7 +202,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       return;
     }
     const controller = new AbortController();
-    fetch(
+    authFetch(
       `${API_URL}/api/app.agents.identity?channel=${encodeURIComponent(channel)}&agent_id=${encodeURIComponent(selectedAgentId)}`,
       { signal: controller.signal },
     )
@@ -271,7 +272,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
 
   const loadAgents = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/app.agents.list?channel=${encodeURIComponent(channel)}`);
+      const res = await authFetch(`${API_URL}/api/app.agents.list?channel=${encodeURIComponent(channel)}`);
       const data = await res.json();
       if (data.ok) {
         setAgents(data.agents);
@@ -286,7 +287,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`${API_URL}/api/app.agents.add`, {
+      const res = await authFetch(`${API_URL}/api/app.agents.add`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -329,7 +330,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setFieldsSaving(true);
       setError(null);
       try {
-        const res = await fetch(`${API_URL}/api/app.agents.update`, {
+        const res = await authFetch(`${API_URL}/api/app.agents.update`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -365,7 +366,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     async (agentId: string) => {
       setError(null);
       try {
-        const res = await fetch(`${API_URL}/api/app.agents.remove`, {
+        const res = await authFetch(`${API_URL}/api/app.agents.remove`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ channel, agent_id: agentId }),
@@ -388,7 +389,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     async (agentId: string, currentlySleeping: boolean) => {
       setError(null);
       try {
-        const res = await fetch(`${API_URL}/api/app.agents.update`, {
+        const res = await authFetch(`${API_URL}/api/app.agents.update`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ channel, agent_id: agentId, sleeping: !currentlySleeping }),
@@ -411,7 +412,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setIdentitySaving(true);
       setError(null);
       try {
-        const res = await fetch(`${API_URL}/api/app.agents.identity`, {
+        const res = await authFetch(`${API_URL}/api/app.agents.identity`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ channel, agent_id: agentId, identity }),
@@ -435,7 +436,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const loadFolders = useCallback(async (path: string) => {
     setFolderLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/app.folders.list?path=${encodeURIComponent(path)}`);
+      const res = await authFetch(`${API_URL}/api/app.folders.list?path=${encodeURIComponent(path)}`);
       const data = await res.json();
       if (data.ok) {
         setFolderPath(data.path);

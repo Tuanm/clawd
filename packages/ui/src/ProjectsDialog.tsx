@@ -1,6 +1,7 @@
 import Prism from "prismjs";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { authFetch } from "./auth-fetch";
 import { ClawdAvatar } from "./MessageList";
 import "prismjs/components/prism-typescript";
 import "prismjs/components/prism-javascript";
@@ -246,7 +247,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
 
   const loadAgents = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/app.agents.list?channel=${encodeURIComponent(channel)}`);
+      const res = await authFetch(`${API_URL}/api/app.agents.list?channel=${encodeURIComponent(channel)}`);
       const data = await res.json();
       if (data.ok) {
         // Only show agents with a project configured

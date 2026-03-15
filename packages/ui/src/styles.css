@@ -6441,3 +6441,72 @@ textarea {
     border-radius: 0;
   }
 }
+
+/* Auth login prompt */
+.login-prompt-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg, #1a1a1a);
+  z-index: 9999;
+}
+
+.login-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px;
+  background: var(--surface, #222);
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  width: 320px;
+}
+
+.login-prompt h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text, #e0e0e0);
+}
+
+.login-prompt p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted, #999);
+  text-align: center;
+}
+
+.login-prompt input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--input-bg, #111);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  color: var(--text, #e0e0e0);
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.login-prompt button {
+  width: 100%;
+  padding: 8px;
+  background: hsl(15 63.1% 59.6%);
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-prompt button:hover {
+  opacity: 0.9;
+}
+
+.login-error {
+  font-size: 12px;
+  color: hsl(0 65% 60%);
+}

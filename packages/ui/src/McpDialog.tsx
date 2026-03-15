@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { authFetch } from "./auth-fetch";
 
 const API_URL = "";
 
@@ -88,7 +89,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
 
   const loadServers = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/app.mcp.list?channel=${encodeURIComponent(channel)}`);
+      const res = await authFetch(`${API_URL}/api/app.mcp.list?channel=${encodeURIComponent(channel)}`);
       const data = await res.json();
       if (data.ok) setServers(data.servers);
     } catch {}
@@ -100,7 +101,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
       setError(null);
       try {
         // Pre-configured servers: backend looks up config by channel + name
-        const res = await fetch(`${API_URL}/api/app.mcp.add`, {
+        const res = await authFetch(`${API_URL}/api/app.mcp.add`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ channel, name }),
@@ -134,7 +135,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
     async (name: string) => {
       setToggling(true);
       try {
-        const res = await fetch(`${API_URL}/api/app.mcp.toggle`, {
+        const res = await authFetch(`${API_URL}/api/app.mcp.toggle`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ channel, name, enabled: false }),

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { authFetch } from "./auth-fetch";
 import MarkdownContent from "./MarkdownContent";
 
 interface Article {
@@ -49,7 +50,7 @@ export default function ArticleModal({ articleId, onClose }: Props) {
     async function loadArticle() {
       setLoading(true);
       try {
-        const res = await fetch(`/api/articles.get?id=${encodeURIComponent(id)}`);
+        const res = await authFetch(`/api/articles.get?id=${encodeURIComponent(id)}`);
         const data = await res.json();
         if (data.ok) {
           setArticle(data.article);
