@@ -2665,6 +2665,25 @@ body {
   background: rgba(255, 255, 255, 0.2);
 }
 
+.lightbox-mermaid {
+  max-width: 90vw;
+  max-height: calc(100vh - 80px);
+  overflow: auto;
+  background: hsl(var(--bg-center, 0 0% 100%));
+  border-radius: 8px;
+  padding: 24px;
+  box-shadow: 0 4px 32px rgba(0, 0, 0, 0.5);
+}
+
+.lightbox-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-diagram--zoomable:hover {
+  opacity: 0.9;
+}
+
 .message-reactions {
   display: flex;
   gap: 4px;
@@ -6782,39 +6801,13 @@ textarea {
   padding: 16px;
 }
 
-/* ── Sidebar Toggle Button ───────────────────────────────────────────────── */
-.sidebar-toggle-btn {
+/* ── Sidebar Backdrop ────────────────────────────────────────────────────── */
+.sidebar-backdrop {
   position: fixed;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 190;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: 1px solid hsl(var(--text) / 15%);
-  background: hsl(var(--bg-center));
-  color: var(--text-secondary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: -2px 0 8px hsl(0 0% 0% / 8%);
-  transition:
-    background 0.15s,
-    color 0.15s,
-    box-shadow 0.15s;
-}
-
-.sidebar-toggle-btn:hover {
-  background: hsl(var(--bg-center));
-  color: var(--text-primary);
-  box-shadow: -2px 0 12px hsl(0 0% 0% / 14%);
-}
-
-/* When sidebar is open, button shifts left to be visible at the sidebar edge */
-.sidebar-toggle-btn.open {
-  right: calc(50vw + 8px);
+  inset: 0;
+  z-index: 199; /* below sidebar (200) */
+  background: hsl(0 0% 0% / 30%);
+  backdrop-filter: blur(4px);
 }
 
 /* Embed artifact card variant */
