@@ -475,8 +475,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           {agents.map((agent) => {
             const isActive = selectedAgentId === agent.agent_id && !showAddForm;
             const color = agent.avatar_color || "#D97853";
-            const hbInterval = agent.heartbeat_interval ?? 0;
-            const hbLabel = hbInterval > 0 ? `${hbInterval}s` : "off";
+            const hasHeartbeat = (agent.heartbeat_interval ?? 0) > 0;
             return (
               <button
                 key={agent.agent_id}
@@ -490,12 +489,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
               >
                 <span className="stream-agent-avatar-wrap">
                   <ClawdAvatar color={color} standing={agent.running && !agent.sleeping} sleeping={agent.sleeping} />
-                  {agent.running && !agent.sleeping && <span className="stream-agent-avatar-dot" />}
+                  {hasHeartbeat && <span className="stream-agent-avatar-dot heartbeat-pulse" />}
                 </span>
                 <span className="stream-agent-avatar-name">{agent.agent_id}</span>
-                <span className="stream-agent-avatar-hb" title={`Heartbeat: ${hbLabel}`}>
-                  {hbLabel}
-                </span>
               </button>
             );
           })}
