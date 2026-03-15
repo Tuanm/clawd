@@ -37,7 +37,7 @@ Key files (line counts):
 > All 4 original "Unresolved Questions" are now resolved.
 
 1. **Persistence:** v1 uses inline storage in `messages.text`. No separate table. Future migration sketch in Phase 3.5.
-2. **Panel vs inline:** v1 uses inline expandable cards. Side panel deferred to future work. Component architecture (standalone `ArtifactCard`) does not preclude it.
+2. **Panel vs inline:** v1 uses **preview card + fullscreen modal** pattern (matches existing `.message-article-card` UX). Compact card in-message; click opens `ArtifactModal` overlay. Side panel deferred to future work.
 3. **Max artifact size:** 500KB content limit. Larger artifacts show "Too large to preview" with download-only fallback. Enforced in Phase 3 parser.
 4. **Explicit markers vs auto-detection:** v1 uses explicit `<artifact>` markers. Agents are instructed via system prompt (Phase 0). Auto-detection is a future enhancement.
 
@@ -48,7 +48,7 @@ Key files (line counts):
 | 0 | [Agent Protocol](#phase-0) | P0 | 2h | Pending |
 | 1 | [Security Foundation](#phase-1) | P0 | 4h | Pending |
 | 2 | [Syntax Highlighting](#phase-2) | P1 | 4h | Pending |
-| 3 | [Artifact Detection & Panel](#phase-3) | P1 | 7h | Pending |
+| 3 | [Artifact Preview Card & Modal](#phase-3) | P1 | 7h | Pending |
 | 3.5 | [Version History (deferred)](#phase-3-5) | P2 | 4h | Deferred |
 | 4 | [Sandboxed Artifact Rendering](#phase-4) | P1 | 6h | Pending |
 | 5 | [Chart & Data Visualization](#phase-5) | P2 | 4h | Pending |
@@ -60,8 +60,8 @@ Key files (line counts):
 ## Dependencies
 
 ```
-Phase 0 (Agent Protocol) ──> Phase 3 (Artifact Detection)
-Phase 1 (Security) ──────> Phase 3 (Artifact Detection) ──> Phase 4 (Sandboxed Rendering)
+Phase 0 (Agent Protocol) ──> Phase 3 (Preview Card & Modal)
+Phase 1 (Security) ──────> Phase 3 (Preview Card & Modal) ──> Phase 4 (Sandboxed Rendering)
 Phase 2 (Syntax Highlighting) is independent
 Phase 3.5 (Versioning) deferred -- depends on Phase 3
 Phase 5 (Charts) depends on Phase 3
@@ -110,24 +110,32 @@ See [phase-02-syntax-highlighting.md](./phase-02-syntax-highlighting.md)
 
 **No changes from reviews.** Prism reuse over Shiki is correct (YAGNI). Wrap `Prism.highlight()` in try/catch for malformed grammar objects.
 
-## Phase 3: Artifact Detection & Panel (P1, 7h) {#phase-3}
+## Phase 3: Artifact Preview Card & Modal (P1, 7h) {#phase-3}
 
-See [phase-03-artifact-detection-panel.md](./phase-03-artifact-detection-panel.md)
+See [phase-03-artifact-card-detail.md](./phase-03-artifact-card-detail.md)
 
-**Expanded scope from reviews (+1h):**
+**UX pattern: preview card + fullscreen modal** (matches existing `.message-article-card` pattern):
+- **In-message:** compact `.artifact-preview-card` showing type badge/icon, title, and brief content preview (first 2-3 lines). Always fixed-height -- no collapse/expand toggle.
+- **On click:** opens `ArtifactModal` fullscreen overlay (z-index 300+, backdrop blur) with rendered artifact at full size.
+- **Modal toolbar:** type badge, title, copy, download, close (X). Keyboard: Escape to close. Click backdrop to close.
+- **Preview thumbnails by type:** code = first 3 lines monospace; chart = chart icon; html/react = "Interactive" badge; svg = tiny inline preview (sanitized, max 60px); csv = row/column count; markdown = first line rendered.
+- **Streaming:** show `.artifact-preview-card` with "Generating..." spinner + live line count. Click disabled until complete.
+
+**Additional scope from reviews:**
 - **Fix regex to be attribute-order-independent** using lookahead pattern:
   ```typescript
   const artifactRe = /<artifact\b(?=[^>]*\btype=["'](\w+)["'])(?=[^>]*\btitle=["']([^"']+)["'])[^>]*>([\s\S]*?)<\/artifact>/i;
   ```
-- **Gate `<artifact>` parsing on message author**: only parse in bot/agent messages. User messages escape or strip artifact tags. Use `subtype` field or `user` field check in `parseMessageBlocks()`.
-- **Add streaming placeholder**: detect opening `<artifact>` tag without closing tag when `is_streaming` is true. Show skeleton card with "Generating artifact..." text. Suppress raw `<artifact>` tag from text output during streaming.
-- **Add a11y attributes**: card header gets `role="button" tabIndex={0} aria-expanded={expanded}` with `onKeyDown` for Enter/Space. All action buttons get `aria-label`. Copy/download confirmation uses `aria-live="polite"` region.
+- **Gate `<artifact>` parsing on message author**: only parse in bot/agent messages. User messages escape or strip artifact tags.
+- **Add a11y attributes**: preview card gets `role="button" tabIndex={0}` with `onKeyDown` for Enter. Modal gets `role="dialog"`, focus trap, Escape to close. All action buttons get `aria-label`.
 - **Add React Error Boundary** wrapping each `ArtifactRenderer` call. On error: show "Failed to render [type] artifact" with "View source" button.
 - **Extract `PreBlock`, `CopyIcon`, `CheckIcon`** from MessageList.tsx into `ui-primitives.ts` to reduce coupling.
 - **Enforce 500KB size limit** before DOMPurify processing. Artifacts over limit get "Too large to preview" with download-only.
 - **Use existing CSS variable pattern** `hsl(var(--bg))` instead of new fallback-based variables for theme colors.
-- **Add responsive CSS**: artifact card actions always-visible on touch devices; fullscreen button primary on mobile.
-- **Unify MAX_HEIGHT** to a single shared constant (600px default, fullscreen escape hatch).
+- **CSS:** follow `.message-article-card` pattern -- same border radius, hover effect, gap, padding. Add type-specific accent colors.
+- **Add responsive CSS**: artifact card actions always-visible on touch devices; modal goes full-viewport on mobile.
+
+**New file:** `packages/ui/src/artifact-modal.tsx` -- fullscreen modal component with toolbar, type-specific rendering, keyboard handling.
 
 ## Phase 3.5: Version History (P2, 4h -- DEFERRED) {#phase-3-5}
 
@@ -205,7 +213,7 @@ See [phase-07-performance.md](./phase-07-performance.md)
 | Mermaid securityLevel is "loose" -- already a risk | High | Phase 1 tightens this to "strict" |
 | styles.css is 5772 lines -- adding artifact styles | Low | Use scoped class prefix `.artifact-` for all new styles; use existing `hsl(var(--bg))` pattern |
 | User-injected `<artifact>` tags cause spoofing | High | Gate parsing on message author (bot/agent only) |
-| Streaming partial artifacts show raw XML | High | Streaming placeholder + tag suppression in Phase 3 |
+| Streaming partial artifacts show raw XML | High | Preview card shows "Generating..." spinner; tag suppression in Phase 3 |
 | `openFullView()` blob URL inherits parent origin | Critical | Phase 1 wraps in sanitized + CSP HTML |
 | No test infrastructure in packages/ui/ | High | Manual testing for v1; automated test setup as follow-up |
 
@@ -234,7 +242,7 @@ Summary of all findings from 4 review reports and how each was addressed.
 | 2 | `openFullView()` blob URL uses unsanitized HTML, inherits parent origin | Security Review #1 | **Phase 1 expanded** -- blob must use sanitized + CSP-wrapped HTML |
 | 3 | `<artifact>` tags parseable from user messages -- spoofing/phishing vector | Security Review #3 | **Phase 3 expanded** -- gate parsing on message author (bot/agent only) |
 | 4 | `className` vs `class` in sanitize schema | Security Review | **Phase 1 expanded** -- use `class` (HTML attr) not `className` (React prop) |
-| 5 | Streaming partial artifacts show raw XML tags | Architecture #2, #3; Gap Analysis edge case #3 | **Phase 3 expanded** -- streaming placeholder + tag suppression |
+| 5 | Streaming partial artifacts show raw XML tags | Architecture #2, #3; Gap Analysis edge case #3 | **Phase 3 expanded** -- preview card shows "Generating..." spinner + live line count; tag suppression |
 
 ### High Fixes
 
@@ -244,7 +252,7 @@ Summary of all findings from 4 review reports and how each was addressed.
 | 7 | CSP `img-src https:` allows tracking pixel exfiltration | Architecture additional; Security #6 | **Phase 4 updated** -- restrict to `data: blob:` |
 | 8 | Babel standalone is ~800KB | Risk assessment | **Phase 4 updated** -- evaluate Sucrase first (~200KB, 6x faster) |
 | 9 | MessageComposer.tsx uses rehype-raw without sanitization | Security Review #5d | **Phase 1 expanded** -- add to rehype-sanitize scope |
-| 10 | No a11y: keyboard nav, ARIA, screen reader support | Completeness Gap #6 | **Phase 3 expanded** -- role, tabIndex, aria-expanded, keyboard handlers, aria-live |
+| 10 | No a11y: keyboard nav, ARIA, screen reader support | Completeness Gap #6 | **Phase 3 expanded** -- card: role="button", tabIndex, Enter handler; modal: role="dialog", focus trap, Escape, aria-label on actions |
 | 11 | No Error Boundary around artifact renderers | Completeness Gap #5 | **Phase 3 expanded** -- React Error Boundary with "View source" fallback |
 | 12 | 4 unresolved questions left ambiguous | Completeness Gap #10 | **Resolved all 4** in "Resolved Questions" section above |
 
@@ -263,12 +271,12 @@ Summary of all findings from 4 review reports and how each was addressed.
 | Finding | Source | Decision |
 |---------|--------|----------|
 | Artifact versioning (most impactful missing feature) | Gap Analysis #6; Completeness Gap #3 | Deferred to Phase 3.5 with migration sketch |
-| Side panel display for HTML/React | Gap Analysis #3 | Future work -- component architecture supports it |
+| Side panel display for HTML/React | Gap Analysis #3 | Future work -- ArtifactModal architecture supports extracting to side panel later |
 | No test infrastructure in packages/ui/ | Completeness Gap #7 | Future work -- manual testing for v1 |
 | McpDialog.tsx SVG injection | Security #5a | Out of scope -- noted as follow-up |
 | Subdomain sandbox for origin isolation | Gap Analysis #5; Security | Future work |
 | morphdom for smoother streaming | Gap Analysis #4 | Future work (Phase 8 candidate) |
 | Separate CSP for HTML vs React artifacts | Security unresolved #3 | **Phase 4** -- two template functions |
-| Mobile/responsive layout | Completeness Gap #4 | Incorporated into Phase 3 and Phase 5 CSS |
+| Mobile/responsive layout | Completeness Gap #4 | Incorporated: Phase 3 modal goes full-viewport on mobile; Phase 5 chart height reduces |
 | Recharts ResponsiveContainer zero-height risk | Completeness edge case #8 | Noted in Phase 5 -- test carefully |
 | Phase 7 effort underestimated | Architecture #6 | **Increased to 3h** |
