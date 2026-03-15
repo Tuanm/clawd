@@ -7,7 +7,7 @@
 
 ## Overview
 - **Priority:** P1 — independent of other phases
-- **Status:** Pending
+- **Status:** Complete
 - **Description:** Activate syntax highlighting for all code blocks. Prismjs is already installed but unused. Evaluate Prism vs Shiki; recommend Prism since it's already a dependency.
 
 ## Key Insights
@@ -245,18 +245,18 @@ cd packages/ui && bun run build
 
 ## Todo List
 
-- [ ] Create `prism-setup.ts` with language imports and aliases
-- [ ] Import `highlightCode` in MessageList.tsx
-- [ ] Update `MARKDOWN_COMPONENTS.code` to use Prism highlighting
-- [ ] Update MarkdownContent.tsx code handler identically
-- [ ] Add Prism token CSS variables for light/dark themes
-- [ ] Add Prism token style rules to styles.css
+- [x] Create `prism-setup.ts` with language imports and aliases
+- [x] Import `highlightCode` in MessageList.tsx
+- [x] Update `MARKDOWN_COMPONENTS.code` to use Prism highlighting
+- [x] Update MarkdownContent.tsx code handler identically
+- [x] Add Prism token CSS variables for light/dark themes
+- [x] Add Prism token style rules to styles.css
 - [ ] Test: Python, TypeScript, Bash, JSON, YAML code blocks are highlighted
 - [ ] Test: Unknown languages fall back to plain text (no crash)
 - [ ] Test: Mermaid blocks still route to MermaidDiagram (not highlighted)
 - [ ] Test: Copy-to-clipboard in PreBlock still works with highlighted code
 - [ ] Test: Dark mode token colors are readable
-- [ ] Run `bun run build:ui` to verify no compile errors
+- [x] Run `bun run build:ui` to verify no compile errors
 
 ## Success Criteria
 - Code blocks with recognized languages show syntax-colored tokens

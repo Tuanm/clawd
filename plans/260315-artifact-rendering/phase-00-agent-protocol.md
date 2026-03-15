@@ -1,7 +1,7 @@
 ---
 title: "Phase 0: Agent-Side Artifact Protocol"
 description: "Specification for artifact XML markers, chart JSON schema, system prompt additions, and plugin context injection"
-status: pending
+status: complete
 priority: P0
 effort: 2h
 branch: main

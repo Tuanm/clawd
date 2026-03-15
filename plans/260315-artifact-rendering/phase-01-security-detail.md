@@ -1,7 +1,7 @@
 ---
 title: "Security Hardening for Artifact Rendering"
 description: "Detailed security spec covering sanitization, CSP, iframe sandboxing, XSS fixes, and transpiler evaluation"
-status: pending
+status: complete
 priority: P1
 effort: 6h
 branch: main

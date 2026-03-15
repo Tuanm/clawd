@@ -1,20 +1,28 @@
+import DOMPurify from "dompurify";
 import mermaid from "mermaid";
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import { UnreadSeparator } from "./UnreadSeparator";
+import { highlightCode } from "./prism-setup";
+import FilePreview, { isPreviewableMimetype } from "./file-preview";
+import LazyViewport from "./lazy-viewport";
+import { markdownSanitizeSchema } from "./sanitize-schema";
+import { CopyIcon, PreBlock } from "./ui-primitives";
+import { ArtifactPreviewCard, StreamingArtifactCard, type ArtifactType } from "./artifact-card";
 
 // Initialize mermaid with dark-aware theme
 const prefersDark = typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
 mermaid.initialize({
   startOnLoad: false,
   theme: prefersDark ? "dark" : "neutral",
-  securityLevel: "loose",
+  securityLevel: "strict",
   fontFamily: "Lato, sans-serif",
 });
 
@@ -147,24 +155,8 @@ function EditIcon() {
   );
 }
 
-// Copy icon component
-export function CopyIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
-// Check icon for copied state
-export function CheckIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  );
-}
+// Re-export for backward compat (ArticlePage imports CopyIcon from here)
+export { CopyIcon } from "./ui-primitives";
 
 // Arrow down icon
 function ArrowDownIcon() {
@@ -211,52 +203,8 @@ function ChevronUpIcon() {
   );
 }
 
-// Pre block wrapper with copy button (button is OUTSIDE the scrollable pre)
-export function PreBlock({ children }: { children: React.ReactNode }) {
-  const [copied, setCopied] = useState(false);
-
-  // Extract code text from children (pre > code > text)
-  const getCodeText = (): string => {
-    try {
-      const codeElement = React.Children.toArray(children)[0] as React.ReactElement;
-      if (codeElement?.props?.children) {
-        return String(codeElement.props.children).replace(/\n$/, "");
-      }
-    } catch {}
-    return "";
-  };
-
-  const copyCode = () => {
-    const code = getCodeText();
-    if (code) {
-      navigator.clipboard.writeText(code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  // Check if this contains a code block (language-*) vs just inline/plain
-  const codeElement = React.Children.toArray(children)[0] as React.ReactElement;
-  const hasLanguageClass = codeElement?.props?.className?.startsWith("language-");
-
-  // If no language class, render plain pre without copy button
-  if (!hasLanguageClass) {
-    return <pre>{children}</pre>;
-  }
-
-  return (
-    <div className="code-block-wrapper">
-      <button
-        className={`code-copy-btn ${copied ? "copied" : ""}`}
-        onClick={copyCode}
-        title={copied ? "Copied!" : "Copy code"}
-      >
-        {copied ? <CheckIcon /> : <CopyIcon />}
-      </button>
-      <pre>{children}</pre>
-    </div>
-  );
-}
+// PreBlock imported from ui-primitives and re-exported for backward compat
+export { PreBlock };
 
 // Mermaid diagram component — memoized to avoid re-rendering when chart content unchanged.
 // Keeps the previous SVG visible while a new render is in progress (prevents flash).
@@ -327,7 +275,9 @@ type MessageBlock =
   | { type: "code"; lang: string; content: string }
   | { type: "mermaid"; content: string }
   | { type: "image"; src: string; alt: string }
-  | { type: "iframe"; src: string; rawHtml: string; height?: string; width?: string };
+  | { type: "iframe"; src: string; rawHtml: string; height?: string; width?: string }
+  | { type: "artifact"; artifactType: ArtifactType; title: string; content: string; language?: string }
+  | { type: "streaming-artifact"; artifactType: ArtifactType; title: string; partialContent: string };
 
 // Validates that a URL is safe (http/https or relative /api/ path) to prevent XSS
 function isSafeUrl(url: string): boolean {
@@ -410,18 +360,27 @@ function IframePreviewCard({
   );
 }
 
+const ARTIFACT_VALID_TYPES: ArtifactType[] = ["html", "react", "svg", "chart", "csv", "markdown", "code"];
+
 // ── Scanner-based block splitter ──────────────────────────────────────────────
 // Returns blocks in source order so the rendered output mirrors original document flow.
-function parseMessageBlocks(text: string): MessageBlock[] {
+// isStreaming: enables partial artifact detection (streaming-artifact blocks).
+// isAgent: artifact tags are only parsed in agent messages.
+function parseMessageBlocks(text: string, isStreaming?: boolean, isAgent?: boolean): MessageBlock[] {
   const blocks: MessageBlock[] = [];
   let pos = 0;
 
   // Strip unsafe tags from every text segment before passing to rehypeRaw.
   // Covers both the textBefore slices and the final tail when candidates.length === 0.
   const pushText = (str: string) => {
-    const cleaned = str
+    let cleaned = str
       .replace(/<iframe\b[\s\S]*?(?:<\/iframe>|\/>)/gi, "")
-      .replace(/<script\b[\s\S]*?<\/script>/gi, "");
+      .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+      .replace(/<artifact\b[\s\S]*?<\/artifact>/gi, "");
+    // During streaming, strip orphaned opening tags so raw XML stays off screen
+    if (isStreaming) {
+      cleaned = cleaned.replace(/<artifact\b[^>]*>[\s\S]*$/i, "");
+    }
     if (cleaned.trim()) blocks.push({ type: "text", content: cleaned });
   };
 
@@ -487,16 +446,70 @@ function parseMessageBlocks(text: string): MessageBlock[] {
       }
     }
 
+    // ── <artifact> — complete and streaming artifact tags ─────────────────────
+    if (isAgent) {
+      const artifactRe = /<artifact\b([^>]*)>([\s\S]*?)<\/artifact>/i;
+      const am = artifactRe.exec(slice);
+      if (am !== null) {
+        const attrs = am[1];
+        const typeM = /\btype=["']([^"']*)["']/.exec(attrs);
+        const titleM = /\btitle=["']([^"']*)["']/.exec(attrs);
+        const langM = /\blanguage=["']([^"']*)["']/.exec(attrs);
+        const rawType = typeM?.[1] ?? "code";
+        const artifactType = (ARTIFACT_VALID_TYPES as string[]).includes(rawType)
+          ? (rawType as ArtifactType)
+          : "code";
+        candidates.push({
+          index: am.index,
+          end: am.index + am[0].length,
+          block: {
+            type: "artifact",
+            artifactType,
+            title: titleM?.[1] ?? "Artifact",
+            content: am[2].trim(),
+            language: langM?.[1],
+          },
+        });
+      }
+
+      // Partial/streaming artifact — opening tag without closing tag
+      if (isStreaming) {
+        const openRe = /<artifact\b([^>]*)>([\s\S]*)$/i;
+        const om = openRe.exec(slice);
+        if (om !== null && !/<\/artifact>/i.test(om[0])) {
+          const attrs = om[1];
+          const typeM = /\btype=["']([^"']*)["']/.exec(attrs);
+          const titleM = /\btitle=["']([^"']*)["']/.exec(attrs);
+          const rawType = typeM?.[1] ?? "code";
+          const artifactType = (ARTIFACT_VALID_TYPES as string[]).includes(rawType)
+            ? (rawType as ArtifactType)
+            : "code";
+          candidates.push({
+            index: om.index,
+            end: om.index + om[0].length,
+            block: {
+              type: "streaming-artifact",
+              artifactType,
+              title: titleM?.[1] ?? "Artifact",
+              partialContent: om[2],
+            },
+          });
+        }
+      }
+    }
+
     if (candidates.length === 0) {
       pushText(slice);
       break;
     }
 
-    // Take the earliest candidate; at a tie prefer mermaid over plain code
+    // Take the earliest candidate; at a tie prefer mermaid > artifact > plain code
     candidates.sort((a, b) => {
       if (a.index !== b.index) return a.index - b.index;
       if (a.block.type === "mermaid") return -1;
       if (b.block.type === "mermaid") return 1;
+      if (a.block.type === "artifact") return -1;
+      if (b.block.type === "artifact") return 1;
       return 0;
     });
     const earliest = candidates[0];
@@ -551,6 +564,15 @@ const MARKDOWN_COMPONENTS = {
     const lang = match ? match[1] : "";
     const code = String(children).replace(/\n$/, "");
     if (lang === "mermaid") return <MermaidDiagram chart={code} />;
+    const highlighted = lang ? highlightCode(code, lang) : null;
+    if (highlighted) {
+      return (
+        <code
+          className={className}
+          dangerouslySetInnerHTML={{ __html: highlighted }}
+        />
+      );
+    }
     return <code className={className}>{children}</code>;
   },
   blockquote: ({ children }: { children?: React.ReactNode }) => {
@@ -589,12 +611,45 @@ function HtmlPreview({ html }: { html: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const openFullView = () => {
-    // Open in new window with data URI for complete isolation
-    const blob = new Blob([html], { type: "text/html" });
+    // Wrap user HTML in a document with restrictive CSP via meta tag.
+    // The CSP blocks inline scripts, eval, and external resource loading.
+    const wrapped = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:;">
+  <style>
+    body { margin: 0; padding: 16px; font-family: system-ui, sans-serif; }
+    img { max-width: 100%; }
+  </style>
+</head>
+<body>${DOMPurify.sanitize(html, {
+      ALLOWED_TAGS: [
+        "h1","h2","h3","h4","h5","h6","p","br","hr","div","span",
+        "ul","ol","li","dl","dt","dd","table","thead","tbody","tr","th","td",
+        "a","img","pre","code","blockquote","em","strong","del","ins",
+        "sub","sup","kbd","mark","abbr","details","summary","figure","figcaption",
+        "svg","path","rect","circle","line","polyline","polygon","text","g","defs",
+        "clipPath","use","symbol","title",
+      ],
+      ALLOWED_ATTR: [
+        "href","src","alt","title","width","height","class","style","id",
+        "colspan","rowspan","align","valign","target","rel",
+        // SVG attributes
+        "viewBox","xmlns","fill","stroke","stroke-width","d","cx","cy","r",
+        "x","y","x1","y1","x2","y2","points","transform","opacity",
+        "font-size","text-anchor","dominant-baseline",
+      ],
+      ALLOW_DATA_ATTR: false,
+      ADD_TAGS: ["style"],
+      FORBID_TAGS: ["script","iframe","object","embed","form","input","textarea","select"],
+    })}</body>
+</html>`;
+    const blob = new Blob([wrapped], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     window.open(url, "_blank");
-    // Clean up blob URL after a delay
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   };
 
   return (
@@ -1270,6 +1325,9 @@ export default function MessageList({
   const scrollHeightBeforeLoadRef = useRef<{ height: number; direction: "older" | "newer" } | null>(null);
   const initialScrollDone = useRef(false);
   const pendingScrollToTs = useRef<string | null>(null);
+  // Cache for parsed message blocks — throttles re-parsing during streaming.
+  // Streaming messages re-parse every 500 chars; non-streaming on every char change.
+  const blockParseCacheRef = useRef<Map<string, { key: string; blocks: MessageBlock[] }>>(new Map());
 
   // Intersection observer for marking messages as seen
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -1924,7 +1982,20 @@ export default function MessageList({
                   // Always parse blocks from FULL text — slicing before parsing breaks fenced blocks
                   // whose closing ``` falls outside the slice window.
                   const decodedText = processMessageText(msg.text);
-                  const blocks = parseMessageBlocks(decodedText);
+                  // Coarse memo: streaming messages re-parse every 500 chars to reduce parse frequency.
+                  // Non-streaming messages re-parse on every char change (exact key).
+                  const blockCacheKey = msg.is_streaming
+                    ? `${msg.ts}-${Math.floor(decodedText.length / 500)}`
+                    : `${msg.ts}-${decodedText.length}`;
+                  const cachedEntry = blockParseCacheRef.current.get(msg.ts);
+                  const blocks: MessageBlock[] =
+                    cachedEntry && cachedEntry.key === blockCacheKey
+                      ? cachedEntry.blocks
+                      : (() => {
+                          const parsed = parseMessageBlocks(decodedText, isStreaming, isAgentMessage(msg));
+                          blockParseCacheRef.current.set(msg.ts, { key: blockCacheKey, blocks: parsed });
+                          return parsed;
+                        })();
                   // For multi-block messages: no collapsing needed — each block is already compact.
                   // For single long-text messages: truncate the text content when collapsed.
                   const singleTextBlock = blocks.length === 1 && blocks[0].type === "text";
@@ -1950,28 +2021,38 @@ export default function MessageList({
                                   <div key={`block-${i}`} className="message-block">
                                     <Markdown
                                       remarkPlugins={[remarkGfm, remarkMath]}
-                                      rehypePlugins={[rehypeKatex, rehypeRaw]}
+                                      rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSanitizeSchema], rehypeKatex]}
                                       components={MARKDOWN_COMPONENTS}
                                     >
                                       {block.content}
                                     </Markdown>
                                   </div>
                                 );
-                              case "code":
+                              case "code": {
+                                const hl = block.lang ? highlightCode(block.content, block.lang) : null;
                                 return (
                                   <div key={`block-${i}`} className="message-block">
                                     <PreBlock>
-                                      {/* Use language-text fallback so unlabelled fences still get a copy button */}
-                                      <code className={block.lang ? `language-${block.lang}` : "language-text"}>
-                                        {block.content}
-                                      </code>
+                                      {hl ? (
+                                        <code
+                                          className={`language-${block.lang}`}
+                                          dangerouslySetInnerHTML={{ __html: hl }}
+                                        />
+                                      ) : (
+                                        <code className={block.lang ? `language-${block.lang}` : "language-text"}>
+                                          {block.content}
+                                        </code>
+                                      )}
                                     </PreBlock>
                                   </div>
                                 );
+                              }
                               case "mermaid":
                                 return (
                                   <div key={`block-${i}`} className="message-block message-mermaid-card">
-                                    <MermaidDiagram chart={block.content} />
+                                    <LazyViewport height={200} fallback={<div className="mermaid-placeholder">Loading diagram...</div>}>
+                                      <MermaidDiagram chart={block.content} />
+                                    </LazyViewport>
                                   </div>
                                 );
                               case "image":
@@ -1989,6 +2070,29 @@ export default function MessageList({
                                       rawHtml={block.rawHtml}
                                       height={block.height}
                                       width={block.width}
+                                    />
+                                  </div>
+                                );
+                              case "artifact":
+                                return (
+                                  <div key={`block-${i}`} className="message-block">
+                                    <LazyViewport height={60}>
+                                      <ArtifactPreviewCard
+                                        type={block.artifactType}
+                                        title={block.title}
+                                        content={block.content}
+                                        language={block.language}
+                                      />
+                                    </LazyViewport>
+                                  </div>
+                                );
+                              case "streaming-artifact":
+                                return (
+                                  <div key={`block-${i}`} className="message-block">
+                                    <StreamingArtifactCard
+                                      artifactType={block.artifactType}
+                                      title={block.title}
+                                      partialContent={block.partialContent}
                                     />
                                   </div>
                                 );
@@ -2104,6 +2208,13 @@ export default function MessageList({
                         >
                           <img src={file.url_private} alt={file.name} className="message-image" />
                         </div>
+                      ) : file.mimetype && isPreviewableMimetype(file.mimetype) ? (
+                        <FilePreview
+                          key={file.id}
+                          url={file.url_private}
+                          name={file.name}
+                          mimetype={file.mimetype}
+                        />
                       ) : (
                         <a
                           key={file.id}

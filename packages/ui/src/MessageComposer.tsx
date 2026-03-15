@@ -3,8 +3,10 @@ import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { markdownSanitizeSchema } from "./sanitize-schema";
 
 // Copy icon for context menu
 function CopyIcon() {
@@ -478,7 +480,7 @@ export default function MessageComposer({
             {text ? (
               <Markdown
                 remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex, rehypeRaw]}
+                rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSanitizeSchema], rehypeKatex]}
                 components={{
                   // Code blocks and inline code
                   code: ({ className, children }) => {

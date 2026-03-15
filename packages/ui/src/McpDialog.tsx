@@ -1,3 +1,4 @@
+import DOMPurify from "dompurify";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -49,8 +50,13 @@ function ServerLogo({ logo, size = 20 }: { logo?: string; size?: number }) {
   if (!logo) return <McpIcon size={size} />;
   // SVG code (starts with < or <svg)
   if (logo.trimStart().startsWith("<")) {
+    const clean = DOMPurify.sanitize(logo, {
+      USE_PROFILES: { svg: true, svgFilters: true },
+      ADD_TAGS: [],
+      ADD_ATTR: [],
+    });
     return (
-      <span dangerouslySetInnerHTML={{ __html: logo }} style={{ width: size, height: size, display: "inline-flex" }} />
+      <span dangerouslySetInnerHTML={{ __html: clean }} style={{ width: size, height: size, display: "inline-flex" }} />
     );
   }
   // URL or base64

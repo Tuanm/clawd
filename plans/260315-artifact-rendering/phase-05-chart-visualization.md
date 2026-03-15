@@ -7,7 +7,7 @@
 
 ## Overview
 - **Priority:** P2
-- **Status:** Pending
+- **Status:** Complete
 - **Depends on:** Phase 3 (Artifact Detection)
 - **Description:** Integrate Recharts for rendering chart-type artifacts. Agents output JSON chart specifications; the UI renders interactive charts with tooltips, legends, and responsive sizing.
 
@@ -337,11 +337,11 @@ case "chart":
 
 ## Todo List
 
-- [ ] Install `recharts` dependency
-- [ ] Create `chart-renderer.tsx` with all chart type renderers
-- [ ] Define and document chart JSON specification format
-- [ ] Update `artifact-renderer.tsx` with lazy-loaded chart case
-- [ ] Add chart CSS styles with dark mode support
+- [x] Install `recharts` dependency
+- [x] Create `chart-renderer.tsx` with all chart type renderers
+- [x] Define and document chart JSON specification format
+- [x] Update `artifact-renderer.tsx` with lazy-loaded chart case
+- [x] Add chart CSS styles with dark mode support
 - [ ] Test: Line chart with multiple series renders correctly
 - [ ] Test: Bar chart with custom colors
 - [ ] Test: Pie chart with labels

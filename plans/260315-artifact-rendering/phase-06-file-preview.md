@@ -7,7 +7,7 @@
 
 ## Overview
 - **Priority:** P2
-- **Status:** Pending
+- **Status:** Complete
 - **Depends on:** Phase 3 (Artifact Detection)
 - **Description:** Add CSV table rendering for csv-type artifacts, PDF inline preview via iframe, and enhanced audio/video HTML5 players. Also improve file attachment detection based on MIME type.
 
@@ -352,20 +352,20 @@ import FilePreview, { isPreviewableMimetype } from "./file-preview";
 
 ## Todo List
 
-- [ ] Create `csv-table.tsx` with CSV parser and table renderer
-- [ ] Create `file-preview.tsx` with PDF/audio/video components
-- [ ] Update `artifact-renderer.tsx` — replace csv placeholder with CsvTable
-- [ ] Update MessageList.tsx — add FilePreview for PDF/audio/video attachments
-- [ ] Add CSV table CSS with sticky headers and dark mode
-- [ ] Add file preview CSS styles
-- [ ] Test: CSV artifact with header row renders as table
-- [ ] Test: CSV with quoted fields containing commas parses correctly
-- [ ] Test: CSV with > 500 rows shows truncation message
-- [ ] Test: PDF attachment shows inline iframe preview
-- [ ] Test: Audio attachment shows HTML5 player with controls
-- [ ] Test: Video attachment shows HTML5 player
-- [ ] Test: Non-previewable files still render as download links
-- [ ] Run `bun run build:ui` to verify no compile errors
+- [x] Create `csv-table.tsx` with CSV parser and table renderer
+- [x] Create `file-preview.tsx` with PDF/audio/video components
+- [x] Update `artifact-modal.tsx` — add csv case using CsvTable (artifact-renderer.tsx not needed; modal owns rendering)
+- [x] Update MessageList.tsx — add FilePreview for PDF/audio/video attachments
+- [x] Add CSV table CSS with sticky headers and dark mode
+- [x] Add file preview CSS styles
+- [x] Test: CSV artifact with header row renders as table
+- [x] Test: CSV with quoted fields containing commas parses correctly
+- [x] Test: CSV with > 500 rows shows truncation message
+- [x] Test: PDF attachment shows inline iframe preview
+- [x] Test: Audio attachment shows HTML5 player with controls
+- [x] Test: Video attachment shows HTML5 player
+- [x] Test: Non-previewable files still render as download links
+- [x] Run `bun run build` — build passes, 0 TS errors
 
 ## Success Criteria
 - CSV artifacts render as scrollable tables with sticky headers

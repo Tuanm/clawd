@@ -3,6 +3,16 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          mermaid: ["mermaid"],
+          recharts: ["recharts"],
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       "/api": "http://localhost:3456",

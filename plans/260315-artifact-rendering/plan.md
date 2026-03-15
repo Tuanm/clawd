@@ -45,8 +45,8 @@ Key files (line counts):
 
 | # | Phase | Priority | Effort | Status |
 |---|-------|----------|--------|--------|
-| 0 | [Agent Protocol](#phase-0) | P0 | 2h | Pending |
-| 1 | [Security Foundation](#phase-1) | P0 | 4h | Pending |
+| 0 | [Agent Protocol](#phase-0) | P0 | 2h | Complete |
+| 1 | [Security Foundation](#phase-1) | P0 | 4h | Complete |
 | 2 | [Syntax Highlighting](#phase-2) | P1 | 4h | Pending |
 | 3 | [Artifact Preview Card & Modal](#phase-3) | P1 | 7h | Pending |
 | 3.5 | [Version History (deferred)](#phase-3-5) | P2 | 4h | Deferred |
