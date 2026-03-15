@@ -2645,7 +2645,7 @@ body {
 
 .lightbox-open-new {
   position: absolute;
-  bottom: 20px;
+  bottom: 64px; /* above the zoom toolbar */
   left: 50%;
   transform: translateX(-50%);
   color: white;
@@ -2678,6 +2678,44 @@ body {
 .lightbox-mermaid svg {
   max-width: 100%;
   height: auto;
+}
+
+.lightbox-toolbar {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: hsl(0 0% 0% / 60%);
+  backdrop-filter: blur(8px);
+  padding: 6px 12px;
+  border-radius: 24px;
+  z-index: 10;
+}
+
+.lightbox-btn {
+  background: none;
+  border: none;
+  color: white;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.lightbox-btn:hover {
+  background: hsl(0 0% 100% / 20%);
+}
+
+.lightbox-zoom-level {
+  color: white;
+  font-size: 12px;
+  min-width: 40px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .mermaid-diagram--zoomable:hover {
@@ -4120,42 +4158,62 @@ body {
 }
 
 .mermaid-error {
-  margin: 8px 0;
+  border: 1px solid hsl(45 80% 60% / 30%);
+  border-radius: 8px;
   padding: 8px 12px;
-  background: #fff5f5;
-  border: 1px solid #ffcdd2;
-  border-radius: 6px;
+  background: hsl(45 80% 60% / 5%);
+  margin: 8px 0;
+}
+
+.mermaid-error-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  overflow: hidden;
+  font-size: 13px;
+  color: hsl(45 80% 40%);
 }
 
-.mermaid-error-label {
-  font-weight: 700;
-  color: #c62828;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.mermaid-error-message {
-  display: block;
-  min-width: 0;
+.mermaid-retry-btn {
+  margin-left: auto;
+  background: none;
+  border: 1px solid hsl(45 80% 60% / 30%);
+  border-radius: 4px;
+  color: hsl(45 80% 40%);
+  padding: 2px 8px;
   font-size: 12px;
-  color: #c62828;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mermaid-retry-btn:hover {
+  background: hsl(45 80% 60% / 10%);
+}
+
+.mermaid-error-details {
+  margin-top: 8px;
+}
+
+.mermaid-error-details summary {
+  font-size: 12px;
+  color: hsl(var(--text) / 50%);
+  cursor: pointer;
+}
+
+.mermaid-error-code {
+  margin-top: 4px;
+  font-size: 12px;
+  max-height: 200px;
+  overflow: auto;
+  background: hsl(var(--text) / 5%);
+  padding: 8px;
+  border-radius: 4px;
 }
 
 @media (prefers-color-scheme: dark) {
-  .mermaid-error {
-    background: hsl(0 60% 12%);
-    border-color: hsl(0 60% 28%);
+  .mermaid-error-header {
+    color: hsl(45 80% 65%);
   }
-  .mermaid-error-label,
-  .mermaid-error-message {
-    color: hsl(0 80% 72%);
+  .mermaid-retry-btn {
+    color: hsl(45 80% 65%);
   }
 }
 
@@ -6806,8 +6864,8 @@ textarea {
   position: fixed;
   inset: 0;
   z-index: 199; /* below sidebar (200) */
-  background: hsl(0 0% 0% / 30%);
-  backdrop-filter: blur(4px);
+  background: hsl(0 0% 0% / 40%);
+  /* no backdrop-filter — blur would affect the sidebar panel at z-index 200 */
 }
 
 /* Embed artifact card variant */

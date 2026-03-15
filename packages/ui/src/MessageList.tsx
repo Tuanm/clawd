@@ -224,6 +224,7 @@ export const MermaidDiagram = React.memo(function MermaidDiagram({
 }) {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
   // Per-instance stable ID — prevents two equal charts from clobbering each other's SVG node
   const instanceId = useId();
   // Debounced chart to avoid queuing hundreds of render calls during streaming
@@ -263,15 +264,33 @@ export const MermaidDiagram = React.memo(function MermaidDiagram({
     return () => {
       cancelled = true;
     };
-  }, [debouncedChart, instanceId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [debouncedChart, instanceId, retryCount]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error) {
     return (
       <div className="mermaid-error">
-        <span className="mermaid-error-label">⚠ Diagram Error</span>
-        <span className="mermaid-error-message" title={error}>
-          {error}
-        </span>
+        <div className="mermaid-error-header">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <span>Diagram preview unavailable</span>
+          <button
+            className="mermaid-retry-btn"
+            onClick={() => {
+              setError(null);
+              setSvg("");
+              setRetryCount((c) => c + 1);
+            }}
+          >
+            Retry
+          </button>
+        </div>
+        <details className="mermaid-error-details">
+          <summary>View source</summary>
+          <pre className="mermaid-error-code">{chart}</pre>
+        </details>
       </div>
     );
   }
@@ -1505,6 +1524,9 @@ export default function MessageList({
   // Mermaid zoom modal state
   const [mermaidZoom, setMermaidZoom] = useState<string | null>(null); // stores rendered SVG content
 
+  // Shared zoom level for lightbox (image + mermaid)
+  const [lightboxZoom, setLightboxZoom] = useState(1);
+
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
@@ -2634,21 +2656,75 @@ export default function MessageList({
         createPortal(
           <div
             className="lightbox-overlay"
-            onClick={() => setLightboxImage(null)}
-            onKeyDown={(e) => e.key === "Escape" && setLightboxImage(null)}
+            onClick={() => {
+              setLightboxImage(null);
+              setLightboxZoom(1);
+            }}
+            onKeyDown={(e) => e.key === "Escape" && (setLightboxImage(null), setLightboxZoom(1))}
+            onWheel={(e) => {
+              e.preventDefault();
+              setLightboxZoom((z) => Math.min(4, Math.max(0.25, z + (e.deltaY > 0 ? -0.1 : 0.1))));
+            }}
             role="dialog"
             aria-modal="true"
             tabIndex={-1}
           >
-            <button className="lightbox-close" onClick={() => setLightboxImage(null)} aria-label="Close">
+            <button
+              className="lightbox-close"
+              onClick={() => {
+                setLightboxImage(null);
+                setLightboxZoom(1);
+              }}
+              aria-label="Close"
+            >
               ×
             </button>
-            <img
-              src={lightboxImage.src}
-              alt={lightboxImage.alt}
-              className="lightbox-image"
-              onClick={(e) => e.stopPropagation()}
-            />
+            <div
+              style={{
+                transform: `scale(${lightboxZoom})`,
+                transformOrigin: "center center",
+                transition: "transform 0.2s",
+              }}
+            >
+              <img
+                src={lightboxImage.src}
+                alt={lightboxImage.alt}
+                className="lightbox-image"
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+            <div className="lightbox-toolbar" onClick={(e) => e.stopPropagation()}>
+              <button
+                className="lightbox-btn"
+                onClick={() => setLightboxZoom((z) => Math.max(0.25, z - 0.25))}
+                title="Zoom out"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="7" y1="11" x2="15" y2="11" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+              </button>
+              <span className="lightbox-zoom-level">{Math.round(lightboxZoom * 100)}%</span>
+              <button
+                className="lightbox-btn"
+                onClick={() => setLightboxZoom((z) => Math.min(4, z + 0.25))}
+                title="Zoom in"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="11" y1="7" x2="11" y2="15" />
+                  <line x1="7" y1="11" x2="15" y2="11" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+              </button>
+              <button className="lightbox-btn" onClick={() => setLightboxZoom(1)} title="Reset zoom">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M1 4v6h6M23 20v-6h-6" />
+                  <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+                </svg>
+              </button>
+            </div>
             <a
               href={lightboxImage.src}
               target="_blank"
@@ -2666,26 +2742,80 @@ export default function MessageList({
         createPortal(
           <div
             className="lightbox-overlay"
-            onClick={() => setMermaidZoom(null)}
-            onKeyDown={(e) => e.key === "Escape" && setMermaidZoom(null)}
+            onClick={() => {
+              setMermaidZoom(null);
+              setLightboxZoom(1);
+            }}
+            onKeyDown={(e) => e.key === "Escape" && (setMermaidZoom(null), setLightboxZoom(1))}
+            onWheel={(e) => {
+              e.preventDefault();
+              setLightboxZoom((z) => Math.min(4, Math.max(0.25, z + (e.deltaY > 0 ? -0.1 : 0.1))));
+            }}
             role="dialog"
             aria-modal="true"
             aria-label="Diagram zoom"
             tabIndex={-1}
           >
-            <button className="lightbox-close" onClick={() => setMermaidZoom(null)} aria-label="Close">
+            <button
+              className="lightbox-close"
+              onClick={() => {
+                setMermaidZoom(null);
+                setLightboxZoom(1);
+              }}
+              aria-label="Close"
+            >
               ×
             </button>
             <div
-              className="lightbox-mermaid"
-              dangerouslySetInnerHTML={{
-                __html: DOMPurify.sanitize(mermaidZoom, {
-                  USE_PROFILES: { svg: true, svgFilters: true },
-                  ADD_TAGS: ["use"],
-                }),
+              style={{
+                transform: `scale(${lightboxZoom})`,
+                transformOrigin: "center center",
+                transition: "transform 0.2s",
               }}
-              onClick={(e) => e.stopPropagation()}
-            />
+            >
+              <div
+                className="lightbox-mermaid"
+                dangerouslySetInnerHTML={{
+                  __html: DOMPurify.sanitize(mermaidZoom, {
+                    USE_PROFILES: { svg: true, svgFilters: true },
+                    ADD_TAGS: ["use"],
+                  }),
+                }}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+            <div className="lightbox-toolbar" onClick={(e) => e.stopPropagation()}>
+              <button
+                className="lightbox-btn"
+                onClick={() => setLightboxZoom((z) => Math.max(0.25, z - 0.25))}
+                title="Zoom out"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="7" y1="11" x2="15" y2="11" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+              </button>
+              <span className="lightbox-zoom-level">{Math.round(lightboxZoom * 100)}%</span>
+              <button
+                className="lightbox-btn"
+                onClick={() => setLightboxZoom((z) => Math.min(4, z + 0.25))}
+                title="Zoom in"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="11" y1="7" x2="11" y2="15" />
+                  <line x1="7" y1="11" x2="15" y2="11" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+              </button>
+              <button className="lightbox-btn" onClick={() => setLightboxZoom(1)} title="Reset zoom">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M1 4v6h6M23 20v-6h-6" />
+                  <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+                </svg>
+              </button>
+            </div>
           </div>,
           document.body,
         )}
