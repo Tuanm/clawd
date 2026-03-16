@@ -2544,31 +2544,19 @@ export default function MessageList({
                   <div className="message-files">
                     {msg.files.map((file) => {
                       if (isImageFile(file)) {
-                        // Images: inline preview + clicking opens sidebar
+                        // Images: inline preview only, click opens lightbox (no duplicate preview card)
                         return (
-                          <div key={file.id} className="message-image-wrapper">
-                            <div
-                              className="message-image-link"
-                              onClick={() => setLightboxImage({ src: file.url_private, alt: file.name })}
-                              role="button"
-                              tabIndex={0}
-                              onKeyDown={(e) =>
-                                e.key === "Enter" && setLightboxImage({ src: file.url_private, alt: file.name })
-                              }
-                            >
-                              <img src={file.url_private} alt={file.name} className="message-image" />
-                            </div>
-                            <FilePreviewCard
-                              file={file}
-                              onClick={() =>
-                                onOpenSidebar?.({
-                                  title: file.name,
-                                  type: "file",
-                                  url: file.url_private,
-                                  fileType: file.mimetype ?? "image/jpeg",
-                                })
-                              }
-                            />
+                          <div
+                            key={file.id}
+                            className="message-image-link"
+                            onClick={() => setLightboxImage({ src: file.url_private, alt: file.name })}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) =>
+                              e.key === "Enter" && setLightboxImage({ src: file.url_private, alt: file.name })
+                            }
+                          >
+                            <img src={file.url_private} alt={file.name} className="message-image" />
                           </div>
                         );
                       }

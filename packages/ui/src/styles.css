@@ -6937,6 +6937,20 @@ textarea {
   overflow: hidden;
 }
 
+.sidebar-file-html {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-html-iframe {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: white;
+}
+
 .sidebar-file-actions {
   display: flex;
   gap: 8px;

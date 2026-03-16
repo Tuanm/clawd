@@ -11,27 +11,25 @@ const CODE_EXTENSIONS =
   /\.(js|jsx|ts|tsx|py|rb|go|rs|java|c|cpp|h|cs|php|sh|bash|zsh|fish|ps1|swift|kt|scala|r|lua|sql|graphql|tf|hcl|dockerfile|makefile|cmake|toml|ini|env|editorconfig)$/i;
 const TEXT_EXTENSIONS = /\.(txt|log|md|markdown|rst|csv|json|yaml|yml|xml|html|htm|css|scss|less|svg)$/i;
 
-export type FileCategory = "pdf" | "csv" | "text" | "code" | "image" | "audio" | "video" | "other";
+export type FileCategory = "pdf" | "csv" | "html" | "text" | "code" | "image" | "audio" | "video" | "other";
 
 export function getFileCategory(mimetype: string, name: string): FileCategory {
   if (mimetype === "application/pdf") return "pdf";
   if (mimetype === "text/csv" || name.endsWith(".csv")) return "csv";
+  if (mimetype === "text/html" || name.endsWith(".html") || name.endsWith(".htm")) return "html";
   if (mimetype.startsWith("image/")) return "image";
   if (mimetype.startsWith("audio/")) return "audio";
   if (mimetype.startsWith("video/")) return "video";
   if (
     mimetype === "text/plain" ||
     mimetype === "application/json" ||
-    mimetype === "text/html" ||
     mimetype === "text/markdown" ||
     mimetype === "text/yaml" ||
     mimetype === "application/xml" ||
     mimetype === "text/xml" ||
     TEXT_EXTENSIONS.test(name)
   ) {
-    // Distinguish code from plain text by extension
     if (CODE_EXTENSIONS.test(name) || mimetype === "application/json") return "code";
-    if (mimetype === "text/html") return "text";
     return "text";
   }
   if (CODE_EXTENSIONS.test(name)) return "code";
@@ -58,6 +56,7 @@ export function isPreviewableMimetype(mimetype: string): boolean {
 const CATEGORY_COLORS: Record<FileCategory, string> = {
   pdf: "#e53e3e",
   csv: "#38a169",
+  html: "#e05d44",
   text: "#3182ce",
   code: "#3182ce",
   image: "#805ad5",
@@ -69,6 +68,7 @@ const CATEGORY_COLORS: Record<FileCategory, string> = {
 const CATEGORY_LABELS: Record<FileCategory, string> = {
   pdf: "PDF",
   csv: "CSV",
+  html: "HTML",
   text: "TXT",
   code: "CODE",
   image: "IMG",
@@ -105,6 +105,12 @@ function FileIcon({ category }: { category: FileCategory }) {
             <line x1="3" y1="9" x2="21" y2="9" />
             <line x1="3" y1="15" x2="21" y2="15" />
             <line x1="9" y1="3" x2="9" y2="21" />
+          </>
+        )}
+        {category === "html" && (
+          <>
+            <polyline points="16 18 22 12 16 6" />
+            <polyline points="8 6 2 12 8 18" />
           </>
         )}
         {(category === "text" || category === "code") && (
@@ -307,6 +313,14 @@ export function FilePreviewSidebar({ url, name, mimetype }: FilePreviewSidebarPr
             </a>
           </p>
         </object>
+      </div>
+    );
+  }
+
+  if (category === "html") {
+    return (
+      <div className="sidebar-file-html">
+        <iframe src={url} title={name} className="sidebar-html-iframe" sandbox="allow-scripts" />
       </div>
     );
   }
