@@ -3279,34 +3279,45 @@ registerTool(
 
 registerTool(
   "convert_to_markdown",
-  "Convert a document file to markdown text. Supports: PDF, DOCX, XLSX, PPTX, HTML, EPUB, CSV. For images use read_image instead. For JSON/XML/YAML/text use view instead.",
+  "Convert a document file to markdown and save as .md file in {projectRoot}/.clawd/files/. Returns the saved path and content size. Use view() to read the converted content. Supports: PDF, DOCX, XLSX, PPTX, HTML, EPUB, CSV. For images use read_image. For JSON/XML/YAML/text use view.",
   {
     path: {
       type: "string",
       description: "Absolute path to the file to convert",
     },
-    max_length: {
-      type: "number",
-      description: "Maximum output characters (default: 30000)",
-    },
   },
   ["path"],
-  async ({ path: filePath, max_length }: Record<string, any>) => {
+  async ({ path: filePath }: Record<string, any>) => {
     if (!filePath) {
       return { success: false, output: "", error: "path is required" };
     }
 
+    const resolvedPath = resolve(filePath);
+    const pathError = validatePath(resolvedPath, "convert_to_markdown");
+    if (pathError) return { success: false, output: "", error: pathError };
+
     const { convertToMarkdown } = await import("./document-converter");
-    const result = await convertToMarkdown(filePath, max_length ?? 30_000);
+    const result = await convertToMarkdown(resolvedPath);
 
     if (!result.success) {
       return { success: false, output: "", error: result.error };
     }
 
+    // Save to {projectRoot}/.clawd/files/
+    const { writeFile, mkdir } = await import("node:fs/promises");
+    const { basename, extname, join } = await import("node:path");
+
+    const projectRoot = getSandboxProjectRoot();
+    const filesDir = join(projectRoot, ".clawd", "files");
+    await mkdir(filesDir, { recursive: true });
+
+    const base = basename(resolvedPath, extname(resolvedPath)).replace(/[^a-zA-Z0-9._-]/g, "_") || "converted";
+    const mdPath = join(filesDir, `${base}.md`);
+    await writeFile(mdPath, result.markdown, "utf-8");
+
     return {
       success: true,
-      output: result.markdown,
-      format: result.format,
+      output: `Converted ${result.format.toUpperCase()} to Markdown (${result.markdown.length} chars). Saved to: ${mdPath}\nUse view("${mdPath}") to read the full content.`,
     };
   },
 );

@@ -23,8 +23,11 @@ type DocFormat = "pdf" | "docx" | "xlsx" | "pptx" | "html" | "epub" | "csv" | "t
 // ============================================================================
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+const MAX_DECOMPRESSED_SIZE = 200 * 1024 * 1024; // 200MB decompressed limit
 const CONVERSION_TIMEOUT_MS = 30_000; // 30s
 const BINARY_SAMPLE_SIZE = 512;
+
+const escPipe = (s: string) => String(s ?? "").replace(/\|/g, "\\|");
 
 // ============================================================================
 // Format Detection
@@ -33,11 +36,8 @@ const BINARY_SAMPLE_SIZE = 512;
 const EXT_MAP: Record<string, DocFormat> = {
   pdf: "pdf",
   docx: "docx",
-  doc: "docx",
   xlsx: "xlsx",
-  xls: "xlsx",
   pptx: "pptx",
-  ppt: "pptx",
   html: "html",
   htm: "html",
   epub: "epub",
@@ -78,6 +78,24 @@ async function detectFormatByMagicBytes(data: Buffer): Promise<DocFormat> {
   return "unknown";
 }
 
+async function loadZipSafe(data: Buffer) {
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(data);
+  let totalUncompressed = 0;
+  zip.forEach((_, file) => {
+    if (!file.dir) {
+      const meta = file as any;
+      totalUncompressed += meta._data?.uncompressedSize ?? meta._data?.compressedSize ?? 0;
+    }
+  });
+  if (totalUncompressed > MAX_DECOMPRESSED_SIZE) {
+    throw new Error(
+      `Decompressed size (~${(totalUncompressed / 1024 / 1024).toFixed(0)}MB) exceeds ${MAX_DECOMPRESSED_SIZE / 1024 / 1024}MB limit`,
+    );
+  }
+  return zip;
+}
+
 async function detectZipSubformat(data: Buffer): Promise<DocFormat> {
   try {
     const JSZip = (await import("jszip")).default;
@@ -111,21 +129,19 @@ function isBinaryData(data: Buffer): boolean {
 // ============================================================================
 
 async function convertPdf(data: Buffer, maxLength: number): Promise<string> {
-  const { PDFParse } = await import("pdf-parse");
-  const parser = new PDFParse({ data });
-  const textResult = await parser.getText();
+  const { extractText } = await import("unpdf");
+  const result = await extractText(new Uint8Array(data));
 
-  const text = textResult.text?.trim();
+  const text = result.text?.join("\n")?.trim();
   if (!text) {
     return "[This PDF appears to contain scanned images only. Use read_image tool for OCR.]";
   }
 
-  const numpages = textResult.total;
-  let body = textResult.text;
+  let body = text;
   if (body.length > maxLength) {
     body = body.slice(0, maxLength) + "\n\n[TRUNCATED]";
   }
-  return `# PDF Document\n\n**Pages:** ${numpages}\n\n${body}`;
+  return `# PDF Document\n\n**Pages:** ${result.totalPages}\n\n${body}`;
 }
 
 async function convertDocx(data: Buffer, maxLength: number): Promise<string> {
@@ -163,16 +179,16 @@ async function convertXlsx(data: Buffer, maxLength: number): Promise<string> {
       continue;
     }
 
-    const maxCols = Math.min((rows[0]?.length || 0), 20);
+    const maxCols = Math.min(rows[0]?.length || 0, 20);
     const maxRows = Math.min(rows.length, 500);
 
-    const header = (rows[0] || []).slice(0, maxCols).map((c) => String(c ?? ""));
+    const header = (rows[0] || []).slice(0, maxCols).map((c) => escPipe(String(c ?? "")));
     parts.push(`| ${header.join(" | ")} |`);
     parts.push(`| ${header.map(() => "---").join(" | ")} |`);
 
     let truncated = false;
     for (let r = 1; r < maxRows; r++) {
-      const row = (rows[r] || []).slice(0, maxCols).map((c) => String(c ?? ""));
+      const row = (rows[r] || []).slice(0, maxCols).map((c) => escPipe(String(c ?? "")));
       const rowStr = `| ${row.join(" | ")} |`;
       parts.push(rowStr);
       totalLen += rowStr.length;
@@ -192,9 +208,17 @@ async function convertXlsx(data: Buffer, maxLength: number): Promise<string> {
   return parts.join("\n");
 }
 
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"');
+}
+
 async function convertPptx(data: Buffer, maxLength: number): Promise<string> {
-  const JSZip = (await import("jszip")).default;
-  const zip = await JSZip.loadAsync(data);
+  const zip = await loadZipSafe(data);
 
   const parts: string[] = ["# Presentation\n"];
   let totalLen = 0;
@@ -210,7 +234,7 @@ async function convertPptx(data: Buffer, maxLength: number): Promise<string> {
     }
 
     const xml = await slideFile.async("text");
-    const texts = [...xml.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((m) => m[1]);
+    const texts = [...xml.matchAll(/<a:t[^>]*>([^<]*)<\/a:t>/g)].map((m) => decodeXmlEntities(m[1]));
     const slideText = texts.join(" ");
     parts.push(`## Slide ${slideNum}\n\n${slideText}\n`);
     totalLen += slideText.length;
@@ -222,9 +246,7 @@ async function convertPptx(data: Buffer, maxLength: number): Promise<string> {
 
 async function convertHtml(text: string, maxLength: number): Promise<string> {
   const TurndownService = (await import("turndown")).default;
-  const cleaned = text
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "");
+  const cleaned = text.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "");
 
   const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
   let md = turndown.turndown(cleaned);
@@ -235,11 +257,10 @@ async function convertHtml(text: string, maxLength: number): Promise<string> {
 }
 
 async function convertEpub(data: Buffer, maxLength: number): Promise<string> {
-  const JSZip = (await import("jszip")).default;
   const TurndownService = (await import("turndown")).default;
   const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
 
-  const zip = await JSZip.loadAsync(data);
+  const zip = await loadZipSafe(data);
 
   const containerXml = await zip.file("META-INF/container.xml")?.async("text");
   if (!containerXml) return "[Invalid EPUB: missing container.xml]";
@@ -250,8 +271,11 @@ async function convertEpub(data: Buffer, maxLength: number): Promise<string> {
 
   const itemRefs = [...opfXml.matchAll(/<itemref\s+idref="([^"]+)"/g)].map((m) => m[1]);
   const items = new Map<string, string>();
-  for (const m of opfXml.matchAll(/<item\s+[^>]*id="([^"]+)"[^>]*href="([^"]+)"[^>]*/g)) {
-    items.set(m[1], m[2]);
+  for (const m of opfXml.matchAll(/<item\s+([^>]+)/g)) {
+    const attrs = m[1];
+    const id = attrs.match(/id="([^"]+)"/)?.[1];
+    const href = attrs.match(/href="([^"]+)"/)?.[1];
+    if (id && href) items.set(id, href);
   }
 
   const opfDir = opfPath.includes("/") ? opfPath.substring(0, opfPath.lastIndexOf("/") + 1) : "";
@@ -268,13 +292,11 @@ async function convertEpub(data: Buffer, maxLength: number): Promise<string> {
     const href = items.get(ref);
     if (!href) continue;
 
-    const fullPath = opfDir + href;
+    const fullPath = opfDir + decodeURIComponent(href);
     const html = await zip.file(fullPath)?.async("text");
     if (!html) continue;
 
-    const cleaned = html
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "");
+    const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "");
     const md = turndown.turndown(cleaned);
     parts.push(md);
     totalLen += md.length;
@@ -283,21 +305,34 @@ async function convertEpub(data: Buffer, maxLength: number): Promise<string> {
   return parts.join("\n\n---\n\n");
 }
 
-function convertCsv(text: string, maxLength: number): string {
-  const lines = text.replace(/\r\n/g, "\n").split("\n").filter((l) => l.trim());
+function convertCsv(text: string, maxLength: number, delimiter: string = ","): string {
+  const lines = text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter((l) => l.trim());
   if (lines.length === 0) return "[Empty CSV file]";
 
   const parseRow = (line: string): string[] => {
     const cells: string[] = [];
     let cell = "";
     let inQuotes = false;
-    for (const ch of line) {
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
       if (inQuotes) {
-        if (ch === '"') inQuotes = false;
-        else cell += ch;
+        if (ch === '"') {
+          // Escaped quote: "" → literal "
+          if (i + 1 < line.length && line[i + 1] === '"') {
+            cell += '"';
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          cell += ch;
+        }
       } else {
         if (ch === '"') inQuotes = true;
-        else if (ch === ",") {
+        else if (ch === delimiter) {
           cells.push(cell);
           cell = "";
         } else {
@@ -312,13 +347,18 @@ function convertCsv(text: string, maxLength: number): string {
   const header = parseRow(lines[0]);
   const maxCols = Math.min(header.length, 20);
   const parts: string[] = [];
-  parts.push(`| ${header.slice(0, maxCols).join(" | ")} |`);
-  parts.push(`| ${header.slice(0, maxCols).map(() => "---").join(" | ")} |`);
+  parts.push(`| ${header.slice(0, maxCols).map(escPipe).join(" | ")} |`);
+  parts.push(
+    `| ${header
+      .slice(0, maxCols)
+      .map(() => "---")
+      .join(" | ")} |`,
+  );
 
   const maxRows = Math.min(lines.length, 500);
   let totalLen = 0;
   for (let i = 1; i < maxRows; i++) {
-    const row = parseRow(lines[i]).slice(0, maxCols);
+    const row = parseRow(lines[i]).slice(0, maxCols).map(escPipe);
     const rowStr = `| ${row.join(" | ")} |`;
     parts.push(rowStr);
     totalLen += rowStr.length;
@@ -339,36 +379,53 @@ function convertCsv(text: string, maxLength: number): string {
 // Main Entry Point
 // ============================================================================
 
-export async function convertToMarkdown(
-  filePath: string,
-  maxLength: number = 30_000,
-): Promise<ConvertResult> {
-  const { readFileSync, statSync } = await import("node:fs");
+export async function convertToMarkdown(filePath: string, maxLength: number = 5_000_000): Promise<ConvertResult> {
+  const { stat: fsStat, readFile } = await import("node:fs/promises");
 
   // File size check
-  let stat: ReturnType<typeof statSync>;
+  let fileStat: Awaited<ReturnType<typeof fsStat>>;
   try {
-    stat = statSync(filePath);
+    fileStat = await fsStat(filePath);
   } catch (err: any) {
     return { success: false, markdown: "", format: "unknown", error: `File not found: ${err.message}` };
   }
 
-  if (stat.size > MAX_FILE_SIZE) {
+  if (!fileStat.isFile()) {
+    return { success: false, markdown: "", format: "unknown", error: "Path is a directory, not a file" };
+  }
+
+  if (fileStat.size > MAX_FILE_SIZE) {
     return {
       success: false,
       markdown: "",
       format: "unknown",
-      error: `File too large: ${(stat.size / 1024 / 1024).toFixed(1)}MB exceeds 50MB limit`,
+      error: `File too large: ${(fileStat.size / 1024 / 1024).toFixed(1)}MB exceeds 50MB limit`,
     };
   }
 
-  const data = readFileSync(filePath);
+  let data: Buffer;
+  try {
+    data = Buffer.from(await readFile(filePath));
+  } catch (err: any) {
+    return { success: false, markdown: "", format: "unknown", error: `Read failed: ${err.message}` };
+  }
 
   // Binary guard (for text-expected formats)
   const extFmt = detectFormatByExtension(filePath);
 
   // Determine format
   let format: DocFormat = extFmt ?? (await detectFormatByMagicBytes(data));
+
+  // Binary guard for text-expected formats
+  const textFormats: DocFormat[] = ["html", "csv", "text"];
+  if (textFormats.includes(format) && isBinaryData(data)) {
+    return {
+      success: false,
+      markdown: "",
+      format,
+      error: "File appears to be binary despite text extension.",
+    };
+  }
 
   // For unknown extension text-like content: check magic bytes first, then try as text
   if (format === "unknown") {
@@ -407,9 +464,11 @@ export async function convertToMarkdown(
         case "epub":
           markdown = await convertEpub(data, maxLength);
           break;
-        case "csv":
-          markdown = await convertCsv(data.toString("utf8"), maxLength);
+        case "csv": {
+          const delim = filePath.toLowerCase().endsWith(".tsv") ? "\t" : ",";
+          markdown = convertCsv(data.toString("utf8"), maxLength, delim);
           break;
+        }
         case "text":
           markdown = data.toString("utf8");
           if (markdown.length > maxLength) {
@@ -431,13 +490,16 @@ export async function convertToMarkdown(
     }
   };
 
-  // Wrap with 30s timeout
-  const timeout = new Promise<ConvertResult>((resolve) =>
-    setTimeout(
+  // Wrap with 30s timeout (clear timer to prevent leak)
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<ConvertResult>((resolve) => {
+    timer = setTimeout(
       () => resolve({ success: false, markdown: "", format, error: "Conversion timed out (30s)" }),
       CONVERSION_TIMEOUT_MS,
-    ),
-  );
+    );
+  });
 
-  return Promise.race([conversionFn(), timeout]);
+  const result = await Promise.race([conversionFn(), timeout]);
+  clearTimeout(timer!);
+  return result;
 }
