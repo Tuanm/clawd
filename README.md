@@ -148,11 +148,9 @@ Settings are loaded from `~/.clawd/config.json`:
     "edit_image": { "provider": "gemini", "model": "gemini-3.1-flash-image" }
   },
 
-  "heartbeat": {                         // Stuck-agent recovery
+  "heartbeat": {                         // Background health monitor
     "enabled": true,                     // default: true
-    "intervalMs": 30000,                 // Check interval (default: 30000)
-    "processingTimeoutMs": 300000,       // Cancel stuck agents (default: 300000)
-    "spaceIdleTimeoutMs": 60000          // Sub-agent idle timeout (default: 60000)
+    "intervalMs": 30000                  // How often to check agent health (default: 30000)
   },
 
   "auth": {                              // Optional API authentication
