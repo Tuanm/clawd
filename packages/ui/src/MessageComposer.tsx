@@ -135,6 +135,7 @@ interface Props {
   searchButton?: React.ReactNode;
   projectsButton?: React.ReactNode;
   mcpButton?: React.ReactNode;
+  skillsButton?: React.ReactNode;
 }
 
 export default function MessageComposer({
@@ -146,6 +147,7 @@ export default function MessageComposer({
   searchButton,
   projectsButton,
   mcpButton,
+  skillsButton,
 }: Props) {
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -471,6 +473,12 @@ export default function MessageComposer({
                 {mcpButton}
               </>
             )}
+            {skillsButton && (
+              <>
+                <div className="toolbar-divider" />
+                {skillsButton}
+              </>
+            )}
           </div>
         )}
 
@@ -612,10 +620,11 @@ export default function MessageComposer({
                 </svg>
               </button>
             )}
-            {/* Search, Projects, and MCP buttons - show when toolbar is hidden */}
+            {/* Search, Projects, MCP, and Skills buttons - show when toolbar is hidden */}
             {!showToolbar && searchButton && searchButton}
             {!showToolbar && projectsButton && projectsButton}
             {!showToolbar && mcpButton && mcpButton}
+            {!showToolbar && skillsButton && skillsButton}
           </div>
           <input
             ref={fileInputRef}

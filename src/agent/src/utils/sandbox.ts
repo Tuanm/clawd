@@ -252,6 +252,12 @@ function getBwrapPrefix(options: BwrapOptions): string {
     if (existsSync(filesDir)) args.push("--ro-bind", filesDir, filesDir);
   }
 
+  // Mount {projectRoot}/.claude/skills/ read-only (Claude Code compatible skill scripts)
+  const projectClaudeSkillsDir = join(projectRoot, ".claude", "skills");
+  if (existsSync(projectClaudeSkillsDir)) {
+    args.push("--ro-bind", projectClaudeSkillsDir, projectClaudeSkillsDir);
+  }
+
   // Tool paths (read-only) - only mount if they exist
   const toolPaths = [
     `${home}/.bun`,
@@ -262,6 +268,8 @@ function getBwrapPrefix(options: BwrapOptions): string {
     `${home}/.clawd/bin`,
     `${home}/.clawd/.ssh`,
     `${home}/.clawd/.gitconfig`,
+    `${home}/.clawd/skills`,
+    `${home}/.claude/skills`,
   ];
 
   for (const toolPath of toolPaths) {
@@ -346,6 +354,16 @@ function getMacOSSandboxProfile(): string {
   (subpath (string-append (param "PROJECT_DIR") "/.clawd/skills")))
 (allow process-exec
   (subpath (string-append (param "PROJECT_DIR") "/.clawd/skills")))
+
+; Allow read + execute for .claude/skills/ (Claude Code compatible skill scripts)
+(allow file-read*
+  (subpath (string-append (param "PROJECT_DIR") "/.claude/skills")))
+(allow process-exec
+  (subpath (string-append (param "PROJECT_DIR") "/.claude/skills")))
+(allow file-read*
+  (subpath (string-append (param "HOME_DIR") "/.claude/skills")))
+(allow process-exec
+  (subpath (string-append (param "HOME_DIR") "/.claude/skills")))
 
 ; Allow read + execute for .clawd/tools/ (custom tool entrypoints)
 (allow file-read*

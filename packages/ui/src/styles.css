@@ -5796,6 +5796,242 @@ textarea {
   height: 16px;
 }
 
+/* Skills button in composer toolbar */
+.skills-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 4px;
+}
+
+.skills-btn:hover {
+  color: hsl(var(--accent));
+  background: hsl(var(--text) / 5%);
+}
+
+.skills-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Skills dialog */
+.skills-dialog {
+  width: min(92vw, 720px);
+  max-height: 75vh;
+}
+
+.skills-dialog-body {
+  flex: 1;
+  overflow: hidden;
+  padding: 16px 20px;
+  font-family: Lato, sans-serif;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.skills-dialog-layout {
+  display: flex;
+  gap: 16px;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Left: skill list column */
+.skills-list-col {
+  width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.skills-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+
+.skills-list-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: hsl(var(--text) / 50%);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.skills-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: hsl(var(--text) / 50%);
+  border-radius: 4px;
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+
+.skills-add-btn:hover {
+  color: hsl(var(--accent));
+  background: hsl(var(--text) / 6%);
+}
+
+.skills-list-empty {
+  font-size: 13px;
+  color: hsl(var(--text) / 40%);
+  padding: 8px 2px;
+  line-height: 1.4;
+}
+
+.skills-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.skills-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 8px;
+  text-align: left;
+  transition: background 0.12s;
+  width: 100%;
+}
+
+.skills-list-item:hover {
+  background: hsl(var(--text) / 5%);
+}
+
+.skills-list-item.active {
+  background: hsl(var(--accent) / 10%);
+}
+
+.skills-list-item-icon {
+  color: hsl(var(--text) / 40%);
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.skills-list-item.active .skills-list-item-icon {
+  color: hsl(var(--accent));
+}
+
+.skills-list-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.skills-list-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: hsl(var(--text));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skills-list-item-desc {
+  font-size: 11px;
+  color: hsl(var(--text) / 50%);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skills-source-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.skills-source-badge--project {
+  background: hsl(var(--accent) / 15%);
+  color: hsl(var(--accent));
+}
+
+.skills-source-badge--global {
+  background: hsl(var(--text) / 8%);
+  color: hsl(var(--text) / 60%);
+}
+
+/* Right: editor column */
+.skills-editor-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-width: 0;
+  border-left: 1px solid hsl(var(--text) / 8%);
+  padding-left: 16px;
+}
+
+.skills-editor-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skills-content-input {
+  min-height: 160px;
+  resize: vertical;
+  font-family: "Fira Code", "Cascadia Code", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.skills-scope-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.skills-scope-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: hsl(var(--text) / 80%);
+  cursor: pointer;
+}
+
+.skills-scope-label input[type="radio"] {
+  accent-color: hsl(var(--accent));
+}
+
+.skills-save-path {
+  font-size: 11px;
+  color: hsl(var(--text) / 40%);
+  font-family: "Fira Code", "Cascadia Code", monospace;
+  padding: 4px 0;
+  word-break: break-all;
+}
+
 /* MCP server icon in the dialog bar */
 .mcp-server-icon {
   display: flex;

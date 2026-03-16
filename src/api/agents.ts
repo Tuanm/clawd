@@ -32,6 +32,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../agent/src/api/provider-config";
+import { getSkillManager } from "../agent/src/skills/manager";
 import type { WorkerManager } from "../worker-manager";
 
 // ============================================================================
@@ -1049,6 +1050,135 @@ export function registerAgentRoutes(
       } catch (error) {
         return json({ ok: false, error: String(error) }, 500);
       }
+    }
+
+    // ========================================================================
+    // Skills API
+    // ========================================================================
+
+    // List skills for an agent
+    if (path === "/api/app.skills.list") {
+      const channel = url.searchParams.get("channel");
+      const agentId = url.searchParams.get("agent_id");
+
+      if (!channel || !agentId) {
+        return json({ ok: false, error: "channel and agent_id required" }, 400);
+      }
+
+      const agent = db
+        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .get(channel, agentId) as { project: string } | null;
+
+      const projectRoot = agent?.project || undefined;
+      const manager = getSkillManager(projectRoot);
+      manager.indexSkillsIfStale();
+      const skills = manager.listSkills();
+
+      return json({ ok: true, skills });
+    }
+
+    // Get single skill content
+    if (path === "/api/app.skills.get") {
+      const name = url.searchParams.get("name");
+      const channel = url.searchParams.get("channel");
+      const agentId = url.searchParams.get("agent_id");
+
+      if (!name) {
+        return json({ ok: false, error: "name required" }, 400);
+      }
+
+      let projectRoot: string | undefined;
+      if (channel && agentId) {
+        const agent = db
+          .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+          .get(channel, agentId) as { project: string } | null;
+        projectRoot = agent?.project || undefined;
+      }
+
+      const manager = getSkillManager(projectRoot);
+      manager.indexSkillsIfStale();
+      const skill = manager.getSkill(name);
+
+      if (!skill) {
+        return json({ ok: false, error: "skill_not_found" }, 404);
+      }
+
+      return json({ ok: true, skill });
+    }
+
+    // Save (create/update) a skill
+    if (path === "/api/app.skills.save" && req.method === "POST") {
+      return handleAsync(async () => {
+        const body = await parseBody(req);
+        const { channel, agent_id, name, description, triggers, content, scope } = body;
+
+        if (!name) {
+          return json({ ok: false, error: "name required" }, 400);
+        }
+
+        let projectRoot: string | undefined;
+        if (channel && agent_id) {
+          const agent = db
+            .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+            .get(channel, agent_id) as { project: string } | null;
+          projectRoot = agent?.project || undefined;
+        }
+
+        const manager = getSkillManager(projectRoot);
+
+        const triggersArray: string[] = Array.isArray(triggers)
+          ? triggers
+          : typeof triggers === "string" && triggers.trim()
+            ? triggers
+                .split(",")
+                .map((t: string) => t.trim())
+                .filter((t: string) => t.length > 0)
+            : [];
+
+        const result = manager.saveSkill(
+          {
+            name: String(name).trim(),
+            description: String(description || "").trim(),
+            triggers: triggersArray,
+            content: String(content || "").trim(),
+          },
+          (scope === "global" ? "global" : "project") as "project" | "global",
+        );
+
+        if (!result.success) {
+          return json({ ok: false, error: result.error }, 400);
+        }
+
+        return json({ ok: true });
+      });
+    }
+
+    // Delete a skill
+    if (path === "/api/app.skills.delete" && req.method === "DELETE") {
+      const name = url.searchParams.get("name");
+      const channel = url.searchParams.get("channel");
+      const agentId = url.searchParams.get("agent_id");
+
+      if (!name) {
+        return json({ ok: false, error: "name required" }, 400);
+      }
+
+      let projectRoot: string | undefined;
+      if (channel && agentId) {
+        const agent = db
+          .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+          .get(channel, agentId) as { project: string } | null;
+        projectRoot = agent?.project || undefined;
+      }
+
+      const manager = getSkillManager(projectRoot);
+      const deleted = manager.deleteSkill(name);
+
+      if (!deleted) {
+        return json({ ok: false, error: "skill_not_found_or_delete_failed" }, 404);
+      }
+
+      return json({ ok: true });
     }
 
     // Not handled
