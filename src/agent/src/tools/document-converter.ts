@@ -158,38 +158,47 @@ async function convertDocx(data: Buffer, maxLength: number): Promise<string> {
 }
 
 async function convertXlsx(data: Buffer, maxLength: number): Promise<string> {
-  const XLSX = await import("xlsx");
-  const workbook = XLSX.read(data, { type: "buffer", cellDates: true });
+  const ExcelJS = await import("exceljs");
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(data as any);
 
   const parts: string[] = [];
   let totalLen = 0;
 
-  for (const sheetName of workbook.SheetNames) {
+  for (const sheet of workbook.worksheets) {
     if (totalLen > maxLength) {
       parts.push("\n\n[TRUNCATED — remaining sheets omitted]");
       break;
     }
 
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1 });
-    parts.push(`## Sheet: ${sheetName}\n`);
+    parts.push(`## Sheet: ${sheet.name}\n`);
 
-    if (rows.length === 0) {
+    if (sheet.rowCount === 0) {
       parts.push("*(empty sheet)*\n");
       continue;
     }
 
-    const maxCols = Math.min(rows[0]?.length || 0, 20);
-    const maxRows = Math.min(rows.length, 500);
+    const maxCols = Math.min(sheet.columnCount, 20);
+    const maxRows = Math.min(sheet.rowCount, 500);
 
-    const header = (rows[0] || []).slice(0, maxCols).map((c) => escPipe(String(c ?? "")));
+    // Header row
+    const headerRow = sheet.getRow(1);
+    const header: string[] = [];
+    for (let c = 1; c <= maxCols; c++) {
+      header.push(escPipe(String(headerRow.getCell(c).value ?? "")));
+    }
     parts.push(`| ${header.join(" | ")} |`);
     parts.push(`| ${header.map(() => "---").join(" | ")} |`);
 
+    // Data rows
     let truncated = false;
-    for (let r = 1; r < maxRows; r++) {
-      const row = (rows[r] || []).slice(0, maxCols).map((c) => escPipe(String(c ?? "")));
-      const rowStr = `| ${row.join(" | ")} |`;
+    for (let r = 2; r <= maxRows; r++) {
+      const row = sheet.getRow(r);
+      const cells: string[] = [];
+      for (let c = 1; c <= maxCols; c++) {
+        cells.push(escPipe(String(row.getCell(c).value ?? "")));
+      }
+      const rowStr = `| ${cells.join(" | ")} |`;
       parts.push(rowStr);
       totalLen += rowStr.length;
       if (totalLen > maxLength) {
@@ -199,8 +208,8 @@ async function convertXlsx(data: Buffer, maxLength: number): Promise<string> {
       }
     }
 
-    if (!truncated && rows.length > 500) {
-      parts.push(`\n*...${rows.length - 500} more rows*`);
+    if (!truncated && sheet.rowCount > 500) {
+      parts.push(`\n*...${sheet.rowCount - 500} more rows*`);
     }
     parts.push("");
   }
