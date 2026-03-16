@@ -77,28 +77,34 @@ No imports needed — React and ReactDOM are pre-loaded.
 
 Content must NOT contain literal `</artifact>`. Use `&lt;/artifact&gt;` if documenting the protocol itself.
 
-## Sidebar Rendering
+## Rendering Locations
 
-Artifacts can render in a dedicated sidebar panel for easier viewing:
+| Type | Renders | On Click |
+|------|---------|----------|
+| `chart`, `svg` | Inline in message | Zoom modal (20x, drag-to-pan) |
+| `html`, `react`, `markdown` | Preview card in message | Opens sidebar panel |
+| `csv` | Preview card in message | Sortable data table in sidebar |
+| `code` | Inline in message (Prism highlighting) | — |
 
-- `html`, `react`, `markdown`, `code` — full sidebar rendering with maximize control
-- `csv` — sortable data table in sidebar
-- `chart`, `svg` — available for quick preview in sidebar
+When `series` is omitted from chart specs, series are auto-inferred from numeric data keys.
 
-Click "View in Sidebar" on artifact cards to open the panel.
+## React Artifacts
+
+- Top-level function should be named `App` (or `Default` as fallback)
+- Available in sandbox: React 18, ReactDOM, Tailwind CSS
+- Prism is NOT available inside React iframes
 
 ## Limitations
 
-- Max 1000 data points per chart, 10 series
-- Artifacts must not exceed ~5MB of content
-- No iframe-to-parent communication (secure by design)
-- React artifacts cannot import external packages — only React, Tailwind, and Prism
+- Max 1000 data points per chart, 10 series (recommended, not hard-enforced)
+- Artifacts should not exceed ~5MB of content
+- Limited iframe-to-parent communication (resize + error reporting only)
 
 ## Security
 
 - HTML/SVG content is sanitized with DOMPurify before rendering
-- markdown sanitized via rehype-sanitize (removes dangerous scripts/attributes)
-- HTML and React artifacts run in sandboxed iframes (`sandbox="allow-scripts"`)
-- No network access from artifact iframes
-- No access to parent page DOM or cookies
-- No browser API access (localStorage, geolocation, etc.)
+- Chat markdown is sanitized via rehype-sanitize
+- HTML and React artifacts run in sandboxed iframes (`sandbox="allow-scripts"`, no `allow-same-origin`)
+- No fetch/XHR from iframes (`connect-src: none`), but React artifacts load dependencies from CDNs
+- No access to parent page DOM or cookies (opaque origin isolation)
+- Sensitive browser APIs blocked (localStorage, geolocation, etc.) via sandbox attribute

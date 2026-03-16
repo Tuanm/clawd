@@ -90,7 +90,7 @@ clawd-app [options]
   --host <host>       Bind address (default: 0.0.0.0)
   --port, -p <port>   Port number (default: 3456)
   --debug             Enable debug logging
-  --yolo              Skip tool confirmation prompts
+  --yolo              Disable sandbox restrictions for agents
   --no-browser         Don't open browser on startup
 ```
 
@@ -102,7 +102,7 @@ clawd-app [options]
   "host": "0.0.0.0",          // Bind address
   "port": 3456,                // Port number
   "debug": false,              // Debug logging
-  "yolo": false,               // Skip tool confirmations
+  "yolo": false,               // Disable sandbox restrictions
 
   // Paths
   "dataDir": "~/.clawd/data",  // Data directory override
@@ -423,12 +423,16 @@ A background health monitor keeps agents responsive:
 
 ### Custom Skills
 
-Agents can use project-specific and global custom skills. Skills are folders containing a `SKILL.md` file with YAML frontmatter:
+Agents load skills from four directories (highest priority last):
 
 ```
-{projectRoot}/.clawd/skills/{name}/SKILL.md   # Project-scoped (priority)
-~/.clawd/skills/{name}/SKILL.md                # Global
+~/.claude/skills/{name}/SKILL.md                # Claude Code global (lowest)
+~/.clawd/skills/{name}/SKILL.md                 # Claw'd global
+{projectRoot}/.claude/skills/{name}/SKILL.md    # Claude Code project
+{projectRoot}/.clawd/skills/{name}/SKILL.md     # Claw'd project (highest)
 ```
+
+Same-name skills in higher-priority directories override lower ones. This enables sharing skills between Claude Code and Claw'd agents.
 
 **SKILL.md format** (compatible with Claude Code):
 
@@ -467,7 +471,19 @@ Agents can delegate tasks via `spawn_agent(task, name)`:
 - Creates an isolated channel `{parent}:space:{uuid}`
 - Sub-agent inherits parent's project, provider, and model
 - Returns results via `respond_to_parent(result)`
-- Configurable timeout (default 300s; spawn_agent overrides to 600s), max 5 concurrent
+- Configurable timeout (default 300s; spawn_agent overrides to 600s), max 5 per channel / 20 global
+- `context` parameter for seeding sub-agents with parent knowledge
+- `report_progress(percent, status)` — non-terminal progress updates to parent
+- `retask_agent(agent_id, task)` — re-task a completed sub-agent without cold-start
+- Stream idle timeout: 120s for slow/thinking models (Opus, o1, o3), 60s for others
+
+### Key Pool & Abuse Prevention
+
+- Per-key RPM tracking with 60s sliding window (conservative 80% of limit)
+- Request spacing: 1200ms + random jitter between requests on same key
+- Escalating backoff on rate limits: 3min → 10min → 30min (429), 30min → 2h → 24h (403)
+- `suspendStrikes` decay by 1 on success (prevents permanent suspension after transient errors)
+- HTTP/2 session sharing with error recovery
 
 ### Scheduler
 
