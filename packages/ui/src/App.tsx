@@ -2018,6 +2018,7 @@ export default function App({ channel: initialChannel }: Props) {
           content={sidebarContent.content}
           artifactType={sidebarContent.artifactType}
           language={sidebarContent.language}
+          fileType={sidebarContent.fileType}
         />
       )}
       <MessageComposer

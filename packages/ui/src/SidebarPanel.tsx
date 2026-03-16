@@ -1,20 +1,24 @@
 // SidebarPanel — slide-out panel on the right side for rich/external content.
-// Supports two display modes:
-//   "iframe" — sandboxed iframe for external URLs (Google Docs, Figma, Atlassian, etc.)
-//   "artifact" — ArtifactRenderer for html/react/csv/markdown/code content
+// Supports three display modes:
+//   "iframe"    — sandboxed iframe for external URLs (Google Docs, Figma, etc.)
+//   "artifact"  — ArtifactRenderer for html/react/csv/markdown/code content
+//   "file"      — FilePreviewSidebar for PDF/CSV/text/code/image/audio/video files
 
 import { useEffect, useRef, Fragment } from "react";
 import { createPortal } from "react-dom";
 import FullArtifactRenderer from "./artifact-renderer";
 import { type ArtifactType, TYPE_CONFIG } from "./artifact-types";
+import { FilePreviewSidebar } from "./file-preview";
 
 export interface SidebarPanelContent {
   title: string;
-  type: "iframe" | "artifact";
+  type: "iframe" | "artifact" | "file";
   url?: string;
   content?: string;
   artifactType?: ArtifactType;
   language?: string;
+  /** mimetype for type === "file" */
+  fileType?: string;
 }
 
 interface SidebarPanelProps extends SidebarPanelContent {
@@ -49,6 +53,7 @@ export default function SidebarPanel({
   content,
   artifactType,
   language,
+  fileType,
 }: SidebarPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -95,9 +100,32 @@ export default function SidebarPanel({
             )}
             <span className="sidebar-panel-title">{title}</span>
           </div>
-          <button className="sidebar-panel-close-btn" onClick={onClose} aria-label="Close sidebar" title="Close (Esc)">
-            <CloseIcon />
-          </button>
+          <div className="sidebar-panel-header-actions">
+            {type === "file" && url && (
+              <>
+                <a href={url} download={title} className="sidebar-panel-action-link" title="Download file">
+                  Download
+                </a>
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="sidebar-panel-action-link"
+                  title="Open in new tab"
+                >
+                  New tab
+                </a>
+              </>
+            )}
+            <button
+              className="sidebar-panel-close-btn"
+              onClick={onClose}
+              aria-label="Close sidebar"
+              title="Close (Esc)"
+            >
+              <CloseIcon />
+            </button>
+          </div>
         </div>
         <div className="sidebar-panel-body">
           {isOpen && type === "iframe" && url && (
@@ -111,6 +139,11 @@ export default function SidebarPanel({
           {isOpen && type === "artifact" && content !== undefined && artifactType && (
             <div className="sidebar-panel-artifact">
               <FullArtifactRenderer artifactType={artifactType} content={content} language={language} />
+            </div>
+          )}
+          {isOpen && type === "file" && url && (
+            <div className="sidebar-panel-file">
+              <FilePreviewSidebar url={url} name={title} mimetype={fileType ?? ""} />
             </div>
           )}
         </div>
