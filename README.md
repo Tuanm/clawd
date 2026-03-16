@@ -656,6 +656,7 @@ All API endpoints are available at `/api/*`. Key groups:
 ```
 Authorization: Bearer <token>
 ```
+WebSocket connections authenticate via `?token=<value>` query parameter on `/ws`.
 
 For the complete API reference, see **[docs/architecture.md § API Reference](docs/architecture.md#12-api-reference)**.
 
@@ -718,10 +719,9 @@ Special: Pie charts use `dataKey`/`nameKey`; composed charts mix line/bar/area t
 
 ### Sidebar Rendering
 
-Artifacts render in sidebar panel for easier viewing:
-- `html`, `react`, `markdown`, `code` — full sidebar rendering
-- `csv` — sortable data table in sidebar
-- `chart`, `svg` — available for sidebar preview
+Artifact rendering by location:
+- **Inline in message**: `chart` (interactive Recharts), `svg` (sanitized), `code` (Prism highlighted)
+- **Sidebar panel** (click preview card): `html`, `react`, `csv`, `markdown`
 
 For detailed artifact protocol, see **[docs/artifacts.md](docs/artifacts.md)**.
 
