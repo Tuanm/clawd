@@ -148,11 +148,6 @@ Settings are loaded from `~/.clawd/config.json`:
     "edit_image": { "provider": "gemini", "model": "gemini-3.1-flash-image" }
   },
 
-  "heartbeat": {                         // Background health monitor
-    "enabled": true,                     // default: true
-    "intervalMs": 30000                  // How often to check agent health (default: 30000)
-  },
-
   "auth": {                              // Optional API authentication
     "token": "your-secret-token"         // All /api/* require "Authorization: Bearer <token>"
   }
