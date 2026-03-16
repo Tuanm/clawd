@@ -809,10 +809,9 @@ Agents output structured content using `<artifact>` tags for rich visualization 
 - DOMPurify strips dangerous attributes/scripts before rendering
 - rehype-sanitize filters unsafe HTML in markdown
 
-**Sidebar Rendering:**
-- html, react, markdown, code types render full-screen in sidebar panel
-- csv tables render in interactive sortable view
-- chart/svg available for quick preview
+**Rendering Locations:**
+- **Inline in message**: chart (Recharts), svg (DOMPurify), code (Prism)
+- **Sidebar panel** (click preview card): html, react, csv, markdown
 
 **Chart Format:**
 ```json
@@ -862,12 +861,14 @@ Parent Agent                    Spaces System                   Sub-Agent
 - **Isolated channel**: Each space gets its own channel (`{parent}:space:{uuid}`) so
   conversations don't interfere
 - **Inheritance**: Sub-agents inherit the parent's project path, LLM provider, and model
-- **Concurrency limit**: Maximum **3 concurrent spaces** globally (not per-channel)
+- **Concurrency limit**: **5 per channel**, **20 global**
 - **Timeout**: Default **300 seconds** (5 minutes); `spawn_agent` overrides to 600 seconds
+- **Heartbeat**: Sub-agents automatically get a **5-second heartbeat** interval to stay responsive
+- **Context seeding**: Parent can pass `context` parameter to reduce sub-agent cold start
 - **Result delivery**: Sub-agent calls `respond_to_parent(result)` which posts the result
   to the parent channel and locks the space (preventing further messages)
 
-**Sub-agent tools**: Sub-agents receive only `respond_to_parent` and `get_space_info` tools.
+**Sub-agent tools**: `respond_to_parent`, `get_space_info`, `report_progress`. The `retask_agent` tool on the parent allows re-tasking completed sub-agents without cold start.
 
 **Space statuses**: `active` → `completed` | `failed` | `timed_out`
 

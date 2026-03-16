@@ -81,10 +81,11 @@ Content must NOT contain literal `</artifact>`. Use `&lt;/artifact&gt;` if docum
 
 | Type | Renders | On Click |
 |------|---------|----------|
-| `chart`, `svg` | Inline in message | Zoom modal (20x, drag-to-pan) |
+| `chart` | Inline in message (interactive Recharts) | — |
+| `svg` | Inline in message (DOMPurify sanitized) | — |
+| `code` | Inline in message (Prism highlighting) | — |
 | `html`, `react`, `markdown` | Preview card in message | Opens sidebar panel |
 | `csv` | Preview card in message | Sortable data table in sidebar |
-| `code` | Inline in message (Prism highlighting) | — |
 
 When `series` is omitted from chart specs, series are auto-inferred from numeric data keys.
 
