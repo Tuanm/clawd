@@ -450,12 +450,10 @@ Config format:
 }
 ```
 
-### Sidebar Rendering
+### Rendering Locations
 
-Artifacts render in fullscreen sidebar:
-- html, react, markdown, code — full content
-- csv — interactive sortable table
-- chart, svg — quick preview
+- **Inline in message**: chart (Recharts), svg (DOMPurify), code (Prism)
+- **Sidebar panel** (click preview card): html, react, csv, markdown
 
 ---
 
@@ -536,7 +534,7 @@ clawd-app [options]
   --host <host>       Server bind address (default: 0.0.0.0)
   -p, --port <port>   Server port (default: 3456)
   --debug             Enable debug logging
-  --yolo              Skip tool confirmation prompts
+  --yolo              Disable sandbox restrictions for agents
   --no-browser         Don't open browser on startup
   -h, --help          Show help
 ```
