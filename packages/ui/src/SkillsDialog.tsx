@@ -296,16 +296,20 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
 
   const renderEditorFields = (skillName: string | null) => (
     <div className="skills-editor-fields skills-accordion-editor">
-      <label className="skills-field-label">Skill Name</label>
-      <input
-        ref={skillName === null ? nameInputRef : undefined}
-        type="text"
-        className="agent-field-input"
-        placeholder="kebab-case-name"
-        value={editName}
-        onChange={(e) => setEditName(e.target.value)}
-        readOnly={skillName !== null}
-      />
+      {/* Skill Name only shown for new skills — existing skills show name in the row header */}
+      {skillName === null && (
+        <>
+          <label className="skills-field-label">Skill Name</label>
+          <input
+            ref={nameInputRef}
+            type="text"
+            className="agent-field-input"
+            placeholder="kebab-case-name"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+          />
+        </>
+      )}
       <label className="skills-field-label">Description</label>
       <input
         type="text"
@@ -407,7 +411,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
               </button>
             );
           })}
-          {/* Plus button in the avatar bar */}
+          {/* Plus button in the avatar bar — with "Add" label */}
           {selectedAgentId && (
             <button
               className={`stream-agent-avatar-btn agent-add-btn ${isCreating ? "active" : ""}`}
@@ -417,6 +421,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
               <span className="stream-agent-avatar-wrap">
                 <PlusIcon />
               </span>
+              <span className="stream-agent-avatar-name">Add</span>
             </button>
           )}
         </div>
