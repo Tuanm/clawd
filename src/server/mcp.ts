@@ -4,7 +4,7 @@
  * Provides MCP tools over HTTP JSON-RPC for AI agents to interact with the chat system.
  * Tools: chat_poll_and_ack, chat_send_message, chat_send_message_with_files, chat_upload_file,
  *        chat_upload_local_file, chat_download_file, chat_read_file_range, chat_get_message_files,
- *        chat_get_history, chat_query_messages, convert_to_markdown
+ *        chat_get_history, chat_query_messages
  */
 
 import { statSync } from "node:fs";
@@ -386,7 +386,7 @@ File content is NEVER included in the result to avoid context bloat.
 Use the returned local_path to read the file with view, bash, or other tools.
 
 **For images:** Use the read_image tool with the file_id instead.
-**For documents (PDF, DOCX, XLSX, PPTX, etc.):** Use convert_to_markdown tool to convert to readable text.`,
+**For documents (PDF, DOCX, XLSX, PPTX, etc.):** Use convert_to_markdown tool with the local_path to convert to readable text.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -1363,39 +1363,6 @@ Requires: GEMINI_API_KEY in ~/.clawd/config.json, ffmpeg/ffprobe for fallback fr
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
-  {
-    name: "convert_to_markdown",
-    description: `Convert a file (PDF, DOCX, XLSX, PPTX, HTML, CSV, EPub) to Markdown text.
-
-This tool converts documents to readable Markdown so you can understand their content.
-Supported formats: PDF, Word (.docx), Excel (.xlsx/.xls), PowerPoint (.pptx), HTML, CSV, EPub.
-For images use read_image. For JSON/XML/YAML/plain text use view or chat_read_file_range.
-
-Args:
-  - file_id (string): File ID from the chat system. The file must already be uploaded or downloaded.
-
-Returns JSON:
-{
-  "ok": true,
-  "file": { "id": "...", "name": "...", "mimetype": "...", "size": number },
-  "markdown": "...",      // The converted Markdown text
-  "local_path": "..."     // Path to the saved .md file (if project_root available)
-}
-
-The converted Markdown is returned directly in the result for immediate use.
-If a project root is available, the .md file is also saved to {projectRoot}/.clawd/files/{filename}.md.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        file_id: {
-          type: "string",
-          description: "File ID from the chat system (e.g., F-xxxxx). The file must be a supported document type.",
-        },
-      },
-      required: ["file_id"],
-    },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  },
 ];
 
 // MCP JSON-RPC handler
@@ -2017,7 +1984,7 @@ async function executeToolCall(
               response.hint =
                 `File saved to: ${targetPath}\n` +
                 `You can read this file using view("${targetPath}") or bash tools (cat, head, etc.).\n` +
-                `For documents (PDF, DOCX, XLSX, PPTX), use convert_to_markdown(file_id="${file.id}") to get readable text.`;
+                `For documents (PDF, DOCX, XLSX, PPTX), use convert_to_markdown(path="${targetPath || file.path}") to convert to readable text.`;
             } catch (saveErr: any) {
               response.hint =
                 `Failed to save file locally: ${saveErr.message}. ` +
@@ -2026,7 +1993,7 @@ async function executeToolCall(
           } else {
             response.hint =
               `File metadata retrieved. Use chat_read_file_range(file_id="${file.id}") to read the file content. ` +
-              `For documents (PDF, DOCX, XLSX, PPTX), use convert_to_markdown(file_id="${file.id}") to get readable text.`;
+              `For documents (PDF, DOCX, XLSX, PPTX), use convert_to_markdown(path="${file.path}") to convert to readable text.`;
           }
 
           resultText = JSON.stringify(response, null, 2);
@@ -2888,62 +2855,6 @@ async function executeToolCall(
             file: { id: file.id, name: file.name, mimetype: file.mimetype },
             ...(result.ok ? { analysis: result.result } : { error: result.error }),
           });
-        }
-        break;
-      }
-
-      case "convert_to_markdown": {
-        const fileId = args.file_id as string;
-        const projectRoot = args._project_root as string | undefined; // Injected by agent plugin
-
-        const file = db
-          .query<{ id: string; name: string; mimetype: string; size: number; path: string }, [string]>(
-            `SELECT id, name, mimetype, size, path FROM files WHERE id = ?`,
-          )
-          .get(fileId);
-
-        if (!file) {
-          resultText = JSON.stringify({ ok: false, error: "File not found" });
-        } else {
-          try {
-            const { convertToMarkdown } = await import("../agent/src/tools/document-converter");
-            const result = await convertToMarkdown(file.path, 30_000);
-
-            if (!result.success) {
-              resultText = JSON.stringify({ ok: false, error: result.error });
-            } else {
-              const response: Record<string, unknown> = {
-                ok: true,
-                file: { id: file.id, name: file.name, mimetype: file.mimetype, size: file.size },
-                markdown: result.markdown,
-                format: result.format,
-              };
-
-              // Save .md file to {projectRoot}/.clawd/files/ if available
-              if (projectRoot) {
-                try {
-                  const { mkdirSync, writeFileSync } = await import("node:fs");
-                  const { join: pathJoin, basename: pathBasename, extname: pathExtname } = await import("node:path");
-
-                  const filesDir = pathJoin(projectRoot, ".clawd", "files");
-                  mkdirSync(filesDir, { recursive: true });
-
-                  const ext = pathExtname(file.name);
-                  const base = pathBasename(file.name, ext);
-                  const mdFilename = `${base}.md`;
-                  const mdPath = pathJoin(filesDir, mdFilename);
-                  writeFileSync(mdPath, result.markdown, "utf-8");
-                  response.local_path = mdPath;
-                } catch {
-                  // Best-effort save — markdown is still returned in the response
-                }
-              }
-
-              resultText = JSON.stringify(response, null, 2);
-            }
-          } catch (err: any) {
-            resultText = JSON.stringify({ ok: false, error: `Conversion failed: ${err.message}` });
-          }
         }
         break;
       }
