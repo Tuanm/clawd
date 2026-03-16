@@ -527,6 +527,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           {/* Selected agent details -- editable fields */}
           {selectedAgent && !showAddForm && (
             <div className="agent-fields">
+              <label className="skills-field-label">Name</label>
               <input
                 type="text"
                 className="agent-field-input"
@@ -534,6 +535,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 value={selectedAgent.agent_id}
                 readOnly
               />
+              <label className="skills-field-label">Provider</label>
               <input
                 type="text"
                 className="agent-field-input"
@@ -544,6 +546,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   setFieldsDirty(checkFieldsDirty(e.target.value, editModel, editProject, editHeartbeat));
                 }}
               />
+              <label className="skills-field-label">Model</label>
               <input
                 type="text"
                 className="agent-field-input"
@@ -554,6 +557,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   setFieldsDirty(checkFieldsDirty(editProvider, e.target.value, editProject, editHeartbeat));
                 }}
               />
+              <label className="skills-field-label">Project</label>
               <input
                 type="text"
                 className="agent-field-input"
@@ -564,6 +568,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   setFieldsDirty(checkFieldsDirty(editProvider, editModel, e.target.value, editHeartbeat));
                 }}
               />
+              <label className="skills-field-label">Heartbeat Interval</label>
               <input
                 type="number"
                 className="agent-field-input"
@@ -577,6 +582,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   setFieldsDirty(checkFieldsDirty(editProvider, editModel, editProject, val));
                 }}
               />
+              <label className="skills-field-label">Identity</label>
               <textarea
                 className="agent-field-input agent-identity-input"
                 placeholder="Identity — describe this agent's role, personality, and responsibilities"
@@ -624,6 +630,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           {/* Add agent form -- same input layout as details */}
           {showAddForm && (
             <div className="agent-fields">
+              <label className="skills-field-label">Name</label>
               <input
                 ref={nameInputRef}
                 type="text"
@@ -639,6 +646,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   }
                 }}
               />
+              <label className="skills-field-label">Provider</label>
               <input
                 type="text"
                 className="agent-field-input"
@@ -653,6 +661,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   }
                 }}
               />
+              <label className="skills-field-label">Model</label>
               <input
                 type="text"
                 className="agent-field-input"
@@ -663,6 +672,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   if (e.key === "Enter") handleAddAgent();
                 }}
               />
+              <label className="skills-field-label">Project</label>
               <div className="agent-field-browse">
                 <input
                   type="text"
@@ -726,6 +736,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   </div>
                 </div>
               )}
+              <label className="skills-field-label">Heartbeat Interval</label>
               <input
                 type="number"
                 className="agent-field-input"
@@ -738,6 +749,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   if (e.key === "Enter") handleAddAgent();
                 }}
               />
+              <label className="skills-field-label">Worker Token</label>
               <input
                 className="agent-field-input"
                 type="password"

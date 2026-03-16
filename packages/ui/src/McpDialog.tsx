@@ -202,6 +202,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
           {/* Selected server detail */}
           {selectedServer && (
             <div className="agent-fields">
+              <label className="skills-field-label">Server Name</label>
               <input
                 type="text"
                 className="agent-field-input"
@@ -209,6 +210,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 value={selectedServer.name}
                 readOnly
               />
+              <label className="skills-field-label">Transport</label>
               <input
                 type="text"
                 className="agent-field-input"
@@ -217,23 +219,30 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 readOnly
               />
               {selectedServer.command && (
-                <input
-                  type="text"
-                  className="agent-field-input"
-                  placeholder="Command"
-                  value={`${selectedServer.command} ${selectedServer.args?.join(" ") || ""}`}
-                  readOnly
-                />
+                <>
+                  <label className="skills-field-label">Command</label>
+                  <input
+                    type="text"
+                    className="agent-field-input"
+                    placeholder="Command"
+                    value={`${selectedServer.command} ${selectedServer.args?.join(" ") || ""}`}
+                    readOnly
+                  />
+                </>
               )}
               {selectedServer.url && (
-                <input
-                  type="text"
-                  className="agent-field-input"
-                  placeholder="URL"
-                  value={selectedServer.url}
-                  readOnly
-                />
+                <>
+                  <label className="skills-field-label">URL</label>
+                  <input
+                    type="text"
+                    className="agent-field-input"
+                    placeholder="URL"
+                    value={selectedServer.url}
+                    readOnly
+                  />
+                </>
               )}
+              <label className="skills-field-label">Status</label>
               <input
                 type="text"
                 className="agent-field-input"
