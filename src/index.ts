@@ -211,6 +211,24 @@ import {
 } from "./server/websocket";
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+/** Build Content-Disposition header value safe for non-ASCII filenames (RFC 5987) */
+function contentDisposition(type: "inline" | "attachment", name: string): string {
+  // ASCII-only fallback: replace non-ASCII and unsafe chars with underscores
+  const asciiFallback = name.replace(/[^\x20-\x7E]/g, "_").replace(/["\r\n\\]/g, "_");
+  // Check if filename is pure ASCII
+  const isPureAscii = /^[\x20-\x7E]+$/.test(name);
+  if (isPureAscii) {
+    return `${type}; filename="${asciiFallback}"`;
+  }
+  // RFC 5987: filename* with UTF-8 percent-encoding for non-ASCII
+  const encoded = encodeURIComponent(name).replace(/'/g, "%27");
+  return `${type}; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
+}
+
+// ============================================================================
 // Initialize
 // ============================================================================
 
@@ -554,7 +572,7 @@ async function handleBrowserFileRequest(req: Request, url: URL, path: string): P
     return new Response(file.data, {
       headers: {
         "Content-Type": file.mimetype,
-        "Content-Disposition": `attachment; filename="${file.name.replace(/["\r\n\\]/g, "_")}"`,
+        "Content-Disposition": contentDisposition("attachment", file.name),
         "Content-Length": String(file.data.length),
         "Referrer-Policy": "no-referrer",
         ...corsHeaders,
@@ -1236,7 +1254,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         return new Response(optimized.data, {
           headers: {
             "Content-Type": optimized.mimetype,
-            "Content-Disposition": `inline; filename="${optimized.name}"`,
+            "Content-Disposition": contentDisposition("inline", optimized.name),
             "X-Original-Size": String(optimized.originalSize),
             "X-Optimized-Size": String(optimized.optimizedSize),
             ...corsHeaders,
@@ -1249,7 +1267,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       return new Response(file.data, {
         headers: {
           "Content-Type": file.mimetype,
-          "Content-Disposition": `inline; filename="${file.name}"`,
+          "Content-Disposition": contentDisposition("inline", file.name),
           ...corsHeaders,
         },
       });
