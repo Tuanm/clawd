@@ -404,22 +404,11 @@ Agents are extended via two interfaces:
 
 Built-in plugins: browser, workspace, context-mode, state-persistence, tunnel, spawn-agent, scheduler, memory, custom-tool.
 
-### Heartbeat Monitor
-
-A background health monitor keeps agents responsive:
-
-- Injects `[HEARTBEAT]` signals into idle agents (configurable interval, default 30s)
-- Cancels agents stuck processing beyond timeout (default 5 minutes)
-- Monitors sub-agent spaces (auto-fail after 10 consecutive heartbeats with no progress)
-- LLM-direct signals — agents receive `[HEARTBEAT]` as a system message, not as chat nudges
-- Enable/disable and configure timeouts via `config.json` `heartbeat` object
-- UI shows pulsing dot animation next to agents with active heartbeat intervals
-
 ### Model Tiering & Tool Filtering
 
-- **Auto-downgrade to Haiku**: For tool routing decisions (cheaper, faster)
-- **Usage-based tool pruning**: After initial warmup, agents auto-prune unused tools to reduce token overhead
-- **Prompt caching**: Supports Anthropic beta header for cache hits on long context (reduces latency & cost)
+- **Auto-downgrade to Haiku**: After 3 consecutive pure tool-call iterations, agents auto-downgrade to fast model (cheaper, faster). Upgrades back when reasoning is needed.
+- **Usage-based tool pruning**: After 5-iteration warmup, agents auto-prune unused tools (category-aware). Re-expands if agent appears stuck.
+- **Prompt caching**: Anthropic `prompt-caching` beta header for cache hits on repeated system prompt + tools.
 
 ### Custom Skills
 
