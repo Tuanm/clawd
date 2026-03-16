@@ -98,6 +98,7 @@ export class SpaceWorkerManager {
         yolo: this.config.yolo,
         contextMode: true,
         isSpaceAgent: true,
+        heartbeatInterval: 5, // Sub-agents always get a 5-second heartbeat to stay responsive
         channelMcpManager: this.getChannelMcp?.(space.channel),
         onLoopExit: () => {
           // If the loop exits without the promise being settled, reject it
