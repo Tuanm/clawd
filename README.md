@@ -676,6 +676,14 @@ Upload files (PDF, CSV, text, code, images) for automatic preview:
 - **Text/Code**: Syntax highlighting preview
 - **Images**: Thumbnail preview
 
+### Document Conversion
+
+`convert_to_markdown` tool converts documents to Markdown for easy agent processing:
+- **Formats**: PDF (text extraction), DOCX (via mammoth), XLSX/CSV/TSV (tables), PPTX (slides), EPUB (ebooks), HTML
+- **Limits**: 50MB max file, 5M char output, 30s timeout
+- **Output**: Saves .md file to `{projectRoot}/.clawd/files/`, returns path for `view()` to read
+- **Security**: Path validation, binary detection, zip bomb protection (200MB decompress limit)
+
 ### Skills Management
 
 UI dialog (star icon next to MCP button) for managing agent skills:

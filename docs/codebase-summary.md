@@ -246,6 +246,23 @@ MV3 extension with two operation modes:
 | **Dialogs** | handle_dialog, auth, permissions | Dialog/auth/permission handling |
 | **Download** | download, cookies, emulate | File/cookie management, device emulation |
 
+### Document Conversion Tool
+
+`convert_to_markdown` — Converts document files to Markdown and saves to `{projectRoot}/.clawd/files/{name}.md`:
+
+- **Supported formats**: PDF, DOCX, XLSX, PPTX, HTML, EPUB, CSV, TSV, plain text
+- **Dependencies**: unpdf (PDF), mammoth (DOCX), exceljs (XLSX), jszip (PPTX/EPUB), turndown (HTML→MD)
+- **Limits**: 50MB max file size, 5M char default maxLength, 30s conversion timeout
+- **Features**:
+  - Magic-byte format detection fallback
+  - Binary file guard for text-expected formats
+  - Progressive truncation with [TRUNCATED] markers
+  - Zip bomb protection (200MB decompressed limit)
+  - Pipe escaping in Markdown tables, TSV tab delimiter support
+  - XML entity decoding for PPTX/EPUB
+- **Security**: Path validation via resolve()+validatePath(), isFile() guard, async file I/O
+- **Output**: Saves .md file, returns hint with path; agents use `view()` to read converted content
+
 ### Anti-Detection Shield (`shield.js`)
 
 Patches injected at document_start:
