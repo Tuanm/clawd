@@ -1,6 +1,6 @@
 services:
   clawd:
-    image: clawd-pilot/clawd:latest
+    image: ghcr.io/clawd-pilot/clawd:latest
     build: .
     ports:
       - "3456:3456"
