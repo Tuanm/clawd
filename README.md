@@ -660,7 +660,7 @@ All API endpoints are available at `/api/*`. Key groups:
 | **Browser** | `/browser/ws` (WebSocket), `/browser/extension`, `/browser/files/*` |
 | **Spaces** | `spaces.list`, `spaces.get` |
 | **Plans** | `plans.list`, `plans.get`, `plans.create`, `plans.update`, `plans.delete` |
-| **Skills** | `skills.list`, `skills.get`, `skills.create` |
+| **Skills** | `app.skills.list`, `app.skills.get`, `app.skills.save`, `app.skills.delete` |
 | **Admin** | `config/reload`, `keys/status`, `keys/sync`, `admin.migrateChannels` |
 
 **Authentication**: If `auth.token` is configured in `config.json`, all API requests require:
@@ -686,9 +686,7 @@ The UI connects via WebSocket for real-time updates:
 | `agent_tool_call` | Tool execution (started/completed/error) |
 | `reaction_added/removed` | Emoji reactions |
 | `message_seen` | Read receipts |
-| `heartbeat_sent` | Heartbeat injected into idle agent |
-| `space_failed` | Sub-agent space failed due to heartbeat timeout |
-| `agent_wakeup` | Agent woken after idle period |
+| `agent_heartbeat` | Heartbeat events (sub-types: `heartbeat_sent`, `processing_timeout`, `space_auto_failed`) |
 
 ---
 
