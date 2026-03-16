@@ -299,14 +299,6 @@ export function FilePreviewSidebar({ url, name, mimetype }: FilePreviewSidebarPr
   if (category === "pdf") {
     return (
       <div className="sidebar-file-pdf">
-        <div className="sidebar-file-actions">
-          <a href={url} download={name} className="sidebar-file-action-btn">
-            Download
-          </a>
-          <a href={url} target="_blank" rel="noopener noreferrer" className="sidebar-file-action-btn">
-            Open in new tab
-          </a>
-        </div>
         <object data={url} type="application/pdf" className="sidebar-pdf-object">
           <p className="sidebar-pdf-fallback">
             PDF preview unavailable.{" "}

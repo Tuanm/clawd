@@ -6797,22 +6797,23 @@ textarea {
   flex-shrink: 0;
 }
 
-.sidebar-panel-action-link {
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 5px;
-  color: var(--text-secondary);
+.sidebar-panel-action-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: hsl(var(--text) / 50%);
   text-decoration: none;
-  border: 1px solid hsl(var(--text) / 15%);
   transition:
     background 0.15s,
     color 0.15s;
-  white-space: nowrap;
 }
 
-.sidebar-panel-action-link:hover {
-  background: hsl(var(--text) / 8%);
-  color: var(--text-primary);
+.sidebar-panel-action-icon:hover {
+  background: hsl(var(--text) / 10%);
+  color: hsl(var(--text) / 90%);
 }
 
 .sidebar-panel-type-badge {
