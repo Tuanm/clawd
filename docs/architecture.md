@@ -1111,10 +1111,10 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `skills.list` | GET | List available skills (from 4 sources) |
-| `skills.get` | GET | Get a specific skill |
-| `skills.create` | POST | Add custom skill |
-| `skills.delete` | POST | Remove a custom skill |
+| `app.skills.list` | GET | List available skills (from 4 source directories) |
+| `app.skills.get` | GET | Get a specific skill with full content |
+| `app.skills.save` | POST | Create or update a skill |
+| `app.skills.delete` | DELETE | Remove a custom skill |
 
 ### 12.9f Custom Tools APIs
 

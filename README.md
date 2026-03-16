@@ -739,13 +739,11 @@ Upload files (PDF, CSV, text, code, images) for automatic preview:
 
 ### Skills Management
 
-UI dialog for managing agent skills across 4 source directories:
-1. Project-scoped skills (`.clawd/skills/` — priority)
-2. Global skills (`~/.clawd/skills/`)
-3. Third-party skill registries
-4. Built-in skills
-
-Enable/disable skills per agent, view descriptions and triggers.
+UI dialog (star icon next to MCP button) for managing agent skills:
+- Skills grouped into **PROJECT** and **GLOBAL** collapsible sections
+- Click skill → accordion expands inline editor (description, triggers, content)
+- Create new skills via **Add** button (saves to `{projectRoot}/.clawd/skills/` or `~/.clawd/skills/`)
+- Skills from `~/.claude/skills/` and `{projectRoot}/.claude/skills/` are read-only (loaded but not editable via UI)
 
 ### Agent Configuration
 
