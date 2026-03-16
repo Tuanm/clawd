@@ -1616,7 +1616,7 @@ export default function App({ channel: initialChannel }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channel: activeChannel,
-          text: text || (uploadedFiles.length > 0 ? `[Attached ${uploadedFiles.length} file(s)]` : ""),
+          text: text || "",
           user: "UHUMAN",
           files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
         }),
