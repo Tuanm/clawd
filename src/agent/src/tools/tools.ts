@@ -3274,6 +3274,44 @@ registerTool(
 );
 
 // ============================================================================
+// Tool: Convert to Markdown
+// ============================================================================
+
+registerTool(
+  "convert_to_markdown",
+  "Convert a document file to markdown text. Supports: PDF, DOCX, XLSX, PPTX, HTML, EPUB, CSV. For images use read_image instead. For JSON/XML/YAML/text use view instead.",
+  {
+    path: {
+      type: "string",
+      description: "Absolute path to the file to convert",
+    },
+    max_length: {
+      type: "number",
+      description: "Maximum output characters (default: 30000)",
+    },
+  },
+  ["path"],
+  async ({ path: filePath, max_length }: Record<string, any>) => {
+    if (!filePath) {
+      return { success: false, output: "", error: "path is required" };
+    }
+
+    const { convertToMarkdown } = await import("./document-converter");
+    const result = await convertToMarkdown(filePath, max_length ?? 30_000);
+
+    if (!result.success) {
+      return { success: false, output: "", error: result.error };
+    }
+
+    return {
+      success: true,
+      output: result.markdown,
+      format: result.format,
+    };
+  },
+);
+
+// ============================================================================
 // Sub-Agent Cleanup
 // ============================================================================
 
