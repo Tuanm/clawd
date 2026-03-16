@@ -96,47 +96,31 @@ clawd-app [options]
 
 ### config.json Schema
 
+Settings are loaded from `~/.clawd/config.json`:
+
 ```jsonc
 {
-  // Server
-  "host": "0.0.0.0",          // Bind address
-  "port": 3456,                // Port number
-  "debug": false,              // Debug logging
-  "yolo": false,               // Disable sandbox restrictions
+  "host": "0.0.0.0",
+  "port": 3456,
+  "debug": false,
+  "yolo": false,                        // Disable sandbox restrictions
+  "dataDir": "~/.clawd/data",           // Data directory override
+  "uiDir": "/custom/ui/path",           // Custom UI directory
 
-  // Paths
-  "dataDir": "~/.clawd/data",  // Data directory override
-  "uiDir": "/custom/ui/path",  // Custom UI directory
-
-  // Agent environment variables (injected into sandbox)
-  "env": {
+  "env": {                               // Environment variables (injected into agent sandbox)
     "GITHUB_TOKEN": "ghp_...",
     "CUSTOM_VAR": "value"
   },
 
-  // LLM providers (snake_case fields)
-  "providers": {
+  "providers": {                         // LLM providers
     "copilot": {
-      "api_key": "github_pat_...",     // Single key
-      // or "api_keys": ["key1", "key2"],  // Key rotation pool
-      "models": {
-        "default": "gpt-4.1",
-        "sonnet": "claude-sonnet-4.6",
-        "opus": "claude-opus-4.6"
-      }
+      "api_key": "github_pat_...",
+      "models": { "default": "gpt-4.1", "sonnet": "claude-sonnet-4.6", "opus": "claude-opus-4.6" }
     },
     "anthropic": { "api_key": "sk-ant-..." },
-    "openai": {
-      "base_url": "https://api.openai.com/v1",
-      "api_key": "sk-..."
-    },
+    "openai": { "base_url": "https://api.openai.com/v1", "api_key": "sk-..." },
     "ollama": { "base_url": "https://ollama.com" },
-    "minimax": {
-      "base_url": "https://api.minimax.io/anthropic",
-      "api_key": "sk-..."
-    },
-    // Custom providers (must specify "type")
-    "groq": {
+    "groq": {                            // Custom provider (must specify "type")
       "type": "openai",
       "base_url": "https://api.groq.com/openai/v1",
       "api_key": "gsk_...",
@@ -144,73 +128,35 @@ clawd-app [options]
     }
   },
 
-  // MCP (Model Context Protocol) servers — per-channel
-  "mcp_servers": {
+  "mcp_servers": {                       // MCP servers — per-channel
     "my-channel": {
-      "github": {
-        "transport": "http",                     // HTTP transport
-        "url": "https://api.githubcopilot.com/mcp",
-        "headers": { "Authorization": "Bearer ..." }
-      },
-      "filesystem": {
-        "command": "npx",                        // stdio transport
-        "args": ["@modelcontextprotocol/server-filesystem"],
-        "env": { "ROOT_DIR": "/data" },
-        "enabled": true
-      },
-      "slack": {
-        "transport": "http",
-        "url": "https://mcp.slack.com/mcp",
-        "oauth": {                               // OAuth2 auto-login
-          "client_id": "...",
-          "client_secret": "...",
-          "authorize_url": "https://slack.com/oauth/v2_user/authorize",
-          "token_url": "https://slack.com/api/oauth.v2.user.access",
-          "scopes": ["chat:write", "channels:history"]
-        }
-      }
+      "github": { "transport": "http", "url": "https://api.githubcopilot.com/mcp", "headers": { "Authorization": "Bearer ..." } },
+      "filesystem": { "command": "npx", "args": ["@modelcontextprotocol/server-filesystem"], "enabled": true }
     }
   },
 
-  // Usage quotas
-  "quotas": {
-    "daily_image_limit": 50       // 0 = unlimited
-  },
+  "quotas": { "daily_image_limit": 50 },// 0 = unlimited
 
-  // Feature flags
-  "workspaces": true,                    // Enable workspace isolation
-  // or: ["channel1", "channel2"]       // Specific channels
+  "workspaces": true,                    // true | false | ["channel1", "channel2"]
+  "worker": true,                        // true | { "channel": ["token1"] }
+  "browser": true,                       // true | ["ch1"] | { "ch1": ["auth_token"] }
+  "memory": true,                        // true | { "provider": "copilot", "model": "gpt-4.1", "autoExtract": true }
 
-  "worker": true,                        // Enable remote workers (all channels)
-  // or: { "channel": ["token1", "token2"] }  // Per-channel tokens
-
-  // Vision configuration
   "vision": {
     "read_image": { "provider": "copilot", "model": "gpt-4.1" },
     "generate_image": { "provider": "gemini", "model": "gemini-3.1-flash-image" },
     "edit_image": { "provider": "gemini", "model": "gemini-3.1-flash-image" }
   },
 
-  // Browser extension access control
-  "browser": true,                       // All channels, no auth
-  // or: ["channel1", "channel2"]        // Specific channels, no auth
-  // or: { "channel": ["auth_token"] }   // Per-channel auth tokens
+  "heartbeat": {                         // Stuck-agent recovery
+    "enabled": true,                     // default: true
+    "intervalMs": 30000,                 // Check interval (default: 30000)
+    "processingTimeoutMs": 300000,       // Cancel stuck agents (default: 300000)
+    "spaceIdleTimeoutMs": 60000          // Sub-agent idle timeout (default: 60000)
+  },
 
-  // Agent long-term memory
-  "memory": true
-  // or: { "provider": "copilot", "model": "gpt-4.1", "autoExtract": true }
-
-  // Heartbeat monitor for stuck-agent recovery
-  "heartbeat": {
-    "enabled": true,              // Enable heartbeat (default: true)
-    "intervalMs": 30000,          // Check interval (default: 30000)
-    "processingTimeoutMs": 300000, // Cancel agents stuck >5min (default: 300000)
-    "spaceIdleTimeoutMs": 60000   // Sub-agent idle timeout (default: 60000)
-  }
-
-  // API authentication (optional)
-  "auth": {
-    "token": "your-secret-token" // All API requests must include "Authorization: Bearer <token>"
+  "auth": {                              // Optional API authentication
+    "token": "your-secret-token"         // All /api/* require "Authorization: Bearer <token>"
   }
 }
 ```
