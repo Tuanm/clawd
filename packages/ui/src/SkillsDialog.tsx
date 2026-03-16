@@ -54,23 +54,6 @@ function SkillIcon() {
   );
 }
 
-function BackIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <polyline points="15 18 9 12 15 6" />
-    </svg>
-  );
-}
-
 function ChevronIcon({ open }: { open: boolean }) {
   return (
     <svg
@@ -88,15 +71,11 @@ function ChevronIcon({ open }: { open: boolean }) {
   );
 }
 
-// View states: "list" shows skill list, "detail" shows skill editor
-type View = "list" | "detail";
-
 export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
-  const [view, setView] = useState<View>("list");
-  const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
+  const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -135,8 +114,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
     if (!isOpen) {
       setSelectedAgentId(null);
       setSkills([]);
-      setView("list");
-      setSelectedSkill(null);
+      setExpandedSkill(null);
       setIsCreating(false);
       setError(null);
       clearEditor();
@@ -146,22 +124,20 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
   useEffect(() => {
     if (!selectedAgentId) {
       setSkills([]);
-      setView("list");
-      setSelectedSkill(null);
+      setExpandedSkill(null);
       setIsCreating(false);
       return;
     }
     loadSkills(selectedAgentId);
-    setView("list");
-    setSelectedSkill(null);
+    setExpandedSkill(null);
     setIsCreating(false);
   }, [selectedAgentId]);
 
   useEffect(() => {
-    if (view === "detail" && isCreating) {
+    if (isCreating) {
       setTimeout(() => nameInputRef.current?.focus(), 100);
     }
-  }, [view, isCreating]);
+  }, [isCreating]);
 
   const clearEditor = () => {
     setEditName("");
@@ -192,8 +168,13 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
     [channel],
   );
 
-  const handleSelectSkill = useCallback(
+  const handleToggleSkill = useCallback(
     async (skill: Skill) => {
+      if (expandedSkill === skill.name) {
+        setExpandedSkill(null);
+        clearEditor();
+        return;
+      }
       setIsCreating(false);
       setError(null);
       try {
@@ -206,36 +187,27 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
         const data = await res.json();
         if (data.ok && data.skill) {
           const s: Skill = data.skill;
-          setSelectedSkill(s);
           setEditName(s.name);
           setEditDescription(s.description || "");
           setEditTriggers(Array.isArray(s.triggers) ? s.triggers.join(", ") : "");
           setEditArgumentHint(s.argumentHint || "");
           setEditContent(s.content || "");
           setEditScope(s.source === "global" ? "global" : "project");
-          setView("detail");
+          setExpandedSkill(skill.name);
         }
       } catch (err) {
         setError(String(err));
       }
     },
-    [channel, selectedAgentId],
+    [channel, selectedAgentId, expandedSkill],
   );
 
   const handleCreateNew = useCallback(() => {
-    setSelectedSkill(null);
+    setExpandedSkill(null);
     clearEditor();
     setIsCreating(true);
-    setView("detail");
     setError(null);
   }, []);
-
-  const handleBack = () => {
-    setView("list");
-    setSelectedSkill(null);
-    setIsCreating(false);
-    setError(null);
-  };
 
   const handleSave = useCallback(async () => {
     if (!editName.trim()) return;
@@ -262,18 +234,10 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
       const data = await res.json();
       if (data.ok) {
         setIsCreating(false);
-        if (selectedAgentId) await loadSkills(selectedAgentId);
-        setSelectedSkill({
-          name: editName.trim(),
-          description: editDescription.trim(),
-          triggers: editTriggers
-            .split(",")
-            .map((t) => t.trim())
-            .filter((t) => t.length > 0),
-          source: editScope,
-          content: editContent,
-          argumentHint: editArgumentHint.trim() || undefined,
-        });
+        if (selectedAgentId) {
+          await loadSkills(selectedAgentId);
+          setExpandedSkill(editName.trim());
+        }
       } else {
         setError(data.error || "Failed to save skill");
       }
@@ -295,11 +259,11 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
   ]);
 
   const handleDelete = useCallback(async () => {
-    if (!selectedSkill) return;
+    if (!expandedSkill) return;
     setDeleting(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ name: selectedSkill.name });
+      const params = new URLSearchParams({ name: expandedSkill });
       if (selectedAgentId) {
         params.set("channel", channel);
         params.set("agent_id", selectedAgentId);
@@ -307,9 +271,8 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
       const res = await authFetch(`${API_URL}/api/app.skills.delete?${params}`, { method: "DELETE" });
       const data = await res.json();
       if (data.ok) {
-        setSelectedSkill(null);
+        setExpandedSkill(null);
         clearEditor();
-        setView("list");
         if (selectedAgentId) await loadSkills(selectedAgentId);
       } else {
         setError(data.error || "Failed to delete skill");
@@ -319,7 +282,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
     } finally {
       setDeleting(false);
     }
-  }, [channel, selectedAgentId, selectedSkill, loadSkills]);
+  }, [channel, selectedAgentId, expandedSkill, loadSkills]);
 
   const getSavePath = () => {
     if (editScope === "global") return `~/.clawd/skills/${editName || "<name>"}/SKILL.md`;
@@ -331,6 +294,82 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
   const globalSkills = skills.filter((s) => s.source === "global");
   const projectSkills = skills.filter((s) => s.source === "project");
 
+  const renderEditorFields = (skillName: string | null) => (
+    <div className="skills-editor-fields skills-accordion-editor">
+      <label className="skills-field-label">Skill Name</label>
+      <input
+        ref={skillName === null ? nameInputRef : undefined}
+        type="text"
+        className="agent-field-input"
+        placeholder="kebab-case-name"
+        value={editName}
+        onChange={(e) => setEditName(e.target.value)}
+        readOnly={skillName !== null}
+      />
+      <label className="skills-field-label">Description</label>
+      <input
+        type="text"
+        className="agent-field-input"
+        placeholder="Brief description (<200 chars)"
+        value={editDescription}
+        onChange={(e) => setEditDescription(e.target.value)}
+        maxLength={200}
+      />
+      <label className="skills-field-label">Triggers / Argument Hints</label>
+      <input
+        type="text"
+        className="agent-field-input"
+        placeholder="keyword1, keyword2, [arg-hint]"
+        value={editTriggers}
+        onChange={(e) => setEditTriggers(e.target.value)}
+      />
+      <label className="skills-field-label">Content</label>
+      <textarea
+        className="agent-field-input skills-content-input"
+        placeholder="Skill instructions (markdown)..."
+        value={editContent}
+        onChange={(e) => setEditContent(e.target.value)}
+      />
+      <div className="skills-scope-row">
+        <label className="skills-scope-label">
+          <input
+            type="radio"
+            name={`skills-scope-${skillName ?? "new"}`}
+            value="project"
+            checked={editScope === "project"}
+            onChange={() => setEditScope("project")}
+          />
+          <span>Project</span>
+        </label>
+        <label className="skills-scope-label">
+          <input
+            type="radio"
+            name={`skills-scope-${skillName ?? "new"}`}
+            value="global"
+            checked={editScope === "global"}
+            onChange={() => setEditScope("global")}
+          />
+          <span>Global</span>
+        </label>
+      </div>
+      <div className="skills-save-path">{getSavePath()}</div>
+      <div className="agent-buttons">
+        <button
+          className="agent-action-btn agent-action-btn--accent"
+          onClick={handleSave}
+          disabled={!editName.trim() || saving}
+        >
+          {saving ? "Saving..." : "Save"}
+        </button>
+        {skillName !== null && (
+          <button className="agent-action-btn agent-action-btn--danger" onClick={handleDelete} disabled={deleting}>
+            {deleting ? "Deleting..." : "Delete"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
   if (!isOpen) return null;
 
   return createPortal(
@@ -339,12 +378,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
         {/* Header */}
         <div className="stream-dialog-header">
           <div className="stream-dialog-title-row">
-            {view === "detail" && (
-              <button className="skills-back-btn" onClick={handleBack} title="Back to skill list">
-                <BackIcon />
-              </button>
-            )}
-            <h3>{view === "detail" ? (isCreating ? "New Skill" : selectedSkill?.name || "Skill") : "Skills"}</h3>
+            <h3>Skills</h3>
           </div>
           <button className="stream-dialog-close" onClick={onClose}>
             ×
@@ -395,11 +429,31 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
             </div>
           )}
 
-          {selectedAgentId && view === "list" && (
+          {selectedAgentId && (
             <div className="skills-list-view">
+              {/* New skill form at top when creating */}
+              {isCreating && (
+                <div className="skills-section">
+                  <div className="skills-section-items">
+                    <div className="skills-accordion-item expanded">
+                      <div className="skills-list-item skills-accordion-header active">
+                        <span className="skills-list-item-icon">
+                          <SkillIcon />
+                        </span>
+                        <span className="skills-list-item-info">
+                          <span className="skills-list-item-name">New Skill</span>
+                        </span>
+                        <ChevronIcon open={true} />
+                      </div>
+                      {renderEditorFields(null)}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {loading ? (
                 <div className="skills-list-empty">Loading...</div>
-              ) : skills.length === 0 ? (
+              ) : skills.length === 0 && !isCreating ? (
                 <div className="skills-list-empty">No skills found. Click + to create one.</div>
               ) : (
                 <>
@@ -413,23 +467,29 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
                       </button>
                       {projectOpen && (
                         <div className="skills-section-items">
-                          {projectSkills.map((skill) => (
-                            <button
-                              key={skill.name}
-                              className="skills-list-item"
-                              onClick={() => handleSelectSkill(skill)}
-                            >
-                              <span className="skills-list-item-icon">
-                                <SkillIcon />
-                              </span>
-                              <span className="skills-list-item-info">
-                                <span className="skills-list-item-name">{skill.name}</span>
-                                {skill.description && (
-                                  <span className="skills-list-item-desc">{skill.description}</span>
-                                )}
-                              </span>
-                            </button>
-                          ))}
+                          {projectSkills.map((skill) => {
+                            const isExpanded = expandedSkill === skill.name;
+                            return (
+                              <div key={skill.name} className={`skills-accordion-item ${isExpanded ? "expanded" : ""}`}>
+                                <button
+                                  className={`skills-list-item skills-accordion-header ${isExpanded ? "active" : ""}`}
+                                  onClick={() => handleToggleSkill(skill)}
+                                >
+                                  <span className="skills-list-item-icon">
+                                    <SkillIcon />
+                                  </span>
+                                  <span className="skills-list-item-info">
+                                    <span className="skills-list-item-name">{skill.name}</span>
+                                    {skill.description && (
+                                      <span className="skills-list-item-desc">{skill.description}</span>
+                                    )}
+                                  </span>
+                                  <ChevronIcon open={isExpanded} />
+                                </button>
+                                {isExpanded && renderEditorFields(skill.name)}
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -445,111 +505,35 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
                       </button>
                       {globalOpen && (
                         <div className="skills-section-items">
-                          {globalSkills.map((skill) => (
-                            <button
-                              key={skill.name}
-                              className="skills-list-item"
-                              onClick={() => handleSelectSkill(skill)}
-                            >
-                              <span className="skills-list-item-icon">
-                                <SkillIcon />
-                              </span>
-                              <span className="skills-list-item-info">
-                                <span className="skills-list-item-name">{skill.name}</span>
-                                {skill.description && (
-                                  <span className="skills-list-item-desc">{skill.description}</span>
-                                )}
-                              </span>
-                            </button>
-                          ))}
+                          {globalSkills.map((skill) => {
+                            const isExpanded = expandedSkill === skill.name;
+                            return (
+                              <div key={skill.name} className={`skills-accordion-item ${isExpanded ? "expanded" : ""}`}>
+                                <button
+                                  className={`skills-list-item skills-accordion-header ${isExpanded ? "active" : ""}`}
+                                  onClick={() => handleToggleSkill(skill)}
+                                >
+                                  <span className="skills-list-item-icon">
+                                    <SkillIcon />
+                                  </span>
+                                  <span className="skills-list-item-info">
+                                    <span className="skills-list-item-name">{skill.name}</span>
+                                    {skill.description && (
+                                      <span className="skills-list-item-desc">{skill.description}</span>
+                                    )}
+                                  </span>
+                                  <ChevronIcon open={isExpanded} />
+                                </button>
+                                {isExpanded && renderEditorFields(skill.name)}
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
                   )}
                 </>
               )}
-            </div>
-          )}
-
-          {selectedAgentId && view === "detail" && (
-            <div className="skills-detail-view">
-              <div className="skills-editor-fields">
-                <label className="skills-field-label">Skill Name</label>
-                <input
-                  ref={nameInputRef}
-                  type="text"
-                  className="agent-field-input"
-                  placeholder="kebab-case-name"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  readOnly={!isCreating}
-                />
-                <label className="skills-field-label">Description</label>
-                <input
-                  type="text"
-                  className="agent-field-input"
-                  placeholder="Brief description (<200 chars)"
-                  value={editDescription}
-                  onChange={(e) => setEditDescription(e.target.value)}
-                  maxLength={200}
-                />
-                <label className="skills-field-label">Triggers / Argument Hints</label>
-                <input
-                  type="text"
-                  className="agent-field-input"
-                  placeholder="keyword1, keyword2, [arg-hint]"
-                  value={editTriggers}
-                  onChange={(e) => setEditTriggers(e.target.value)}
-                />
-                <label className="skills-field-label">Content</label>
-                <textarea
-                  className="agent-field-input skills-content-input"
-                  placeholder="Skill instructions (markdown)..."
-                  value={editContent}
-                  onChange={(e) => setEditContent(e.target.value)}
-                />
-                <div className="skills-scope-row">
-                  <label className="skills-scope-label">
-                    <input
-                      type="radio"
-                      name="skills-scope"
-                      value="project"
-                      checked={editScope === "project"}
-                      onChange={() => setEditScope("project")}
-                    />
-                    <span>Project</span>
-                  </label>
-                  <label className="skills-scope-label">
-                    <input
-                      type="radio"
-                      name="skills-scope"
-                      value="global"
-                      checked={editScope === "global"}
-                      onChange={() => setEditScope("global")}
-                    />
-                    <span>Global</span>
-                  </label>
-                </div>
-                <div className="skills-save-path">{getSavePath()}</div>
-                <div className="agent-buttons">
-                  <button
-                    className="agent-action-btn agent-action-btn--accent"
-                    onClick={handleSave}
-                    disabled={!editName.trim() || saving}
-                  >
-                    {saving ? "Saving..." : "Save"}
-                  </button>
-                  {!isCreating && selectedSkill && (
-                    <button
-                      className="agent-action-btn agent-action-btn--danger"
-                      onClick={handleDelete}
-                      disabled={deleting}
-                    >
-                      {deleting ? "Deleting..." : "Delete"}
-                    </button>
-                  )}
-                </div>
-              </div>
             </div>
           )}
 
