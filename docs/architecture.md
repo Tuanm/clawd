@@ -1,6 +1,6 @@
 # Claw'd — Architecture Reference
 
-> Last updated: 2026-03-08
+> Last updated: 2026-03-16
 
 ---
 
@@ -19,12 +19,15 @@
    - [Token Management & Context Compaction](#63-token-management--context-compaction)
    - [Plugin System](#64-plugin-system)
    - [Memory System](#65-memory-system)
+   - [Heartbeat Monitor](#66-heartbeat-monitor)
+   - [Model Tiering & Tool Filtering](#67-model-tiering--tool-filtering)
 7. [Browser Extension](#7-browser-extension)
    - [Architecture Overview](#71-architecture-overview)
    - [Normal Mode (CDP)](#72-normal-mode-cdp)
    - [Stealth Mode (Anti-Bot)](#73-stealth-mode-anti-bot)
    - [Anti-Detection Shield](#74-anti-detection-shield)
    - [Distribution](#75-distribution)
+   - [Artifact Rendering Pipeline](#76-artifact-rendering-pipeline)
 8. [Sub-Agent System (Spaces)](#8-sub-agent-system-spaces)
    - [Space Lifecycle](#81-space-lifecycle)
    - [Scheduler Integration](#82-scheduler-integration)
@@ -579,6 +582,60 @@ agent can later retrieve relevant chunks via FTS5 keyword matching without re-ex
 preferences ("always use TypeScript"), and decisions ("we chose PostgreSQL for the DB").
 These persist indefinitely and are injected into the system prompt when relevant.
 
+### 6.6 Heartbeat Monitor
+
+**File**: `src/worker-manager.ts`
+
+A background health monitor keeps agents responsive and recovers from stuck states:
+
+**Mechanism:**
+- Runs on a configurable interval (default: 30s)
+- Tracks agent state: idle vs. active processing
+- For idle agents: injects `[HEARTBEAT]` system message to wake them up
+- For stuck agents: cancels processing if exceeding timeout (default: 5 minutes)
+- For sub-agent spaces: auto-fails after 10 consecutive heartbeats with no progress (circuit breaker)
+
+**Configuration** (in `config.json`):
+```jsonc
+"heartbeat": {
+  "enabled": true,              // Enable monitor (default: true)
+  "intervalMs": 30000,          // Check interval (default: 30000)
+  "processingTimeoutMs": 300000, // Cancel stuck agents after 5 min
+  "spaceIdleTimeoutMs": 60000   // Sub-agent idle timeout
+}
+```
+
+**Heartbeat Signal Protocol:**
+- `[HEARTBEAT]` appears as a system message in the LLM context
+- Agents read this as a wake signal, not a user message
+- Agents check for pending work and continue if found
+- No reply needed if idle with no pending work
+
+**WebSocket Events:**
+- `heartbeat_sent` — Heartbeat injected into idle agent
+- `agent_wakeup` — Agent activated after heartbeat
+- `space_failed` — Sub-agent space failed due to heartbeat timeout
+
+### 6.7 Model Tiering & Tool Filtering
+
+**Files**: `src/agent/src/api/factory.ts`, `src/worker-loop.ts`
+
+**Model Tiering:**
+- For tool routing decisions (determining which tools to call), automatically downgrade to Haiku model
+- Reduces token overhead and LLM latency for routing logic
+- Main LLM call uses full configured model (Opus, Sonnet, etc.)
+
+**Tool Filtering:**
+- After initial warmup period, agents analyze tool usage patterns
+- Automatically prune unused tools from subsequent calls
+- Reduces token count in system prompt by up to 30%
+- Improves LLM focus on actually-used tools
+
+**Prompt Caching:**
+- Supports Anthropic beta header for cache hits on long context
+- Reduces latency and cost for repeated context patterns
+- Cache key: hash of system prompt + context blocks
+
 ---
 
 ## 7. Browser Extension
@@ -719,6 +776,50 @@ The browser extension is **not installed from a store**. Instead:
 2. The zip is base64-encoded and embedded into `src/embedded-extension.ts`
 3. At runtime, the server serves the zip at `/browser/extension`
 4. Users download and load it as an unpacked extension in Chrome
+
+---
+
+## 7.6 Artifact Rendering Pipeline
+
+**Files**: `packages/ui/src/artifact-*.tsx`, `packages/ui/src/chart-renderer.tsx`
+
+Agents output structured content using `<artifact>` tags for rich visualization in the UI:
+
+**7 Artifact Types:**
+
+| Type | Rendering | Security |
+|------|-----------|----------|
+| `html` | Sandboxed iframe | DOMPurify sanitization |
+| `react` | Babel + Tailwind sandbox | No direct DOM access |
+| `svg` | Inline with sanitization | DOMPurify + rehype-sanitize |
+| `chart` | Recharts (line/bar/pie/area/scatter/composed) | No network access |
+| `csv` | Sortable HTML table | Escaped content |
+| `markdown` | Full markdown + syntax highlighting | rehype-sanitize |
+| `code` | Prism syntax highlighting (32+ languages) | Read-only display |
+
+**Sandbox Model:**
+- HTML/React run in `<iframe sandbox="allow-scripts">` (no external network, DOM access, or cookie leakage)
+- Direct `<iframe>` access isolated from parent page origin
+- DOMPurify strips dangerous attributes/scripts before rendering
+- rehype-sanitize filters unsafe HTML in markdown
+
+**Sidebar Rendering:**
+- html, react, markdown, code types render full-screen in sidebar panel
+- csv tables render in interactive sortable view
+- chart/svg available for quick preview
+
+**Chart Format:**
+```json
+{
+  "type": "line",
+  "data": [{"month": "Jan", "value": 100}],
+  "xKey": "month",
+  "series": [{"key": "value", "name": "Series 1"}],
+  "title": "Title"
+}
+```
+
+Max 1000 data points, 10 series per chart.
 
 ---
 
@@ -873,6 +974,9 @@ All real-time communication flows through the WebSocket connection at `/ws`.
 | `reaction_added` | `{ ts, channel, user, reaction }` | Emoji reaction added |
 | `reaction_removed` | `{ ts, channel, user, reaction }` | Emoji reaction removed |
 | `message_seen` | `{ ts, channel, user }` | Read receipt |
+| `heartbeat_sent` | `{ agent_id, channel }` | Heartbeat signal injected into idle agent |
+| `agent_wakeup` | `{ agent_id, channel }` | Agent activated after heartbeat |
+| `space_failed` | `{ space_channel, reason }` | Sub-agent space failed (heartbeat timeout or other) |
 
 ### Client → Server Events
 
@@ -998,6 +1102,21 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 |----------|--------|-------------|
 | `spaces.list` | GET | List spaces |
 | `spaces.get` | GET | Get a specific space |
+
+### 12.9e Skills APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `skills.list` | GET | List available skills (from 4 sources) |
+| `skills.get` | GET | Get a specific skill |
+| `skills.create` | POST | Add custom skill |
+| `skills.delete` | POST | Remove a custom skill |
+
+### 12.9f Custom Tools APIs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `custom_tool` | POST | Create/edit/delete/execute custom tools |
 
 ### 12.10 Special Endpoints
 
@@ -1276,7 +1395,21 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
   // Memory system configuration
   // true = enabled with defaults
   // { "provider": "...", "model": "...", "autoExtract": true } = custom config
-  "memory": true
+  "memory": true,
+
+  // Heartbeat monitor for stuck-agent recovery
+  "heartbeat": {
+    "enabled": true,
+    "intervalMs": 30000,
+    "processingTimeoutMs": 300000,
+    "spaceIdleTimeoutMs": 60000
+  },
+
+  // API authentication (optional)
+  // When set, all API requests require: Authorization: Bearer <token>
+  "auth": {
+    "token": "your-secret-token"
+  }
 }
 ```
 
