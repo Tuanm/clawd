@@ -24,7 +24,12 @@ import { smartTruncate } from "./agent/src/utils/smart-truncation";
 import { loadConfigFile } from "./config-file";
 import { db, getOrRegisterAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
 import { getPendingMessages, postMessage } from "./server/routes/messages";
-import { broadcastAgentStreaming, broadcastMessageSeen, broadcastUpdate } from "./server/websocket";
+import {
+  broadcastAgentStreaming,
+  broadcastAgentToken,
+  broadcastMessageSeen,
+  broadcastUpdate,
+} from "./server/websocket";
 import type { TrackedSpace } from "./spaces/spawn-plugin";
 import { timedFetch } from "./utils/timed-fetch";
 
@@ -447,8 +452,8 @@ export class WorkerLoop {
         // Skip if real messages are waiting (hasNewMessages from WS push) — prioritize real work.
         if (this.heartbeatPending && !this.hasNewMessages) {
           this.heartbeatPending = false;
-          const heartbeatPrompt =
-            "[HEARTBEAT] You have been idle. Check for pending work or continue your current task.";
+          const heartbeatPrompt = "[HEARTBEAT]";
+          broadcastAgentToken(this.config.channel, this.config.agentId, "[HEARTBEAT]", "event");
           this.isProcessing = true;
           this.processingStartedAt = Date.now();
           this.wasCancelledByHeartbeat = false;
