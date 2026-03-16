@@ -12,7 +12,7 @@ import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import { UnreadSeparator } from "./UnreadSeparator";
 import { highlightCode } from "./prism-setup";
-import FilePreview, { isPreviewableMimetype } from "./file-preview";
+import { FilePreviewCard, isPreviewableFile } from "./file-preview";
 import LazyViewport from "./lazy-viewport";
 import { markdownSanitizeSchema } from "./sanitize-schema";
 import { CopyIcon, CheckIcon, PreBlock } from "./ui-primitives";
@@ -2542,23 +2542,53 @@ export default function MessageList({
                 {msg.tool_result && <ToolResultCard toolResult={msg.tool_result} />}
                 {msg.files && msg.files.length > 0 && (
                   <div className="message-files">
-                    {msg.files.map((file) =>
-                      isImageFile(file) ? (
-                        <div
-                          key={file.id}
-                          className="message-image-link"
-                          onClick={() => setLightboxImage({ src: file.url_private, alt: file.name })}
-                          role="button"
-                          tabIndex={0}
-                          onKeyDown={(e) =>
-                            e.key === "Enter" && setLightboxImage({ src: file.url_private, alt: file.name })
-                          }
-                        >
-                          <img src={file.url_private} alt={file.name} className="message-image" />
-                        </div>
-                      ) : file.mimetype && isPreviewableMimetype(file.mimetype) ? (
-                        <FilePreview key={file.id} url={file.url_private} name={file.name} mimetype={file.mimetype} />
-                      ) : (
+                    {msg.files.map((file) => {
+                      if (isImageFile(file)) {
+                        // Images: inline preview + clicking opens sidebar
+                        return (
+                          <div key={file.id} className="message-image-wrapper">
+                            <div
+                              className="message-image-link"
+                              onClick={() => setLightboxImage({ src: file.url_private, alt: file.name })}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) =>
+                                e.key === "Enter" && setLightboxImage({ src: file.url_private, alt: file.name })
+                              }
+                            >
+                              <img src={file.url_private} alt={file.name} className="message-image" />
+                            </div>
+                            <FilePreviewCard
+                              file={file}
+                              onClick={() =>
+                                onOpenSidebar?.({
+                                  title: file.name,
+                                  type: "file",
+                                  url: file.url_private,
+                                  fileType: file.mimetype ?? "image/jpeg",
+                                })
+                              }
+                            />
+                          </div>
+                        );
+                      }
+                      if (isPreviewableFile(file)) {
+                        return (
+                          <FilePreviewCard
+                            key={file.id}
+                            file={file}
+                            onClick={() =>
+                              onOpenSidebar?.({
+                                title: file.name,
+                                type: "file",
+                                url: file.url_private,
+                                fileType: file.mimetype ?? "",
+                              })
+                            }
+                          />
+                        );
+                      }
+                      return (
                         <a
                           key={file.id}
                           href={file.url_private}
@@ -2568,8 +2598,8 @@ export default function MessageList({
                         >
                           {file.name}
                         </a>
-                      ),
-                    )}
+                      );
+                    })}
                   </div>
                 )}
                 {/* Reactions hidden for now - uncomment when emoji conversion is implemented
