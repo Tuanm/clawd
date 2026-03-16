@@ -5943,6 +5943,28 @@ textarea {
   text-overflow: ellipsis;
 }
 
+/* Accordion: skill row + expanded editor wrapped together */
+.skills-accordion-item {
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+
+.skills-accordion-item.expanded {
+  background: hsl(var(--text) / 5%);
+}
+
+.skills-accordion-item .skills-list-item {
+  border-radius: 8px 8px 0 0;
+}
+
+.skills-accordion-item:not(.expanded) .skills-list-item {
+  border-radius: 8px;
+}
+
+.skills-accordion-editor {
+  padding: 4px 12px 12px 12px;
+}
+
 /* Back button in detail view header */
 .skills-back-btn {
   display: flex;
