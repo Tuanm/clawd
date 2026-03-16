@@ -611,30 +611,36 @@ A background health monitor keeps agents responsive and recovers from stuck stat
 - Agents check for pending work and continue if found
 - No reply needed if idle with no pending work
 
-**WebSocket Events:**
+**WebSocket Events** (all broadcast as `type: "agent_heartbeat"` with `event` sub-field):
 - `heartbeat_sent` — Heartbeat injected into idle agent
-- `agent_wakeup` — Agent activated after heartbeat
-- `space_failed` — Sub-agent space failed due to heartbeat timeout
+- `processing_timeout` — Agent cancelled for exceeding processing timeout
+- `space_auto_failed` — Sub-agent space failed after max heartbeat attempts
 
 ### 6.7 Model Tiering & Tool Filtering
 
-**Files**: `src/agent/src/api/factory.ts`, `src/worker-loop.ts`
+**Files**: `src/agent/src/agent/agent.ts` (`getIterationModel`), `src/agent/src/api/factory.ts`
 
-**Model Tiering:**
-- For tool routing decisions (determining which tools to call), automatically downgrade to Haiku model
-- Reduces token overhead and LLM latency for routing logic
-- Main LLM call uses full configured model (Opus, Sonnet, etc.)
+**Model Tiering** (`getIterationModel` in agent.ts):
+- Auto-downgrade to fast model (default `claude-haiku-4.5`) when conditions are met:
+  - Past first 2 iterations (warmup always uses full model)
+  - No tool results pending delivery
+  - Not immediately after compaction
+  - User message has no reasoning keywords (explain, analyze, design, etc.)
+  - Last 3 iterations were ALL pure tool calls (content < 50 chars)
+- Upgrades back to full model when reasoning is needed
+- Configurable via `config.fastModel`
 
-**Tool Filtering:**
-- After initial warmup period, agents analyze tool usage patterns
-- Automatically prune unused tools from subsequent calls
-- Reduces token count in system prompt by up to 30%
-- Improves LLM focus on actually-used tools
+**Tool Filtering** (`filterToolsByUsage` in agent.ts):
+- After 5-iteration warmup, prune unused built-in tools
+- Category-based: if any tool in a category is used, keep all tools in that category
+- Always keep: chat tools, system tools, MCP/plugin tools
+- Re-expansion trigger: if 2+ consecutive text-only responses, re-expand to full set
+- Reduces tool definition tokens by 30-60%
 
 **Prompt Caching:**
-- Supports Anthropic beta header for cache hits on long context
-- Reduces latency and cost for repeated context patterns
-- Cache key: hash of system prompt + context blocks
+- Anthropic `prompt-caching-2024-07-31` beta header enabled
+- System prompt marked with `cache_control: { type: "ephemeral" }`
+- Reduces input token billing for cached prefix
 
 ---
 
@@ -974,9 +980,7 @@ All real-time communication flows through the WebSocket connection at `/ws`.
 | `reaction_added` | `{ ts, channel, user, reaction }` | Emoji reaction added |
 | `reaction_removed` | `{ ts, channel, user, reaction }` | Emoji reaction removed |
 | `message_seen` | `{ ts, channel, user }` | Read receipt |
-| `heartbeat_sent` | `{ agent_id, channel }` | Heartbeat signal injected into idle agent |
-| `agent_wakeup` | `{ agent_id, channel }` | Agent activated after heartbeat |
-| `space_failed` | `{ space_channel, reason }` | Sub-agent space failed (heartbeat timeout or other) |
+| `agent_heartbeat` | `{ agent_id, channel, event, timestamp }` | Heartbeat events (event: `heartbeat_sent`, `processing_timeout`, `space_auto_failed`) |
 
 ### Client → Server Events
 
