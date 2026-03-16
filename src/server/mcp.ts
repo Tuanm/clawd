@@ -1365,11 +1365,11 @@ Requires: GEMINI_API_KEY in ~/.clawd/config.json, ffmpeg/ffprobe for fallback fr
   },
   {
     name: "convert_to_markdown",
-    description: `Convert a file (PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML, EPub, etc.) to Markdown text using Microsoft's markitdown.
+    description: `Convert a file (PDF, DOCX, XLSX, PPTX, HTML, CSV, EPub) to Markdown text.
 
 This tool converts documents to readable Markdown so you can understand their content.
-Supported formats: PDF, Word (.docx), Excel (.xlsx/.xls), PowerPoint (.pptx),
-HTML, CSV, JSON, XML, ZIP, EPub, images (EXIF metadata), and more.
+Supported formats: PDF, Word (.docx), Excel (.xlsx/.xls), PowerPoint (.pptx), HTML, CSV, EPub.
+For images use read_image. For JSON/XML/YAML/plain text use view or chat_read_file_range.
 
 Args:
   - file_id (string): File ID from the chat system. The file must already be uploaded or downloaded.
@@ -1383,9 +1383,7 @@ Returns JSON:
 }
 
 The converted Markdown is returned directly in the result for immediate use.
-If a project root is available, the .md file is also saved to {projectRoot}/.clawd/files/{filename}.md.
-
-Requires: markitdown CLI installed (pip install 'markitdown[all]' or pipx install 'markitdown[all]')`,
+If a project root is available, the .md file is also saved to {projectRoot}/.clawd/files/{filename}.md.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -2908,53 +2906,17 @@ async function executeToolCall(
           resultText = JSON.stringify({ ok: false, error: "File not found" });
         } else {
           try {
-            // Find markitdown binary — check common locations
-            const home = homedir();
-            const { existsSync: fsExists } = await import("node:fs");
-            const candidates = [
-              join(home, ".clawd", "venvs", "markitdown", "bin", "markitdown"),
-              join(home, ".local", "bin", "markitdown"),
-              "/usr/local/bin/markitdown",
-              "/usr/bin/markitdown",
-              "markitdown", // fallback to PATH
-            ];
-            let markitdownBin = "markitdown";
-            for (const candidate of candidates) {
-              if (candidate === "markitdown" || fsExists(candidate)) {
-                markitdownBin = candidate;
-                break;
-              }
-            }
+            const { convertToMarkdown } = await import("../agent/src/tools/document-converter");
+            const result = await convertToMarkdown(file.path, 30_000);
 
-            // Run markitdown CLI to convert the file
-            const proc = Bun.spawn([markitdownBin, file.path], {
-              stdout: "pipe",
-              stderr: "pipe",
-              env: {
-                ...process.env,
-                PATH: `${home}/.clawd/venvs/markitdown/bin:${home}/.local/bin:/usr/local/bin:${process.env.PATH}`,
-              },
-            });
-
-            const [stdout, stderr] = await Promise.all([
-              new Response(proc.stdout).text(),
-              new Response(proc.stderr).text(),
-            ]);
-            const exitCode = await proc.exited;
-
-            if (exitCode !== 0) {
-              resultText = JSON.stringify({
-                ok: false,
-                error: `markitdown conversion failed (exit ${exitCode}): ${stderr.trim() || "Unknown error"}`,
-                hint: "Ensure markitdown is installed: pip install 'markitdown[all]' or pipx install 'markitdown[all]'",
-              });
+            if (!result.success) {
+              resultText = JSON.stringify({ ok: false, error: result.error });
             } else {
-              const markdown = stdout;
               const response: Record<string, unknown> = {
                 ok: true,
                 file: { id: file.id, name: file.name, mimetype: file.mimetype, size: file.size },
-                markdown:
-                  markdown.length > 50000 ? markdown.slice(0, 50000) + "\n\n[TRUNCATED — content too long]" : markdown,
+                markdown: result.markdown,
+                format: result.format,
               };
 
               // Save .md file to {projectRoot}/.clawd/files/ if available
@@ -2970,7 +2932,7 @@ async function executeToolCall(
                   const base = pathBasename(file.name, ext);
                   const mdFilename = `${base}.md`;
                   const mdPath = pathJoin(filesDir, mdFilename);
-                  writeFileSync(mdPath, markdown, "utf-8");
+                  writeFileSync(mdPath, result.markdown, "utf-8");
                   response.local_path = mdPath;
                 } catch {
                   // Best-effort save — markdown is still returned in the response
@@ -2980,11 +2942,7 @@ async function executeToolCall(
               resultText = JSON.stringify(response, null, 2);
             }
           } catch (err: any) {
-            resultText = JSON.stringify({
-              ok: false,
-              error: `Failed to run markitdown: ${err.message}`,
-              hint: "Ensure markitdown is installed: pip install 'markitdown[all]' or pipx install 'markitdown[all]'",
-            });
+            resultText = JSON.stringify({ ok: false, error: `Conversion failed: ${err.message}` });
           }
         }
         break;
