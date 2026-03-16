@@ -8,6 +8,7 @@ import PlanModal from "./PlanModal";
 import ProjectsDialog from "./ProjectsDialog";
 import SearchModal from "./SearchModal";
 import SidebarPanel from "./SidebarPanel";
+import SkillsDialog from "./SkillsDialog";
 import { UnreadBadge } from "./UnreadBadge";
 
 interface SeenByAgent {
@@ -505,6 +506,7 @@ export default function App({ channel: initialChannel }: Props) {
   const isSpaceLocked = spaceInfo != null && spaceInfo.status !== "active";
   const [showAgentDialog, setShowAgentDialog] = useState(false);
   const [showMcpDialog, setShowMcpDialog] = useState(false);
+  const [showSkillsDialog, setShowSkillsDialog] = useState(false);
   const [jumpToMessageTs, setJumpToMessageTs] = useState<string | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [isActiveChannelAtBottom, setIsActiveChannelAtBottom] = useState(true);
@@ -2088,6 +2090,15 @@ export default function App({ channel: initialChannel }: Props) {
             </button>
           ) : undefined
         }
+        skillsButton={
+          !isSpaceChannel ? (
+            <button className="skills-btn" onClick={() => setShowSkillsDialog(true)} title="Skills">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26" />
+              </svg>
+            </button>
+          ) : undefined
+        }
       />
       <StreamOutputDialog
         open={streamDialogOpen}
@@ -2119,6 +2130,7 @@ export default function App({ channel: initialChannel }: Props) {
       />
       <AgentDialog channel={activeChannel} isOpen={showAgentDialog} onClose={() => setShowAgentDialog(false)} />
       <McpDialog channel={activeChannel} isOpen={showMcpDialog} onClose={() => setShowMcpDialog(false)} />
+      <SkillsDialog channel={activeChannel} isOpen={showSkillsDialog} onClose={() => setShowSkillsDialog(false)} />
       <ProjectsDialog
         channel={activeChannel}
         isOpen={showProjectsDialog}
