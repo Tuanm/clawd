@@ -91,7 +91,7 @@ clawd-app [options]
   --port, -p <port>   Port number (default: 3456)
   --debug             Enable debug logging
   --yolo              Skip tool confirmation prompts
-  --no-browser        Disable browser extension support
+  --no-browser         Don't open browser on startup
 ```
 
 ### config.json Schema
@@ -199,6 +199,19 @@ clawd-app [options]
   // Agent long-term memory
   "memory": true
   // or: { "provider": "copilot", "model": "gpt-4.1", "autoExtract": true }
+
+  // Heartbeat monitor for stuck-agent recovery
+  "heartbeat": {
+    "enabled": true,              // Enable heartbeat (default: true)
+    "intervalMs": 30000,          // Check interval (default: 30000)
+    "processingTimeoutMs": 300000, // Cancel agents stuck >5min (default: 300000)
+    "spaceIdleTimeoutMs": 60000   // Sub-agent idle timeout (default: 60000)
+  }
+
+  // API authentication (optional)
+  "auth": {
+    "token": "your-secret-token" // All API requests must include "Authorization: Bearer <token>"
+  }
 }
 ```
 
@@ -338,7 +351,16 @@ clawd/
 │   ├── ui/                       # React SPA (Vite + TypeScript)
 │   │   └── src/
 │   │       ├── App.tsx           # Main app, WebSocket, state management
-│   │       ├── MessageList.tsx   # Messages, StreamOutputDialog
+│   │       ├── MessageList.tsx   # Messages, mermaid rendering
+│   │       ├── artifact-types.ts # 7 artifact types (html, react, svg, chart, csv, markdown, code)
+│   │       ├── artifact-renderer.tsx # Artifact rendering logic
+│   │       ├── artifact-sandbox.tsx # Sandboxed iframe for html/react (DOMPurify + rehype-sanitize)
+│   │       ├── chart-renderer.tsx # Recharts component with 6 chart types
+│   │       ├── file-preview.tsx  # File preview cards (PDF, CSV, text, code, images)
+│   │       ├── SidebarPanel.tsx  # Sidebar for artifact/file rendering
+│   │       ├── SkillsDialog.tsx  # Manage agent skills (4 directories)
+│   │       ├── AgentDialog.tsx   # Agent config (includes heartbeat_interval)
+│   │       ├── auth-fetch.ts     # Fetch wrapper for token-based auth
 │   │       └── styles.css        # All styles
 │   ├── browser-extension/        # Chrome MV3 extension
 │   │   └── src/
@@ -381,6 +403,23 @@ Agents are extended via two interfaces:
 - **Plugin** — adds lifecycle hooks: `onUserMessage()`, `onToolCall()`, `getSystemContext()`
 
 Built-in plugins: browser, workspace, context-mode, state-persistence, tunnel, spawn-agent, scheduler, memory, custom-tool.
+
+### Heartbeat Monitor
+
+A background health monitor keeps agents responsive:
+
+- Injects `[HEARTBEAT]` signals into idle agents (configurable interval, default 30s)
+- Cancels agents stuck processing beyond timeout (default 5 minutes)
+- Monitors sub-agent spaces (auto-fail after 10 consecutive heartbeats with no progress)
+- LLM-direct signals — agents receive `[HEARTBEAT]` as a system message, not as chat nudges
+- Enable/disable and configure timeouts via `config.json` `heartbeat` object
+- UI shows pulsing dot animation next to agents with active heartbeat intervals
+
+### Model Tiering & Tool Filtering
+
+- **Auto-downgrade to Haiku**: For tool routing decisions (cheaper, faster)
+- **Usage-based tool pruning**: After initial warmup, agents auto-prune unused tools to reduce token overhead
+- **Prompt caching**: Supports Anthropic beta header for cache hits on long context (reduces latency & cost)
 
 ### Custom Skills
 
@@ -605,7 +644,13 @@ All API endpoints are available at `/api/*`. Key groups:
 | **Browser** | `/browser/ws` (WebSocket), `/browser/extension`, `/browser/files/*` |
 | **Spaces** | `spaces.list`, `spaces.get` |
 | **Plans** | `plans.list`, `plans.get`, `plans.create`, `plans.update`, `plans.delete` |
+| **Skills** | `skills.list`, `skills.get`, `skills.create` |
 | **Admin** | `config/reload`, `keys/status`, `keys/sync`, `admin.migrateChannels` |
+
+**Authentication**: If `auth.token` is configured in `config.json`, all API requests require:
+```
+Authorization: Bearer <token>
+```
 
 For the complete API reference, see **[docs/architecture.md § API Reference](docs/architecture.md#12-api-reference)**.
 
@@ -625,6 +670,109 @@ The UI connects via WebSocket for real-time updates:
 | `agent_tool_call` | Tool execution (started/completed/error) |
 | `reaction_added/removed` | Emoji reactions |
 | `message_seen` | Read receipts |
+| `heartbeat_sent` | Heartbeat injected into idle agent |
+| `space_failed` | Sub-agent space failed due to heartbeat timeout |
+| `agent_wakeup` | Agent woken after idle period |
+
+---
+
+## Artifact Rendering
+
+Agents output structured content using `<artifact>` tags. The UI automatically detects and renders these as interactive visual components:
+
+### 7 Artifact Types
+
+| Type | Content | Rendering |
+|---|---|---|
+| `html` | HTML markup | Sandboxed iframe with DOMPurify sanitization |
+| `react` | JSX component (function App) | Babel + Tailwind in sandboxed iframe |
+| `svg` | SVG markup | Inline rendering with DOMPurify sanitization |
+| `chart` | JSON spec (Recharts) | Interactive line/bar/pie/area/scatter/composed charts |
+| `csv` | CSV with header row | Sortable data table |
+| `markdown` | Markdown text | Full markdown pipeline with syntax highlighting |
+| `code` | Source code | Prism syntax highlighting (32+ languages) |
+
+### Chart JSON Format
+
+```json
+{
+  "type": "line",
+  "data": [{"month": "Jan", "sales": 100}],
+  "xKey": "month",
+  "series": [{"key": "sales", "name": "Sales"}],
+  "title": "Monthly Sales"
+}
+```
+
+Special: Pie charts use `dataKey`/`nameKey`; composed charts mix line/bar/area types per series.
+
+### Sandbox Security
+
+- HTML/React/SVG sanitized with DOMPurify + rehype-sanitize
+- Artifacts run in sandboxed iframes (`sandbox="allow-scripts"`)
+- No network access; no DOM/cookie access from artifacts
+- Max 1000 data points per chart, 10 series
+
+### Sidebar Rendering
+
+Artifacts render in sidebar panel for easier viewing:
+- `html`, `react`, `markdown`, `code` — full sidebar rendering
+- `csv` — sortable data table in sidebar
+- `chart`, `svg` — available for sidebar preview
+
+For detailed artifact protocol, see **[docs/artifacts.md](docs/artifacts.md)**.
+
+---
+
+## UI Features
+
+### File Preview
+
+Upload files (PDF, CSV, text, code, images) for automatic preview:
+- **PDF**: Thumbnail + file size
+- **CSV**: Sortable data preview in sidebar
+- **Text/Code**: Syntax highlighting preview
+- **Images**: Thumbnail preview
+
+### Skills Management
+
+UI dialog for managing agent skills across 4 source directories:
+1. Project-scoped skills (`.clawd/skills/` — priority)
+2. Global skills (`~/.clawd/skills/`)
+3. Third-party skill registries
+4. Built-in skills
+
+Enable/disable skills per agent, view descriptions and triggers.
+
+### Agent Configuration
+
+Per-agent settings in UI:
+- Provider (copilot, openai, anthropic, ollama, etc.)
+- Model selection
+- Project path
+- **Heartbeat interval** (0 = disabled) — configurable per agent
+- Displays pulsing dot animation when heartbeat is active
+
+### Mermaid Diagram Zoom
+
+Mermaid diagrams in markdown render with:
+- Click to zoom (up to 20x magnification)
+- Drag-to-pan within zoomed view
+- Error retry button on parse failures
+
+### Direct Database Polling
+
+In-process agents bypass HTTP self-calls:
+- Agents query `chat.db` and `memory.db` directly
+- Reduced latency for session/message lookups
+- Atomic transaction handling
+
+### WebSocket Push Notifications
+
+Agents subscribe to channels via WebSocket:
+- Agents receive real-time updates without polling
+- Channel-scoped message subscriptions
+- Reduces network overhead
 
 ---
 

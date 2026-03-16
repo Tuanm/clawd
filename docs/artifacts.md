@@ -77,9 +77,28 @@ No imports needed — React and ReactDOM are pre-loaded.
 
 Content must NOT contain literal `</artifact>`. Use `&lt;/artifact&gt;` if documenting the protocol itself.
 
+## Sidebar Rendering
+
+Artifacts can render in a dedicated sidebar panel for easier viewing:
+
+- `html`, `react`, `markdown`, `code` — full sidebar rendering with maximize control
+- `csv` — sortable data table in sidebar
+- `chart`, `svg` — available for quick preview in sidebar
+
+Click "View in Sidebar" on artifact cards to open the panel.
+
+## Limitations
+
+- Max 1000 data points per chart, 10 series
+- Artifacts must not exceed ~5MB of content
+- No iframe-to-parent communication (secure by design)
+- React artifacts cannot import external packages — only React, Tailwind, and Prism
+
 ## Security
 
 - HTML/SVG content is sanitized with DOMPurify before rendering
+- markdown sanitized via rehype-sanitize (removes dangerous scripts/attributes)
 - HTML and React artifacts run in sandboxed iframes (`sandbox="allow-scripts"`)
 - No network access from artifact iframes
 - No access to parent page DOM or cookies
+- No browser API access (localStorage, geolocation, etc.)
