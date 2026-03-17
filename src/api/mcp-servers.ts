@@ -23,10 +23,13 @@ function json(data: any, status = 200): Response {
   });
 }
 
-/** Resolve public-facing origin, respecting reverse proxy headers. */
-function getPublicOrigin(req: Request, url: URL): string {
-  const proto = req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "");
-  const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || url.host;
+/** Resolve public-facing origin, respecting reverse proxy headers.
+ *  Non-local hosts always use https (proxies may forward x-forwarded-proto: http
+ *  from the internal connection, but the public endpoint is always TLS). */
+export function getPublicOrigin(req: Request, url: URL): string {
+  const host = (req.headers.get("x-forwarded-host") || req.headers.get("host") || url.host).split(",")[0].trim();
+  const isLocal = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?$/.test(host);
+  const proto = isLocal ? req.headers.get("x-forwarded-proto")?.split(",")[0].trim() || "http" : "https";
   return `${proto}://${host}`;
 }
 
