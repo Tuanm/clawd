@@ -101,7 +101,7 @@ import {
 // Now import modules (database will initialize)
 import { registerAgentRoutes } from "./api/agents";
 import { registerArticleRoutes } from "./api/articles";
-import { registerMcpServerRoutes } from "./api/mcp-servers";
+import { getPublicOrigin, registerMcpServerRoutes } from "./api/mcp-servers";
 import { loadConfig, validateConfig } from "./config";
 import { getAuthToken, isBrowserEnabled, isWorkspacesEnabled, loadConfigFile, reloadConfigFile } from "./config-file";
 import { extensionZipSize, getExtensionZip } from "./embedded-extension";
@@ -748,9 +748,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     // CIMD: Serve client metadata document for MCP OAuth (SEP-991)
     if (path === "/.well-known/oauth-client.json") {
-      const proto = (req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "")).replace(":", "");
-      const host = (req.headers.get("x-forwarded-host") || req.headers.get("host") || url.host).split(",")[0].trim();
-      const publicOrigin = `${proto}://${host}`;
+      const publicOrigin = getPublicOrigin(req, url);
       return new Response(
         JSON.stringify({
           client_id: `${publicOrigin}/.well-known/oauth-client.json`,
