@@ -2,6 +2,13 @@
 
 @import url("https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap");
 
+/* Disable mobile tap highlight (blue flash on touch) */
+*,
+*::before,
+*::after {
+  -webkit-tap-highlight-color: transparent;
+}
+
 :root {
   --accent: 15 63.1% 59.6%;
   --bg: 48 33.3% 97.1%;
@@ -1202,6 +1209,8 @@ body {
   background: transparent;
   border-radius: 8px;
   border: 1px solid transparent;
+  max-width: 100%;
+  overflow: hidden;
   transition:
     background 0.1s ease,
     border-color 0.1s ease,
@@ -1600,6 +1609,14 @@ body {
   color: var(--text-primary);
   line-height: 1.46668;
   word-wrap: break-word;
+  overflow-wrap: break-word;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.message-content img {
+  max-width: 100%;
+  height: auto;
 }
 
 /* Each logical content block (text, code, image, mermaid, iframe) gets subtle spacing */
