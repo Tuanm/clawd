@@ -18,7 +18,7 @@ const BASE_WEIGHTS: Record<string, number> = {
   assistant_tool_calls: 70,
   assistant_text: 50,
   tool_error: 80,
-  tool_success: 40,
+  tool_success: 55, // Raised from 40 — tool results carry critical state for continuity
 };
 
 const CATEGORY_BONUS = {
@@ -88,6 +88,17 @@ export function scoreMessages(messages: Message[]): ScoredMessage[] {
 
   // Score each message
   const scored: ScoredMessage[] = messages.map((msg, i) => {
+    // Heartbeat signals are ephemeral — always drop
+    if (msg.content?.includes("<agent_signal>")) {
+      return {
+        message: msg,
+        index: i,
+        score: 0,
+        stage: "DROPPED" as MessageStage,
+        isAnchor: false,
+        atomicGroupId: atomicGroups.get(i),
+      };
+    }
     if (msg.role === "system") {
       return {
         message: msg,
@@ -136,8 +147,8 @@ export function scoreMessages(messages: Message[]): ScoredMessage[] {
     if (score > STAGE_FULL) stage = "FULL";
     else if (score >= STAGE_COMPRESSED) stage = "COMPRESSED";
 
-    // Anchor detection
-    const isAnchor = isTaskDefinition(content) || isUnresolvedError(content) || i === 0 || i === total - 1;
+    // Anchor detection — always keep first, last, last 5 messages (recent tool chain), task definitions, errors
+    const isAnchor = isTaskDefinition(content) || isUnresolvedError(content) || i === 0 || i >= total - 5;
 
     return { message: msg, index: i, score, stage, isAnchor, atomicGroupId: atomicGroups.get(i) };
   });

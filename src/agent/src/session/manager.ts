@@ -411,6 +411,12 @@ export class SessionManager {
    * @returns Number of messages deleted
    */
   compactSession(sessionId: string, keepCount: number = 50, summaryPrefix?: string): number {
+    // Purge heartbeat signals — they are ephemeral and should not survive compaction
+    this.db.run(
+      `DELETE FROM messages WHERE session_id = ? AND role = 'user' AND content LIKE '%<agent_signal>%[HEARTBEAT]%</agent_signal>%'`,
+      [sessionId],
+    );
+
     const stats = this.getSessionStats(sessionId);
 
     if (stats.messageCount <= keepCount) {
