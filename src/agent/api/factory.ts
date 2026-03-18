@@ -756,7 +756,15 @@ class OllamaProvider implements LLMProvider {
   constructor(options: OpenAIProviderOptions) {
     // Use /api/chat endpoint, not /v1/messages
     this.baseUrl = options.baseUrl.replace(/\/$/, "").replace("/v1", "");
-    if (!this.baseUrl.includes("ollama.com")) {
+    // Use hostname check (not substring) to avoid path-based false positives
+    let isOllamaCloud = false;
+    try {
+      const h = new URL(this.baseUrl).hostname;
+      isOllamaCloud = h === "ollama.com" || h.endsWith(".ollama.com");
+    } catch {
+      // malformed baseUrl — fall through to localhost default
+    }
+    if (!isOllamaCloud) {
       this.baseUrl = "http://localhost:11434";
     }
     this.apiKey = options.apiKey;

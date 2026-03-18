@@ -438,13 +438,34 @@ function parseMessageBlocks(text: string, isStreaming?: boolean, isAgent?: boole
   const blocks: MessageBlock[] = [];
   let pos = 0;
 
+  // Strip unsafe tags using index-based search (avoids regex [\s\S]*? flagged by CodeQL).
+  const unsafeTags = ["iframe", "script", "object", "embed", "form", "base", "meta", "link", "style"];
+  const stripUnsafeTags = (input: string): string => {
+    let result = input;
+    for (const tag of unsafeTags) {
+      const openRe = new RegExp(`<${tag}\\b`, "i");
+      const closeTag = `</${tag}>`;
+      let safety = 50;
+      while (safety-- > 0) {
+        const m = openRe.exec(result);
+        if (!m) break;
+        const closeIdx = result.toLowerCase().indexOf(closeTag.toLowerCase(), m.index);
+        if (closeIdx !== -1) {
+          result = result.slice(0, m.index) + result.slice(closeIdx + closeTag.length);
+        } else {
+          // Self-closing or orphan open — find end of tag
+          const endIdx = result.indexOf(">", m.index);
+          result = result.slice(0, m.index) + (endIdx !== -1 ? result.slice(endIdx + 1) : "");
+        }
+      }
+    }
+    return result;
+  };
+
   // Strip unsafe tags from every text segment before passing to rehypeRaw.
   // Covers both the textBefore slices and the final tail when candidates.length === 0.
   const pushText = (str: string) => {
-    let cleaned = str
-      .replace(/<iframe\b[\s\S]*?(?:<\/iframe>|\/>)/gi, "")
-      .replace(/<script\b[\s\S]*?<\/script>/gi, "")
-      .replace(/<artifact\b[\s\S]*?<\/artifact>/gi, "");
+    let cleaned = stripUnsafeTags(str).replace(/<artifact\b[\s\S]*?<\/artifact>/gi, "");
     // During streaming, strip orphaned opening tags so raw XML stays off screen
     if (isStreaming) {
       cleaned = cleaned.replace(/<artifact\b[^>]*>[\s\S]*$/i, "");
@@ -2012,14 +2033,16 @@ export default function MessageList({
 
   // Process message text to convert @msg:ts references to clickable links
   const processMessageText = useCallback((text: string) => {
-    // Decode HTML entities (e.g., &gt; -> >, &lt; -> <, &amp; -> &)
-    let processed = text
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&nbsp;/g, " ");
+    // Decode HTML entities in a single pass to avoid double-decode issues
+    const entityMap: Record<string, string> = {
+      "&lt;": "<",
+      "&gt;": ">",
+      "&quot;": '"',
+      "&#39;": "'",
+      "&nbsp;": " ",
+      "&amp;": "&",
+    };
+    let processed = text.replace(/&(?:lt|gt|quot|nbsp|amp|#39);/g, (m) => entityMap[m] ?? m);
 
     // Convert HTML <a> tags to markdown links
     processed = processed.replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/gi, (_, href, linkText) => {

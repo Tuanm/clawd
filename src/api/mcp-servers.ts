@@ -143,7 +143,7 @@ export function registerMcpServerRoutes(
           const stored = loadOAuthToken(channel, name);
           token = stored?.access_token;
           console.log(
-            `[mcp-servers] OAuth creds: client_id=${oauth.client_id.slice(0, 15)}..., has_secret=${!!oauth.client_secret}, stored_token=${token ? "yes" : "no"}`,
+            `[mcp-servers] OAuth creds: has_client_id=${!!oauth.client_id}, has_secret=${!!oauth.client_secret}, stored_token=${token ? "yes" : "no"}`,
           );
         }
 

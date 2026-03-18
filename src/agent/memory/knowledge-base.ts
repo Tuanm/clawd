@@ -187,8 +187,8 @@ export class KnowledgeBase {
 
   private searchSubstring(query: string, sessionId?: string, limit = 10): KBSearchResult[] {
     const sessionFilter = sessionId ? "AND session_id = ?" : "";
-    // Escape SQL LIKE wildcards
-    const escapedQuery = query.replace(/%/g, "\\%").replace(/_/g, "\\_");
+    // Escape SQL LIKE wildcards: escape backslash first, then % and _ to avoid double-escaping
+    const escapedQuery = query.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
     const params: any[] = [`%${escapedQuery}%`];
     if (sessionId) params.push(sessionId);
     params.push(limit);

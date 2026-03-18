@@ -75,8 +75,12 @@ export default function HomePage() {
   };
 
   const navigateToSpace = () => {
-    if (spaceId.trim()) {
-      window.location.href = `/${spaceId.trim()}`;
+    const id = spaceId.trim();
+    if (id) {
+      // Validate: allow only alphanumeric, hyphens, underscores, dots to prevent XSS
+      if (!/^[\w.-]+$/.test(id)) return;
+      // Use pathname assignment (relative path only) to prevent javascript: injection
+      window.location.pathname = `/${id}`;
     }
   };
 

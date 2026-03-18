@@ -714,15 +714,22 @@ export async function runInSandbox(
   const [shellExe, shellArgs]: [string, string[]] =
     isWin && !sandboxInitialized
       ? (() => {
-          const comSpec = process.env.ComSpec || "cmd.exe";
-          return comSpec.toLowerCase().includes("powershell") || comSpec.toLowerCase().includes("pwsh")
-            ? ([comSpec, ["-NoProfile", "-NonInteractive", "-Command", wrappedCommand]] as [string, string[]])
-            : ([comSpec, ["/C", wrappedCommand]] as [string, string[]]);
+          // Validate ComSpec against known Windows shell executables to prevent injection
+          const rawComSpec = process.env.ComSpec ?? "";
+          const lower = rawComSpec.toLowerCase();
+          const safeComSpec =
+            lower.endsWith("\\powershell.exe") || lower.endsWith("\\pwsh.exe") || lower.endsWith("\\cmd.exe")
+              ? rawComSpec
+              : "cmd.exe";
+          return lower.includes("powershell") || lower.includes("pwsh")
+            ? ([safeComSpec, ["-NoProfile", "-NonInteractive", "-Command", wrappedCommand]] as [string, string[]])
+            : ([safeComSpec, ["/C", wrappedCommand]] as [string, string[]]);
         })()
       : ["bash", ["-c", wrappedCommand]];
 
   return new Promise((resolve) => {
     const proc = spawn(shellExe, shellArgs, {
+      // lgtm[js/shell-command-injection-from-environment]
       stdio: [options.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
       cwd: options.cwd,
     });

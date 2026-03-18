@@ -196,7 +196,15 @@ async function searchViaDuckDuckGo(query: string, maxResults: number): Promise<S
       const altRegex = /<a[^>]*rel="nofollow"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g;
       while ((match = altRegex.exec(html)) !== null && results.length < maxResults) {
         const [, url, title] = match;
-        if (url && title && url.startsWith("http") && !url.includes("duckduckgo.com")) {
+        // Use URL hostname check to avoid substring matching false positives (e.g., attacker.com/duckduckgo.com)
+        let isDuckDuckGo = false;
+        try {
+          const h = new URL(url).hostname;
+          isDuckDuckGo = h === "duckduckgo.com" || h.endsWith(".duckduckgo.com");
+        } catch {
+          // malformed URL — skip it
+        }
+        if (url && title && url.startsWith("http") && !isDuckDuckGo) {
           results.push({ title: title.trim(), url, snippet: "" });
         }
       }
