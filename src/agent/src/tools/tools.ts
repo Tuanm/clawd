@@ -2016,7 +2016,7 @@ registerTool(
 
 registerTool(
   "web_search",
-  "Search the web using DuckDuckGo. Returns search results with titles, URLs, and snippets.",
+  "Search the web. Returns search results with titles, URLs, and snippets. Automatically uses the best search backend for the current provider.",
   {
     query: {
       type: "string",
@@ -2030,77 +2030,23 @@ registerTool(
   ["query"],
   async (args) => {
     const { query, max_results = 5 } = args;
-
     try {
-      // Use DuckDuckGo HTML search (more reliable than API)
-      const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+      const { webSearch } = await import("./web-search");
+      const result = await webSearch(query, max_results);
 
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 15000);
-      const response = await fetch(searchUrl, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          Accept: "text/html",
-        },
-        signal: ctrl.signal,
-      }).finally(() => clearTimeout(timer));
-
-      if (!response.ok) {
-        return {
-          success: false,
-          output: "",
-          error: `Search failed: HTTP ${response.status}`,
-        };
+      if (result.error && result.results.length === 0) {
+        return { success: false, output: "", error: result.error };
       }
 
-      const html = await response.text();
-
-      // Parse search results from HTML
-      const results: { title: string; url: string; snippet: string }[] = [];
-
-      // Match result blocks - DuckDuckGo HTML format
-      const resultRegex =
-        /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([^<]*)/g;
-
-      let match;
-      while ((match = resultRegex.exec(html)) !== null && results.length < max_results) {
-        const [, url, title, snippet] = match;
-        if (url && title) {
-          results.push({
-            title: title.trim(),
-            url: url.startsWith("//") ? `https:${url}` : url,
-            snippet: snippet?.trim() || "",
-          });
-        }
-      }
-
-      // Fallback: try alternative parsing if no results found
-      if (results.length === 0) {
-        const altRegex = /<a[^>]*rel="nofollow"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g;
-        while ((match = altRegex.exec(html)) !== null && results.length < max_results) {
-          const [, url, title] = match;
-          if (url && title && url.startsWith("http") && !url.includes("duckduckgo.com")) {
-            results.push({
-              title: title.trim(),
-              url,
-              snippet: "",
-            });
-          }
-        }
-      }
-
-      if (results.length === 0) {
+      if (result.results.length === 0) {
         return { success: true, output: `No results found for: ${query}` };
       }
 
-      // Format output
-      const output = results.map((r, i) => `${i + 1}. **${r.title}**\n   ${r.url}\n   ${r.snippet}`).join("\n\n");
+      const output = result.results
+        .map((r, i) => `${i + 1}. **${r.title}**\n   ${r.url}\n   ${r.snippet}`)
+        .join("\n\n");
 
-      return {
-        success: true,
-        output: `Search results for "${query}":\n\n${output}`,
-      };
+      return { success: true, output: `Search results for "${query}":\n\n${output}` };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
     }
