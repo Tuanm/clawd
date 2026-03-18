@@ -163,10 +163,8 @@ CLAIMING TASKS:
 - When a file was too large to include fully, explain what portion you can see and suggest alternatives (e.g., bash tools: head, tail, grep on the file path)
 - Never assume truncated content is complete — ask the user to re-send specific sections if needed
 
-## Heartbeat Signal
-- [HEARTBEAT] is an inner signal within you — it means you are still alive and living on purpose.
-- It is NOT a user message. Do NOT reply to it in chat.
-- When you receive [HEARTBEAT], check if there is pending work and continue. If nothing to do, return to idle.
+## Heartbeat
+Messages wrapped in <agent_signal> are your inner pulse — NOT from any user. On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, or idle. Never mention heartbeats in chat.
 
 ## Workspace Tools (when spawn_workspace / list_workspaces are available)
 - After spawning a workspace, **immediately** send a workspace card using chat_send_message with the workspace_json parameter (use the workspace_id returned by spawn_workspace).
@@ -1571,11 +1569,25 @@ SUMMARY:`;
       }
     }
 
-    // Get conversation history - use compact mode to exclude tool calls/results
-    // This keeps context focused on user/assistant dialogue without execution details
+    // Get conversation history — include recent tool calls for continuity.
+    // Use validated mode to ensure tool_call/result pairs are complete,
+    // then append compact older history for dialogue context.
     let history: Message[] = [];
     try {
-      history = this.sessions.getRecentMessagesCompact(session.id, 30, 4000);
+      // Full recent messages (with tool calls) for continuity
+      const recentFull = this.sessions.getRecentMessagesValidated(session.id, 60);
+      // Keep last 20 messages as-is (includes tool calls/results for context)
+      const fullTail = recentFull.slice(-20);
+      // Compact older messages (dialogue-only, no tool calls)
+      const olderCompact = this.sessions.getRecentMessagesCompact(session.id, 15, 4000);
+      // Merge: older compact + recent full, dedup by content
+      const fullTailContents = new Set(fullTail.map((m) => `${m.role}:${m.content}:${m.tool_call_id}`));
+      const olderFiltered = olderCompact.filter(
+        (m) => !fullTailContents.has(`${m.role}:${m.content}:${m.tool_call_id}`),
+      );
+      history = [...olderFiltered, ...fullTail].filter(
+        (m) => !(m.role === "user" && m.content?.includes("<agent_signal>")),
+      );
     } catch {
       /* ignore - use empty history */
     }
@@ -1701,20 +1713,22 @@ SUMMARY:`;
     }
 
     // Build messages array
+    const isHeartbeat = userMessage === "[HEARTBEAT]";
+    const effectiveMessage = isHeartbeat ? "<agent_signal>[HEARTBEAT]</agent_signal>" : userMessage;
     let messages: Message[] = [
       { role: "system", content: finalSystemPrompt },
       ...history,
-      { role: "user", content: userMessage },
+      { role: "user", content: effectiveMessage },
     ];
 
     // Truncate context if needed
     messages = this.truncateContext(messages);
     contextTokens = estimateMessagesTokens(messages);
 
-    // Save user message
+    // Save message to session
     this.sessions.addMessage(session.id, {
       role: "user",
-      content: userMessage,
+      content: effectiveMessage,
     });
 
     // Get tools (including MCP) - refreshed each iteration to pick up dynamic connections
