@@ -20,7 +20,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { getSessionManager } from "../../src/session/manager";
+import { getSessionManager } from "../../session/manager";
 
 // Session size limits (in estimated tokens) - tuned for 128k context (claude-opus-4.6)
 const TOKEN_LIMIT_CRITICAL = 70000; // Emergency reset threshold

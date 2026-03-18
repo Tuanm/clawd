@@ -1,4 +1,4 @@
-import type { ToolPlugin, ToolRegistration } from "../agent/src/tools/plugin";
+import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
 import { timedFetch } from "../utils/timed-fetch";
 import type { SpaceManager } from "./manager";
 

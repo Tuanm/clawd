@@ -42,7 +42,7 @@ Chrome Extension (packages/browser-extension/)
 | Component | Purpose | Key Files |
 |-----------|---------|-----------|
 | **Server** | HTTP+WebSocket, route handling, API | `src/index.ts`, `src/server/` |
-| **Agent System** | Multi-agent orchestration, reasoning loop | `src/worker-loop.ts`, `src/agent/src/` |
+| **Agent System** | Multi-agent orchestration, reasoning loop | `src/worker-loop.ts`, `src/agent/` |
 | **Database** | SQLite (chat.db, memory.db, kanban.db) | `src/server/database.ts` |
 | **Browser Automation** | Chrome extension bridge + 26 tools | `packages/browser-extension/`, `src/server/browser-bridge.ts` |
 | **Sub-Agents** | Parallel task delegation (Spaces) | `src/spaces/` |
@@ -67,18 +67,14 @@ clawd/
 │   │   ├── browser-bridge.ts         # Browser extension WS bridge
 │   │   ├── remote-worker.ts          # Remote worker bridge
 │   │   └── routes/                   # API endpoint handlers
-│   ├── agent/src/                    # Agent system
-│   │   ├── agent/agent.ts            # Core Agent class, reasoning loop
-│   │   ├── memory/                   # session.ts, knowledge-base.ts, agent-memory.ts
+│   ├── agent/                        # Agent system
+│   │   ├── agent.ts                  # Core Agent class, reasoning loop
+│   │   ├── api/                      # LLM provider factory, key pool, clients
+│   │   ├── tools/                    # Tool definitions, web search, document converter
+│   │   ├── plugins/                  # All plugins (chat, browser, workspace, tunnel, etc.)
 │   │   ├── session/                  # Session manager, checkpoints, summarizer
-│   │   ├── plugins/                  # ToolPlugin/Plugin system
-│   │   │   ├── browser-plugin.ts     # 26 browser tools
-│   │   │   ├── workspace-plugin.ts   # Workspace/docker integration
-│   │   │   ├── clawd-agent-bus/      # Agent-to-agent communication
-│   │   │   └── ...                   # Other plugins
+│   │   ├── memory/                   # session.ts, knowledge-base.ts, agent-memory.ts
 │   │   ├── mcp/                      # MCP client connections
-│   │   ├── tools/                    # Tool execution system
-│   │   ├── api/                      # LLM provider factory, key pool
 │   │   └── utils/                    # sandbox.ts, debug, context helpers
 │   ├── spaces/                       # Sub-agent system
 │   │   ├── manager.ts                # Space lifecycle
@@ -149,7 +145,7 @@ Key behaviors:
 - New user messages can interrupt in-progress turns
 - Tool execution runs in sandboxed environment (bubblewrap/sandbox-exec)
 
-### Agent Class (`src/agent/src/agent/agent.ts`)
+### Agent Class (`src/agent/agent.ts`)
 
 Core reasoning engine with:
 - Plugin system for tool extensions

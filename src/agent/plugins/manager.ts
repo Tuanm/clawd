@@ -3,7 +3,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { AgentResult } from "../agent/agent";
+import type { AgentResult } from "../agent";
 import type { CopilotClient } from "../api/client";
 
 // ============================================================================

@@ -292,14 +292,16 @@ clawd/
 │   │   ├── websocket.ts          # WebSocket broadcasting
 │   │   ├── browser-bridge.ts     # Browser extension WS bridge
 │   │   └── remote-worker.ts      # Remote worker WebSocket bridge
-│   ├── agent/src/
-│   │   ├── agent/agent.ts        # Agent class, reasoning loop, compaction
-│   │   ├── memory/               # Session memory, knowledge base, agent memories
+│   ├── agent/
+│   │   ├── agent.ts              # Agent class, reasoning loop, compaction
+│   │   ├── api/                  # LLM provider clients, key pool, factory
+│   │   ├── tools/                # Tool definitions, web search, document converter
+│   │   ├── plugins/              # All plugins (chat, browser, workspace, tunnel, etc.)
 │   │   ├── session/              # Session manager, checkpoints, summarizer
-│   │   ├── skills/manager.ts     # Custom skill loader (project + global)
-│   │   ├── plugins/              # browser-plugin, workspace-plugin, custom-tool-plugin, etc.
+│   │   ├── memory/               # Session memory, knowledge base, agent memories
+│   │   ├── skills/               # Custom skill loader (project + global)
 │   │   ├── mcp/                  # MCP client connections
-│   │   └── utils/sandbox.ts      # Sandbox execution (bwrap/sandbox-exec)
+│   │   └── utils/                # Sandbox, debug, agent context, smart truncation
 │   ├── spaces/                   # Sub-agent system
 │   │   ├── manager.ts            # Space lifecycle
 │   │   ├── worker.ts             # Space worker orchestrator

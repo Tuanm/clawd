@@ -14,8 +14,8 @@ import {
   queryRecentStats,
   querySummary,
 } from "../../analytics";
-import type { ToolPlugin, ToolRegistration } from "../src/tools/plugin";
-import type { ToolResult } from "../src/tools/tools";
+import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
+import type { ToolResult } from "../tools/tools";
 
 // ── GitHub Copilot SVG Logo ──────────────────────────────────────────
 

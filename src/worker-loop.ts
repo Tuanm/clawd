@@ -12,15 +12,15 @@ import { join, resolve } from "node:path";
 import { type ClawdChatConfig, createClawdChatPlugin, createClawdChatToolPlugin } from "./agent/plugins/clawd-chat";
 import { createCopilotAnalyticsPlugin } from "./agent/plugins/copilot-analytics-plugin";
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
-import { Agent, type AgentConfig } from "./agent/src/agent/agent";
-import { callContext } from "./agent/src/api/call-context";
-import { createProvider } from "./agent/src/api/factory";
-import { createMemoryPlugin, isMemoryEnabled } from "./agent/src/plugins/memory-plugin";
-import { RemoteWorkerBridge } from "./agent/src/plugins/remote-worker-bridge";
-import { runWithAgentContext, setProjectHash } from "./agent/src/tools/tools";
-import { setDebug } from "./agent/src/utils/debug";
-import { initializeSandbox } from "./agent/src/utils/sandbox";
-import { smartTruncate } from "./agent/src/utils/smart-truncation";
+import { Agent, type AgentConfig } from "./agent/agent";
+import { callContext } from "./agent/api/call-context";
+import { createProvider } from "./agent/api/factory";
+import { createMemoryPlugin, isMemoryEnabled } from "./agent/plugins/memory-plugin";
+import { RemoteWorkerBridge } from "./agent/plugins/remote-worker-bridge";
+import { runWithAgentContext, setProjectHash } from "./agent/tools/tools";
+import { setDebug } from "./agent/utils/debug";
+import { initializeSandbox } from "./agent/utils/sandbox";
+import { smartTruncate } from "./agent/utils/smart-truncation";
 import { loadConfigFile } from "./config-file";
 import { db, getOrRegisterAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
 import { getPendingMessages, postMessage } from "./server/routes/messages";
@@ -125,11 +125,11 @@ export interface WorkerLoopConfig {
   workerToken?: string;
   onLoopExit?: () => void;
   additionalPlugins?: Array<{
-    plugin?: import("./agent/src/plugins/manager").Plugin;
-    toolPlugin?: import("./agent/src/tools/plugin").ToolPlugin;
+    plugin?: import("./agent/plugins/manager").Plugin;
+    toolPlugin?: import("./agent/tools/plugin").ToolPlugin;
   }>;
   /** Shared MCPManager for channel-scoped MCP servers (owned by WorkerManager) */
-  channelMcpManager?: import("./agent/src/mcp/client").MCPManager;
+  channelMcpManager?: import("./agent/mcp/client").MCPManager;
   /**
    * WebSocket URL for push notifications (e.g. ws://localhost:3000/ws).
    * Derived from chatApiUrl by replacing http:// with ws://.
@@ -155,7 +155,7 @@ export class WorkerLoop {
   private sleeping = false;
   private isProcessing = false;
   private abortController: AbortController | null = null;
-  private activeAgent: import("./agent/src/agent/agent").Agent | null = null;
+  private activeAgent: import("./agent/agent").Agent | null = null;
   private stoppedPromise: { resolve: () => void } | null = null;
   private trackedSpaces = new Map<string, TrackedSpace>();
 
@@ -303,7 +303,7 @@ export class WorkerLoop {
     // opening a second SQLite connection (which risks SQLITE_BUSY
     // if the singleton is mid-write).
     try {
-      const { getSessionManager } = await import("./agent/src/session/manager");
+      const { getSessionManager } = await import("./agent/session/manager");
       const sm = getSessionManager();
       const session = sm.getSession(this.sessionName);
       if (session) {
@@ -358,7 +358,7 @@ export class WorkerLoop {
 
     // Kill all cloudflare tunnels created by this worker
     try {
-      const { TunnelPlugin } = await import("./agent/src/plugins/tunnel-plugin");
+      const { TunnelPlugin } = await import("./agent/plugins/tunnel-plugin");
       TunnelPlugin.destroyAll();
     } catch {}
   }

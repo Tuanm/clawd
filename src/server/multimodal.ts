@@ -465,7 +465,7 @@ let _copilotImgKeyIdx = 0;
 function getCopilotVisionToken(): string | null {
   // Try KeyPool first (handles rotation, rate limiting, suspension)
   try {
-    const { keyPool } = require("../agent/src/api/key-pool");
+    const { keyPool } = require("../agent/api/key-pool");
     return keyPool.peekToken("agent") ?? null;
   } catch {
     // KeyPool unavailable (e.g. server process without agent bootstrap) — use config directly

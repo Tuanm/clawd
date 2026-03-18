@@ -722,7 +722,7 @@ export class BrowserPlugin implements ToolPlugin {
       sendBrowserCommand,
       getConnectionInfo,
       releaseAgentTabs,
-    } = await import("../../../server/browser-bridge");
+    } = await import("../../server/browser-bridge");
     const channel = this.channel;
     const agentId = this.agentId;
     // Wrap sendBrowserCommand to auto-inject agent routing options
@@ -743,7 +743,7 @@ export class BrowserPlugin implements ToolPlugin {
 
   /** Save a buffer as a chat file and return its file ID + metadata. */
   private async uploadToChatServer(buffer: Buffer, filename: string, mimetype: string) {
-    const { ATTACHMENTS_DIR, db, generateId } = await import("../../../server/database");
+    const { ATTACHMENTS_DIR, db, generateId } = await import("../../server/database");
     const id = generateId("F");
     const dotIndex = filename.lastIndexOf(".");
     const ext = dotIndex > 0 ? filename.slice(dotIndex + 1) : "";
@@ -1449,7 +1449,7 @@ export class BrowserPlugin implements ToolPlugin {
 
   async destroy(): Promise<void> {
     if (this.agentId) {
-      const { releaseAgentTabs } = await import("../../../server/browser-bridge");
+      const { releaseAgentTabs } = await import("../../server/browser-bridge");
       releaseAgentTabs(this.agentId);
     }
   }

@@ -13,30 +13,30 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isBrowserEnabled, isWorkspacesEnabled } from "../../../config-file";
-import type { CompletionRequest, Message, ToolCall, ToolDefinition } from "../api/client";
-import { createProvider } from "../api/factory";
-import { AllKeysSuspendedError } from "../api/key-pool";
-import type { LLMProvider } from "../api/providers";
-import { MODEL_TOKEN_LIMITS as CENTRALIZED_MODEL_LIMITS, getThresholds } from "../constants/context-limits";
-import { formatToolResult, parseToolArguments } from "../core/loop";
-import { destroyHooks, initializeHooks } from "../hooks/manager";
-import { MCPManager } from "../mcp/client";
-import { estimateMessagesTokens, estimateTokens } from "../memory/memory";
-import { type ContextModePluginResult, createContextModePlugin } from "../plugins/context-mode-plugin";
-import { CustomToolPlugin } from "../plugins/custom-tool-plugin";
-import { type Plugin, PluginManager } from "../plugins/manager";
-import { createStatePersistencePlugin } from "../plugins/state-persistence-plugin";
-import { TunnelPlugin } from "../plugins/tunnel-plugin";
-import { WorkspaceToolPlugin } from "../plugins/workspace-plugin";
-import { type Checkpoint, CheckpointManager } from "../session/checkpoint";
-import { getSessionManager, type Session, type SessionManager } from "../session/manager";
-import { getSkillManager } from "../skills/manager";
-import { type ToolPlugin, ToolPluginManager } from "../tools/plugin";
-import { executeTools, getSandboxProjectRoot, type ToolResult, toolDefinitions } from "../tools/tools";
-import { getAgentContext, getContextProjectRoot } from "../utils/agent-context";
-import { ContextTracker } from "../utils/context-tracker";
-import { isDebugEnabled } from "../utils/debug";
+import { isBrowserEnabled, isWorkspacesEnabled } from "../config-file";
+import type { CompletionRequest, Message, ToolCall, ToolDefinition } from "./api/client";
+import { createProvider } from "./api/factory";
+import { AllKeysSuspendedError } from "./api/key-pool";
+import type { LLMProvider } from "./api/providers";
+import { MODEL_TOKEN_LIMITS as CENTRALIZED_MODEL_LIMITS, getThresholds } from "./constants/context-limits";
+import { formatToolResult, parseToolArguments } from "./core/loop";
+import { destroyHooks, initializeHooks } from "./hooks/manager";
+import { MCPManager } from "./mcp/client";
+import { estimateMessagesTokens, estimateTokens } from "./memory/memory";
+import { type ContextModePluginResult, createContextModePlugin } from "./plugins/context-mode-plugin";
+import { CustomToolPlugin } from "./plugins/custom-tool-plugin";
+import { type Plugin, PluginManager } from "./plugins/manager";
+import { createStatePersistencePlugin } from "./plugins/state-persistence-plugin";
+import { TunnelPlugin } from "./plugins/tunnel-plugin";
+import { WorkspaceToolPlugin } from "./plugins/workspace-plugin";
+import { type Checkpoint, CheckpointManager } from "./session/checkpoint";
+import { getSessionManager, type Session, type SessionManager } from "./session/manager";
+import { getSkillManager } from "./skills/manager";
+import { type ToolPlugin, ToolPluginManager } from "./tools/plugin";
+import { executeTools, getSandboxProjectRoot, type ToolResult, toolDefinitions } from "./tools/tools";
+import { getAgentContext, getContextProjectRoot } from "./utils/agent-context";
+import { ContextTracker } from "./utils/context-tracker";
+import { isDebugEnabled } from "./utils/debug";
 
 // ============================================================================
 // Colored Logging Helpers
@@ -79,7 +79,7 @@ export interface AgentConfig {
   /** Fast model for tool-routing iterations (default: "claude-haiku-4.5") */
   fastModel?: string;
   /** Shared MCP manager for channel-scoped MCP servers (owned by WorkerManager, NOT disconnected on agent close) */
-  sharedMcpManager?: import("../mcp/client").MCPManager;
+  sharedMcpManager?: import("./mcp/client").MCPManager;
 }
 
 export interface AgentResult {
@@ -462,7 +462,7 @@ export class Agent {
 
         if (this.config.contextMode) {
           try {
-            const { loadWorkingState, formatForContext } = await import("../session/working-state");
+            const { loadWorkingState, formatForContext } = await import("./session/working-state");
             const sessionDir = `${homedir()}/.clawd/sessions/${this.session.id}`;
             const workingState = loadWorkingState(sessionDir);
             const stateContext = formatForContext(workingState);
@@ -503,9 +503,9 @@ export class Agent {
         try {
           // Smart compaction: importance-weighted selection (Phase 2)
           const { scoreMessages, fitToBudget, compressMessage, repairRoleAlternation } = await import(
-            "../session/message-scoring"
+            "./session/message-scoring"
           );
-          const { loadWorkingState, formatForContext } = await import("../session/working-state");
+          const { loadWorkingState, formatForContext } = await import("./session/working-state");
 
           const scored = scoreMessages(allMessages);
           const thresholds = getThresholds(this.getModel(), true);
@@ -663,7 +663,7 @@ export class Agent {
 
         // If still large, use smart truncation to 20%
         if (compressed.length > MIN_COMPRESS_SIZE) {
-          const { smartTruncate } = require("../utils/smart-truncation");
+          const { smartTruncate } = require("./utils/smart-truncation");
           compressed = smartTruncate(compressed, {
             maxLength: Math.max(200, Math.floor(compressed.length * 0.2)),
           });
@@ -1515,7 +1515,7 @@ SUMMARY:`;
     // Only enabled when config.json has "browser": true, ["channel-1", ...], or { channel: [tokens] }.
     if (!this._browserPluginRegistered && isBrowserEnabled(ctx?.channel)) {
       try {
-        const { BrowserPlugin } = require("../plugins/browser-plugin");
+        const { BrowserPlugin } = require("./plugins/browser-plugin");
         // Use channel:agentName as browser identity — two agents in different channels
         // can share the same name, so both parts are needed for uniqueness.
         const browserAgentId =

@@ -347,7 +347,7 @@ No code changes needed — Claw'd's existing MCP client infrastructure handles d
 
 | Capability | Status | Notes |
 |-----------|--------|-------|
-| MCP client (stdio + HTTP) | ✅ Exists | `src/agent/src/mcp/client.ts` |
+| MCP client (stdio + HTTP) | ✅ Exists | `src/agent/mcp/client.ts` |
 | External MCP server config | ✅ Exists | `mcp_servers` in `~/.clawd/config.json` |
 | Sandbox (bwrap/sandbox-exec) | ✅ Exists | Kernel-level isolation |
 | Multi-agent support | ✅ Exists | Per-agent context isolation |
@@ -704,7 +704,7 @@ The winning strategy combines the **Hybrid Docker+MCP architecture** (solution #
 - C/UA uses Apple Virtualization.Framework (macOS only) — irrelevant for Linux servers/cloud
 
 **For Hybrid Docker+MCP (#4+5):**
-- Claw'd's MCP client (`src/agent/src/mcp/client.ts`) already supports HTTP transport — connecting to a container's MCP endpoint requires zero code changes
+- Claw'd's MCP client (`src/agent/mcp/client.ts`) already supports HTTP transport — connecting to a container's MCP endpoint requires zero code changes
 - GoClaw architecture (analyzed in Section 1 of goclaw-architecture.md) already defines Docker sandbox lifecycle patterns
 - Layered control priority minimizes cost while maximizing capability
 
@@ -770,7 +770,7 @@ Priority 4: Vision + xdotool (screenshot-based)   → $0.002-0.015/action**, 60-
 **What:**
 - Add Playwright MCP server to Claw'd's MCP config (`~/.clawd/config.json`)
 - Agent gains: navigate, click, type, fill forms, extract text, take screenshots — all via accessibility tree
-- Works with existing `MCPManager` in `src/agent/src/mcp/client.ts`
+- Works with existing `MCPManager` in `src/agent/mcp/client.ts`
 
 **Config:**
 ```json
@@ -878,7 +878,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 
 **Claw'd Integration:**
 ```typescript
-// In src/agent/src/workspace/container.ts (NEW)
+// In src/agent/workspace/container.ts (NEW)
 
 interface WorkspaceConfig {
   image: string;           // "clawd-workspace:v1.0.0" (pinned, NOT :latest)

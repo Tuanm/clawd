@@ -11,7 +11,7 @@
  */
 
 import type { ServerWebSocket } from "bun";
-import { GATEWAY_ADMIN_PORT, GATEWAY_PROXY_PORT } from "../../agent/src/workspace/gateway.js";
+import { GATEWAY_ADMIN_PORT, GATEWAY_PROXY_PORT } from "../../agent/workspace/gateway.js";
 
 /** Per-connection map: connId → backend WebSocket (Caddy gateway → noVNC websockify) */
 const wsProxyBackends = new Map<string, WebSocket>();
@@ -43,7 +43,7 @@ async function ensureGatewayRoute(workspaceId: string): Promise<void> {
     // Admin API unreachable — try to reconnect anyway
   }
   // Route missing: register it now (idempotent)
-  const { connectWorkspaceToGateway } = await import("../../agent/src/workspace/gateway.js");
+  const { connectWorkspaceToGateway } = await import("../../agent/workspace/gateway.js");
   await connectWorkspaceToGateway(workspaceId);
 }
 

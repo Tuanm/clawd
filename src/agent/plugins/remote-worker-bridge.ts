@@ -7,7 +7,7 @@
  */
 
 import { createHash } from "crypto";
-import { getConnectedWorker, getTokenChannels, workerEvents } from "../../../server/remote-worker";
+import { getConnectedWorker, getTokenChannels, workerEvents } from "../../server/remote-worker";
 import type { MCPManager } from "../mcp/client";
 import { RemoteWorkerMCPConnection } from "../mcp/remote-worker-connection";
 

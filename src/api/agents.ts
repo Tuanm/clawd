@@ -31,8 +31,8 @@ import { execSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../agent/src/api/provider-config";
-import { getSkillManager } from "../agent/src/skills/manager";
+import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../agent/api/provider-config";
+import { getSkillManager } from "../agent/skills/manager";
 import type { WorkerManager } from "../worker-manager";
 
 // ============================================================================

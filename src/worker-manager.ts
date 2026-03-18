@@ -6,8 +6,8 @@
  * add/remove agent requests from the API.
  */
 
-import { getChannelMCPServers } from "./agent/src/api/provider-config";
-import { MCPManager } from "./agent/src/mcp/client";
+import { getChannelMCPServers } from "./agent/api/provider-config";
+import { MCPManager } from "./agent/mcp/client";
 import type { AppConfig } from "./config";
 import { getAuthToken } from "./config-file";
 import { loadOAuthToken } from "./mcp-oauth";

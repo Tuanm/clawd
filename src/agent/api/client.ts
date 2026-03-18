@@ -4,7 +4,7 @@
 
 import { EventEmitter } from "node:events";
 import http2 from "node:http2";
-import { trackFailure, trackSuccess } from "../../../analytics";
+import { trackFailure, trackSuccess } from "../../analytics";
 import { callContext } from "./call-context";
 import { AllKeysSuspendedError, keyPool } from "./key-pool";
 import { ensureKeyPoolInitialized, getBaseUrlForProvider, getCopilotToken } from "./provider-config";

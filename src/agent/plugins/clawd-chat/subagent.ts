@@ -4,8 +4,8 @@
  * Sends notifications to clawd-chat when sub-agents start, complete, etc.
  */
 
-import type { ToolCall } from "../../src/api/client";
-import type { PluginContext, PluginResult, SubAgentPlugin, ToolResultInfo } from "../../src/subagent/plugin";
+import type { ToolCall } from "../../api/client";
+import type { PluginContext, PluginResult, SubAgentPlugin, ToolResultInfo } from "../../subagent/plugin";
 
 export interface ClawdChatSubAgentConfig {
   apiUrl: string;

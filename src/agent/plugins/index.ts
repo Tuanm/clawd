@@ -8,5 +8,5 @@ export {
   type ClawdChatSubAgentConfig,
   createClawdChatPlugin,
   createClawdChatSubAgentPlugin,
-} from "../../plugins/clawd-chat";
+} from "./clawd-chat";
 export { type Plugin, type PluginContext, type PluginHooks, PluginManager } from "./manager";
