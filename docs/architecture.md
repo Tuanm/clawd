@@ -86,41 +86,37 @@ communicating with users through a real-time collaborative chat UI. Agents can:
 
 ## 2. High-Level Architecture
 
-```
-User Browser
-    │  HTTP/WebSocket (default: localhost:3456)
-    ▼
-┌─────────────────────────────────────────────┐
-│ Claw'd Server (src/index.ts — Bun HTTP+WS) │
-│                                              │
-│  ┌──────────┐  ┌────────────┐  ┌──────────┐│
-│  │ Chat API │  │MCP Endpoint│  │ Browser  ││
-│  │ /api/*   │  │ /mcp       │  │ Bridge   ││
-│  └────┬─────┘  └─────┬──────┘  └────┬─────┘│
-│       │               │              │       │
-│  ┌────▼───────────────▼──────┐       │       │
-│  │ SQLite (WAL mode)         │       │       │
-│  │ chat.db (messages, agents)│       │       │
-│  │ memory.db (LLM sessions)  │       │       │
-│  └───────────────────────────┘       │       │
-│                                      │       │
-│  ┌──────────────────────────────────▼──────┐│
-│  │ Agent Loop (src/agent/)                  ││
-│  │ ├─ LLM provider (multi-provider)        ││
-│  │ ├─ Tool plugins (browser, workspace)    ││
-│  │ ├─ MCP clients (chat + external)        ││
-│  │ ├─ Sub-agent spawner (spaces)           ││
-│  │ └─ Context compactor / token manager    ││
-│  └──────────────────────────────────────────┘│
-└──────────────────────────────────────────────┘
-         │ WebSocket
-         ▼
-┌──────────────────────────┐
-│ Chrome Browser Extension │
-│ (packages/browser-extension/) │
-│ ├─ CDP tools (normal)    │
-│ └─ Stealth mode (anti-bot)│
-└──────────────────────────┘
+```mermaid
+flowchart TD
+    UB["User Browser\nHTTP/WebSocket\n(default: localhost:3456)"]
+
+    subgraph Server["Claw'd Server (src/index.ts — Bun HTTP+WS)"]
+        ChatAPI["Chat API\n/api/*"]
+        MCP["MCP Endpoint\n/mcp"]
+        Bridge["Browser\nBridge"]
+
+        subgraph DB["SQLite (WAL mode)"]
+            ChatDB["chat.db\n(messages, agents)"]
+            MemDB["memory.db\n(LLM sessions)"]
+        end
+
+        subgraph AgentLoop["Agent Loop (src/agent/)"]
+            LLM["LLM provider (multi-provider)"]
+            Tools["Tool plugins (browser, workspace)"]
+            MCPClients["MCP clients (chat + external)"]
+            Spawner["Sub-agent spawner (spaces)"]
+            Compactor["Context compactor / token manager"]
+        end
+    end
+
+    Chrome["Chrome Browser Extension\n(packages/browser-extension/)\nCDP tools (normal)\nStealth mode (anti-bot)"]
+
+    UB -->|HTTP| ChatAPI
+    UB -->|HTTP| MCP
+    ChatAPI --> DB
+    MCP --> DB
+    Bridge --> AgentLoop
+    AgentLoop -->|WebSocket| Chrome
 ```
 
 ### Data Flow Summary
@@ -441,21 +437,27 @@ FTS5 full-text search index on `agent_memories.content`.
 
 Each agent runs its own `WorkerLoop` instance, managed by `WorkerManager`:
 
-```
-┌─────────────────────────────────────────────┐
-│ WorkerManager (src/worker-manager.ts)       │
-│  ├─ WorkerLoop (agent-1) ─── poll 200ms ──┐│
-│  ├─ WorkerLoop (agent-2) ─── poll 200ms ──┤│
-│  └─ WorkerLoop (agent-N) ─── poll 200ms ──┤│
-│                                             ││
-│  Each loop:                                 ││
-│  1. Check for new messages in channel       ││
-│  2. Build prompt (system + context + tools) ││
-│  3. Call LLM (streaming)                    ││
-│  4. Parse response → execute tool calls     ││
-│  5. Post results back to channel            ││
-│  6. Repeat until no pending messages        ││
-└─────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph WM["WorkerManager (src/worker-manager.ts)"]
+        WL1["WorkerLoop (agent-1)\npoll every 200ms"]
+        WL2["WorkerLoop (agent-2)\npoll every 200ms"]
+        WLN["WorkerLoop (agent-N)\npoll every 200ms"]
+    end
+
+    subgraph EachLoop["Each Loop"]
+        S1["1. Check for new messages in channel"]
+        S2["2. Build prompt (system + context + tools)"]
+        S3["3. Call LLM (streaming)"]
+        S4["4. Parse response → execute tool calls"]
+        S5["5. Post results back to channel"]
+        S6["6. Repeat until no pending messages"]
+    end
+
+    WL1 --> S1
+    WL2 --> S1
+    WLN --> S1
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S1
 ```
 
 **Key behaviors:**
@@ -471,16 +473,19 @@ Each agent runs its own `WorkerLoop` instance, managed by `WorkerManager`:
 
 The `Agent` class implements the core reasoning loop:
 
-```
-LLM Call (streaming)
-    │
-    ├── Text response → post to channel
-    │
-    └── Tool calls → parse → execute each tool
-            │
-            ├── Tool result → inject into context
-            │
-            └── Continue loop (call LLM again with results)
+```mermaid
+flowchart TD
+    LLM["LLM Call (streaming)"]
+    Text["Text response → post to channel"]
+    ToolCalls["Tool calls → parse → execute each tool"]
+    ToolResult["Tool result → inject into context"]
+    Continue["Continue loop (call LLM again with results)"]
+
+    LLM --> Text
+    LLM --> ToolCalls
+    ToolCalls --> ToolResult
+    ToolResult --> Continue
+    Continue --> LLM
 ```
 
 Each iteration:
@@ -557,23 +562,27 @@ interface Plugin {
 
 The memory system has three tiers, each serving different retrieval needs:
 
-```
-┌─────────────────────────────────────────────────┐
-│ Tier 1: Session Memory (messages table)         │
-│ ├─ Full conversation history with LLM           │
-│ ├─ Subject to compaction at token thresholds    │
-│ └─ Checkpointed for recovery                    │
-├─────────────────────────────────────────────────┤
-│ Tier 2: Knowledge Base (knowledge table)        │
-│ ├─ FTS5-indexed tool output chunks              │
-│ ├─ Retrieved by FTS5 keyword matching on demand │
-│ └─ Enables recall of past tool results          │
-├─────────────────────────────────────────────────┤
-│ Tier 3: Agent Memory (agent_memories table)     │
-│ ├─ Long-term facts, preferences, decisions      │
-│ ├─ FTS5-indexed for search                      │
-│ └─ Persists across sessions indefinitely        │
-└─────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph T1["Tier 1: Session Memory (messages table)"]
+        T1A["Full conversation history with LLM"]
+        T1B["Subject to compaction at token thresholds"]
+        T1C["Checkpointed for recovery"]
+    end
+
+    subgraph T2["Tier 2: Knowledge Base (knowledge table)"]
+        T2A["FTS5-indexed tool output chunks"]
+        T2B["Retrieved by FTS5 keyword matching on demand"]
+        T2C["Enables recall of past tool results"]
+    end
+
+    subgraph T3["Tier 3: Agent Memory (agent_memories table)"]
+        T3A["Long-term facts, preferences, decisions"]
+        T3B["FTS5-indexed for search"]
+        T3C["Persists across sessions indefinitely"]
+    end
+
+    T1 --> T2 --> T3
 ```
 
 **Tier 1 — Session memory**: The raw conversation with the LLM, stored in `memory.db → messages`.
@@ -656,40 +665,20 @@ connects to the clawd server via WebSocket and executes browser commands on beha
 
 ### 7.1 Architecture Overview
 
-```
-┌─────────────────────────────────────────────┐
-│ Chrome Browser Extension (MV3)              │
-│                                              │
-│  ┌──────────────────────────────────────┐   │
-│  │ service-worker.js (~2700 lines)      │   │
-│  │ ├─ Command dispatcher                │   │
-│  │ ├─ CDP mode (chrome.debugger API)    │   │
-│  │ └─ Stealth mode (scripting API)      │   │
-│  └──────────────┬───────────────────────┘   │
-│                  │                            │
-│  ┌──────────────▼───────────────────────┐   │
-│  │ offscreen.js                         │   │
-│  │ └─ WebSocket connection maintainer   │   │
-│  │    (WS ping every 20s,              │   │
-│  │     SW keepalive every 25s)         │   │
-│  └──────────────┬───────────────────────┘   │
-│                  │ WebSocket                  │
-│  ┌──────────────▼───────────────────────┐   │
-│  │ content-script.js                    │   │
-│  │ └─ DOM extraction + interaction      │   │
-│  └──────────────────────────────────────┘   │
-│                                              │
-│  ┌──────────────────────────────────────┐   │
-│  │ shield.js (MAIN world, document_start│   │
-│  │ └─ Anti-detection patches            │   │
-│  └──────────────────────────────────────┘   │
-└─────────────────────────────────────────────┘
-         │ WebSocket
-         ▼
-┌─────────────────────────────────────────────┐
-│ Claw'd Server (browser-bridge.ts)           │
-│ └─ /browser/ws endpoint                     │
-└─────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Ext["Chrome Browser Extension (MV3)"]
+        SW["service-worker.js (~2700 lines)\nCommand dispatcher\nCDP mode (chrome.debugger API)\nStealth mode (scripting API)"]
+        OS["offscreen.js\nWebSocket connection maintainer\nWS ping every 20s\nSW keepalive every 25s"]
+        CS["content-script.js\nDOM extraction + interaction"]
+        SH["shield.js\n(MAIN world, document_start)\nAnti-detection patches"]
+        SW --> OS
+        OS -->|WebSocket| CS
+    end
+
+    Server["Claw'd Server (browser-bridge.ts)\n/browser/ws endpoint"]
+
+    OS -->|WebSocket| Server
 ```
 
 **Communication flow:**
@@ -840,25 +829,19 @@ parallel.
 
 ### 8.1 Space Lifecycle
 
-```
-Parent Agent                    Spaces System                   Sub-Agent
-    │                               │                               │
-    │  spawn_agent(task, name)      │                               │
-    ├──────────────────────────────►│                               │
-    │                               │  Create isolated channel      │
-    │                               │  {parent}:space:{uuid}        │
-    │                               ├──────────────────────────────►│
-    │                               │  Start new WorkerLoop         │
-    │                               │  (inherits provider/model)    │
-    │                               │                               │
-    │                               │           ... working ...     │
-    │                               │                               │
-    │                               │  respond_to_parent(result)    │
-    │                               │◄──────────────────────────────┤
-    │  Result posted to parent      │                               │
-    │  channel + space locked       │  Space status → completed     │
-    │◄──────────────────────────────┤                               │
-    │                               │                               │
+```mermaid
+sequenceDiagram
+    participant PA as Parent Agent
+    participant SS as Spaces System
+    participant SA as Sub-Agent
+
+    PA->>SS: spawn_agent(task, name)
+    SS->>SA: Create isolated channel {parent}:space:{uuid}
+    SS->>SA: Start new WorkerLoop (inherits provider/model)
+    Note over SA: ... working ...
+    SA->>SS: respond_to_parent(result)
+    SS->>PA: Result posted to parent channel + space locked
+    Note over SS: Space status → completed
 ```
 
 **Key details:**
@@ -951,14 +934,22 @@ Uses `sandbox-exec` with Seatbelt profiles:
 External machines can connect to the clawd server as **remote tool providers**, extending
 an agent's capabilities across multiple hosts.
 
-```
-┌─────────────────────┐        WebSocket         ┌──────────────────────┐
-│ Remote Machine      │ ◄─────────────────────── │ Claw'd Server        │
-│ (worker)            │                           │                      │
-│ ├─ Custom tools     │  worker:registered event  │ RemoteWorkerBridge   │
-│ └─ worker_token auth│ ─────────────────────────►│ ├─ SHA256 token hash │
-└─────────────────────┘                           │ └─ Channel authz     │
-                                                  └──────────────────────┘
+```mermaid
+flowchart LR
+    subgraph RM["Remote Machine (worker)"]
+        CT["Custom tools"]
+        WT["worker_token auth"]
+    end
+
+    subgraph CS["Claw'd Server"]
+        RWB["RemoteWorkerBridge"]
+        TH["SHA256 token hash"]
+        CA["Channel authz"]
+    end
+
+    RM -->|"WebSocket\n(connect)"| CS
+    RM -->|"worker:registered event"| RWB
+    CS -->|"WebSocket\n(commands)"| RM
 ```
 
 **How it works:**
@@ -1261,20 +1252,15 @@ The build process compiles everything into a single self-contained binary.
 
 ### Build Pipeline
 
-```
-bun run build
-    │
-    ├─ 1. Vite builds UI
-    │     packages/ui/ → packages/ui/dist/
-    │
-    ├─ 2. embed-ui.ts
-    │     packages/ui/dist/ → base64 → src/embedded-ui.ts
-    │
-    ├─ 3. zip-extension.ts
-    │     packages/browser-extension/ → zip → base64 → src/embedded-extension.ts
-    │
-    └─ 4. bun build --compile
-          src/index.ts → dist/server/clawd-app (single binary)
+```mermaid
+flowchart TD
+    Start["bun run build"]
+    S1["1. Vite builds UI\npackages/ui/ → packages/ui/dist/"]
+    S2["2. embed-ui.ts\npackages/ui/dist/ → base64 → src/embedded-ui.ts"]
+    S3["3. zip-extension.ts\npackages/browser-extension/ → zip → base64 → src/embedded-extension.ts"]
+    S4["4. bun build --compile\nsrc/index.ts → dist/server/clawd-app (single binary)"]
+
+    Start --> S1 --> S2 --> S3 --> S4
 ```
 
 ### Build Commands
