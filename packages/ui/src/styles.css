@@ -2056,13 +2056,26 @@ body {
   border-bottom: 1px solid var(--border-color, #e2e8f0);
 }
 
-/* Article Page */
+/* Article Page — identical to chat UI, hides channel name + header-right + composer */
 .article-page {
-  min-height: 100vh;
-  padding: 40px 20px;
-  background: var(--bg-main);
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
+  height: 100dvh;
+  background: var(--bg-main);
+  overflow: hidden;
+}
+
+/* Hide channel name and header-right area in article page */
+.article-page .header-channel-name,
+.article-page .header-right {
+  display: none !important;
+}
+
+/* Hide composer/input area in article page */
+.article-page .composer,
+.article-page .composer-box {
+  display: none !important;
 }
 
 /* Article content card (standalone page) */

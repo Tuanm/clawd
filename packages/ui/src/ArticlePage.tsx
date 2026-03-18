@@ -121,39 +121,104 @@ export default function ArticlePage({ articleId }: Props) {
 
   if (loading) {
     return (
-      <div className="article-page">
-        <div className="article-card-loading">
-          <div className="loading-spinner" />
+      <div className="app loading">
+        <header className="header">
+          <div className="header-left">
+            <div className="clawd-entrance">
+              <svg width="28" height="22" viewBox="0 0 66 52" fill="none">
+                <rect x="0" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                <rect x="60" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                <g className="leg1">
+                  <rect x="6" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                  <rect x="42" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                </g>
+                <g className="leg2">
+                  <rect x="18" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                  <rect x="54" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                </g>
+                <rect x="6" width="54" height="39" fill="hsl(15 63.1% 59.6%)" />
+                <rect x="12" y="13" width="6" height="6.5" fill="#000" />
+                <rect x="48" y="13" width="6" height="6.5" fill="#000" />
+              </svg>
+            </div>
+          </div>
+        </header>
+      </div>
+    );
+  }
+
+  if (error || !article) {
+    return (
+      <div className="app article-page">
+        <header className="header">
+          <div className="header-left">
+            <div className="clawd-logo-wrapper">
+              <svg width="28" height="22" viewBox="0 0 66 52" fill="none">
+                <rect x="0" y="13" width="6" height="13" fill="hsl(0 0% 60%)" />
+                <rect x="60" y="13" width="6" height="13" fill="hsl(0 0% 60%)" />
+                <rect x="6" y="39" width="6" height="13" fill="hsl(0 0% 60%)" />
+                <rect x="18" y="39" width="6" height="13" fill="hsl(0 0% 60%)" />
+                <rect x="42" y="39" width="6" height="13" fill="hsl(0 0% 60%)" />
+                <rect x="54" y="39" width="6" height="13" fill="hsl(0 0% 60%)" />
+                <rect x="6" width="54" height="39" fill="hsl(0 0% 60%)" />
+                <rect x="12" y="16" width="6" height="2" fill="#000" />
+                <rect x="48" y="16" width="6" height="2" fill="#000" />
+              </svg>
+            </div>
+          </div>
+        </header>
+        <div className="messages-wrapper article-scrollable">
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flex: 1,
+              color: "var(--text-muted)",
+            }}
+          >
+            {error || "Article not found"}
+          </div>
         </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="article-page">
-        <div className="article-card-error">{error}</div>
-      </div>
-    );
-  }
-
-  if (!article) {
-    return (
-      <div className="article-page">
-        <div className="article-card-error">Article not found</div>
       </div>
     );
   }
 
   return (
-    <div className="article-page" onContextMenu={handleContextMenu}>
-      <div className="article-content-card">
-        <div className="article-card-date">{formatRelativeDate(article.created_at)}</div>
-        <div className="article-card-body">
-          <MarkdownContent content={article.content} />
+    <div className="app article-page" onContextMenu={handleContextMenu}>
+      <header className="header">
+        <div className="header-left">
+          <div className="clawd-logo-wrapper">
+            <svg width="28" height="22" viewBox="0 0 66 52" fill="none">
+              <rect x="0" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+              <rect x="60" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+              <rect x="6" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+              <rect x="18" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+              <rect x="42" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+              <rect x="54" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+              <rect x="6" width="54" height="39" fill="hsl(15 63.1% 59.6%)" />
+              <rect x="12" y="13" width="6" height="6.5" fill="#000" />
+              <rect x="48" y="13" width="6" height="6.5" fill="#000" />
+            </svg>
+          </div>
         </div>
-        <div className="article-card-author">
-          <ClawdAvatar color={article.avatar_color} title={article.author} />
+      </header>
+      <div className="messages-wrapper article-scrollable">
+        <div className="messages-list">
+          <div className="message">
+            <div className="message-row">
+              <ClawdAvatar color={article.avatar_color} title={article.author} />
+              <div className="message-body">
+                <div className="message-header">
+                  <span className="message-sender">{article.author}</span>
+                  <span className="message-time">{formatRelativeDate(article.created_at)}</span>
+                </div>
+                <div className="message-content">
+                  <MarkdownContent content={article.content} />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
       {contextMenu.visible && (
