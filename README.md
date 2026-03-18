@@ -82,6 +82,12 @@ flowchart LR
   end
 
   Bridge <-->|"WebSocket"| Extension
+
+  subgraph Worker["Remote Worker (TS/Py/Java)"]
+    WTools["File / Shell / Browser tools"]
+  end
+
+  Agents <-->|"WebSocket (MCP)"| Worker
 ```
 
 The server is a single Bun HTTP+WebSocket process (`src/index.ts`) that serves the embedded React UI, manages agents, and bridges browser automation. Each agent runs its own polling loop with tool execution, context management, and memory persistence.
