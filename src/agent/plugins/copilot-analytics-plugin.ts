@@ -60,7 +60,7 @@ export function createCopilotAnalyticsPlugin(channel: string): ToolPlugin {
 
       const lines = summary.map((row) => {
         const tokens = row.total_prompt_tokens + row.total_completion_tokens;
-        return `${row.period}: ${row.total_calls} calls (${row.ok_calls} ok, ${row.error_calls} errors), ${tokens} tokens, $${row.total_premium_cost.toFixed(4)} premium, ${row.avg_latency_ms ? Math.round(row.avg_latency_ms) + "ms avg" : "n/a"}${row.p95_latency_ms ? ` / ${Math.round(row.p95_latency_ms)}ms p95` : ""}`;
+        return `${row.period}: ${row.total_calls} calls (${row.ok_calls} ok, ${row.error_calls} errors), ${tokens} tokens, ${row.total_premium_requests.toFixed(1)} premium reqs, ${row.avg_latency_ms ? Math.round(row.avg_latency_ms) + "ms avg" : "n/a"}${row.p95_latency_ms ? ` / ${Math.round(row.p95_latency_ms)}ms p95` : ""}`;
       });
 
       return { success: true, output: `Copilot Usage Summary (${granularity}):\n${lines.join("\n")}` };
@@ -80,7 +80,7 @@ export function createCopilotAnalyticsPlugin(channel: string): ToolPlugin {
 
       const lines = models.map((row) => {
         const tokens = row.total_prompt_tokens + row.total_completion_tokens;
-        return `${row.model}: ${row.total_calls} calls (${row.ok_calls} ok), ${tokens} tokens, $${row.total_premium_cost.toFixed(4)} premium, ${row.avg_latency_ms ? Math.round(row.avg_latency_ms) + "ms avg" : "n/a"}`;
+        return `${row.model}: ${row.total_calls} calls (${row.ok_calls} ok), ${tokens} tokens, ${row.total_premium_requests.toFixed(1)} premium reqs, ${row.avg_latency_ms ? Math.round(row.avg_latency_ms) + "ms avg" : "n/a"}`;
       });
 
       return { success: true, output: `Model Usage:\n${lines.join("\n")}` };
@@ -100,7 +100,7 @@ export function createCopilotAnalyticsPlugin(channel: string): ToolPlugin {
 
       const lines = keys.map((row) => {
         const lastUsed = new Date(row.last_used_ts).toISOString().slice(0, 19);
-        return `${row.key_fingerprint}: ${row.total_calls} calls (${row.ok_calls} ok, ${row.error_calls} errors), $${row.total_premium_cost.toFixed(4)} premium, last used ${lastUsed}`;
+        return `${row.key_fingerprint}: ${row.total_calls} calls (${row.ok_calls} ok, ${row.error_calls} errors), ${row.total_premium_requests.toFixed(1)} premium reqs, last used ${lastUsed}`;
       });
 
       return { success: true, output: `API Key Usage:\n${lines.join("\n")}` };
@@ -120,7 +120,7 @@ export function createCopilotAnalyticsPlugin(channel: string): ToolPlugin {
           `Copilot Usage (last ${window} minutes):\n` +
           `Calls: ${stats.calls}\n` +
           `Errors: ${stats.errors}\n` +
-          `Premium Cost: $${stats.premiumCost.toFixed(4)}\n` +
+          `Premium Requests: ${stats.premiumRequests.toFixed(1)}\n` +
           `Avg Latency: ${stats.avgLatencyMs ? Math.round(stats.avgLatencyMs) + "ms" : "n/a"}`,
       };
     } catch (err: any) {
@@ -144,7 +144,7 @@ export function createCopilotAnalyticsPlugin(channel: string): ToolPlugin {
       const lines = calls.map((c: any) => {
         const ts = new Date(c.ts).toISOString().slice(0, 19);
         const tokens = (c.prompt_tokens || 0) + (c.completion_tokens || 0);
-        return `${ts} ${c.status.padEnd(5)} ${c.model} ${tokens}tok ${c.latency_ms ? c.latency_ms + "ms" : "n/a"} ${c.premium_cost ? "$" + c.premium_cost.toFixed(4) : ""} ${c.channel || ""} ${c.agent_id || ""}`;
+        return `${ts} ${c.status.padEnd(5)} ${c.model} ${tokens}tok ${c.latency_ms ? c.latency_ms + "ms" : "n/a"} ${c.premium_cost ? c.premium_cost.toFixed(1) + " pr" : ""} ${c.channel || ""} ${c.agent_id || ""}`;
       });
 
       return {
