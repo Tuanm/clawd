@@ -1,4 +1,4 @@
-# Claw'd — Agentic Collaborative Chat
+# Claw'd
 
 Claw'd is an open-source platform where AI agents operate autonomously through a real-time collaborative chat interface. Multiple agents can communicate with users and each other, execute code in sandboxed environments, browse the web via a Chrome extension, spawn sub-agents for parallel work, and persist memories across sessions.
 
@@ -136,6 +136,11 @@ Settings are loaded from `~/.clawd/config.json`:
   },
 
   "quotas": { "daily_image_limit": 50 },// 0 = unlimited
+
+  "model_token_limits": {                // Override built-in token limits (optional)
+    "copilot": { "gpt-4.1": 64000 },
+    "anthropic": { "claude-opus-4.6": 200000 }
+  },
 
   "workspaces": true,                    // true | false | ["channel1", "channel2"]
   "worker": true,                        // true | { "channel": ["token1"] }
@@ -349,6 +354,15 @@ Built-in plugins: browser, workspace, context-mode, state-persistence, tunnel, s
 - **Usage-based tool pruning**: After 5-iteration warmup, agents auto-prune unused tools (category-aware). Re-expands if agent appears stuck.
 - **Prompt caching**: Anthropic `prompt-caching` beta header for cache hits on repeated system prompt + tools.
 
+### Heartbeat Monitor
+
+Automatic stuck-agent detection and recovery:
+- **Heartbeat interval**: Configurable per-agent (default 30s) — set to 0 to disable
+- **Processing timeout**: Default 300s — cancels LLM + pending tool calls if agent doesn't progress
+- **Space idle timeout**: Default 60s — injects [HEARTBEAT] signal to idle sub-agents (prevents stuck spaces)
+- **Heartbeat signal**: `[HEARTBEAT]` sent as `<agent_signal>` user message, stripped from context compaction
+- **Smart compaction**: Heartbeat messages dropped automatically during context compression, never persisted
+
 ### Custom Skills
 
 Agents load skills from four directories (highest priority last):
@@ -390,8 +404,17 @@ Tool execution is sandboxed with JSON arguments via stdin, 30s default timeout (
 ### Memory (3-Tier)
 
 1. **Session memory** — conversation history with smart compaction at token thresholds
+   - **Hybrid history**: Last 20 messages kept in full; older messages stored in compact form
+   - **Smart message scoring**: Messages weighted by type (system: 100, user: 90, tool_success: 55, etc.) and recency
+   - **3-stage lifecycle**: FULL (>60 score) → COMPRESSED (30-60) → DROPPED (<30)
+   - **Full reset**: When tokens exceed critical threshold, generates 4K-token LLM summary
+   - **Anchor messages**: Task definitions, unresolved errors always preserved
+
 2. **Knowledge base** — FTS5-indexed tool output chunks for context retrieval
+   - Fast search across tool execution results and important outputs
+
 3. **Agent memories** — long-term facts, preferences, and decisions per agent
+   - Persistent across sessions via SQLite with FTS5 search
 
 ### Sub-Agents (Spaces)
 
@@ -404,6 +427,14 @@ Agents can delegate tasks via `spawn_agent(task, name)`:
 - `report_progress(percent, status)` — non-terminal progress updates to parent
 - `retask_agent(agent_id, task)` — re-task a completed sub-agent without cold-start
 - Stream idle timeout: 120s for slow/thinking models (Opus, o1, o3), 60s for others
+
+### Web Search
+
+Built-in web search with provider-specific backends:
+- **Copilot**: Calls GitHub MCP server's `web_search` tool (JSON-RPC 2.0)
+- **Others**: Falls back to DuckDuckGo HTML search
+- **20s timeout** with configurable result limits
+- Automatic provider detection and fallback handling
 
 ### Key Pool & Abuse Prevention
 
@@ -488,16 +519,25 @@ The extension is zipped and base64-embedded in the compiled binary, served at `/
 
 All agent tool execution runs in a sandboxed environment:
 
-- **Linux**: bubblewrap (bwrap) — deny-by-default namespace isolation
-- **macOS**: sandbox-exec with Seatbelt profiles
+- **Linux**: bubblewrap (bwrap) — deny-by-default namespace isolation with custom seccomp filters
+- **macOS**: sandbox-exec with Seatbelt profiles — allow-default approach with strategic denials
+- **Windows**: Path validation only (sandbox-exec not available); supports PowerShell, cmd.exe, bash
+- **Cross-platform shell detection**: Uses native shell (PowerShell on Windows, bash on Unix)
 
 ### Access Policy
 
 | Access | Paths |
 |---|---|
-| **Read/Write** | `{projectRoot}`, `/tmp`, `~/.clawd` |
+| **Read/Write** | `{projectRoot}` (excluding `.clawd/`), `/tmp`, `~/.clawd` |
 | **Read-only** | `/usr`, `/bin`, `/lib`, `/etc`, `~/.bun`, `~/.cargo`, `~/.deno`, `~/.nvm`, `~/.local` |
-| **Blocked** | `{projectRoot}/.clawd/` (agent config), home directory (except tool dirs) |
+| **Blocked** | `{projectRoot}/.clawd/` (agent config, identity), home directory (except tool dirs) |
+
+### Environment Variables
+
+- **Wipe & rebuild**: Sandbox environment cleared and rebuilt with only safe variables
+- **Git configuration**: Non-interactive with `commit.gpgsign=false`, `StrictHostKeyChecking=accept-new`, `BatchMode=yes`
+- **Tool environment**: Injected from `~/.clawd/.env` (never exposed directly to agents)
+- **TMPDIR**: Set to `/tmp` for Bun and other tools requiring temporary storage
 
 ---
 
@@ -546,6 +586,13 @@ The multi-stage Dockerfile:
 1. **Build stage** (oven/bun:1): Install deps → build UI → embed assets → compile binary
 2. **Runtime stage** (debian:bookworm-slim): Minimal image with git, ripgrep, python3, tmux, build-essential, bubblewrap, curl, openssh-client, bun, rust
 
+### Docker Image Publishing
+
+GitHub workflow publishes Docker images to **ghcr.io** on tag push:
+- **Trigger**: Push tag (e.g., `v1.2.3`)
+- **Registry**: `ghcr.io/clawd-pilot/clawd`
+- **Tags**: Version-specific (e.g., `v1.2.3`) and `latest`
+
 ### Run with Docker Compose
 
 ```yaml
@@ -553,7 +600,7 @@ The multi-stage Dockerfile:
 services:
   clawd:
     build: .
-    image: clawd-pilot/clawd:latest
+    image: ghcr.io/clawd-pilot/clawd:latest
     ports:
       - "3456:3456"
     volumes:
@@ -615,7 +662,7 @@ The UI connects via WebSocket for real-time updates:
 | `agent_tool_call` | Tool execution (started/completed/error) |
 | `reaction_added/removed` | Emoji reactions |
 | `message_seen` | Read receipts |
-| `agent_heartbeat` | Heartbeat events (sub-types: `heartbeat_sent`, `processing_timeout`, `space_auto_failed`) |
+| `agent_heartbeat` | Heartbeat monitor events (sub-types: `heartbeat_sent`, `processing_timeout`, `space_auto_failed`) — automatic stuck-agent recovery |
 
 ---
 
@@ -679,10 +726,11 @@ Upload files (PDF, CSV, text, code, images) for automatic preview:
 ### Document Conversion
 
 `convert_to_markdown` tool converts documents to Markdown for easy agent processing:
-- **Formats**: PDF (text extraction), DOCX (via mammoth), XLSX/CSV/TSV (tables), PPTX (slides), EPUB (ebooks), HTML
-- **Limits**: 50MB max file, 5M char output, 30s timeout
-- **Output**: Saves .md file to `{projectRoot}/.clawd/files/`, returns path for `view()` to read
-- **Security**: Path validation, binary detection, zip bomb protection (200MB decompress limit)
+- **Formats**: PDF, DOCX, XLSX, CSV, TSV, PPTX, EPUB, HTML
+- **Parser**: Uses unpdf for PDF extraction, exceljs for spreadsheets
+- **Limits**: 50MB file size, 30s timeout, 200MB decompressed limit (zip bomb protection)
+- **Output**: Saves .md file to `{projectRoot}/.clawd/files/` and returns path hint for `view()` to read
+- **Security**: Magic-byte format detection, binary detection, zip bomb protection
 
 ### Skills Management
 
