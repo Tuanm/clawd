@@ -2477,7 +2477,7 @@ function execGitCommand(args: string[], cwd?: string): Promise<{ success: boolea
 
   // Non-interactive env vars (all platforms)
   const gitEnv: Record<string, string> = {
-    ...process.env as Record<string, string>,
+    ...(process.env as Record<string, string>),
     GIT_TERMINAL_PROMPT: "0",
     GIT_CONFIG_GLOBAL: gitConfigPath,
   };
@@ -2509,8 +2509,12 @@ function execGitCommand(args: string[], cwd?: string): Promise<{ success: boolea
     const proc = spawn("git", fullArgs, { cwd, timeout: 30000, env: gitEnv });
     let stdout = "";
     let stderr = "";
-    proc.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+    proc.stdout?.on("data", (d: Buffer) => {
+      stdout += d.toString();
+    });
+    proc.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
     proc.on("close", (code) => {
       if (code === 0) {
         res({ success: true, output: stdout.trim() });

@@ -94,6 +94,10 @@ export function getSafeEnvVars(): Record<string, string> {
     GIT_CONFIG_GLOBAL: `${home}/.clawd/.gitconfig`,
     GIT_SSH_COMMAND: `ssh -F /dev/null -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i ${home}/.clawd/.ssh/id_ed25519`,
     GIT_TERMINAL_PROMPT: "0",
+    // Ensure temp dir is writable /tmp (Bun and other tools need this)
+    TMPDIR: "/tmp",
+    TEMP: "/tmp",
+    TMP: "/tmp",
     // Suppress interactive prompts from common tools
     DEBIAN_FRONTEND: "noninteractive",
     HOMEBREW_NO_AUTO_UPDATE: "1",
@@ -281,6 +285,13 @@ function getBwrapPrefix(options: BwrapOptions): string {
     if (existsSync(toolPath)) {
       args.push("--ro-bind", toolPath, toolPath);
     }
+  }
+
+  // Bun install cache needs write access for package operations (bun install, bun add).
+  // Must come AFTER the read-only ~/.bun mount so it overrides the subdirectory.
+  const bunInstallDir = `${home}/.bun/install`;
+  if (existsSync(bunInstallDir)) {
+    args.push("--bind", bunInstallDir, bunInstallDir);
   }
 
   // Clear host environment and set only safe variables
@@ -700,14 +711,15 @@ export async function runInSandbox(
 
   // Determine shell: sandbox wrapping uses bash; Windows fallback uses native shell
   const isWin = platform() === "win32";
-  const [shellExe, shellArgs]: [string, string[]] = isWin && !sandboxInitialized
-    ? (() => {
-        const comSpec = process.env.ComSpec || "cmd.exe";
-        return comSpec.toLowerCase().includes("powershell") || comSpec.toLowerCase().includes("pwsh")
-          ? [comSpec, ["-NoProfile", "-NonInteractive", "-Command", wrappedCommand]] as [string, string[]]
-          : [comSpec, ["/C", wrappedCommand]] as [string, string[]];
-      })()
-    : ["bash", ["-c", wrappedCommand]];
+  const [shellExe, shellArgs]: [string, string[]] =
+    isWin && !sandboxInitialized
+      ? (() => {
+          const comSpec = process.env.ComSpec || "cmd.exe";
+          return comSpec.toLowerCase().includes("powershell") || comSpec.toLowerCase().includes("pwsh")
+            ? ([comSpec, ["-NoProfile", "-NonInteractive", "-Command", wrappedCommand]] as [string, string[]])
+            : ([comSpec, ["/C", wrappedCommand]] as [string, string[]]);
+        })()
+      : ["bash", ["-c", wrappedCommand]];
 
   return new Promise((resolve) => {
     const proc = spawn(shellExe, shellArgs, {
