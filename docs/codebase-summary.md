@@ -1,6 +1,6 @@
 # Claw'd Codebase Summary
 
-> Generated: 2026-03-16 | Total Files: 260 | Total Lines: 1,126,514 tokens
+> Generated: 2026-03-18 | Total Files: ~260 | Total Tokens: 1,173,410 | Codebase size: 4.8M chars
 
 ---
 
@@ -159,7 +159,7 @@ Core reasoning engine with:
 - Long-term agent memory
 
 **System Prompt Injection:**
-- [HEARTBEAT] — Wake signal for idle agents
+- `<agent_signal>[HEARTBEAT]</agent_signal>` — Wake signal for idle agents (user-role message, stripped during compaction)
 - Memory context — Relevant agent memories inserted
 - Knowledge chunks — Retrieved via semantic search
 - Tool definitions — Updated based on usage patterns (tool filtering)
@@ -192,7 +192,7 @@ Built-in plugins: browser, workspace, context-mode, state-persistence, spawn-age
 
 Background health system for stuck-agent recovery:
 
-- **Injects [HEARTBEAT]** into idle agents (configurable interval, default 30s)
+- **Injects `<agent_signal>[HEARTBEAT]</agent_signal>`** into idle agents as a user-role message (configurable interval, default 30s)
 - **Cancels stuck agents** exceeding processing timeout (default 5 min)
 - **Monitors sub-agents** — fails after 10 consecutive heartbeats with no progress
 - **WebSocket events** — `heartbeat_sent`, `agent_wakeup`, `space_failed`
@@ -722,6 +722,12 @@ Located in `biome.json`:
 - `mermaid` — Diagram rendering
 - `dompurify` — HTML sanitization
 - `rehype-sanitize` — Markdown sanitization
+- `unpdf` — PDF text extraction
+- `exceljs` — XLSX spreadsheet parsing
+- `mammoth` — DOCX conversion
+- `turndown` — HTML → Markdown conversion
+- `jszip` — ZIP/PPTX/EPUB handling
+- `sharp` — Image processing
 
 ### Development
 

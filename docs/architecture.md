@@ -1,6 +1,6 @@
-# Claw'd — Architecture Reference
+# Claw'd Architecture Reference
 
-> Last updated: 2026-03-16
+> Last updated: 2026-03-18
 
 ---
 
@@ -494,23 +494,28 @@ Each iteration:
 
 ### 6.3 Token Management & Context Compaction
 
-The agent maintains a token budget with three tiers:
+The agent maintains a token budget with dynamic thresholds (contextMode=true) or legacy fixed values:
 
-| Threshold | Action |
-|-----------|--------|
-| **~50K tokens** | ⚠️ Warning — begin soft compaction |
-| **~70K tokens** | 🔴 Critical — aggressive compaction with summarization |
-| **Checkpoint** | Context recovery from saved checkpoints on overflow |
+| Level | Dynamic | Legacy | Action |
+|-------|---------|--------|--------|
+| **Normal** | <50% effective | <32K | Full session history kept |
+| **Warning** | 50-70% | 32-50K | Soft compaction begins |
+| **Critical** | 70-85% | 50-70K | Aggressive pruning + summarization |
+| **Emergency** | >85% | >70K | Full LLM-generated summary, reset |
 
-**Smart compaction** uses importance-weighted message scoring:
+**Smart message scoring** (from `message-scoring.ts`):
+- **Base weights**: system (100), user (90), tool_error (80), tool_success (55), tool_calls (70), assistant_text (50)
+- **Recency bonus**: Half-life ~28 messages
+- **Reference bonus**: Messages referenced by later messages (+10)
+- **3-stage lifecycle**: FULL (>60) → COMPRESSED (30-60) → DROPPED (<30)
+- **Anchor messages**: Task definitions, unresolved errors always preserved
+- **Atomic grouping**: Tool calls paired with their results
 
-- System messages: highest weight (never removed)
-- Recent user messages: high weight
-- Old assistant messages: lower weight, candidates for summarization
-- Tool results: lowest weight, first to be compacted
+**Full reset trigger**: When tokens exceed 95% of raw model limit (safety margin). Full reset uses a two-phase approach: (1) aggressive compaction keeping last 15 messages, (2) only if still over critical threshold, full session reset with LLM-generated summary (4096 max output tokens, model-aware input budget).
 
-**Checkpoint system**: Periodically saves a snapshot of the conversation state. On context
-overflow, the agent can recover from the last checkpoint rather than losing all context.
+**Hybrid history**: Last 20 messages kept in full; older messages stored compact form for replay.
+
+**Heartbeat handling**: `[HEARTBEAT]` and `<agent_signal>` messages dropped automatically during compaction, never persisted.
 
 ### 6.4 Plugin System
 
@@ -591,7 +596,7 @@ A background health monitor keeps agents responsive and recovers from stuck stat
 **Mechanism:**
 - Runs on a configurable interval (default: 30s)
 - Tracks agent state: idle vs. active processing
-- For idle agents: injects `[HEARTBEAT]` system message to wake them up
+- For idle agents: injects a user-role message wrapped in `<agent_signal>[HEARTBEAT]</agent_signal>` to wake them up
 - For stuck agents: cancels processing if exceeding timeout (default: 5 minutes)
 - For sub-agent spaces: auto-fails after 10 consecutive heartbeats with no progress (circuit breaker)
 
@@ -606,8 +611,8 @@ A background health monitor keeps agents responsive and recovers from stuck stat
 ```
 
 **Heartbeat Signal Protocol:**
-- `[HEARTBEAT]` appears as a system message in the LLM context
-- Agents read this as a wake signal, not a user message
+- `[HEARTBEAT]` is sent as a user-role message wrapped in `<agent_signal>[HEARTBEAT]</agent_signal>`
+- Agents read this as a wake signal, not a conversational user message
 - Agents check for pending work and continue if found
 - No reply needed if idle with no pending work
 
@@ -934,6 +939,10 @@ Uses `sandbox-exec` with Seatbelt profiles:
 - Agent environment is **cleaned and rebuilt** — not inherited from the host
 - Only safe variables from `~/.clawd/.env` are passed through
 - API keys and secrets are injected explicitly, not via host environment
+- `TMPDIR`/`TEMP`/`TMP` set to `/tmp` for Bun compatibility
+- Non-interactive env vars set: `DEBIAN_FRONTEND=noninteractive`, `HOMEBREW_NO_AUTO_UPDATE=1`, `PIP_NO_INPUT=1`, `CONDA_YES=1`
+- `~/.bun/install` mounted read-write (overrides the read-only `~/.bun` mount)
+- `.clawd/skills/`, `.clawd/tools/`, `.clawd/files/` re-mounted read-only as exceptions to the blocked `.clawd/` rule
 
 ---
 
@@ -1317,7 +1326,7 @@ The Dockerfile uses a two-stage build for minimal image size:
 # compose.yaml
 services:
   clawd:
-    image: clawd-pilot/clawd:latest
+    image: ghcr.io/clawd-pilot/clawd:latest
     build: .
     restart: unless-stopped
     ports:
@@ -1375,6 +1384,20 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
     "daily_image_limit": 50
   },
 
+  // Override token limits for models (optional)
+  "model_token_limits": {
+    "copilot": { "gpt-4.1": 64000, "gpt-4o": 128000 },
+    "anthropic": { "claude-opus-4.6": 200000 }
+  },
+
+  // Heartbeat monitor configuration
+  "heartbeat": {
+    "enabled": true,
+    "intervalMs": 30000,         // Check agent health every 30s
+    "processingTimeoutMs": 300000, // Cancel if processing >5min
+    "spaceIdleTimeoutMs": 60000   // Poke idle sub-agents after 60s
+  },
+
   // Workspace plugin toggle
   // true = all channels, false = disabled, ["channel1"] = specific channels
   "workspaces": true,
@@ -1401,14 +1424,6 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
   // true = enabled with defaults
   // { "provider": "...", "model": "...", "autoExtract": true } = custom config
   "memory": true,
-
-  // Heartbeat monitor for stuck-agent recovery
-  "heartbeat": {
-    "enabled": true,
-    "intervalMs": 30000,
-    "processingTimeoutMs": 300000,
-    "spaceIdleTimeoutMs": 60000
-  },
 
   // API authentication (optional)
   // When set, all API requests require: Authorization: Bearer <token>
