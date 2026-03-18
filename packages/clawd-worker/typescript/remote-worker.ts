@@ -419,9 +419,8 @@ function findGitBash(): string | null {
 function resolveShell(command: string): { exe: string; args: string[] } {
   if (!IS_WINDOWS) return { exe: "bash", args: ["-c", command] };
 
-  const gitBash = findGitBash();
-  if (gitBash) return { exe: gitBash, args: ["-c", command] };
-
+  // Use native Windows shell — no Git Bash conversion needed.
+  // Agent should write OS-native commands (PowerShell/cmd syntax).
   for (const ps of ["pwsh.exe", "powershell.exe"]) {
     try {
       execSync(`where ${ps}`, { stdio: "ignore" });
@@ -430,7 +429,7 @@ function resolveShell(command: string): { exe: string; args: string[] } {
       // try next
     }
   }
-  return { exe: "cmd.exe", args: ["/c", command] };
+  return { exe: process.env.ComSpec || "cmd.exe", args: ["/c", command] };
 }
 
 // ---------------------------------------------------------------------------
@@ -2490,8 +2489,13 @@ const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: "get_system_info",
+    description: "Get remote machine architecture: OS, platform, shell, and runtime info.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
     name: "bash",
-    description: "Run a bash command. Output is streamed back.",
+    description: "Run a shell command. Uses bash on Linux/macOS, PowerShell/cmd on Windows. Use OS-native syntax.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3013,6 +3017,40 @@ async function handleToolCall(msg: { id: string; tool: string; args: any }): Pro
       case "glob":
         result = await handleGlob(msg.args);
         break;
+      case "get_system_info": {
+        const os = await import("node:os");
+        const shell = resolveShell("echo test");
+        result = {
+          success: true,
+          output: JSON.stringify(
+            {
+              os: process.platform,
+              os_version: os.release(),
+              arch: os.arch(),
+              hostname: os.hostname(),
+              shell: shell.exe,
+              shell_type: IS_WINDOWS
+                ? shell.exe.toLowerCase().includes("powershell") || shell.exe.toLowerCase().includes("pwsh")
+                  ? "powershell"
+                  : "cmd"
+                : "bash",
+              home: os.homedir(),
+              user: os.userInfo().username,
+              runtime: typeof Bun !== "undefined" ? `Bun ${Bun.version}` : `Node ${process.version}`,
+              cpus: os.cpus().length,
+              memory_gb: Math.round(os.totalmem() / 1024 / 1024 / 1024),
+              is_remote: true,
+              worker_name: config.name,
+              hint: IS_WINDOWS
+                ? "This is a Windows remote machine. Use native PowerShell/cmd commands."
+                : "This is a Unix remote machine. Use bash/shell commands.",
+            },
+            null,
+            2,
+          ),
+        };
+        break;
+      }
       case "bash":
         result = await handleBash(msg.id, msg.args);
         break;
