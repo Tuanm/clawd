@@ -224,8 +224,19 @@ export class WorkerLoop {
   /** Set sleeping state */
   setSleeping(sleeping: boolean): void {
     this.sleeping = sleeping;
-    // Reset idle backoff when waking so the agent polls immediately at full speed
-    if (!sleeping) this.idlePollMs = POLL_INTERVAL;
+    if (sleeping) {
+      // Clear any pending heartbeat so it doesn't fire on wake
+      this.heartbeatPending = false;
+      // Cancel in-flight processing so the agent stops immediately
+      if (this.isProcessing && this.activeAgent) {
+        try {
+          this.activeAgent.cancel();
+        } catch {}
+      }
+    } else {
+      // Reset idle backoff when waking so the agent polls immediately at full speed
+      this.idlePollMs = POLL_INTERVAL;
+    }
     this.log(sleeping ? "Agent sleeping" : "Agent awake");
   }
 
