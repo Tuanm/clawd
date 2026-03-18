@@ -2119,18 +2119,20 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             </button>
           }
           projectsButton={
-            <button className="projects-btn" onClick={() => setShowProjectsDialog(true)} title="Browse Project Files">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
-              </svg>
-            </button>
+            recentAgents.length > 0 ? (
+              <button className="projects-btn" onClick={() => setShowProjectsDialog(true)} title="Browse Project Files">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+                </svg>
+              </button>
+            ) : undefined
           }
           mcpButton={
             !isSpaceChannel ? (
@@ -2140,7 +2142,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             ) : undefined
           }
           skillsButton={
-            !isSpaceChannel ? (
+            !isSpaceChannel && recentAgents.length > 0 ? (
               <button className="skills-btn" onClick={() => setShowSkillsDialog(true)} title="Skills">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26" />
