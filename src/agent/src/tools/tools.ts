@@ -4,7 +4,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import type { ToolCall, ToolDefinition } from "../api/client";
 import { getHookManager } from "../hooks/manager";
 import {
@@ -182,15 +182,15 @@ export function getProjectJobsDir(): string {
  */
 function isSensitiveFile(targetPath: string): boolean {
   const resolved = resolve(targetPath);
-  const basename = resolved.split("/").pop() || "";
+  const bn = basename(resolved);
 
   // Allow .env.example (template files)
-  if (basename === ".env.example" || basename.endsWith(".example")) {
+  if (bn === ".env.example" || bn.endsWith(".example")) {
     return false;
   }
 
   // Block .env files and variants (.env, .env.local, .env.production, etc.)
-  if (basename === ".env" || basename.startsWith(".env.")) {
+  if (bn === ".env" || bn.startsWith(".env.")) {
     return true;
   }
 
@@ -222,8 +222,9 @@ function isPathAllowed(targetPath: string): boolean {
   const resolved = resolve(targetPath);
   const projectRoot = getSandboxProjectRoot();
 
-  // Allowed paths: project root and /tmp only
-  const allowedPrefixes = [projectRoot, "/tmp"];
+  // Allowed paths: project root and system temp dir (cross-platform)
+  const { tmpdir } = require("node:os");
+  const allowedPrefixes = [projectRoot, "/tmp", tmpdir()];
 
   return allowedPrefixes.some((prefix) => resolved === prefix || resolved.startsWith(`${prefix}/`));
 }
@@ -370,6 +371,9 @@ registerTool("get_system_info", "Alias for get_environment.", {}, [], async () =
 // Tool: Shell (cross-platform)
 // ============================================================================
 
+/** Maximum bytes to accumulate from a single bash command's stdout+stderr combined */
+const MAX_BASH_OUTPUT = 10 * 1024 * 1024; // 10MB
+
 registerTool(
   "bash",
   "Execute a shell command. On Linux/macOS uses bash, on Windows uses cmd.exe or PowerShell natively. No command conversion needed — use the OS-native syntax.",
@@ -431,27 +435,35 @@ registerTool(
 
             let stdout = "";
             let stderr = "";
+            let outputBytes = 0;
 
             proc.stdout?.on("data", (data: Buffer) => {
-              stdout += data.toString();
+              if (outputBytes < MAX_BASH_OUTPUT) {
+                stdout += data.toString();
+                outputBytes += data.length;
+              }
             });
             proc.stderr?.on("data", (data: Buffer) => {
-              stderr += data.toString();
+              if (outputBytes < MAX_BASH_OUTPUT) {
+                stderr += data.toString();
+                outputBytes += data.length;
+              }
             });
 
             proc.on("close", (code: number | null) => {
               clearTimeout(timeoutId);
+              const truncated = outputBytes >= MAX_BASH_OUTPUT ? "\n[OUTPUT TRUNCATED: exceeded 10MB limit]" : "";
               if (timedOut) {
                 resolve({
                   success: false,
-                  output: stdout.trim(),
+                  output: stdout.trim() + truncated,
                   error:
                     `TIMEOUT: Command exceeded ${timeout / 1000}s limit. ` +
                     `For long-running tasks, use job_submit instead.`,
                 });
                 return;
               }
-              const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
+              const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "") + truncated;
               resolve({
                 success: code === 0,
                 output: sandboxNotice + (output.trim() || "(no output)"),
@@ -486,6 +498,15 @@ registerTool(
       const proc = spawn(shell, shellArgs, {
         timeout,
         cwd: workDir,
+        env: {
+          ...process.env,
+          // Suppress interactive prompts (targeted — don't set CI=true as it breaks tmux/others)
+          DEBIAN_FRONTEND: "noninteractive",
+          GIT_TERMINAL_PROMPT: "0",
+          HOMEBREW_NO_AUTO_UPDATE: "1",
+          CONDA_YES: "1",
+          PIP_NO_INPUT: "1",
+        },
       });
       let timedOut = false;
 
@@ -496,27 +517,35 @@ registerTool(
 
       let stdout = "";
       let stderr = "";
+      let outputBytes = 0;
 
       proc.stdout?.on("data", (data: Buffer) => {
-        stdout += data.toString();
+        if (outputBytes < MAX_BASH_OUTPUT) {
+          stdout += data.toString();
+          outputBytes += data.length;
+        }
       });
       proc.stderr?.on("data", (data: Buffer) => {
-        stderr += data.toString();
+        if (outputBytes < MAX_BASH_OUTPUT) {
+          stderr += data.toString();
+          outputBytes += data.length;
+        }
       });
 
       proc.on("close", (code: number | null) => {
         clearTimeout(timeoutId);
+        const truncated = outputBytes >= MAX_BASH_OUTPUT ? "\n[OUTPUT TRUNCATED: exceeded 10MB limit]" : "";
         if (timedOut) {
           resolve({
             success: false,
-            output: stdout.trim(),
+            output: stdout.trim() + truncated,
             error:
               `TIMEOUT: Command exceeded ${timeout / 1000}s limit. ` +
               `For long-running tasks, use job_submit instead.`,
           });
           return;
         }
-        const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
+        const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "") + truncated;
         resolve({
           success: code === 0,
           output: output.trim() || "(no output)",
@@ -610,10 +639,9 @@ registerTool(
           return { success: true, output };
         }
 
-        // Check file size before reading
-        const sizeResult = await runInSandbox("stat", ["-c", "%s", resolvedPath]);
-        if (sizeResult.success) {
-          const fileSize = parseInt(sizeResult.stdout.trim(), 10);
+        // Check file size before reading (using statSync - cross-platform, no shell dependency)
+        try {
+          const fileSize = statSync(resolvedPath).size;
           if (fileSize > 1024 * 1024) {
             return {
               success: false,
@@ -621,6 +649,8 @@ registerTool(
               error: `File too large (${(fileSize / 1024 / 1024).toFixed(1)}MB). Use start_line/end_line to read specific sections, or use grep to find relevant parts first.`,
             };
           }
+        } catch {
+          // stat failed - proceed and let cat report any error
         }
 
         // Read file
@@ -770,10 +800,12 @@ registerTool(
 
         content = content.replace(old_str, new_str);
 
-        // Write file using tee (handles content via stdin)
+        // Write file using heredoc with random delimiter to prevent injection
+        const { randomUUID } = await import("node:crypto");
+        const heredocDelim = `CLAWD_EOF_${randomUUID().replace(/-/g, "")}`;
         const writeResult = await runInSandbox("bash", [
           "-c",
-          `cat > "${resolvedPath}" << 'CLAWD_EOF'\n${content}\nCLAWD_EOF`,
+          `cat > "${resolvedPath}" << '${heredocDelim}'\n${content}\n${heredocDelim}`,
         ]);
         if (!writeResult.success) {
           return {
@@ -861,10 +893,12 @@ registerTool(
           };
         }
 
-        // Create file
+        // Create file using heredoc with random delimiter to prevent injection
+        const { randomUUID: randomUUIDCreate } = await import("node:crypto");
+        const heredocDelimCreate = `CLAWD_EOF_${randomUUIDCreate().replace(/-/g, "")}`;
         const writeResult = await runInSandbox("bash", [
           "-c",
-          `cat > "${resolvedPath}" << 'CLAWD_EOF'\n${content}\nCLAWD_EOF`,
+          `cat > "${resolvedPath}" << '${heredocDelimCreate}'\n${content}\n${heredocDelimCreate}`,
         ]);
         if (!writeResult.success) {
           return {
@@ -998,7 +1032,9 @@ registerTool(
       proc.on("error", () => {
         clearTimeout(timeoutId);
         // Fallback to grep if rg not available
-        const grepProc = spawn("grep", ["-rn", pattern, resolvedPath]);
+        const grepFallbackArgs = ["-rn", pattern, resolvedPath];
+        if (glob) grepFallbackArgs.splice(1, 0, `--include=${glob}`);
+        const grepProc = spawn("grep", grepFallbackArgs);
         let grepTimedOut = false;
 
         const grepTimeoutId = setTimeout(() => {
@@ -2430,23 +2466,61 @@ registerTool(
 // ============================================================================
 
 /**
- * Execute a git command inside the sandbox
- * Uses agent-specific git/ssh config from ~/.clawd/ (set via sandbox env)
+ * Execute a git command. Cross-platform, non-interactive.
+ * Disables GPG signing, SSH host verification prompts, terminal prompts.
+ * Uses sandbox on Linux/macOS, direct spawn on Windows.
  */
 function execGitCommand(args: string[], cwd?: string): Promise<{ success: boolean; output: string; error?: string }> {
-  // Build git command - env vars are set by sandbox
-  const gitCmd = `GIT_TERMINAL_PROMPT=0 git --no-pager ${args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`;
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const sshKey = `${home}/.clawd/.ssh/id_ed25519`;
+  const gitConfigPath = `${home}/.clawd/.gitconfig`;
 
-  // Run inside sandbox
-  return runInSandbox("bash", ["-c", gitCmd], { cwd, timeout: 30000 }).then((result) => {
-    if (result.success) {
-      return { success: true, output: result.stdout.trim() };
-    } else {
+  // Non-interactive env vars (all platforms)
+  const gitEnv: Record<string, string> = {
+    ...process.env as Record<string, string>,
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_GLOBAL: gitConfigPath,
+  };
+
+  // SSH config (skip on Windows if no ssh key — git may use credential manager)
+  if (!IS_WINDOWS || existsSync(sshKey)) {
+    gitEnv.GIT_SSH_COMMAND = `ssh -F /dev/null -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i ${sshKey}`;
+  }
+
+  const fullArgs = ["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "--no-pager", ...args];
+
+  // On Linux/macOS with sandbox: run via sandbox for isolation
+  if (isSandboxReady()) {
+    const escaped = fullArgs.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
+    const gitCmd = `GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL='${gitConfigPath}' GIT_SSH_COMMAND='${gitEnv.GIT_SSH_COMMAND || ""}' git ${escaped}`;
+    return runInSandbox("bash", ["-c", gitCmd], { cwd, timeout: 30000 }).then((result) => {
+      if (result.success) {
+        return { success: true, output: result.stdout.trim() };
+      }
       const error = result.stderr.includes("TIMEOUT")
         ? "TIMEOUT: Git command exceeded 30s."
         : result.stderr.trim() || `Exit code: ${result.code}`;
       return { success: false, output: result.stdout.trim(), error };
-    }
+    });
+  }
+
+  // Direct spawn (Windows, or Linux/macOS without sandbox)
+  return new Promise((res) => {
+    const proc = spawn("git", fullArgs, { cwd, timeout: 30000, env: gitEnv });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+    proc.on("close", (code) => {
+      if (code === 0) {
+        res({ success: true, output: stdout.trim() });
+      } else {
+        res({ success: false, output: stdout.trim(), error: stderr.trim() || `Exit code: ${code}` });
+      }
+    });
+    proc.on("error", (err) => {
+      res({ success: false, output: "", error: err.message });
+    });
   });
 }
 
@@ -2690,6 +2764,7 @@ async function execTmux(args: string[]): Promise<{ success: boolean; output: str
     const proc = spawn("tmux", args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, TERM: "xterm-256color" },
+      timeout: 10000,
     });
 
     let stdout = "";

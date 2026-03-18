@@ -92,8 +92,13 @@ export function getSafeEnvVars(): Record<string, string> {
     LANG: "C.UTF-8",
     SHELL: "/bin/bash",
     GIT_CONFIG_GLOBAL: `${home}/.clawd/.gitconfig`,
-    GIT_SSH_COMMAND: `ssh -F /dev/null -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${home}/.clawd/.ssh/id_ed25519`,
+    GIT_SSH_COMMAND: `ssh -F /dev/null -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i ${home}/.clawd/.ssh/id_ed25519`,
     GIT_TERMINAL_PROMPT: "0",
+    // Suppress interactive prompts from common tools
+    DEBIAN_FRONTEND: "noninteractive",
+    HOMEBREW_NO_AUTO_UPDATE: "1",
+    PIP_NO_INPUT: "1",
+    CONDA_YES: "1",
     ...loadAgentEnv(),
   };
 
@@ -690,12 +695,24 @@ export async function runInSandbox(
   const cmdParts = [command, ...args.map((a) => shellEscape(a))];
   const cmdString = cmdParts.join(" ");
 
-  // Wrap with sandbox
+  // Wrap with sandbox (Linux/macOS only — Windows uses direct spawn)
   const wrappedCommand = await wrapCommandForSandbox(cmdString, options.cwd);
 
+  // Determine shell: sandbox wrapping uses bash; Windows fallback uses native shell
+  const isWin = platform() === "win32";
+  const [shellExe, shellArgs]: [string, string[]] = isWin && !sandboxInitialized
+    ? (() => {
+        const comSpec = process.env.ComSpec || "cmd.exe";
+        return comSpec.toLowerCase().includes("powershell") || comSpec.toLowerCase().includes("pwsh")
+          ? [comSpec, ["-NoProfile", "-NonInteractive", "-Command", wrappedCommand]] as [string, string[]]
+          : [comSpec, ["/C", wrappedCommand]] as [string, string[]];
+      })()
+    : ["bash", ["-c", wrappedCommand]];
+
   return new Promise((resolve) => {
-    const proc = spawn("bash", ["-c", wrappedCommand], {
+    const proc = spawn(shellExe, shellArgs, {
       stdio: [options.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
+      cwd: options.cwd,
     });
 
     // Write stdin data if provided
