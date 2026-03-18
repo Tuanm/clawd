@@ -300,7 +300,10 @@ exit $EXIT_CODE
       }
     }
 
-    return readFileSync(logFile, "utf8");
+    const MAX_LOG_BYTES = 100 * 1024; // 100KB cap
+    const raw = readFileSync(logFile, "utf8");
+    if (raw.length <= MAX_LOG_BYTES) return raw;
+    return "[...truncated, showing last 100KB...]\n" + raw.slice(raw.length - MAX_LOG_BYTES);
   }
 
   // ==========================================================================
