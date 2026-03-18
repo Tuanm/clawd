@@ -18,6 +18,25 @@ import {
 } from "../utils/sandbox";
 
 // ============================================================================
+// Cross-platform shell helper
+// ============================================================================
+
+const IS_WINDOWS = process.platform === "win32";
+
+/** Get the shell command and args to execute a command string on the current OS */
+function getShellArgs(command: string): [string, string[]] {
+  if (IS_WINDOWS) {
+    // Use PowerShell if available, otherwise cmd.exe
+    const shell = process.env.ComSpec || "cmd.exe";
+    if (shell.toLowerCase().includes("powershell") || shell.toLowerCase().includes("pwsh")) {
+      return [shell, ["-NoProfile", "-NonInteractive", "-Command", command]];
+    }
+    return [shell, ["/C", command]];
+  }
+  return ["bash", ["-c", command]];
+}
+
+// ============================================================================
 // API Response Types
 // ============================================================================
 
@@ -179,6 +198,20 @@ function isSensitiveFile(targetPath: string): boolean {
 }
 
 /**
+ * Resolve a path that may be relative (from project root) or absolute.
+ * Prevents path traversal attacks — resolved path must stay within allowed dirs.
+ */
+function resolveSafePath(inputPath: string): string {
+  if (!inputPath) return getSandboxProjectRoot();
+  // Absolute paths pass through directly
+  if (inputPath.startsWith("/") || (IS_WINDOWS && /^[a-zA-Z]:[\\/]/.test(inputPath))) {
+    return resolve(inputPath);
+  }
+  // Relative paths resolve from project root
+  return resolve(getSandboxProjectRoot(), inputPath);
+}
+
+/**
  * Check if a path is within allowed directories:
  * - Project root and subdirectories
  * - /tmp and subdirectories
@@ -285,22 +318,38 @@ registerTool(
 );
 
 // ============================================================================
-// Tool: Get Project Root
+// Tool: Get Environment (combined system info + project root)
 // ============================================================================
 
 registerTool(
-  "get_project_root",
-  "Get the current project root directory (git root or cwd). Use this when you need to know the base path for the project you are working in.",
+  "get_environment",
+  "Get working environment: OS, shell, project root, and runtime. Call at session start. All file tools accept relative paths (resolved from project root).",
   {},
   [],
   async () => {
+    const os = await import("node:os");
+    const platform = os.platform();
+    const isWindows = platform === "win32";
+    const shell = isWindows ? process.env.ComSpec || "cmd.exe" : process.env.SHELL || "/bin/bash";
     const projectRoot = getSandboxProjectRoot();
     return {
       success: true,
       output: JSON.stringify(
         {
           project_root: projectRoot,
-          hint: 'Use this path as the base for all file operations. Combine with relative paths like: project_root + "/src/file.ts"',
+          os: platform,
+          arch: os.arch(),
+          shell,
+          shell_type: isWindows
+            ? shell.toLowerCase().includes("powershell")
+              ? "powershell"
+              : "cmd"
+            : shell.split("/").pop(),
+          user: os.userInfo().username,
+          runtime: `Bun ${Bun.version}`,
+          hint: isWindows
+            ? "Windows machine. Use PowerShell/cmd syntax. File paths accept relative (from project_root) or absolute."
+            : "Unix machine. Use bash syntax. File paths accept relative (from project_root) or absolute.",
         },
         null,
         2,
@@ -309,17 +358,25 @@ registerTool(
   },
 );
 
+// Backward compatibility aliases
+registerTool("get_project_root", "Alias for get_environment.", {}, [], async () =>
+  tools.get("get_environment")!({} as any),
+);
+registerTool("get_system_info", "Alias for get_environment.", {}, [], async () =>
+  tools.get("get_environment")!({} as any),
+);
+
 // ============================================================================
-// Tool: Bash
+// Tool: Shell (cross-platform)
 // ============================================================================
 
 registerTool(
   "bash",
-  "Execute a bash command. Use for running shell commands, scripts, or system operations.",
+  "Execute a shell command. On Linux/macOS uses bash, on Windows uses cmd.exe or PowerShell natively. No command conversion needed — use the OS-native syntax.",
   {
     command: {
       type: "string",
-      description: "The bash command to execute",
+      description: "The shell command to execute (use OS-native syntax)",
     },
     timeout: {
       type: "number",
@@ -332,7 +389,7 @@ registerTool(
   },
   ["command"],
   async ({ command, timeout = 30000, cwd }) => {
-    let workDir = cwd ? resolve(cwd) : undefined;
+    let workDir = cwd ? resolveSafePath(cwd) : undefined;
 
     // When sandbox enabled, use platform-specific isolation (bwrap on Linux, sandbox-exec on macOS)
     if (isSandboxEnabled()) {
@@ -423,9 +480,10 @@ registerTool(
       // (e.g., missing dependencies). Still apply path validation above.
     }
 
-    // Non-sandboxed mode - run directly
+    // Non-sandboxed mode - run directly (cross-platform shell)
     return new Promise((resolve) => {
-      const proc = spawn("bash", ["-c", command], {
+      const [shell, shellArgs] = getShellArgs(command);
+      const proc = spawn(shell, shellArgs, {
         timeout,
         cwd: workDir,
       });
@@ -515,7 +573,7 @@ registerTool(
   ["path"],
   async ({ path, start_line, end_line }) => {
     try {
-      const resolvedPath = resolve(path);
+      const resolvedPath = resolveSafePath(path);
 
       // Always validate path first (checks both allowed paths AND sensitive files like .env)
       const pathError = validatePath(resolvedPath, "view");
@@ -664,7 +722,7 @@ registerTool(
   ["path", "old_str", "new_str"],
   async ({ path, old_str, new_str }) => {
     try {
-      const resolvedPath = resolve(path);
+      const resolvedPath = resolveSafePath(path);
 
       // Always validate path first (checks both allowed paths AND sensitive files like .env)
       const pathError = validatePath(resolvedPath, "edit");
@@ -783,7 +841,7 @@ registerTool(
   ["path", "content"],
   async ({ path, content }) => {
     try {
-      const resolvedPath = resolve(path);
+      const resolvedPath = resolveSafePath(path);
 
       // Always validate path first (checks both allowed paths AND sensitive files like .env)
       const pathError = validatePath(resolvedPath, "create");
@@ -863,7 +921,7 @@ registerTool(
   },
   ["pattern"],
   async ({ pattern, path = ".", glob, context }) => {
-    const resolvedPath = resolve(path);
+    const resolvedPath = resolveSafePath(path);
 
     const args = ["--color=never", "--line-number"];
     if (glob) args.push("-g", glob);
@@ -991,7 +1049,7 @@ registerTool(
   },
   ["pattern"],
   async ({ pattern, path = "." }) => {
-    const resolvedPath = resolve(path);
+    const resolvedPath = resolveSafePath(path);
 
     // Use sandbox for filesystem isolation
     if (isSandboxReady()) {
@@ -3238,7 +3296,7 @@ registerTool(
       return { success: false, output: "", error: "path is required" };
     }
 
-    const resolvedPath = resolve(filePath);
+    const resolvedPath = resolveSafePath(filePath);
     const pathError = validatePath(resolvedPath, "convert_to_markdown");
     if (pathError) return { success: false, output: "", error: pathError };
 

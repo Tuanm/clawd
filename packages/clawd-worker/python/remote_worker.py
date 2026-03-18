@@ -471,39 +471,18 @@ def sanitize_secrets(output):  # type: (str) -> str
 # ---------------------------------------------------------------------------
 
 def resolve_shell(command):  # type: (str) -> Tuple[str, List[str]]
-    """Return ``(exe, args)`` to execute *command* without ``shell=True``."""
+    """Return ``(exe, args)`` to execute *command* without ``shell=True``.
+    Uses native OS shell — no Git Bash conversion on Windows."""
     if not IS_WINDOWS:
         return ("bash", ["-c", command])
 
-    # Try Git Bash first (most common on Windows dev machines)
-    git_bash_paths = [
-        os.path.join(
-            os.environ.get("ProgramFiles", r"C:\Program Files"),
-            "Git", "bin", "bash.exe",
-        ),
-        os.path.join(
-            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
-            "Git", "bin", "bash.exe",
-        ),
-        os.path.join(
-            os.environ.get("LOCALAPPDATA", ""),
-            "Programs", "Git", "bin", "bash.exe",
-        ),
-    ]
-    for p in git_bash_paths:
-        if os.path.isfile(p):
-            return (p, ["-c", command])
-
-    bash = shutil.which("bash")
-    if bash:
-        return (bash, ["-c", command])
-
+    # Use native Windows shell (PowerShell preferred, then cmd)
     for ps in ("pwsh", "powershell"):
         found = shutil.which(ps)
         if found:
             return (found, ["-NoProfile", "-NonInteractive", "-Command", command])
 
-    return ("cmd.exe", ["/c", command])
+    return (os.environ.get("ComSpec", "cmd.exe"), ["/c", command])
 
 
 # ---------------------------------------------------------------------------

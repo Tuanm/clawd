@@ -593,24 +593,8 @@ public class RemoteWorker {
         if (!IS_WINDOWS) {
             return new ShellCmd("bash", List.of("-c", command));
         }
-        // Try Git Bash
-        for (String base : List.of(
-                System.getenv("ProgramFiles"), System.getenv("ProgramFiles(x86)"),
-                System.getenv("LOCALAPPDATA") != null ? System.getenv("LOCALAPPDATA") + "\\Programs" : null)) {
-            if (base == null) continue;
-            Path p = Path.of(base, "Git", "bin", "bash.exe");
-            if (Files.isRegularFile(p)) return new ShellCmd(p.toString(), List.of("-c", command));
-        }
-        // Try bash on PATH
-        try {
-            var which = new ProcessBuilder("where", "bash.exe").redirectErrorStream(true).start();
-            String out = new String(which.getInputStream().readAllBytes()).trim();
-            which.waitFor(5, TimeUnit.SECONDS);
-            if (!out.isEmpty() && Files.isRegularFile(Path.of(out.lines().findFirst().orElse("")))) {
-                return new ShellCmd(out.lines().findFirst().orElse("bash"), List.of("-c", command));
-            }
-        } catch (Exception ignored) {}
-        // Try PowerShell
+        // Use native Windows shell — no Git Bash conversion.
+        // Agent should write OS-native commands (PowerShell/cmd syntax).
         for (String ps : List.of("pwsh.exe", "powershell.exe")) {
             try {
                 var which = new ProcessBuilder("where", ps).redirectErrorStream(true).start();
@@ -620,7 +604,8 @@ public class RemoteWorker {
                 }
             } catch (Exception ignored) {}
         }
-        return new ShellCmd("cmd.exe", List.of("/c", command));
+        String comSpec = System.getenv("ComSpec");
+        return new ShellCmd(comSpec != null ? comSpec : "cmd.exe", List.of("/c", command));
     }
 
     // -----------------------------------------------------------------------
