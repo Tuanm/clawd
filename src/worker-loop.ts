@@ -344,6 +344,12 @@ export class WorkerLoop {
       this.stoppedPromise = null;
     }
     await this.clearStreamingState();
+
+    // Kill all cloudflare tunnels created by this worker
+    try {
+      const { TunnelPlugin } = await import("./agent/src/plugins/tunnel-plugin");
+      TunnelPlugin.destroyAll();
+    } catch {}
   }
 
   // ===========================================================================
