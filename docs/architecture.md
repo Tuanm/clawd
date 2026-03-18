@@ -111,12 +111,15 @@ flowchart TD
 
     Chrome["Chrome Browser Extension\n(packages/browser-extension/)\nCDP tools (normal)\nStealth mode (anti-bot)"]
 
+    Worker["Remote Worker\n(TS / Python / Java)\nFile, shell, browser tools"]
+
     UB -->|HTTP| ChatAPI
     UB -->|HTTP| MCP
     ChatAPI --> DB
     MCP --> DB
     Bridge --> AgentLoop
     AgentLoop -->|WebSocket| Chrome
+    AgentLoop -->|"WebSocket (MCP)"| Worker
 ```
 
 ### Data Flow Summary
@@ -128,6 +131,7 @@ flowchart TD
 5. **Agent → Tools**: Plugin system executes tool calls; results flow back into the LLM loop
 6. **Agent → Browser**: WebSocket bridge to Chrome extension for remote browser automation
 7. **Agent → Sub-agents**: Spaces system spawns isolated sub-agent channels for parallel work
+8. **Agent → Remote Worker**: WebSocket MCP bridge extends agent tools to external machines (TS/Python/Java workers)
 
 ---
 
