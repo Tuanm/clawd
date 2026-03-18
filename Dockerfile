@@ -55,14 +55,15 @@ RUN ARCH=$(dpkg --print-architecture) && \
       -o /usr/local/bin/cloudflared && \
     chmod +x /usr/local/bin/cloudflared
 
-# Java (11, 17, 21) via Eclipse Adoptium (Temurin) — direct tarball download
+# Java (11, 17, 21) via Eclipse Adoptium (Temurin) — with retry for transient 502s
 RUN mkdir -p /usr/lib/jvm && \
-    curl -fsSL -L "https://api.adoptium.net/v3/binary/latest/11/ga/linux/x64/jdk/hotspot/normal/eclipse" \
-      | tar xz -C /usr/lib/jvm && \
-    curl -fsSL -L "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse" \
-      | tar xz -C /usr/lib/jvm && \
-    curl -fsSL -L "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse" \
-      | tar xz -C /usr/lib/jvm && \
+    for v in 11 17 21; do \
+      for i in 1 2 3; do \
+        curl -fsSL -L --retry 3 --retry-delay 5 \
+          "https://api.adoptium.net/v3/binary/latest/${v}/ga/linux/x64/jdk/hotspot/normal/eclipse" \
+          | tar xz -C /usr/lib/jvm && break || sleep 10; \
+      done; \
+    done && \
     ln -sf /usr/lib/jvm/jdk-21* /usr/lib/jvm/java-21-default
 # Default to Java 21; agents can switch via JAVA_HOME
 ENV JAVA_HOME=/usr/lib/jvm/java-21-default
