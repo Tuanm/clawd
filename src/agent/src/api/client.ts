@@ -249,6 +249,28 @@ export class CopilotClient extends EventEmitter {
   }
 
   /**
+   * Fetch token limit for a model from the Copilot /models endpoint.
+   * Returns limits.max_context_window_tokens if available.
+   */
+  async fetchModelTokenLimit(model: string): Promise<number | null> {
+    try {
+      const token = getCopilotToken() || this.token;
+      const res = await fetch(`${this.baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${token}`, ...BASE_HEADERS },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        data?: Array<{ id: string; limits?: { max_context_window_tokens?: number } }>;
+      };
+      const found = data.data?.find((m) => m.id === model);
+      return found?.limits?.max_context_window_tokens ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Send a completion request with key rotation on 429/403.
    * @param initiator "user" = counts as premium request; "agent" = 0 premium cost (default)
    */

@@ -101,6 +101,13 @@ export interface LLMProvider {
    * Close any open connections
    */
   close(): void;
+
+  /**
+   * Fetch token limit for a model from the provider API.
+   * Returns null if the provider doesn't expose this info.
+   * Optional — providers that don't support it simply don't implement it.
+   */
+  fetchModelTokenLimit?(model: string): Promise<number | null>;
 }
 
 // ============================================================================

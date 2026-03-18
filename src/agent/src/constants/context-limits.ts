@@ -5,7 +5,7 @@
  * token limit. When contextMode=false, legacy hardcoded values are used.
  */
 
-export const MODEL_TOKEN_LIMITS: Record<string, number> = {
+const BUILTIN_TOKEN_LIMITS: Record<string, number> = {
   "claude-opus-4.6": 128000,
   "claude-opus-4.5": 128000,
   "claude-sonnet-4.5": 128000,
@@ -14,8 +14,23 @@ export const MODEL_TOKEN_LIMITS: Record<string, number> = {
   "gpt-5": 128000,
   "gpt-5.1": 128000,
   "gpt-5.2": 128000,
-  "gpt-4.1": 128000,
+  "gpt-4.1": 64000,
 };
+
+/** Merged token limits: built-in defaults + config.json overrides */
+export const MODEL_TOKEN_LIMITS: Record<string, number> = { ...BUILTIN_TOKEN_LIMITS };
+
+/** Apply overrides from config.json model_token_limits (provider → model → limit) */
+export function applyTokenLimitOverrides(overrides: Record<string, Record<string, number>>): void {
+  for (const models of Object.values(overrides)) {
+    if (typeof models !== "object" || !models) continue;
+    for (const [model, limit] of Object.entries(models)) {
+      if (typeof limit === "number" && limit > 0) {
+        MODEL_TOKEN_LIMITS[model] = limit;
+      }
+    }
+  }
+}
 
 export interface ContextThresholds {
   /** Token count at which to create a proactive checkpoint */

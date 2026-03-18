@@ -444,22 +444,35 @@ export class Agent {
       const postTokens = postStats?.estimatedTokens ?? 0;
       if (postTokens >= this.tokenLimitCritical) {
         console.log(`[Agent] Still at ${postTokens} tokens after compaction, full reset as last resort`);
+
+        // Generate summary BEFORE wiping — capture what the agent was doing
+        let resetSummary = "";
+        try {
+          const allMessages = this.sessions.getRecentMessages(this.session.id, 200);
+          resetSummary = await this.generateCompactionSummary(allMessages);
+        } catch {
+          resetSummary = `[Session reset — ${postStats?.messageCount ?? 0} messages exceeded critical token limit]`;
+        }
+
         this.sessions.resetSession(this.session.name);
-        // Inject recovery context
-        if (this.config.contextMode && this.session) {
+
+        // Inject summary + recovery context into fresh session
+        const recoveryParts: string[] = [`[Emergency reset — prior session summary]\n${resetSummary}`];
+
+        if (this.config.contextMode) {
           try {
             const { loadWorkingState, formatForContext } = await import("../session/working-state");
             const sessionDir = `${homedir()}/.clawd/sessions/${this.session.id}`;
             const workingState = loadWorkingState(sessionDir);
             const stateContext = formatForContext(workingState);
-            if (stateContext) {
-              const recovery = `[Emergency checkpoint — session reset]\n${stateContext}\n[Resume from working state above. Verify file hashes before making changes.]`;
-              this.sessions.addMessage(this.session.id, { role: "system", content: recovery });
-            }
+            if (stateContext) recoveryParts.push(stateContext);
           } catch (err) {
             if (this.config.verbose) console.log("[Agent] Recovery context injection failed:", err);
           }
         }
+
+        recoveryParts.push("[Resume from the summary above. Verify current state before making changes.]");
+        this.sessions.addMessage(this.session.id, { role: "user", content: recoveryParts.join("\n\n") });
       }
 
       const remaining = postTokens < this.tokenLimitCritical ? (postStats?.messageCount ?? 0) : 0;
@@ -706,25 +719,29 @@ export class Agent {
         return `[${messages.length} messages compacted - mostly tool calls]`;
       }
 
-      // Build conversation text for summarization
-      const conversationText = relevantMessages
-        .slice(0, 30) // Limit to avoid huge prompts
-        .map((m) => `${m.role.toUpperCase()}: ${(m.content || "").slice(0, 500)}`)
-        .join("\n\n");
+      // Build conversation text for summarization — use model's context minus output + overhead
+      const modelLimit = MODEL_TOKEN_LIMITS[this.config.model] ?? 128_000;
+      const maxInputTokens = modelLimit - 4096 - 1000; // reserve 4K output + 1K prompt overhead
+      const maxInputChars = maxInputTokens * 3; // ~3 chars/token
+      let conversationText = "";
+      for (const m of relevantMessages) {
+        const entry = `${m.role.toUpperCase()}: ${(m.content || "").slice(0, 2000)}\n\n`;
+        if (conversationText.length + entry.length > maxInputChars) break;
+        conversationText += entry;
+      }
 
-      // Use LLM to generate summary
-      const summaryPrompt = `Summarize this conversation in 2-3 sentences. Focus on: what was discussed, key decisions made, and any important context for continuing the conversation.
+      const summaryPrompt = `Summarize this conversation concisely. Focus on: tasks requested, key decisions, current progress, unfinished work, and critical context for continuing.
 
 CONVERSATION:
 ${conversationText}
 
 SUMMARY:`;
 
-      // Quick non-streaming call for summary (use cheaper/faster model)
+      // Use default model for quality summary
       const response = await this.client.complete({
-        model: "claude-haiku-4.5",
+        model: this.config.model,
         messages: [{ role: "user", content: summaryPrompt }],
-        max_tokens: 200,
+        max_tokens: 4096,
       });
 
       const summary = response.choices[0]?.message?.content?.trim();
@@ -737,7 +754,7 @@ SUMMARY:`;
       }
     }
 
-    // Fallback: simple heuristic summary
+    // Fallback: count-based summary
     const userMsgCount = messages.filter((m) => m.role === "user").length;
     const assistantMsgCount = messages.filter((m) => m.role === "assistant").length;
     const toolMsgCount = messages.filter((m) => m.role === "tool").length;
@@ -1404,6 +1421,19 @@ SUMMARY:`;
           console.log(`[Agent] Context mode plugin failed:`, err?.message || err);
         }
       }
+    }
+
+    // Probe provider for model token limit (non-blocking, best-effort)
+    if (!MODEL_TOKEN_LIMITS[this.config.model]) {
+      this.client
+        .fetchModelTokenLimit?.(this.config.model)
+        .then((limit) => {
+          if (limit && !MODEL_TOKEN_LIMITS[this.config.model]) {
+            MODEL_TOKEN_LIMITS[this.config.model] = limit;
+            console.log(`[Agent] Discovered token limit for ${this.config.model}: ${limit}`);
+          }
+        })
+        .catch(() => {});
     }
 
     // Initialize context tracker when contextMode is enabled

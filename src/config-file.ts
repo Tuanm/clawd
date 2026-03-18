@@ -119,6 +119,21 @@ export interface ConfigFile {
   auth?: {
     token?: string;
   };
+  /**
+   * Override token limits for specific models, organized by provider.
+   * Merged with built-in defaults (overrides take precedence).
+   * Model keys can be aliases or exact IDs.
+   *
+   * Example:
+   * ```json
+   * "model_token_limits": {
+   *   "copilot": { "gpt-4.1": 64000, "gpt-4.1-mini": 32000 },
+   *   "anthropic": { "claude-sonnet-4": 200000 },
+   *   "ollama": { "llama3": 8000 }
+   * }
+   * ```
+   */
+  model_token_limits?: Record<string, Record<string, number>>;
 }
 
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");
