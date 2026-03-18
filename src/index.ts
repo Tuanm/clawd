@@ -83,12 +83,9 @@ Examples:
   process.exit(0);
 }
 
-import { keyPool } from "./agent/src/api/key-pool";
-import {
-  clearConfigCache as clearProviderConfigCache,
-  ensureKeyPoolInitialized,
-} from "./agent/src/api/provider-config";
-import { setDebug } from "./agent/src/utils/debug";
+import { keyPool } from "./agent/api/key-pool";
+import { clearConfigCache as clearProviderConfigCache, ensureKeyPoolInitialized } from "./agent/api/provider-config";
+import { setDebug } from "./agent/utils/debug";
 import {
   type CallsQueryOptions,
   queryCalls,
@@ -128,7 +125,7 @@ if (!validateConfig(config)) {
 {
   const fileConfig = loadConfigFile();
   if (fileConfig.model_token_limits) {
-    const { applyTokenLimitOverrides } = require("./agent/src/constants/context-limits");
+    const { applyTokenLimitOverrides } = require("./agent/constants/context-limits");
     applyTokenLimitOverrides(fileConfig.model_token_limits);
   }
 }
@@ -139,8 +136,8 @@ import REMOTE_WORKER_JAVA from "../packages/clawd-worker/java/RemoteWorker.java"
 import REMOTE_WORKER_PY from "../packages/clawd-worker/python/remote_worker.py" with { type: "text" };
 // @ts-expect-error — Bun text import; remote-worker.ts has no default export
 import REMOTE_WORKER_TS from "../packages/clawd-worker/typescript/remote-worker.ts" with { type: "text" };
-import type { ToolResult } from "./agent/src/tools/tools";
-import { tools as builtinTools } from "./agent/src/tools/tools";
+import type { ToolResult } from "./agent/tools/tools";
+import { tools as builtinTools } from "./agent/tools/tools";
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
 // ============================================================================
@@ -263,7 +260,7 @@ function getMemoryDb(): InstanceType<typeof Database> {
 
 // Always clean up orphaned workspace containers on startup (even if workspaces is now disabled,
 // containers may exist from when it was enabled). Only reconcile ports if currently enabled.
-import("./agent/src/workspace/container.js")
+import("./agent/workspace/container.js")
   .then(({ cleanupOrphanedWorkspaces, reconcilePortsFromDocker }) =>
     cleanupOrphanedWorkspaces()
       .catch((err: unknown) => {
@@ -830,7 +827,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         );
 
         // Look up the OAuth config for this server
-        const { getChannelMCPServers } = await import("./agent/src/api/provider-config");
+        const { getChannelMCPServers } = await import("./agent/api/provider-config");
         const configs = getChannelMCPServers(channel);
         const serverConfig = configs[serverName];
         if (!serverConfig?.oauth) {
@@ -2151,7 +2148,7 @@ const gracefulShutdown = async (signal: string) => {
     await workerManager.stop();
     // Always destroy workspace containers on shutdown (even if feature was disabled after
     // containers were created, to prevent Docker resource leaks)
-    const { listActiveWorkspaces, destroyWorkspace } = await import("./agent/src/workspace/container.js");
+    const { listActiveWorkspaces, destroyWorkspace } = await import("./agent/workspace/container.js");
     const workspaces = listActiveWorkspaces();
     if (workspaces.length > 0) {
       console.log(`[clawd-app] Destroying ${workspaces.length} workspace container(s)...`);

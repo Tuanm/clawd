@@ -11,8 +11,8 @@ import {
   removeChannelMCPServer as removeFromConfig,
   saveChannelMCPServer,
   setChannelMCPServerEnabled,
-} from "../agent/src/api/provider-config";
-import type { MCPServerConfig } from "../agent/src/api/providers";
+} from "../agent/api/provider-config";
+import type { MCPServerConfig } from "../agent/api/providers";
 import { discoverOAuthMetadata, loadOAuthToken, removeOAuthToken, startOAuthFlow } from "../mcp-oauth";
 import type { WorkerManager } from "../worker-manager";
 

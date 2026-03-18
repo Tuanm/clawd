@@ -1,4 +1,4 @@
-import type { MCPManager } from "../agent/src/mcp/client";
+import type { MCPManager } from "../agent/mcp/client";
 import { type AgentHealthSnapshot, WorkerLoop } from "../worker-loop";
 import type { Space } from "./db";
 import type { SpaceManager } from "./manager";

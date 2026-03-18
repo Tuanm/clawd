@@ -2,14 +2,14 @@
  * Copilot call analytics — fire-and-forget async writes, SQL-backed queries.
  *
  * Imported by:
- *   - src/agent/src/api/client.ts (writes)
+ *   - src/agent/api/client.ts (writes)
  *   - src/index.ts (reads via exported query helpers)
  *
  * Uses the existing `db` instance from server/database so all analytics live
  * in the same chat.db file alongside messages, agents, etc.
  */
 
-import { getModelMultiplier } from "./agent/src/api/key-pool";
+import { getModelMultiplier } from "./agent/api/key-pool";
 import { db } from "./server/database";
 
 // ============================================================================

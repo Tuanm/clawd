@@ -151,14 +151,14 @@ clawd/
 │   │   ├── routes/             # API route handlers
 │   │   └── browser-bridge.ts   # Browser extension WS bridge
 │   ├── agent/
-│   │   └── src/
-│   │       ├── agent/agent.ts  # Main Agent class + reasoning loop
-│   │       ├── memory/         # memory.ts, knowledge-base.ts, agent-memory.ts
-│   │       ├── session/        # Session manager, checkpoints, summarizer
-│   │       ├── plugins/        # browser-plugin.ts, workspace-plugin.ts
-│   │       ├── mcp/            # MCP client connections
-│   │       ├── tools/          # Tool execution + plugin system
-│   │       └── utils/          # sandbox.ts, agent-context.ts
+│   │   ├── agent.ts            # Main Agent class + reasoning loop
+│   │   ├── api/                # LLM provider clients, key pool, factory
+│   │   ├── tools/              # Tool definitions, web search, document converter
+│   │   ├── plugins/            # All plugins (chat, browser, workspace, tunnel, etc.)
+│   │   ├── session/            # Session manager, checkpoints, summarizer
+│   │   ├── memory/             # memory.ts, knowledge-base.ts, agent-memory.ts
+│   │   ├── mcp/                # MCP client connections
+│   │   └── utils/              # sandbox.ts, agent-context.ts
 │   ├── spaces/                 # Sub-agent system
 │   │   ├── manager.ts          # Space lifecycle management
 │   │   ├── worker.ts           # Space worker orchestrator
@@ -203,7 +203,7 @@ clawd/
 | `src/server/database.ts` | SQLite schema, migrations, prepared statements for chat.db |
 | `src/server/websocket.ts` | WebSocket connection tracking, message broadcasting |
 | `src/server/browser-bridge.ts` | WebSocket bridge between agents and browser extension |
-| `src/agent/src/agent/agent.ts` | Core Agent class — reasoning loop, tool dispatch |
+| `src/agent/agent.ts` | Core Agent class — reasoning loop, tool dispatch |
 | `src/spaces/manager.ts` | Sub-agent space creation, lifecycle, cleanup |
 | `src/scheduler/manager.ts` | Cron/interval/once job scheduling and execution |
 
@@ -473,7 +473,7 @@ flowchart TD
 
 ### 6.2 Agent Class & Reasoning Loop
 
-**File**: `src/agent/src/agent/agent.ts`
+**File**: `src/agent/agent.ts`
 
 The `Agent` class implements the core reasoning loop:
 
@@ -636,7 +636,7 @@ A background health monitor keeps agents responsive and recovers from stuck stat
 
 ### 6.7 Model Tiering & Tool Filtering
 
-**Files**: `src/agent/src/agent/agent.ts` (`getIterationModel`), `src/agent/src/api/factory.ts`
+**Files**: `src/agent/agent.ts` (`getIterationModel`), `src/agent/api/factory.ts`
 
 **Model Tiering** (`getIterationModel` in agent.ts):
 - Auto-downgrade to fast model (default `claude-haiku-4.5`) when conditions are met:

@@ -10,10 +10,10 @@
  */
 
 import { timedFetch as _sharedTimedFetch } from "../../../utils/timed-fetch";
-import type { Plugin, PluginContext } from "../../src/plugins/manager";
-import type { ToolPlugin, ToolRegistration } from "../../src/tools/plugin";
-import { setChatApiUrl, setCurrentAgentId, setCurrentChannel } from "../../src/tools/tools";
-import { getContextProjectRoot } from "../../src/utils/agent-context";
+import type { Plugin, PluginContext } from "../manager";
+import type { ToolPlugin, ToolRegistration } from "../../tools/plugin";
+import { setChatApiUrl, setCurrentAgentId, setCurrentChannel } from "../../tools/tools";
+import { getContextProjectRoot } from "../../utils/agent-context";
 
 // Module-scoped wrapper with 15s default for chat API calls (longer than the shared 10s default
 // because chat plugin calls include streaming setup and file uploads that need more headroom).

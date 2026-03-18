@@ -5,8 +5,8 @@
  * so no wait/poll/report tools are needed — the parent sees results in chat.
  */
 
-import type { ToolPlugin, ToolRegistration } from "../agent/src/tools/plugin";
-import type { ToolResult } from "../agent/src/tools/tools";
+import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
+import type { ToolResult } from "../agent/tools/tools";
 import { timedFetch } from "../utils/timed-fetch";
 import type { SpaceManager } from "./manager";
 import type { SpaceWorkerManager } from "./worker";

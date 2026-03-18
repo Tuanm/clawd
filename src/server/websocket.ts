@@ -1,5 +1,5 @@
 import type { ServerWebSocket } from "bun";
-import { isDebugEnabled } from "../agent/src/utils/debug";
+import { isDebugEnabled } from "../agent/utils/debug";
 import {
   type BrowserWsData,
   handleBrowserWsClose,

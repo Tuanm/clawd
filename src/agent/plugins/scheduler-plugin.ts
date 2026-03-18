@@ -9,7 +9,7 @@
  */
 
 import type { SchedulerManager } from "../../scheduler/manager";
-import type { ToolPlugin, ToolRegistration } from "../src/tools/plugin";
+import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
 
 interface SchedulerPluginConfig {
   scheduler: SchedulerManager;
