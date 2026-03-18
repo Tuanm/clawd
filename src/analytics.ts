@@ -25,7 +25,7 @@ export interface CopilotCallRecord {
   latencyMs?: number;
   promptTokens?: number;
   completionTokens?: number;
-  premiumCost: number;
+  premiumRequests: number;
   agentId?: string;
   channel?: string;
   errorMsg?: string;
@@ -50,7 +50,7 @@ export interface SummaryRow {
   error_calls: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;
-  total_premium_cost: number;
+  total_premium_requests: number;
   avg_latency_ms: number | null;
   p95_latency_ms: number | null;
 }
@@ -60,7 +60,7 @@ export interface KeyStatsRow {
   total_calls: number;
   ok_calls: number;
   error_calls: number;
-  total_premium_cost: number;
+  total_premium_requests: number;
   avg_latency_ms: number | null;
   last_used_ts: number;
 }
@@ -71,7 +71,7 @@ export interface ModelStatsRow {
   ok_calls: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;
-  total_premium_cost: number;
+  total_premium_requests: number;
   avg_latency_ms: number | null;
 }
 
@@ -109,7 +109,7 @@ export function trackCopilotCall(record: CopilotCallRecord): void {
         record.latencyMs ?? null,
         record.promptTokens ?? null,
         record.completionTokens ?? null,
-        record.premiumCost,
+        record.premiumRequests,
         record.agentId ?? null,
         record.channel ?? null,
         record.errorMsg ?? null,
@@ -144,7 +144,7 @@ export function trackSuccess(opts: {
     latencyMs: opts.latencyMs,
     promptTokens: opts.promptTokens,
     completionTokens: opts.completionTokens,
-    premiumCost: cost,
+    premiumRequests: cost,
     agentId: opts.agentId,
     channel: opts.channel,
   });
@@ -170,7 +170,7 @@ export function trackFailure(opts: {
     initiator: opts.initiator,
     status: opts.status,
     latencyMs: opts.latencyMs,
-    premiumCost: 0,
+    premiumRequests: 0,
     agentId: opts.agentId,
     channel: opts.channel,
     errorMsg: opts.errorMsg,
@@ -255,7 +255,7 @@ export function querySummary(opts: CallsQueryOptions & { granularity?: "hour" | 
       SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) AS error_calls,
       COALESCE(SUM(prompt_tokens), 0)             AS total_prompt_tokens,
       COALESCE(SUM(completion_tokens), 0)         AS total_completion_tokens,
-      COALESCE(SUM(premium_cost), 0)              AS total_premium_cost,
+      COALESCE(SUM(premium_cost), 0)              AS total_premium_requests,
       AVG(latency_ms)                             AS avg_latency_ms
     FROM copilot_calls
     ${where}
@@ -304,7 +304,7 @@ export function queryKeyStats(opts: CallsQueryOptions = {}): KeyStatsRow[] {
       COUNT(*)                                    AS total_calls,
       SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok_calls,
       SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) AS error_calls,
-      COALESCE(SUM(premium_cost), 0)              AS total_premium_cost,
+      COALESCE(SUM(premium_cost), 0)              AS total_premium_requests,
       AVG(latency_ms)                             AS avg_latency_ms,
       MAX(ts)                                     AS last_used_ts
     FROM copilot_calls
@@ -326,7 +326,7 @@ export function queryModelStats(opts: CallsQueryOptions = {}): ModelStatsRow[] {
       SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok_calls,
       COALESCE(SUM(prompt_tokens), 0)             AS total_prompt_tokens,
       COALESCE(SUM(completion_tokens), 0)         AS total_completion_tokens,
-      COALESCE(SUM(premium_cost), 0)              AS total_premium_cost,
+      COALESCE(SUM(premium_cost), 0)              AS total_premium_requests,
       AVG(latency_ms)                             AS avg_latency_ms
     FROM copilot_calls
     ${where}
@@ -336,11 +336,47 @@ export function queryModelStats(opts: CallsQueryOptions = {}): ModelStatsRow[] {
     .all(...params) as ModelStatsRow[];
 }
 
+export interface KeyHistoryRow {
+  key_fingerprint: string;
+  period: string;
+  total_calls: number;
+  ok_calls: number;
+  error_calls: number;
+  total_premium_requests: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+}
+
+/** Per-key daily usage history (for long-term analysis) */
+export function queryKeyHistory(
+  opts: CallsQueryOptions & { granularity?: "hour" | "day" | "week" } = {},
+): KeyHistoryRow[] {
+  const { sql: where, params } = buildWhere(opts);
+  const fmt = opts.granularity === "hour" ? "%Y-%m-%dT%H:00Z" : opts.granularity === "week" ? "%Y-W%W" : "%Y-%m-%d";
+  return db
+    .query(`
+    SELECT
+      key_fingerprint,
+      strftime('${fmt}', ts / 1000, 'unixepoch') AS period,
+      COUNT(*)                                    AS total_calls,
+      SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok_calls,
+      SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) AS error_calls,
+      COALESCE(SUM(premium_cost), 0)              AS total_premium_requests,
+      COALESCE(SUM(prompt_tokens), 0)             AS total_prompt_tokens,
+      COALESCE(SUM(completion_tokens), 0)         AS total_completion_tokens
+    FROM copilot_calls
+    ${where}
+    GROUP BY key_fingerprint, period
+    ORDER BY period DESC, key_fingerprint
+  `)
+    .all(...params) as KeyHistoryRow[];
+}
+
 /** Current "live" snapshot: last N minutes rolling window */
 export function queryRecentStats(windowMinutes = 60): {
   calls: number;
   errors: number;
-  premiumCost: number;
+  premiumRequests: number;
   avgLatencyMs: number | null;
 } {
   const since = Date.now() - windowMinutes * 60_000;
@@ -349,11 +385,11 @@ export function queryRecentStats(windowMinutes = 60): {
     SELECT
       COUNT(*)                                        AS calls,
       SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) AS errors,
-      COALESCE(SUM(premium_cost), 0)                  AS premiumCost,
+      COALESCE(SUM(premium_cost), 0)                  AS premiumRequests,
       AVG(latency_ms)                                 AS avgLatencyMs
     FROM copilot_calls
     WHERE ts >= ?
   `)
-    .get(since) as { calls: number; errors: number; premiumCost: number; avgLatencyMs: number | null };
-  return row ?? { calls: 0, errors: 0, premiumCost: 0, avgLatencyMs: null };
+    .get(since) as { calls: number; errors: number; premiumRequests: number; avgLatencyMs: number | null };
+  return row ?? { calls: 0, errors: 0, premiumRequests: 0, avgLatencyMs: null };
 }

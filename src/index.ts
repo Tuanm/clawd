@@ -93,6 +93,7 @@ import {
   type CallsQueryOptions,
   queryCalls,
   queryCallsCount,
+  queryKeyHistory,
   queryKeyStats,
   queryModelStats,
   queryRecentStats,
@@ -1043,6 +1044,18 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         };
       });
       return json({ ok: true, keys: enriched });
+    }
+
+    // GET /api/analytics/copilot/keys/history?granularity=day|hour|week&from=<ms>&to=<ms>&keyFingerprint=X
+    if (path === "/api/analytics/copilot/keys/history" && req.method === "GET") {
+      const granularity = (url.searchParams.get("granularity") ?? "day") as "day" | "hour" | "week";
+      const opts = {
+        from: numParam(url, "from"),
+        to: numParam(url, "to"),
+        keyFingerprint: url.searchParams.get("keyFingerprint") ?? undefined,
+        granularity,
+      };
+      return json({ ok: true, history: queryKeyHistory(opts) });
     }
 
     // GET /api/analytics/copilot/models?from=<ms>&to=<ms>&channel=X
