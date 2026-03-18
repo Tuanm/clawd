@@ -56,21 +56,32 @@ See [Docker Deployment](#docker-deployment) for details.
 
 ## Architecture Overview
 
-```
-User Browser ─── HTTP/WS ──→ Claw'd Server (Bun)
-                                 ├── Chat API (/api/*)
-                                 ├── MCP Endpoint (/mcp)
-                                 ├── Browser Bridge (/browser/ws)
-                                 ├── SQLite: chat.db + memory.db
-                                 └── Agent Loops
-                                      ├── LLM providers
-                                      ├── Tool plugins
-                                      ├── Sub-agents (Spaces)
-                                      └── Scheduler (cron/interval)
-                                           │
-Chrome Extension ← WS ──────────────────────┘
-   ├── CDP mode (full control)
-   └── Stealth mode (anti-detection)
+```mermaid
+flowchart LR
+  Browser["User Browser"]
+  Browser -->|"HTTP / WebSocket"| Server
+
+  subgraph Server["Claw'd Server (Bun)"]
+    API["Chat API (/api/*)"]
+    MCP["MCP Endpoint (/mcp)"]
+    Bridge["Browser Bridge (/browser/ws)"]
+    DB[("SQLite\nchat.db + memory.db")]
+    Agents["Agent Loops"]
+  end
+
+  subgraph Agents["Agent Loops"]
+    LLM["LLM Providers"]
+    Tools["Tool Plugins"]
+    Spaces["Sub-agents (Spaces)"]
+    Scheduler["Scheduler (cron)"]
+  end
+
+  subgraph Extension["Chrome Extension"]
+    CDP["CDP mode"]
+    Stealth["Stealth mode"]
+  end
+
+  Bridge <-->|"WebSocket"| Extension
 ```
 
 The server is a single Bun HTTP+WebSocket process (`src/index.ts`) that serves the embedded React UI, manages agents, and bridges browser automation. Each agent runs its own polling loop with tool execution, context management, and memory persistence.
