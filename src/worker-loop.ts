@@ -1068,6 +1068,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
         projectHash,
         agentId,
         channel,
+        provider: this.config.provider,
       },
       async () => {
         try {

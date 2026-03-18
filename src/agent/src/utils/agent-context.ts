@@ -27,6 +27,8 @@ export interface AgentContext {
   agentId?: string;
   /** Channel ID (optional, for logging/debugging) */
   channel?: string;
+  /** LLM provider type (e.g., "copilot", "openai", "anthropic") */
+  provider?: string;
 }
 
 // AsyncLocalStorage instance - automatically propagates through async calls
@@ -89,4 +91,13 @@ export function getContextAgentId(): string {
 export function getContextChannel(): string {
   const ctx = getAgentContext();
   return ctx?.channel || "";
+}
+
+/**
+ * Get the provider type from context.
+ * Returns empty string if not in a context.
+ */
+export function getContextProvider(): string {
+  const ctx = getAgentContext();
+  return ctx?.provider || "";
 }
