@@ -146,7 +146,8 @@ export function registerArticleRoutes(
             now,
           );
         } catch (err: any) {
-          return json({ ok: false, error: err.message }, 500);
+          console.error("[articles] upsert error:", err);
+          return json({ ok: false, error: "Internal server error" }, 500);
         }
 
         const getStmt = db.prepare("SELECT * FROM articles WHERE id = ?");
@@ -248,10 +249,14 @@ function handleAsync(req: Request, fn: () => Promise<Response>): Response {
   try {
     const result = fn();
     if (result instanceof Promise) {
-      return result.catch((err) => json({ ok: false, error: String(err) }, 500)) as unknown as Response;
+      return result.catch((err) => {
+        console.error("[articles] handler error:", err);
+        return json({ ok: false, error: "Internal server error" }, 500);
+      }) as unknown as Response;
     }
     return result;
   } catch (err) {
-    return json({ ok: false, error: String(err) }, 500);
+    console.error("[articles] handler error:", err);
+    return json({ ok: false, error: "Internal server error" }, 500);
   }
 }

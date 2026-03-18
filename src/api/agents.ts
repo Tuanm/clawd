@@ -471,7 +471,8 @@ export function registerAgentRoutes(
             [channel, agent_id, agentProvider, agentModel, agentProject, agentWorkerToken, agentHeartbeatInterval],
           );
         } catch (error) {
-          return json({ ok: false, error: String(error) }, 500);
+          console.error("[agents] register error:", error);
+          return json({ ok: false, error: "Internal server error" }, 500);
         }
 
         // Start the worker loop
@@ -735,7 +736,8 @@ export function registerAgentRoutes(
           .sort((a: any, b: any) => a.name.localeCompare(b.name));
         return json({ ok: true, path: dir, folders });
       } catch (error) {
-        return json({ ok: false, error: String(error) }, 500);
+        console.error("[agents] list folders error:", error);
+        return json({ ok: false, error: "Internal server error" }, 500);
       }
     }
 
@@ -864,7 +866,8 @@ export function registerAgentRoutes(
         const tree = buildTree(projectRoot, "", 3, rootGitTrackedFiles, ""); // Max depth of 3 initially
         return json({ ok: true, root: projectRoot, tree });
       } catch (error) {
-        return json({ ok: false, error: String(error) }, 500);
+        console.error("[agents] file tree error:", error);
+        return json({ ok: false, error: "Internal server error" }, 500);
       }
     }
 
@@ -951,7 +954,8 @@ export function registerAgentRoutes(
 
         return json({ ok: true, path: relativePath, entries: result });
       } catch (error) {
-        return json({ ok: false, error: String(error) }, 500);
+        console.error("[agents] list dir error:", error);
+        return json({ ok: false, error: "Internal server error" }, 500);
       }
     }
 
@@ -1048,7 +1052,8 @@ export function registerAgentRoutes(
           language: languageMap[ext] || "plaintext",
         });
       } catch (error) {
-        return json({ ok: false, error: String(error) }, 500);
+        console.error("[agents] read file error:", error);
+        return json({ ok: false, error: "Internal server error" }, 500);
       }
     }
 

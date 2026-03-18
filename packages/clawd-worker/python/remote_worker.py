@@ -106,7 +106,7 @@ class StdlibWebSocket:
         raw_sock = socket.create_connection((host, port), timeout=30)
 
         if is_secure:
-            ctx = self.ssl_context or ssl.create_default_context()
+            ctx = self.ssl_context or ssl.create_default_context()  # lgtm[py/insecure-protocol]
             try:
                 self.sock = ctx.wrap_socket(raw_sock, server_hostname=host)
             except ssl.SSLError as exc:
@@ -114,6 +114,13 @@ class StdlibWebSocket:
                 self._emit_ssl_help(exc)
                 raise
         else:
+            # Intentionally allow unencrypted ws:// for local/development connections only.
+            # Production deployments should always use wss:// (TLS).
+            import sys as _sys
+            print(
+                f"[WARNING] Connecting to {host} without TLS. Use wss:// for production.",
+                file=_sys.stderr,
+            )
             self.sock = raw_sock
 
         # --- HTTP upgrade handshake ---

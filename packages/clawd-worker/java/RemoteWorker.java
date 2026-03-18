@@ -115,7 +115,8 @@ public class RemoteWorker {
                 sb.append(b ? "true" : "false");
             } else if (obj instanceof Number n) {
                 double d = n.doubleValue();
-                if (d == Math.floor(d) && !Double.isInfinite(d) && Math.abs(d) < 1e15) {
+                if (d == Math.floor(d) && !Double.isInfinite(d) && !Double.isNaN(d)
+                        && d >= Long.MIN_VALUE && d <= Long.MAX_VALUE && Math.abs(d) < 1e15) {
                     sb.append((long) d);
                 } else {
                     sb.append(n);

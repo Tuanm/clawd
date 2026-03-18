@@ -560,7 +560,8 @@ async function handleBrowserFileRequest(req: Request, url: URL, path: string): P
       const result = await uploadFile(file, "browser", undefined, "UBROWSER");
       return json(result, result.ok ? 200 : 413);
     } catch (err: any) {
-      return json({ ok: false, error: err.message }, 500);
+      console.error("[ERROR] file upload:", err);
+      return json({ ok: false, error: "Internal server error" }, 500);
     }
   }
 
@@ -823,7 +824,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           redirect_uri: flowRedirectUri,
         } = flow;
         console.log(
-          `[OAuth callback] Flow matched: channel=${channel}, server=${serverName}, token_endpoint=${token_endpoint}, redirect_uri=${flowRedirectUri}, has_secret=${!!client_secret}, has_verifier=${!!code_verifier}`,
+          `[OAuth callback] Flow matched: channel=${channel}, server=${serverName}, has_token_endpoint=${!!token_endpoint}, has_redirect_uri=${!!flowRedirectUri}, has_secret=${!!client_secret}, has_verifier=${!!code_verifier}`,
         );
 
         // Look up the OAuth config for this server
@@ -845,7 +846,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         const effectiveClientId = client_id || serverConfig.oauth.client_id;
         const redirectUri = flowRedirectUri;
         console.log(
-          `[OAuth callback] Exchanging code: tokenUrl=${tokenUrl}, clientId=${effectiveClientId}, redirectUri=${redirectUri}`,
+          `[OAuth callback] Exchanging code: has_token_url=${!!tokenUrl}, has_client_id=${!!effectiveClientId}, has_redirect_uri=${!!redirectUri}`,
         );
 
         const token = await exchangeOAuthCode(
@@ -1927,7 +1928,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     return json({ ok: false, error: "not_found" }, 404);
   } catch (error) {
     console.error("[ERROR]", error);
-    return json({ ok: false, error: String(error) }, 500);
+    return json({ ok: false, error: "Internal server error" }, 500);
   }
 }
 

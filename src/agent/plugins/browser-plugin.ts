@@ -1009,7 +1009,10 @@ export class BrowserPlugin implements ToolPlugin {
           };
         }
         // Wrap stored script as async IIFE with __args injected (async supports await in scripts)
-        code = `(async function(){const __args=${argsJson};${storedScript}})()`;
+        // CodeQL: argsJson is produced by JSON.stringify (safe serialization) and storedScript
+        // is a pre-stored JS snippet from the browser_store command, not raw user input at this point.
+        // The purpose of this tool is to execute JavaScript in a browser tab — code execution is intentional.
+        code = `(async function(){const __args=${argsJson};${storedScript}})()`; // lgtm[js/bad-code-sanitization]
       }
 
       if (!code) {
@@ -1021,8 +1024,9 @@ export class BrowserPlugin implements ToolPlugin {
       }
 
       // Wrap inline code in async IIFE for clean scope isolation & top-level await support
+      // This tool's purpose is to execute JavaScript in a browser tab — code execution is intentional.
       if (!args.script_id) {
-        code = `(async()=>{${code}})()`;
+        code = `(async()=>{${code}})()`; // lgtm[js/bad-code-sanitization]
       }
 
       const result = await sendBrowserCommand("execute", {

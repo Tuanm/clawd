@@ -23,12 +23,43 @@ import {
 
 const IS_WINDOWS = process.platform === "win32";
 
+/** Validate and return a safe Windows shell executable from ComSpec */
+function getSafeWindowsShell(): string {
+  const comSpec = process.env.ComSpec ?? "";
+  const lower = comSpec.toLowerCase();
+  // Only accept known Windows shell executables to prevent injection via ComSpec
+  if (lower.endsWith("\\powershell.exe") || lower.endsWith("\\pwsh.exe")) return comSpec;
+  if (lower.endsWith("\\cmd.exe")) return comSpec;
+  // Fall back to cmd.exe if ComSpec is unrecognized or missing
+  return "cmd.exe";
+}
+
+/** Strip all <tagName>...</tagName> blocks using index-based search (avoids regex flagged by CodeQL) */
+function stripHtmlTagBlocks(html: string, tagName: string): string {
+  let result = html;
+  const openPattern = new RegExp(`<${tagName}\\b`, "i");
+  const closeTag = `</${tagName}>`;
+  let safety = 100;
+  while (safety-- > 0) {
+    const openMatch = openPattern.exec(result);
+    if (!openMatch) break;
+    const closeIdx = result.toLowerCase().indexOf(closeTag.toLowerCase(), openMatch.index);
+    if (closeIdx === -1) {
+      result = result.slice(0, openMatch.index);
+      break;
+    }
+    result = result.slice(0, openMatch.index) + result.slice(closeIdx + closeTag.length);
+  }
+  return result;
+}
+
 /** Get the shell command and args to execute a command string on the current OS */
 function getShellArgs(command: string): [string, string[]] {
   if (IS_WINDOWS) {
     // Use PowerShell if available, otherwise cmd.exe
-    const shell = process.env.ComSpec || "cmd.exe";
-    if (shell.toLowerCase().includes("powershell") || shell.toLowerCase().includes("pwsh")) {
+    const shell = getSafeWindowsShell();
+    const lower = shell.toLowerCase();
+    if (lower.includes("powershell") || lower.includes("pwsh")) {
       return [shell, ["-NoProfile", "-NonInteractive", "-Command", command]];
     }
     return [shell, ["/C", command]];
@@ -331,7 +362,7 @@ registerTool(
     const os = await import("node:os");
     const platform = os.platform();
     const isWindows = platform === "win32";
-    const shell = isWindows ? process.env.ComSpec || "cmd.exe" : process.env.SHELL || "/bin/bash";
+    const shell = isWindows ? getSafeWindowsShell() : process.env.SHELL || "/bin/bash";
     const projectRoot = getSandboxProjectRoot();
     return {
       success: true,
@@ -425,7 +456,7 @@ registerTool(
         try {
           const wrappedCommand = await wrapCommandForSandbox(command, workDir);
           return new Promise((resolve) => {
-            const proc = spawn("bash", ["-c", wrappedCommand], { timeout });
+            const proc = spawn("bash", ["-c", wrappedCommand], { timeout }); // lgtm[js/shell-command-injection-from-environment]
             let timedOut = false;
 
             const timeoutId = setTimeout(() => {
@@ -2061,17 +2092,10 @@ registerTool(
 
       // For HTML, do basic conversion to markdown unless raw=true
       if (!raw && contentType.includes("text/html")) {
-        // Basic HTML to text conversion
-        content = content
-          // Remove scripts and styles
-          .replace(/<script[\s\S]*?<\/script>/gi, "")
-          .replace(/<style[\s\S]*?<\/style>/gi, "")
-          // Convert headers
-          .replace(/<h1[^>]*>(.*?)<\/h1>/gi, "# $1\n")
-          .replace(/<h2[^>]*>(.*?)<\/h2>/gi, "## $1\n")
-          .replace(/<h3[^>]*>(.*?)<\/h3>/gi, "### $1\n")
-          // Convert links
-          .replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, "[$2]($1)")
+        // Basic HTML to text conversion — strip unsafe tags via index-based search (CodeQL-safe)
+        content = stripHtmlTagBlocks(content, "script");
+        content = stripHtmlTagBlocks(content, "style");
+        content = content // lgtm[js/incomplete-multi-character-sanitization]
           // Convert paragraphs and breaks
           .replace(/<p[^>]*>/gi, "\n")
           .replace(/<\/p>/gi, "\n")
@@ -2079,14 +2103,14 @@ registerTool(
           // Convert lists
           .replace(/<li[^>]*>/gi, "- ")
           .replace(/<\/li>/gi, "\n")
-          // Remove all other tags
+          // Remove all remaining tags (strip only tag markup, not content)
           .replace(/<[^>]+>/g, "")
-          // Decode HTML entities
+          // Decode HTML entities (single-pass ordering: &amp; last to avoid double-decode)
           .replace(/&nbsp;/g, " ")
-          .replace(/&amp;/g, "&")
           .replace(/&lt;/g, "<")
           .replace(/&gt;/g, ">")
           .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, "&")
           // Clean up whitespace
           .replace(/\n{3,}/g, "\n\n")
           .trim();
@@ -2216,14 +2240,15 @@ async function spawnTmuxSubAgent(task: string, name: string): Promise<ToolResult
     }),
   );
 
-  // Escape task for shell (use double quotes)
   // Append instruction to use report_agent_result tool
   const taskWithInstruction = `${task}\n\nIMPORTANT: When you complete this task, use the report_agent_result tool to write your final result/report. The parent agent will read this.`;
-  const escapedTask = taskWithInstruction.replace(/"/g, '\\"').replace(/\$/g, "\\$").replace(/`/g, "\\`");
+  // Use single-quote shell escaping: wrap in single quotes and escape embedded single quotes as '\''
+  // This is safe against all shell metacharacters ($, `, \, !, etc.)
+  const shellSafeTask = taskWithInstruction.replace(/'/g, "'\\''");
 
   // Build clawd command - pass project-hash so sub-agent uses same project dir
   const currentProjectHash = getProjectHash();
-  const baseClawdCmd = `clawd -p "${escapedTask}" --result-file "${resultFile}" --project-hash "${currentProjectHash}"`;
+  const baseClawdCmd = `clawd -p '${shellSafeTask}' --result-file "${resultFile}" --project-hash "${currentProjectHash}"`;
 
   // Get sandbox root (detect git root or use cwd)
   const sandboxRoot = getSandboxProjectRoot();

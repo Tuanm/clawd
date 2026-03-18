@@ -341,9 +341,9 @@ export function startOAuthFlow(
   }
 
   const authUrl = `${oauth.authorize_url}?${params.toString()}`;
-  console.log(
-    `[mcp-oauth] Starting OAuth flow: channel=${channel}, server=${serverName}, authorize_url=${oauth.authorize_url}, scopes=${oauth.scopes?.join(",") || "none"}, callback=${callbackUrl}`,
-  );
+  const scopeCount = oauth.scopes?.length || 0;
+  // lgtm[js/clear-text-logging]
+  console.log(`[mcp-oauth] Starting OAuth flow: channel=${channel}, server=${serverName}, scopes=${scopeCount}`);
 
   // Register pending flow with 5-min timeout
   const timeout = setTimeout(() => pendingFlows.delete(nonce), 5 * 60 * 1000);
@@ -382,7 +382,7 @@ export async function exchangeOAuthCode(
   if (clientSecret) bodyParams.client_secret = clientSecret;
 
   console.log(
-    `[mcp-oauth] Token exchange: url=${tokenUrl}, client_id=${clientId}, redirect_uri=${redirectUri}, has_verifier=${!!codeVerifier}, has_secret=${!!clientSecret}`,
+    `[mcp-oauth] Token exchange: has_url=${!!tokenUrl}, has_client_id=${!!clientId}, has_verifier=${!!codeVerifier}, has_secret=${!!clientSecret}`,
   );
 
   const headers: Record<string, string> = {
