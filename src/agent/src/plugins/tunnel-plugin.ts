@@ -30,13 +30,19 @@ interface TunnelRecord {
 }
 
 // ============================================================================
+// Shared tunnel state (persists across agent sessions within the same process)
+// ============================================================================
+
+const globalTunnels = new Map<string, TunnelRecord>();
+let globalIdCounter = 0;
+
+// ============================================================================
 // Plugin
 // ============================================================================
 
 export class TunnelPlugin implements ToolPlugin {
   readonly name = "tunnel";
-  private tunnels = new Map<string, TunnelRecord>();
-  private idCounter = 0;
+  private tunnels = globalTunnels;
 
   getTools(): ToolRegistration[] {
     return [
@@ -114,7 +120,7 @@ export class TunnelPlugin implements ToolPlugin {
       };
     }
 
-    const id = args.label ? `tunnel-${this.slugify(args.label)}` : `tunnel-${++this.idCounter}`;
+    const id = args.label ? `tunnel-${this.slugify(args.label)}` : `tunnel-${++globalIdCounter}`;
     if (this.tunnels.has(id)) {
       return {
         success: false,
@@ -285,10 +291,22 @@ export class TunnelPlugin implements ToolPlugin {
   // --------------------------------------------------------------------------
 
   async destroy(): Promise<void> {
-    for (const record of this.tunnels.values()) {
-      this.killTunnel(record);
+    // No-op: tunnels persist across agent sessions.
+    // Use TunnelPlugin.destroyAll() for process-level cleanup.
+  }
+
+  /** Kill all tunnels globally. Call on process shutdown. */
+  static destroyAll(): void {
+    for (const record of globalTunnels.values()) {
+      try {
+        if (record.process.pid) process.kill(-record.process.pid, "SIGTERM");
+      } catch {
+        try {
+          record.process.kill("SIGTERM");
+        } catch {}
+      }
     }
-    this.tunnels.clear();
+    globalTunnels.clear();
   }
 
   // --------------------------------------------------------------------------
