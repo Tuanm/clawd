@@ -30,18 +30,14 @@ function registerServiceWorker() {
 
 registerServiceWorker();
 
-// Import ArticlePage
-import ArticlePage from "./ArticlePage";
-
 // Simple path-based routing
 function Router() {
   const path = window.location.pathname;
 
-  // Match article paths: /articles/{id}
+  // Match article paths: /articles/{id} — render App in article mode
   const articleMatch = path.match(/^\/articles\/([^/]+)\/?$/);
   if (articleMatch) {
-    const articleId = articleMatch[1];
-    return <ArticlePage articleId={articleId} />;
+    return <App channel="articles" articleId={articleMatch[1]} />;
   }
 
   // Match both patterns:

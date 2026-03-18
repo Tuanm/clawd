@@ -44,7 +44,7 @@ export interface PendingMessage {
 }
 
 // Helper to check if message is from an agent
-const isAgentMessage = (msg: Message) => msg.user === "UBOT" || msg.user.startsWith("UWORKER-") || !!msg.agent_id;
+const isAgentMessage = (msg: Message) => msg.user === "UBOT" || msg.user?.startsWith("UWORKER-") || !!msg.agent_id;
 
 interface AgentStatus {
   status: string;
@@ -54,6 +54,8 @@ interface AgentStatus {
 
 interface Props {
   channel: string;
+  /** When set, App renders in article mode — shows only this article as a single message */
+  articleId?: string;
 }
 
 const API_URL = "";
@@ -442,7 +444,8 @@ function LoginPrompt({ onLogin }: { onLogin: (token: string) => void }) {
   );
 }
 
-export default function App({ channel: initialChannel }: Props) {
+export default function App({ channel: initialChannel, articleId }: Props) {
+  const isArticleMode = !!articleId;
   // Active channel (can be switched without page reload)
   const [activeChannel, setActiveChannel] = useState(initialChannel);
 
@@ -1522,6 +1525,8 @@ export default function App({ channel: initialChannel }: Props) {
 
   // Initialize channel when it becomes active
   useEffect(() => {
+    // Article mode skips normal channel initialization
+    if (isArticleMode) return;
     // Use ref to avoid re-running effect on every channelStates change
     const state = channelStatesRef.current.get(activeChannel);
     if (!state?.loaded) {
@@ -1541,13 +1546,50 @@ export default function App({ channel: initialChannel }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChannel]); // Only trigger on channel change, not state changes
 
+  // Article mode: fetch article and inject as single message
+  useEffect(() => {
+    if (!isArticleMode || !articleId) return;
+    (async () => {
+      try {
+        const res = await authFetch(`${API_URL}/api/articles.get?id=${encodeURIComponent(articleId)}`);
+        const data = await res.json();
+        if (data.ok && data.article) {
+          const art = data.article;
+          updateChannelState(activeChannel, {
+            messages: [
+              {
+                ts: String(art.created_at),
+                user: art.author || "Claw'd",
+                text: art.content,
+                agent_id: art.author || "clawd",
+                avatar_color: art.avatar_color,
+              },
+            ],
+            hasMoreOlder: false,
+            hasMoreNewer: false,
+            isAtLatest: true,
+            loaded: true,
+          });
+          setValidProject(true);
+        } else {
+          setValidProject(true);
+          updateChannelState(activeChannel, { messages: [], loaded: true });
+        }
+      } catch {
+        setValidProject(true);
+        updateChannelState(activeChannel, { messages: [], loaded: true });
+      }
+    })();
+  }, [articleId, isArticleMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Fetch unread counts on mount and when open channels change
   useEffect(() => {
     fetchUnreadCounts();
   }, [fetchUnreadCounts]);
 
-  // Connect WebSocket on mount
+  // Connect WebSocket on mount (skip in article mode — no real-time updates needed)
   useEffect(() => {
+    if (isArticleMode) return;
     connectWebSocket();
 
     // Background polling for ALL open channels - 3 seconds (WebSocket handles real-time)
@@ -1821,10 +1863,14 @@ export default function App({ channel: initialChannel }: Props) {
   const hasActiveChannelUnread = !isActiveChannelAtBottom && (unreadCounts[activeChannel] || 0) > 0;
 
   return (
-    <div className="app">
+    <div className="app" data-article-mode={isArticleMode || undefined}>
       <header className="header">
         <div className="header-left">
-          {isSpaceChannel && parentChannel ? (
+          {isArticleMode ? (
+            <div className="clawd-logo-wrapper">
+              <ClawdLogo sleeping={false} hasUnread={false} />
+            </div>
+          ) : isSpaceChannel && parentChannel ? (
             <>
               <button
                 className="clawd-logo-button"
@@ -1847,59 +1893,61 @@ export default function App({ channel: initialChannel }: Props) {
             </>
           )}
         </div>
-        <div className="header-right">
-          {/* Notification permission toggle - hidden once granted */}
-          {"Notification" in window && notificationPermission !== "granted" && (
-            <button
-              className="notification-toggle"
-              onClick={handleNotificationToggle}
-              title={
-                notificationPermission === "denied"
-                  ? "Notifications blocked - enable in browser settings"
-                  : "Enable desktop notifications"
-              }
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+        {!isArticleMode && (
+          <div className="header-right">
+            {/* Notification permission toggle - hidden once granted */}
+            {"Notification" in window && notificationPermission !== "granted" && (
+              <button
+                className="notification-toggle"
+                onClick={handleNotificationToggle}
+                title={
+                  notificationPermission === "denied"
+                    ? "Notifications blocked - enable in browser settings"
+                    : "Enable desktop notifications"
+                }
               >
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                <line x1="1" y1="1" x2="23" y2="23" strokeWidth="2" />
-              </svg>
-            </button>
-          )}
-          <div className="online-agents">
-            {/* Only show active (not sleeping) agents - sorted by agent_id */}
-            {[...activeAgents]
-              .sort((a, b) => a.agent_id.localeCompare(b.agent_id))
-              .map((agent) => (
-                <div
-                  key={agent.agent_id}
-                  className="online-agent clickable"
-                  title={`${agent.agent_id} — click to see thoughts`}
-                  onClick={() => openAgentThoughts(agent.agent_id, agent.avatar_color)}
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                 >
-                  <AgentAvatarSmall color={agent.avatar_color} />
-                </div>
-              ))}
-          </div>
-          {!isSpaceChannel && (
-            <div
-              className={`connection-indicator ${!connected ? "reconnecting" : ""} clickable`}
-              title="Agent"
-              onClick={() => setShowAgentDialog(true)}
-            >
-              <CopilotLogo />
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  <line x1="1" y1="1" x2="23" y2="23" strokeWidth="2" />
+                </svg>
+              </button>
+            )}
+            <div className="online-agents">
+              {/* Only show active (not sleeping) agents - sorted by agent_id */}
+              {[...activeAgents]
+                .sort((a, b) => a.agent_id.localeCompare(b.agent_id))
+                .map((agent) => (
+                  <div
+                    key={agent.agent_id}
+                    className="online-agent clickable"
+                    title={`${agent.agent_id} — click to see thoughts`}
+                    onClick={() => openAgentThoughts(agent.agent_id, agent.avatar_color)}
+                  >
+                    <AgentAvatarSmall color={agent.avatar_color} />
+                  </div>
+                ))}
             </div>
-          )}
-        </div>
+            {!isSpaceChannel && (
+              <div
+                className={`connection-indicator ${!connected ? "reconnecting" : ""} clickable`}
+                title="Agent"
+                onClick={() => setShowAgentDialog(true)}
+              >
+                <CopilotLogo />
+              </div>
+            )}
+          </div>
+        )}
       </header>
 
       {/* Channel list dialog - triggered by logo click */}
@@ -2023,83 +2071,85 @@ export default function App({ channel: initialChannel }: Props) {
           fileType={sidebarContent.fileType}
         />
       )}
-      <MessageComposer
-        onSend={sendMessage}
-        channel={activeChannel}
-        disabled={!channelStates.get(activeChannel)?.loaded || (isSpaceChannel && isSpaceLocked)}
-        thinkingBanner={
-          streamingAgents.length > 0 ? (
-            <div
-              className="thinking-banner"
-              onClick={() => {
-                setStreamDialogAgentId(null);
-                setStreamDialogOpen(true);
-              }}
-              title="Click to see thoughts"
-            >
-              <div className="thinking-clawd">
-                <ClawdLogo />
+      {!isArticleMode && (
+        <MessageComposer
+          onSend={sendMessage}
+          channel={activeChannel}
+          disabled={!channelStates.get(activeChannel)?.loaded || (isSpaceChannel && isSpaceLocked)}
+          thinkingBanner={
+            streamingAgents.length > 0 ? (
+              <div
+                className="thinking-banner"
+                onClick={() => {
+                  setStreamDialogAgentId(null);
+                  setStreamDialogOpen(true);
+                }}
+                title="Click to see thoughts"
+              >
+                <div className="thinking-clawd">
+                  <ClawdLogo />
+                </div>
+                <span>Thinking...</span>
               </div>
-              <span>Thinking...</span>
-            </div>
-          ) : null
-        }
-        hibernateBanner={
-          showOfflineBanner ? (
-            <div className="hibernate-banner">
-              <div className="sleeping-clawd">
-                <ClawdLogo sleeping={true} />
+            ) : null
+          }
+          hibernateBanner={
+            showOfflineBanner ? (
+              <div className="hibernate-banner">
+                <div className="sleeping-clawd">
+                  <ClawdLogo sleeping={true} />
+                </div>
+                <span>Sleeping...</span>
               </div>
-              <span>Sleeping...</span>
-            </div>
-          ) : null
-        }
-        searchButton={
-          <button className="search-btn" onClick={() => setShowSearchModal(true)} title="Search Messages">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="11" cy="11" r="8" />
-              <path d="M21 21l-4.35-4.35" />
-            </svg>
-          </button>
-        }
-        projectsButton={
-          <button className="projects-btn" onClick={() => setShowProjectsDialog(true)} title="Browse Project Files">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
-            </svg>
-          </button>
-        }
-        mcpButton={
-          !isSpaceChannel ? (
-            <button className="mcp-btn" onClick={() => setShowMcpDialog(true)} title="MCP Servers">
-              <McpIcon size={16} />
-            </button>
-          ) : undefined
-        }
-        skillsButton={
-          !isSpaceChannel ? (
-            <button className="skills-btn" onClick={() => setShowSkillsDialog(true)} title="Skills">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26" />
+            ) : null
+          }
+          searchButton={
+            <button className="search-btn" onClick={() => setShowSearchModal(true)} title="Search Messages">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="11" cy="11" r="8" />
+                <path d="M21 21l-4.35-4.35" />
               </svg>
             </button>
-          ) : undefined
-        }
-      />
+          }
+          projectsButton={
+            <button className="projects-btn" onClick={() => setShowProjectsDialog(true)} title="Browse Project Files">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+              </svg>
+            </button>
+          }
+          mcpButton={
+            !isSpaceChannel ? (
+              <button className="mcp-btn" onClick={() => setShowMcpDialog(true)} title="MCP Servers">
+                <McpIcon size={16} />
+              </button>
+            ) : undefined
+          }
+          skillsButton={
+            !isSpaceChannel ? (
+              <button className="skills-btn" onClick={() => setShowSkillsDialog(true)} title="Skills">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26" />
+                </svg>
+              </button>
+            ) : undefined
+          }
+        />
+      )}
       <StreamOutputDialog
         open={streamDialogOpen}
         onClose={() => {
