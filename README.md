@@ -811,6 +811,14 @@ bun run install:local  # Copy binary to ~/.clawd/bin/
 
 ---
 
+## Disclaimer
+
+This codebase is **100% AI-generated**. Every line of code, configuration, and documentation was written by AI agents (Claude, GPT, Copilot) with human direction and review. While we strive for quality and correctness, there may be bugs, security issues, or unexpected behavior. **Use at your own risk.**
+
+We welcome contributions from everyone — whether you're fixing bugs, improving documentation, adding features, or just reporting issues. Feel free to open a PR or issue on GitHub.
+
+---
+
 ## License
 
 [MIT](LICENSE)
