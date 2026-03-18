@@ -1112,6 +1112,27 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
     }
   }
 
+  async fetchModelTokenLimit(model: string): Promise<number | null> {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/show`, {
+        method: "POST",
+        headers: this.getHeaders(),
+        body: JSON.stringify({ name: model }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { parameters?: string; model_info?: Record<string, unknown> };
+      // Try model_info first (newer Ollama versions)
+      const ctxFromInfo = data.model_info?.["context_length"] ?? data.model_info?.["num_ctx"];
+      if (typeof ctxFromInfo === "number") return ctxFromInfo;
+      // Parse from parameters text (e.g., "num_ctx 4096")
+      const match = data.parameters?.match(/num_ctx\s+(\d+)/);
+      return match ? parseInt(match[1], 10) : null;
+    } catch {
+      return null;
+    }
+  }
+
   close(): void {
     // No connection to close for HTTP/1.1 fetch
   }

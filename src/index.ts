@@ -123,6 +123,15 @@ if (!validateConfig(config)) {
   process.exit(1);
 }
 
+// Apply model token limit overrides from config.json
+{
+  const fileConfig = loadConfigFile();
+  if (fileConfig.model_token_limits) {
+    const { applyTokenLimitOverrides } = require("./agent/src/constants/context-limits");
+    applyTokenLimitOverrides(fileConfig.model_token_limits);
+  }
+}
+
 // @ts-expect-error — Bun text imports; TypeScript cannot resolve non-TS assets
 import REMOTE_WORKER_JAVA from "../packages/clawd-worker/java/RemoteWorker.java" with { type: "text" };
 // @ts-expect-error — Bun text imports; TypeScript cannot resolve non-TS assets
