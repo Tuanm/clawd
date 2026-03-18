@@ -1779,10 +1779,10 @@ export default function App({ channel: initialChannel }: Props) {
                 <rect x="60" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
                 <g className="leg1">
                   <rect x="6" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-                  <rect x="18" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                  <rect x="42" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
                 </g>
                 <g className="leg2">
-                  <rect x="42" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                  <rect x="18" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
                   <rect x="54" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
                 </g>
                 <rect x="6" width="54" height="39" fill="hsl(15 63.1% 59.6%)" />
