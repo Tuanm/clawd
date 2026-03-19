@@ -950,10 +950,9 @@ ${taskMsgs}
 
 ${
   this.config.isSpaceAgent
-    ? `# SUB-AGENT INSTRUCTIONS
+    ? `# TASK INSTRUCTIONS
 
-You are a sub-agent in a sub-space. Complete the task and call respond_to_parent(result) with your final result.
-Do NOT use chat_send_message — only respond_to_parent delivers results to the main agent.
+Complete the assigned task. When done, call respond_to_parent(result) with your final result.
 Project root: ${projectRoot}`
     : `# INSTRUCTIONS
 
@@ -982,15 +981,12 @@ Project root: ${projectRoot}`
     const targetTs = unprocessedMessages[unprocessedMessages.length - 1]?.ts || "";
 
     if (this.config.isSpaceAgent) {
-      return `[SYSTEM] YOU ARE SUB-AGENT: "${agentId}"
-
-CONTINUATION REQUIRED — you did not call respond_to_parent yet.
+      return `[SYSTEM] CONTINUATION REQUIRED — you did not call respond_to_parent yet.
 
 ## UNPROCESSED MESSAGES:
 ${messageContext}
 
-Complete the task and call respond_to_parent(result) with your final result.
-Then call chat_mark_processed(timestamp="${targetTs}").`;
+Complete the task and call respond_to_parent(result) with your final result.`;
     }
 
     return `[SYSTEM] YOU ARE AGENT: "${agentId}"

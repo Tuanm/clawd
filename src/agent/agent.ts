@@ -940,6 +940,11 @@ SUMMARY:`;
       filtered = filtered.filter((t) => denied.has(t.function.name.toLowerCase()) === false);
     }
 
+    // Sub-agents: exclude chat tools (they use respond_to_parent, not chat_send_message)
+    if (this.config.promptContext?.isSpaceAgent) {
+      filtered = filtered.filter((t) => !t.function.name.startsWith("chat_"));
+    }
+
     return filtered;
   }
 
