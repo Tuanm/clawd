@@ -398,7 +398,7 @@ Agent identities are defined in markdown files with YAML frontmatter (Claude Cod
 {projectRoot}/.clawd/agents/{name}.md      # Claw'd project (highest)
 ```
 
-Each agent file contains: name, description, model override, tool restrictions, skills, directives, language, and system prompt. Sub-agents can be spawned with a specific agent file via `spawn_agent(task, agent="code-reviewer")` — the sub-agent inherits the agent file's system prompt, model, tools, directives, and language settings. Without the `agent` parameter, sub-agents inherit the parent's full configuration (backward compatible).
+Each agent file contains: name, description, provider, model, tool restrictions, skills, directives, language, and system prompt. Sub-agents can be spawned with a specific agent file via `spawn_agent(task, agent="code-reviewer")` — the sub-agent inherits the agent file's system prompt, provider, model, tools, directives, and language settings. Without the `agent` parameter, sub-agents inherit the parent's full configuration (backward compatible).
 
 For full details, see **[docs/agents.md](docs/agents.md)**.
 

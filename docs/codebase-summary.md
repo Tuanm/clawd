@@ -134,7 +134,7 @@ clawd/
 Agent identities defined in markdown with YAML frontmatter (Claude Code-compatible). Loaded from 4 directories with priority override:
 1. `~/.claude/agents/` (lowest) → 2. `~/.clawd/agents/` → 3. `{project}/.claude/agents/` → 4. `{project}/.clawd/agents/` (highest)
 
-Fields: name, description, model, tools, disallowedTools, skills, memory, language, directives, maxTurns, background. Sub-agents can be spawned with a specific agent file via `spawn_agent(task, agent="code-reviewer")` — the sub-agent inherits the agent file's system prompt, model, tool restrictions, and directives. Tool name aliases (Read→view, Write→create, Bash→bash, etc.) resolve automatically in agent file tool restrictions for Claude Code compatibility.
+Fields: name, description, provider, model, tools, disallowedTools, skills, memory, language, directives, maxTurns, background. Sub-agents can be spawned with a specific agent file via `spawn_agent(task, agent="code-reviewer")` — the sub-agent inherits the agent file's system prompt, provider, model, tool restrictions, and directives. Tool name aliases (Read→view, Write→create, Bash→bash, etc.) resolve automatically in agent file tool restrictions for Claude Code compatibility.
 
 ### Worker Loop (`src/worker-loop.ts`)
 
