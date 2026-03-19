@@ -1022,7 +1022,7 @@ Please:
         projectHash,
         agentId,
         channel,
-        provider: this.config.provider,
+        provider: this.config.provider || "copilot",
       },
       async () => {
         try {
