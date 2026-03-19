@@ -129,6 +129,13 @@ clawd/
 
 ## Agent System Architecture
 
+### Agent Files (`src/agent/agents/loader.ts`)
+
+Agent identities defined in markdown with YAML frontmatter (Claude Code-compatible). Loaded from 4 directories with priority override:
+1. `~/.claude/agents/` (lowest) → 2. `~/.clawd/agents/` → 3. `{project}/.claude/agents/` → 4. `{project}/.clawd/agents/` (highest)
+
+Fields: name, description, model, tools, disallowedTools, skills, memory, language, directives, maxTurns, background. Sub-agents can be spawned with a specific agent file via `spawn_agent(agent="name")`.
+
 ### Worker Loop (`src/worker-loop.ts`)
 
 Each agent runs an independent polling loop:

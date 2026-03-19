@@ -382,6 +382,21 @@ Automatic stuck-agent detection and recovery:
 - **Heartbeat signal**: `[HEARTBEAT]` sent as `<agent_signal>` user message, stripped from context compaction
 - **Smart compaction**: Heartbeat messages dropped automatically during context compression, never persisted
 
+### Agent Files
+
+Agent identities are defined in markdown files with YAML frontmatter (Claude Code-compatible format). Loaded from four directories (highest priority last):
+
+```
+~/.claude/agents/{name}.md                 # Claude Code global (lowest)
+~/.clawd/agents/{name}.md                  # Claw'd global
+{projectRoot}/.claude/agents/{name}.md     # Claude Code project
+{projectRoot}/.clawd/agents/{name}.md      # Claw'd project (highest)
+```
+
+Each agent file contains: name, description, model override, tool restrictions, skills, directives, language, and system prompt. Sub-agents can be spawned with a specific agent file via `spawn_agent(task, agent="code-reviewer")`.
+
+For full details, see **[docs/agents.md](docs/agents.md)**.
+
 ### Custom Skills
 
 Agents load skills from four directories (highest priority last):
@@ -833,6 +848,7 @@ bun run install:local  # Copy binary to ~/.clawd/bin/
 ## Documentation
 
 - **[docs/architecture.md](docs/architecture.md)** — Comprehensive architecture reference (database schema, agent system, browser extension, spaces, scheduler, sandbox, API reference, configuration)
+- **[docs/agents.md](docs/agents.md)** — Agent file format, priority system, sub-agent spawning, tool restrictions, examples
 - **[docs/skills.md](docs/skills.md)** — Creating and managing agent skills (SKILL.md format, triggers, scripts, priority)
 - **[docs/custom-tools.md](docs/custom-tools.md)** — Creating and managing custom tools (tool.json, execution model, examples)
 

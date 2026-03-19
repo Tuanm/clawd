@@ -1,3 +1,4 @@
+import type { AgentFileConfig } from "../agent/agents/loader";
 import type { MCPManager } from "../agent/mcp/client";
 import { type AgentHealthSnapshot, WorkerLoop } from "../worker-loop";
 import type { Space } from "./db";
@@ -39,7 +40,7 @@ export class SpaceWorkerManager {
     this.getChannelMcp = fn;
   }
 
-  startSpaceWorker(space: Space, agentConfig: AgentConfig): Promise<string> {
+  startSpaceWorker(space: Space, agentConfig: AgentConfig, agentFileConfig?: AgentFileConfig): Promise<string> {
     if (this.workers.size >= MAX_SPACE_WORKERS_GLOBAL) {
       throw new Error(`Max global space workers (${MAX_SPACE_WORKERS_GLOBAL}) exceeded`);
     }
@@ -109,6 +110,7 @@ export class SpaceWorkerManager {
           }
         },
         additionalPlugins: [{ plugin: { name: "space-tools", version: "1.0.0", hooks: {} }, toolPlugin: spacePlugin }],
+        agentFileConfig,
       });
 
       const entry: SpaceWorkerEntry = {

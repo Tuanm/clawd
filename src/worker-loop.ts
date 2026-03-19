@@ -9,14 +9,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { type ClawdChatConfig, createClawdChatPlugin, createClawdChatToolPlugin } from "./agent/plugins/clawd-chat";
-import { createCopilotAnalyticsPlugin } from "./agent/plugins/copilot-analytics-plugin";
-import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 import { Agent, type AgentConfig } from "./agent/agent";
+import { buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "./agent/agents/loader";
 import { callContext } from "./agent/api/call-context";
 import { createProvider } from "./agent/api/factory";
+import { type ClawdChatConfig, createClawdChatPlugin, createClawdChatToolPlugin } from "./agent/plugins/clawd-chat";
+import { createCopilotAnalyticsPlugin } from "./agent/plugins/copilot-analytics-plugin";
 import { createMemoryPlugin, isMemoryEnabled } from "./agent/plugins/memory-plugin";
 import { RemoteWorkerBridge } from "./agent/plugins/remote-worker-bridge";
+import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 import { runWithAgentContext, setProjectHash } from "./agent/tools/tools";
 import { setDebug } from "./agent/utils/debug";
 import { initializeSandbox } from "./agent/utils/sandbox";
@@ -55,14 +56,7 @@ const MAX_COMBINED_PROMPT_LENGTH = 40000;
 // Keeps system instructions bounded so they don't consume too much of the context window.
 const MAX_SYSTEM_INSTRUCTIONS_LENGTH = 4000;
 
-// Agent identity configuration from .clawd/agents.json
-interface AgentIdentityConfig {
-  roles?: string[];
-  description?: string;
-  directives?: string[];
-  model?: string;
-  language?: string;
-}
+// Agent identity loaded from .clawd/agents/{name}.md (or .claude/agents/)
 
 interface Message {
   ts: string;
@@ -147,6 +141,8 @@ export interface WorkerLoopConfig {
   heartbeatInterval?: number;
   /** Auth token for internal HTTP self-calls (Authorization: Bearer <token>) */
   authToken?: string;
+  /** Agent file config for sub-agents spawned with agent= parameter */
+  agentFileConfig?: import("./agent/agents/loader").AgentFileConfig;
 }
 
 export class WorkerLoop {
@@ -1090,10 +1086,12 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
           const agentConfig: AgentConfig = {
             provider,
             model,
-            maxIterations: 0, // Unlimited for worker mode
+            maxIterations: this.config.agentFileConfig?.maxTurns || 0, // 0 = unlimited
             contextMode: this.config.contextMode,
             additionalContext: clawdContext || undefined,
             sharedMcpManager: this.config.channelMcpManager,
+            toolAllowlist: this.config.agentFileConfig?.tools,
+            toolDenylist: this.config.agentFileConfig?.disallowedTools,
             onToken: (token) => {
               process.stdout.write(token);
             },
@@ -1249,91 +1247,13 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
     );
   }
 
-  /** Load agent identity from {projectRoot}/.clawd/agents.json */
+  /** Load agent identity from agents/{name}.md (4-directory priority) */
   private loadAgentIdentity(): string {
     const { projectRoot, agentId } = this.config;
-    const sections: string[] = [];
-    const rolesDir = join(projectRoot, ".clawd", "roles");
-
-    // 1. Always load the agent's own role file first — this is the primary identity
-    //    source and must survive agents.json corruption
-    const ownRolePath = join(rolesDir, `${agentId}.md`);
-    let ownRoleLoaded = false;
-    if (existsSync(ownRolePath)) {
-      try {
-        const content = readFileSync(ownRolePath, "utf-8").trim();
-        if (content) {
-          sections.push(
-            `## YOUR IDENTITY — FOLLOW STRICTLY\n\nYou ARE "${agentId}". You MUST stay in character at ALL times.\n\n${content}`,
-          );
-          ownRoleLoaded = true;
-        }
-      } catch {
-        // Ignore read errors — will fall through to agents.json
-      }
-    }
-
-    // 2. Load agents.json for additional config (description, directives, other roles, other agents)
-    const configPath = join(projectRoot, ".clawd", "agents.json");
-    let config: Record<string, AgentIdentityConfig> = {};
-    if (existsSync(configPath)) {
-      try {
-        config = JSON.parse(readFileSync(configPath, "utf-8"));
-      } catch (e) {
-        this.log(`Failed to parse .clawd/agents.json: ${e}`);
-        // Continue — the own role file is already loaded above
-      }
-    }
-
-    const agent = config[agentId];
-
-    // 3. If own role file wasn't loaded, use agents.json identity header
-    if (!ownRoleLoaded) {
-      const langNote = agent?.language ? ` You MUST communicate in language: "${agent.language}".` : "";
-      sections.push(
-        `## YOUR IDENTITY — FOLLOW STRICTLY\n\nYou ARE "${agentId}". You MUST stay in character at ALL times.${langNote}${agent?.description ? `\n\n${agent.description}` : ""}`,
-      );
-    } else if (agent?.language) {
-      // Append language directive even when role file is loaded
-      sections.push(`You MUST communicate in language: "${agent.language}".`);
-    }
-
-    if (agent) {
-      // 4. Standing directives (behavioral rules that persist across sessions)
-      if (agent.directives && agent.directives.length > 0) {
-        sections.push(
-          `### Standing Directives\n\nThese are your standing behavioral rules. Follow them at ALL times, even after long conversations:\n\n${agent.directives.map((d: string) => `- ${d}`).join("\n")}`,
-        );
-      }
-
-      // 5. Load additional role files (excluding own role which is already loaded)
-      for (const role of agent.roles || []) {
-        if (role === agentId) continue; // Already loaded above
-        const rolePath = join(rolesDir, `${role}.md`);
-        if (existsSync(rolePath)) {
-          try {
-            const content = readFileSync(rolePath, "utf-8");
-            sections.push(`### Role: ${role}\n\n${content}`);
-          } catch {
-            // Ignore read errors for individual role files
-          }
-        }
-      }
-    }
-
-    // 6. Summary of other agents (so this agent knows who else is available)
-    const others = Object.entries(config)
-      .filter(([name]) => name !== agentId)
-      .map(([name, cfg]) => {
-        const roles = cfg.roles?.join(", ") || "no roles";
-        return `- "${name}" (roles: ${roles}): ${cfg.description || "No description"}`;
-      });
-
-    if (others.length > 0) {
-      sections.push(`## Other Agents in This Project\n\n${others.join("\n")}`);
-    }
-
-    return sections.join("\n\n");
+    const agent = loadAgentFile(agentId, projectRoot);
+    if (!agent) return "";
+    const allAgents = listAgentFiles(projectRoot);
+    return buildAgentSystemPrompt(agent, allAgents);
   }
 
   /** Load CLAWD.md instructions from project root */
@@ -1357,10 +1277,19 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
       } catch {}
     }
 
-    // 3. Agent identity from {projectRoot}/.clawd/agents.json
-    const identity = this.loadAgentIdentity();
-    if (identity) {
-      contexts.push(`# Agent Identity & Configuration\n\n${identity}`);
+    // 3. Agent identity — from agentFileConfig (sub-agent spawn) or disk lookup
+    if (this.config.agentFileConfig) {
+      // Sub-agent spawned with agent= parameter: use provided config directly
+      const allAgents = listAgentFiles(projectRoot);
+      const identity = buildAgentSystemPrompt(this.config.agentFileConfig, allAgents);
+      if (identity) {
+        contexts.push(`# Agent Identity & Configuration\n\n${identity}`);
+      }
+    } else {
+      const identity = this.loadAgentIdentity();
+      if (identity) {
+        contexts.push(`# Agent Identity & Configuration\n\n${identity}`);
+      }
     }
 
     const result = contexts.join("\n\n---\n\n");
