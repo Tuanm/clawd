@@ -53,6 +53,7 @@ Save to `~/.clawd/agents/` to make it available across all projects:
 name: agent-name
 description: When to use this agent
 model: sonnet
+provider: anthropic
 tools: [bash, view, grep, glob]
 disallowedTools: [create]
 skills: [deploy-checklist]
@@ -74,6 +75,7 @@ System prompt markdown goes here...
 |-------|------|----------|-------------|
 | `name` | string | Yes | Unique identifier (lowercase, hyphens, underscores) |
 | `description` | string | Yes | When to delegate to this agent — shown to other agents for awareness |
+| `provider` | string | No | LLM provider: `copilot`, `anthropic`, `openai`, `ollama`, or any configured provider. Defaults to parent agent's provider |
 | `model` | string | No | `sonnet`, `opus`, `haiku`, `inherit`, or full model ID (e.g., `claude-sonnet-4.6`). Defaults to `inherit` |
 | `tools` | string[] | No | Tool allowlist — only these tools available. Inherits all if omitted |
 | `disallowedTools` | string[] | No | Tool denylist — removed from available tools |
@@ -129,6 +131,7 @@ spawn_agent(task: "Review the auth module", agent: "code-reviewer")
 When the `agent` parameter is provided:
 - The agent file is loaded from the 4-directory priority system
 - Sub-agent gets the agent file's **system prompt** as its identity
+- Sub-agent uses the agent file's **provider** (or inherits from parent)
 - Sub-agent uses the agent file's **model** (or inherits from parent)
 - Sub-agent is restricted to the agent file's **tools** (if specified)
 - Sub-agent's **directives** and **language** are applied
@@ -136,7 +139,14 @@ When the `agent` parameter is provided:
 
 Without the `agent` parameter, `spawn_agent` creates an anonymous sub-agent that inherits the parent's configuration (existing behavior, unchanged).
 
-### Model Override
+### Provider & Model Override
+
+The `provider` field specifies which LLM provider the sub-agent uses. Must match a configured provider in `config.json`. When omitted, inherits from parent.
+
+```yaml
+provider: anthropic    # use Anthropic API directly
+model: haiku           # with Haiku model
+```
 
 The `model` field supports aliases and full model IDs:
 
@@ -147,6 +157,8 @@ The `model` field supports aliases and full model IDs:
 | `haiku` | `claude-haiku-4.5` |
 | `inherit` | Parent agent's model |
 | `claude-sonnet-4.6` | Used as-is (full model ID) |
+
+Provider and model can be combined independently — e.g., use Copilot provider with a specific model, or Anthropic provider with Haiku for cost savings.
 
 ---
 
@@ -253,6 +265,7 @@ Focus on fixing the underlying issue, not the symptoms.
 ```markdown
 ---
 name: doc-writer
+provider: anthropic
 description: Generates and updates project documentation
 tools: [view, grep, glob, create, edit]
 disallowedTools: [bash, git_push]
