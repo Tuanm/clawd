@@ -504,6 +504,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     channel: string;
     card_message_ts: string | null;
     agent_color: string;
+    agent_id: string;
   } | null>(null);
   const [spaceError, setSpaceError] = useState(false);
   const isSpaceLocked = spaceInfo != null && spaceInfo.status !== "active";
@@ -604,8 +605,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       .filter(([ch]) => ch !== activeChannel || !isActiveChannelAtBottom)
       .reduce((acc, [, count]) => acc + count, 0);
     const countDisplay = totalUnread > 99 ? "99+" : totalUnread.toString();
-    document.title = totalUnread > 0 ? `Claw'd | ${displayName} (${countDisplay})` : `Claw'd | ${displayName}`;
-  }, [displayName, unreadCounts, activeChannel, isActiveChannelAtBottom]);
+    const titleBase = spaceInfo?.agent_id
+      ? `Claw'd | ${parentChannel} | ${spaceInfo.agent_id}`
+      : `Claw'd | ${displayName}`;
+    document.title = totalUnread > 0 ? `${titleBase} (${countDisplay})` : titleBase;
+  }, [displayName, unreadCounts, activeChannel, isActiveChannelAtBottom, spaceInfo, parentChannel]);
 
   // Keyboard shortcut: Ctrl+F / Cmd+F for search
   useEffect(() => {
@@ -725,6 +729,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             channel: data.space.channel,
             card_message_ts: data.space.card_message_ts,
             agent_color: data.space.agent_color,
+            agent_id: data.space.agent_id,
           });
         else setSpaceError(true);
       })
@@ -1882,7 +1887,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               >
                 <ClawdLogo sleeping={false} hasUnread={false} />
               </button>
-              <span className="header-channel-name">{parentChannel}</span>
+              <span className="header-channel-name">
+                {parentChannel}
+                {spaceInfo?.agent_id ? ` | ${spaceInfo.agent_id}` : ""}
+              </span>
             </>
           ) : (
             <>
