@@ -31,6 +31,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { isValidAgentName, listAgentFiles, loadAgentFile, parseAgentFile } from "../agent/agents/loader";
 import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../agent/api/provider-config";
 import { getSkillManager } from "../agent/skills/manager";
 import type { WorkerManager } from "../worker-manager";
@@ -639,7 +640,7 @@ export function registerAgentRoutes(
       });
     }
 
-    // Get agent identity (role file content)
+    // Get agent identity (from agent file)
     if (path === "/api/app.agents.identity" && req.method === "GET") {
       const channel = url.searchParams.get("channel");
       const agent_id = url.searchParams.get("agent_id");
@@ -650,17 +651,15 @@ export function registerAgentRoutes(
         .get(channel, agent_id) as any;
       if (!agent?.project) return json({ ok: true, identity: "" });
 
-      const rolePath = join(agent.project, ".clawd", "roles", `${agent_id}.md`);
-      let identity = "";
-      if (existsSync(rolePath)) {
-        try {
-          identity = readFileSync(rolePath, "utf-8");
-        } catch {}
-      }
-      return json({ ok: true, identity });
+      const agentFile = loadAgentFile(agent_id, agent.project);
+      return json({
+        ok: true,
+        identity: agentFile?.systemPrompt || "",
+        config: agentFile || null,
+      });
     }
 
-    // Save agent identity (role file + agents.json upsert)
+    // Save agent identity (write agent file)
     if (path === "/api/app.agents.identity" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
@@ -673,35 +672,69 @@ export function registerAgentRoutes(
           .get(channel, agent_id) as any;
         if (!agent?.project) return json({ ok: false, error: "Agent has no project root" }, 400);
 
+        // Validate agent name (path traversal protection)
+        if (!isValidAgentName(agent_id)) {
+          return json({ ok: false, error: "Invalid agent_id: must be alphanumeric with hyphens/underscores" }, 400);
+        }
+
         const { mkdirSync, writeFileSync } = await import("node:fs");
-        const rolesDir = join(agent.project, ".clawd", "roles");
-        mkdirSync(rolesDir, { recursive: true });
+        const agentsDir = join(agent.project, ".clawd", "agents");
+        mkdirSync(agentsDir, { recursive: true });
 
-        // Write role file
-        const rolePath = join(rolesDir, `${agent_id}.md`);
-        writeFileSync(rolePath, identity, "utf-8");
+        // Sanitize YAML values: strip newlines and control characters to prevent frontmatter injection
+        const sanitizeYaml = (v: string) => v.replace(/[\r\n\t]/g, " ").trim();
 
-        // Upsert role in agents.json
-        const agentsJsonPath = join(agent.project, ".clawd", "agents.json");
-        let agentsConfig: Record<string, any> = {};
-        if (existsSync(agentsJsonPath)) {
-          try {
-            agentsConfig = JSON.parse(readFileSync(agentsJsonPath, "utf-8"));
-          } catch {}
+        // Build agent file with frontmatter
+        const frontmatterLines = ["---", `name: ${sanitizeYaml(agent_id)}`];
+        if (body.description) frontmatterLines.push(`description: "${sanitizeYaml(String(body.description))}"`);
+        if (body.model) frontmatterLines.push(`model: ${sanitizeYaml(String(body.model))}`);
+        if (body.language) frontmatterLines.push(`language: ${sanitizeYaml(String(body.language))}`);
+        if (Array.isArray(body.tools) && body.tools.length > 0) {
+          frontmatterLines.push(`tools: [${body.tools.map((t: string) => sanitizeYaml(String(t))).join(", ")}]`);
         }
-        if (!agentsConfig[agent_id]) agentsConfig[agent_id] = {};
-        const roles: string[] = agentsConfig[agent_id].roles || [];
-        if (!roles.includes(agent_id)) {
-          roles.push(agent_id);
-          agentsConfig[agent_id].roles = roles;
+        if (Array.isArray(body.directives) && body.directives.length > 0) {
+          frontmatterLines.push("directives:");
+          for (const d of body.directives) frontmatterLines.push(`  - ${sanitizeYaml(String(d))}`);
         }
-        writeFileSync(agentsJsonPath, JSON.stringify(agentsConfig, null, 2), "utf-8");
+        frontmatterLines.push("---");
+
+        const fileContent = `${frontmatterLines.join("\n")}\n\n${identity}`;
+        const outPath = join(agentsDir, `${agent_id}.md`);
+
+        // Final path safety check: ensure resolved path is within agentsDir
+        const { resolve: resolvePath } = await import("node:path");
+        if (!resolvePath(outPath).startsWith(resolvePath(agentsDir))) {
+          return json({ ok: false, error: "Path traversal detected" }, 400);
+        }
+        writeFileSync(outPath, fileContent, "utf-8");
 
         // Identity is hot-reloaded: loadClawdInstructions() reads from disk
         // on every iteration, so no agent restart is needed.
 
         return json({ ok: true });
       });
+    }
+
+    // List available agent files from all 4 directories
+    if (path === "/api/app.agents.available") {
+      const channel = url.searchParams.get("channel");
+      const agent_id = url.searchParams.get("agent_id");
+      if (!channel || !agent_id) return json({ ok: false, error: "channel and agent_id required" }, 400);
+
+      const agent = db
+        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .get(channel, agent_id) as any;
+      if (!agent?.project) return json({ ok: true, agents: [] });
+
+      const agents = listAgentFiles(agent.project).map((a) => ({
+        name: a.name,
+        description: a.description,
+        model: a.model,
+        source: a.source,
+        tools: a.tools,
+        skills: a.skills,
+      }));
+      return json({ ok: true, agents });
     }
 
     // Get worker status

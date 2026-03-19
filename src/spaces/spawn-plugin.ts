@@ -5,6 +5,7 @@
  * so no wait/poll/report tools are needed — the parent sees results in chat.
  */
 
+import { type AgentFileConfig, loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
 import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
 import type { ToolResult } from "../agent/tools/tools";
 import { timedFetch } from "../utils/timed-fetch";
@@ -38,6 +39,8 @@ export interface TrackedSpace {
   error?: string;
   status: "running" | "completed" | "failed";
   evictionTimer?: ReturnType<typeof setTimeout>;
+  /** Agent file config used to spawn this space (preserved for retask) */
+  agentFileConfig?: AgentFileConfig;
 }
 
 export function createSpawnAgentPlugin(
@@ -61,6 +64,11 @@ export function createSpawnAgentPlugin(
           parameters: {
             task: { type: "string", description: "The task for the sub-agent" },
             name: { type: "string", description: "Optional friendly name" },
+            agent: {
+              type: "string",
+              description:
+                "Optional agent file name to load config from (e.g., 'code-reviewer'). The sub-agent uses the agent file's system prompt, model, tools, and skills.",
+            },
             context: {
               type: "string",
               description:
@@ -104,7 +112,6 @@ export function createSpawnAgentPlugin(
 
   async function handleSpawnAgent(args: Record<string, any>): Promise<ToolResult> {
     const task = args.task as string;
-    const name = (args.name as string) || `sub-${Date.now()}`;
     const context = (args.context as string) || "";
 
     if (!task) {
@@ -116,6 +123,21 @@ export function createSpawnAgentPlugin(
       if (!agentConfig) {
         return { success: false, output: "", error: `No agent configured for channel ${config.channel}` };
       }
+
+      // Load agent file config if agent= parameter provided
+      let agentFileConfig: AgentFileConfig | null = null;
+      if (args.agent) {
+        if (!agentConfig.project) {
+          return { success: false, output: "", error: "Cannot load agent file: parent agent has no project root" };
+        }
+        agentFileConfig = loadAgentFile(args.agent as string, agentConfig.project);
+        if (!agentFileConfig) {
+          return { success: false, output: "", error: `Agent file "${args.agent}" not found in any agents/ directory` };
+        }
+      }
+
+      // Name: explicit > agent file name > fallback
+      const name = (args.name as string) || agentFileConfig?.name || `sub-${Date.now()}`;
 
       const spaceId = crypto.randomUUID();
       const sanitizedTitle = name
@@ -182,9 +204,18 @@ export function createSpawnAgentPlugin(
       }
 
       // 4. Start space worker (use sub-agent ID so it differs from main agent)
+      // Apply model override from agent file if provided
+      const effectiveModel = agentFileConfig?.model
+        ? resolveModelAlias(agentFileConfig.model, agentConfig.model)
+        : agentConfig.model;
+
       let completionPromise: Promise<string>;
       try {
-        completionPromise = spaceWorkerManager.startSpaceWorker(space, { ...agentConfig, agentId: subAgentId });
+        completionPromise = spaceWorkerManager.startSpaceWorker(
+          space,
+          { ...agentConfig, agentId: subAgentId, model: effectiveModel },
+          agentFileConfig || undefined,
+        );
       } catch (workerErr: any) {
         // Worker failed to start — mark space as failed and update card
         spaceManager.failSpace(space.id, workerErr.message);
@@ -229,6 +260,7 @@ export function createSpawnAgentPlugin(
         promise: completionPromise,
         startedAt: Date.now(),
         status: "running",
+        agentFileConfig: agentFileConfig || undefined,
       };
 
       completionPromise
@@ -354,10 +386,17 @@ export function createSpawnAgentPlugin(
         return { success: false, output: "", error: "Failed to post retask to space channel" };
       }
 
-      // Restart space worker
+      // Restart space worker (preserve agent file config from original spawn)
+      const retaskModel = tracked.agentFileConfig?.model
+        ? resolveModelAlias(tracked.agentFileConfig.model, agentConfig.model)
+        : agentConfig.model;
       let completionPromise: Promise<string>;
       try {
-        completionPromise = spaceWorkerManager.startSpaceWorker(space, { ...agentConfig, agentId: subAgentId });
+        completionPromise = spaceWorkerManager.startSpaceWorker(
+          space,
+          { ...agentConfig, agentId: subAgentId, model: retaskModel },
+          tracked.agentFileConfig,
+        );
       } catch (workerErr: any) {
         spaceManager.failSpace(space.id, workerErr.message);
         return { success: false, output: "", error: `Failed to start worker: ${workerErr.message}` };

@@ -80,6 +80,10 @@ export interface AgentConfig {
   fastModel?: string;
   /** Shared MCP manager for channel-scoped MCP servers (owned by WorkerManager, NOT disconnected on agent close) */
   sharedMcpManager?: import("./mcp/client").MCPManager;
+  /** Tool allowlist from agent file — only these tools available (if set) */
+  toolAllowlist?: string[];
+  /** Tool denylist from agent file — these tools removed from available set */
+  toolDenylist?: string[];
 }
 
 export interface AgentResult {
@@ -903,7 +907,18 @@ SUMMARY:`;
       }
     }
 
-    return tools;
+    // Apply agent file tool restrictions (allowlist/denylist)
+    let filtered = tools;
+    if (this.config.toolAllowlist && this.config.toolAllowlist.length > 0) {
+      const allowed = new Set(this.config.toolAllowlist.map((t) => t.toLowerCase()));
+      filtered = filtered.filter((t) => allowed.has(t.function.name.toLowerCase()));
+    }
+    if (this.config.toolDenylist && this.config.toolDenylist.length > 0) {
+      const denied = new Set(this.config.toolDenylist.map((t) => t.toLowerCase()));
+      filtered = filtered.filter((t) => !denied.has(t.function.name.toLowerCase()));
+    }
+
+    return filtered;
   }
 
   /**
