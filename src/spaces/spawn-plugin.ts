@@ -69,14 +69,14 @@ export function createSpawnAgentPlugin(
         {
           name: "spawn_agent",
           description:
-            "Spawn a sub-agent in a sub-space to handle a task. The sub-agent will respond directly to this chat channel when done — no need to wait or poll for results. Use list_available_agents to discover specialized agents you can spawn.",
+            "Spawn a sub-agent to handle a task. Defaults to 'explore' agent (fast, read-only, haiku). Use agent= to specify a different agent (e.g., 'general' for full access, 'plan' for research). Use list_agents(type='available') to discover agents.",
           parameters: {
             task: { type: "string", description: "The task for the sub-agent" },
             name: { type: "string", description: "Optional friendly name" },
             agent: {
               type: "string",
               description:
-                "Optional agent file name to load config from (e.g., 'code-reviewer'). The sub-agent uses the agent file's system prompt, model, tools, and skills. Use list_available_agents to see what's available.",
+                "Agent to use. Built-in: 'explore' (read-only, haiku), 'plan' (research, inherit model), 'general' (full access, inherit model). Default: 'explore'. Use list_agents to see all available.",
             },
             context: {
               type: "string",
@@ -213,16 +213,13 @@ export function createSpawnAgentPlugin(
       }
       if (agentConfig.project) _cachedProjectRoot = agentConfig.project;
 
-      // Load agent file config if agent= parameter provided
+      // Load agent file config — explicit agent= param, or default to "explore"
+      const agentName = (args.agent as string) || "explore";
       let agentFileConfig: AgentFileConfig | null = null;
-      if (args.agent) {
-        if (!agentConfig.project) {
-          return { success: false, output: "", error: "Cannot load agent file: parent agent has no project root" };
-        }
-        agentFileConfig = loadAgentFile(args.agent as string, agentConfig.project);
-        if (!agentFileConfig) {
-          return { success: false, output: "", error: `Agent file "${args.agent}" not found in any agents/ directory` };
-        }
+      const projectRoot = agentConfig.project || "";
+      agentFileConfig = loadAgentFile(agentName, projectRoot);
+      if (!agentFileConfig) {
+        return { success: false, output: "", error: `Agent file "${agentName}" not found` };
       }
 
       // Name: explicit > agent file name > fallback
