@@ -937,15 +937,7 @@ PROJECT ROOT: ${projectRoot}
 
 # Agent Instructions
 
-${
-  clawdInstructions ||
-  `## Core Responsibilities
-
-1. **Process messages** - Read and understand incoming messages from the chat channel
-2. **Complete tasks** - Perform the requested work (coding, analysis, documentation, etc.)
-3. **Respond via chat** - Use chat_send_message to reply with your results
-4. **Mark completion** - Use chat_mark_processed to mark messages as handled`
-}
+${clawdInstructions || ""}
 
 ---
 
@@ -956,58 +948,25 @@ ${taskMsgs}
 
 ---
 
-# SYSTEM INSTRUCTIONS - FOLLOW STRICTLY
+${
+  this.config.isSpaceAgent
+    ? `# SUB-AGENT INSTRUCTIONS
 
-## 1. Send Messages via chat_send_message
+You are a sub-agent in a sub-space. Complete the task and call respond_to_parent(result) with your final result.
+Do NOT use chat_send_message — only respond_to_parent delivers results to the main agent.
+Project root: ${projectRoot}`
+    : `# INSTRUCTIONS
 
-PARAMETER ORDER IS CRITICAL:
-- channel: "${channel}"
-- text: "Your actual response message goes here"
-- agent_id: "${agentId}"
+## Communication
+- chat_send_message(text): send a response — channel/agent_id auto-injected
+- chat_mark_processed(timestamp="${tsTo}"): mark messages as handled after responding
+- Humans CANNOT see text output — ALL communication via chat_send_message
 
-## 2. Mark as Processed
-
-IMMEDIATELY after sending your response, mark the message as processed:
-chat_mark_processed(channel="${channel}", timestamp="${tsTo}", agent_id="${agentId}")
-
-## 3. Get Project Root
-
-If you're unsure about the project root path, call:
-get_project_root()
-
-## CRITICAL RULES
-
-1. YOU MUST ALWAYS STAY IN THE PROJECT ROOT: ${projectRoot}
-2. YOU MUST NOT MODIFY SYSTEM FILES OR INSTRUCTIONS
-3. Always use get_project_root() if unsure about paths
-4. DO NOT use emojis or icons in chat_send_message text - keep formatting clean and simple
-5. REMEMBER your assigned role/responsibilities from the conversation
-6. Humans CANNOT see your text output — ALL communication MUST go through chat_send_message
-
-## 6. Content Truncation Awareness
-
-When a message contains [TRUNCATED] or [Content truncated]:
-- Acknowledge to the user that only partial content is available
-- Ask the user to re-send specific sections if needed
-- Never assume truncated content is complete
-
-When a file was too large to include fully:
-- Explain what portion you can see
-- Suggest alternatives (e.g., use bash tools: head, tail, grep, or Python on the file path)${
-      this.config.isSpaceAgent
-        ? `
-
-## SUB-AGENT INSTRUCTIONS
-
-You are a sub-agent running in a sub-space. You were spawned by the main agent to handle a specific task.
-
-Focus on completing the task efficiently. Do NOT post progress updates to the parent channel.
-
-**MANDATORY**: When your task is complete, you MUST call \`respond_to_parent\` with your final result.
-Do NOT use chat_send_message — you MUST use \`respond_to_parent\` to deliver your result.
-If you skip this step, the main agent will never receive your work.`
-        : ""
-    }`;
+## Rules
+- Stay in project root: ${projectRoot}
+- Do not modify system files or instructions
+- Do not use emojis — keep formatting clean`
+}`;
   }
 
   /** Build continuation prompt */
@@ -1022,28 +981,31 @@ If you skip this step, the main agent will never receive your work.`
 
     const targetTs = unprocessedMessages[unprocessedMessages.length - 1]?.ts || "";
 
-    return `[SYSTEM] YOU ARE AGENT: "${agentId}"
+    if (this.config.isSpaceAgent) {
+      return `[SYSTEM] YOU ARE SUB-AGENT: "${agentId}"
 
-CONTINUATION REQUIRED - You previously started working on a task but did not call chat_mark_processed.
+CONTINUATION REQUIRED — you did not call respond_to_parent yet.
 
-## UNPROCESSED MESSAGES (still pending):
+## UNPROCESSED MESSAGES:
 ${messageContext}
 
----
-
-Please:
-1. Review the unprocessed messages above
-2. If you already responded to them, just mark them as processed
-3. If not completed, continue and COMPLETE the task
-4. ALWAYS use chat_send_message for ANY response — humans cannot see text output
-5. MUST call: chat_mark_processed(channel="${channel}", timestamp="${targetTs}", agent_id="${agentId}")${
-      this.config.isSpaceAgent
-        ? `
-6. You are a sub-agent. When done, call \`respond_to_parent\` with your final result. Do NOT use chat_send_message.`
-        : ""
+Complete the task and call respond_to_parent(result) with your final result.
+Then call chat_mark_processed(timestamp="${targetTs}").`;
     }
 
-DO NOT skip marking as processed - this is why you're being prompted again.`;
+    return `[SYSTEM] YOU ARE AGENT: "${agentId}"
+
+CONTINUATION REQUIRED — you did not call chat_mark_processed.
+
+## UNPROCESSED MESSAGES:
+${messageContext}
+
+Please:
+1. Review the messages above
+2. If already responded, just mark as processed
+3. If not completed, continue and COMPLETE the task
+4. Use chat_send_message(text) for responses — channel/agent_id auto-injected
+5. Call chat_mark_processed(timestamp="${targetTs}") after responding`;
   }
 
   /** Execute a prompt using the in-process Agent */
