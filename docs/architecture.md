@@ -163,7 +163,7 @@ clawd/
 │   │   ├── manager.ts          # Space lifecycle management
 │   │   ├── worker.ts           # Space worker orchestrator
 │   │   ├── spawn-plugin.ts     # spawn_agent tool
-│   │   ├── plugin.ts           # respond_to_parent, get_space_info
+│   │   ├── plugin.ts           # complete_task, get_environment
 │   │   └── db.ts               # spaces table schema
 │   ├── scheduler/              # Scheduled jobs (cron, interval, once)
 │   │   ├── manager.ts          # Scheduler tick loop
@@ -844,7 +844,7 @@ sequenceDiagram
     SS->>SA: Load agent file config (model, tools, system prompt, directives)
     SS->>SA: Start new WorkerLoop (inherits provider/model if not overridden)
     Note over SA: ... working ...
-    SA->>SS: respond_to_parent(result)
+    SA->>SS: complete_task(result)
     SS->>PA: Result posted to parent channel + space locked
     Note over SS: Space status → completed
 ```
@@ -859,11 +859,11 @@ sequenceDiagram
 - **Timeout**: Default **300 seconds** (5 minutes); `spawn_agent` overrides to 600 seconds
 - **Heartbeat**: Sub-agents automatically get a **5-second heartbeat** interval to stay responsive
 - **Context seeding**: Parent can pass `context` parameter to reduce sub-agent cold start
-- **Result delivery**: Sub-agent calls `respond_to_parent(result)` which posts the result
+- **Result delivery**: Sub-agent calls `complete_task(result)` which posts the result
   to the parent channel and locks the space (preventing further messages)
 - **Sub-agent naming**: Sub-agents use friendly names with UUID suffix (e.g., "code-reviewer-a1b2c3") and get colored avatars
 
-**Sub-agent tools**: `respond_to_parent`, `get_space_info`. The `retask_agent` tool on the parent allows re-tasking completed sub-agents without cold start.
+**Sub-agent tools**: `complete_task`, `get_environment`. The `retask_agent` tool on the parent allows re-tasking completed sub-agents without cold start.
 
 **Space statuses**: `active` → `completed` | `failed` | `timed_out`
 

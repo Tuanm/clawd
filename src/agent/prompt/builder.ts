@@ -264,8 +264,8 @@ function sectionContext(): string {
 // ============================================================================
 
 function sectionSubAgentInstructions(): string {
-  return `# MANDATORY: Call respond_to_parent When Done
-You MUST call respond_to_parent(result) with your final result when the task is complete.
+  return `# MANDATORY: Call complete_task When Done
+You MUST call complete_task(result) with your final result when the task is complete.
 This is the ONLY way to deliver your work. If you don't call it, your work is lost.
 Do NOT use chat_send_message — it is not available to you.`;
 }

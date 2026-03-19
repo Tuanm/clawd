@@ -940,9 +940,28 @@ SUMMARY:`;
       filtered = filtered.filter((t) => denied.has(t.function.name.toLowerCase()) === false);
     }
 
-    // Sub-agents: exclude chat tools (they use respond_to_parent, not chat_send_message)
+    // Sub-agents: ensure critical tools survive allowlist filtering
     if (this.config.promptContext?.isSpaceAgent) {
-      filtered = filtered.filter((t) => !t.function.name.startsWith("chat_"));
+      // complete_task is a plugin tool that may be filtered by agent file allowlist — force re-add
+      const forceInclude = new Set(["complete_task", "chat_mark_processed"]);
+      for (const tool of pluginTools) {
+        if (forceInclude.has(tool.function.name) && !filtered.some((t) => t.function.name === tool.function.name)) {
+          filtered.push(tool);
+        }
+      }
+      // Also ensure get_environment and today are available (from built-in tools)
+      for (const tool of tools) {
+        if (
+          (tool.function.name === "get_environment" || tool.function.name === "today") &&
+          !filtered.some((t) => t.function.name === tool.function.name)
+        ) {
+          filtered.push(tool);
+        }
+      }
+      // Remove chat tools (except chat_mark_processed)
+      filtered = filtered.filter(
+        (t) => !t.function.name.startsWith("chat_") || t.function.name === "chat_mark_processed",
+      );
     }
 
     return filtered;
@@ -996,7 +1015,7 @@ SUMMARY:`;
       "chat_send_message",
       "chat_mark_processed",
       "get_project_root",
-      "respond_to_parent",
+      "complete_task",
       "spawn_agent",
       "list_agents",
       "knowledge_search",

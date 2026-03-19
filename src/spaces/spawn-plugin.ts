@@ -1,7 +1,7 @@
 /**
  * Spawn Agent Plugin — overrides spawn_agent to route through the sub-space system.
  *
- * Sub-agents respond directly to the parent chat channel via respond_to_parent,
+ * Sub-agents respond directly to the parent chat channel via complete_task,
  * so no wait/poll/report tools are needed — the parent sees results in chat.
  */
 
