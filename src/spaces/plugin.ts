@@ -28,7 +28,15 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
           handler: async (
             args: Record<string, unknown>,
           ): Promise<{ success: boolean; output: string; error?: string }> => {
-            const result = String(args.result || "");
+            // Accept common LLM parameter name variants (result, response, text, output)
+            const result = String(args.result || args.response || args.text || args.output || "");
+            if (!result) {
+              return {
+                success: false,
+                output: "",
+                error: "Missing result content. Call respond_to_parent(result='your result text here').",
+              };
+            }
             const won = spaceManager.lockSpace(config.spaceId, "completed", result);
             if (!won) {
               return { success: true, output: "Space already completed by another process." };
