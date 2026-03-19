@@ -685,7 +685,7 @@ async function executePrompt(prompt: string): Promise<{ success: boolean; output
     "--project-hash",
     projectHash, // Project-scoped data isolation
     "--id",
-    AGENT_ID, // Agent identity (loads from .clawd/agents.json)
+    AGENT_ID, // Agent identity (loads from .clawd/agents/{name}.md)
   ];
 
   // Pass through --yolo and --debug flags

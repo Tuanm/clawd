@@ -209,34 +209,21 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
     try {
       // Sanitize agentId for filesystem safety
       const safeId = agentId.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const rolesDir = join(projectRoot, ".clawd", "roles");
-      mkdirSync(rolesDir, { recursive: true });
+      const agentsDir = join(projectRoot, ".clawd", "agents");
+      mkdirSync(agentsDir, { recursive: true });
 
-      const rolePath = join(rolesDir, `${safeId}.md`);
-      // Defense-in-depth: verify path stays within rolesDir
+      const agentPath = join(agentsDir, `${safeId}.md`);
+      // Defense-in-depth: verify path stays within agentsDir
       const { resolve: resolvePath } = await import("node:path");
-      const resolvedRole = resolvePath(rolePath);
-      const resolvedRolesDir = resolvePath(rolesDir);
-      if (!resolvedRole.startsWith(resolvedRolesDir + "/")) {
+      const resolvedAgent = resolvePath(agentPath);
+      const resolvedAgentsDir = resolvePath(agentsDir);
+      if (!resolvedAgent.startsWith(resolvedAgentsDir + "/")) {
         return { success: false, output: "", error: "Invalid agent ID for path" };
       }
-      writeFileSync(rolePath, trimmed, "utf-8");
 
-      // Upsert role in agents.json (re-read before write to narrow race window)
-      const agentsJsonPath = join(projectRoot, ".clawd", "agents.json");
-      let agentsConfig: Record<string, any> = {};
-      if (existsSync(agentsJsonPath)) {
-        try {
-          agentsConfig = JSON.parse(readFileSync(agentsJsonPath, "utf-8"));
-        } catch {}
-      }
-      if (!agentsConfig[agentId]) agentsConfig[agentId] = {};
-      const roles: string[] = agentsConfig[agentId].roles || [];
-      if (!roles.includes(agentId)) {
-        roles.push(agentId);
-        agentsConfig[agentId].roles = roles;
-      }
-      writeFileSync(agentsJsonPath, JSON.stringify(agentsConfig, null, 2), "utf-8");
+      // Write agent file with frontmatter
+      const fileContent = `---\nname: ${safeId}\n---\n\n${trimmed}`;
+      writeFileSync(agentPath, fileContent, "utf-8");
 
       return {
         success: true,
