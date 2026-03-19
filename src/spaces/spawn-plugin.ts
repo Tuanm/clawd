@@ -298,7 +298,8 @@ export function createSpawnAgentPlugin(
       }
 
       // 4. Start space worker (use sub-agent ID so it differs from main agent)
-      // Apply model override from agent file if provided
+      // Apply provider + model overrides from agent file if provided
+      const effectiveProvider = agentFileConfig?.provider || agentConfig.provider;
       const effectiveModel = agentFileConfig?.model
         ? resolveModelAlias(agentFileConfig.model, agentConfig.model)
         : agentConfig.model;
@@ -307,7 +308,7 @@ export function createSpawnAgentPlugin(
       try {
         completionPromise = spaceWorkerManager.startSpaceWorker(
           space,
-          { ...agentConfig, agentId: subAgentId, model: effectiveModel },
+          { ...agentConfig, agentId: subAgentId, provider: effectiveProvider, model: effectiveModel },
           agentFileConfig || undefined,
         );
       } catch (workerErr: any) {
@@ -482,6 +483,7 @@ export function createSpawnAgentPlugin(
       }
 
       // Restart space worker (preserve agent file config from original spawn)
+      const retaskProvider = tracked.agentFileConfig?.provider || agentConfig.provider;
       const retaskModel = tracked.agentFileConfig?.model
         ? resolveModelAlias(tracked.agentFileConfig.model, agentConfig.model)
         : agentConfig.model;
@@ -489,7 +491,7 @@ export function createSpawnAgentPlugin(
       try {
         completionPromise = spaceWorkerManager.startSpaceWorker(
           space,
-          { ...agentConfig, agentId: subAgentId, model: retaskModel },
+          { ...agentConfig, agentId: subAgentId, provider: retaskProvider, model: retaskModel },
           tracked.agentFileConfig,
         );
       } catch (workerErr: any) {

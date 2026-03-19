@@ -33,6 +33,7 @@ export type AgentSource = "claude-global" | "clawd-global" | "claude-project" | 
 export interface AgentFileConfig {
   name: string;
   description: string;
+  provider?: string;
   model?: string;
   tools?: string[];
   disallowedTools?: string[];
@@ -176,6 +177,7 @@ export function parseAgentFile(filePath: string, source: AgentSource): AgentFile
   return {
     name,
     description,
+    provider: typeof metadata.provider === "string" ? metadata.provider : undefined,
     model: typeof metadata.model === "string" ? metadata.model : undefined,
     tools: Array.isArray(metadata.tools) ? (metadata.tools as string[]) : undefined,
     disallowedTools: Array.isArray(metadata.disallowedTools) ? (metadata.disallowedTools as string[]) : undefined,
