@@ -410,6 +410,8 @@ Detailed steps and guidelines...
 
 Skills can include their own scripts in the folder. Agents can read and execute scripts from project skills in sandbox mode.
 
+For full details, see **[docs/skills.md](docs/skills.md)**.
+
 ### Custom Tools
 
 Agents can create, manage, and use project-specific custom tools via the `custom_tool` tool with 6 modes: `list`, `add`, `edit`, `delete`, `view`, `execute`.
@@ -419,6 +421,8 @@ Tools are stored at `{projectRoot}/.clawd/tools/{toolId}/` with:
 - **entrypoint script** — auto-detected interpreter from extension (`.sh`→bash, `.py`→python3, `.ts/.js`→bun)
 
 Tool execution is sandboxed with JSON arguments via stdin, 30s default timeout (max 300s). Once added, the tool is immediately available to the creating agent; other agents in the same project see it in their next session.
+
+For full details and examples, see **[docs/custom-tools.md](docs/custom-tools.md)**.
 
 ### Memory (3-Tier)
 
@@ -829,6 +833,8 @@ bun run install:local  # Copy binary to ~/.clawd/bin/
 ## Documentation
 
 - **[docs/architecture.md](docs/architecture.md)** — Comprehensive architecture reference (database schema, agent system, browser extension, spaces, scheduler, sandbox, API reference, configuration)
+- **[docs/skills.md](docs/skills.md)** — Creating and managing agent skills (SKILL.md format, triggers, scripts, priority)
+- **[docs/custom-tools.md](docs/custom-tools.md)** — Creating and managing custom tools (tool.json, execution model, examples)
 
 ---
 
