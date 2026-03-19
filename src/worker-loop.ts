@@ -1000,9 +1000,10 @@ When a file was too large to include fully:
 
 You are a sub-agent running in a sub-space. You were spawned by the main agent to handle a specific task.
 
+Focus on completing the task efficiently. Do NOT post progress updates to the parent channel.
+
 **MANDATORY**: When your task is complete, you MUST call \`respond_to_parent\` with your final result.
-This sends your result back to the parent channel and locks this sub-space.
-Do NOT just send a chat message — you MUST use the \`respond_to_parent\` tool to deliver your result.
+Do NOT use chat_send_message — you MUST use \`respond_to_parent\` to deliver your result.
 If you skip this step, the main agent will never receive your work.`
         : ""
     }`;
@@ -1037,9 +1038,7 @@ Please:
 5. MUST call: chat_mark_processed(channel="${channel}", timestamp="${targetTs}", agent_id="${agentId}")${
       this.config.isSpaceAgent
         ? `
-6. You are a sub-agent. When your task is complete, you MUST call \`respond_to_parent\` with your final result.
-Do NOT just send a chat message — you MUST use the \`respond_to_parent\` tool to deliver your result.
-If you skip this step, the main agent will never receive your work.`
+6. You are a sub-agent. When done, call \`respond_to_parent\` with your final result. Do NOT use chat_send_message.`
         : ""
     }
 

@@ -974,7 +974,6 @@ SUMMARY:`;
       "respond_to_parent",
       "spawn_agent",
       "list_agents",
-      "report_progress",
       "knowledge_search",
       "skill_activate",
       "skill_search",

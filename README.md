@@ -462,7 +462,6 @@ Agents can delegate tasks via `spawn_agent(task, name)`:
 - Returns results via `respond_to_parent(result)`
 - Configurable timeout (default 300s; spawn_agent overrides to 600s), max 5 per channel / 20 global
 - `context` parameter for seeding sub-agents with parent knowledge
-- `report_progress(percent, status)` — non-terminal progress updates to parent
 - `retask_agent(agent_id, task)` — re-task a completed sub-agent without cold-start
 - Stream idle timeout: 120s for slow/thinking models (Opus, o1, o3), 60s for others
 
