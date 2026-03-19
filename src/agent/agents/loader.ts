@@ -340,3 +340,72 @@ export function resolveModelAlias(alias: string, parentModel: string): string {
   };
   return ALIASES[alias] || alias;
 }
+
+// ============================================================================
+// Tool Name Alias Map (Claude Code → Claw'd)
+// ============================================================================
+
+/**
+ * Maps Claude Code tool names to Claw'd equivalents.
+ * Claude Code uses PascalCase; Claw'd uses snake_case.
+ * Tools with no mapping pass through unchanged (case-insensitive match).
+ */
+const TOOL_ALIASES: Record<string, string> = {
+  // Core file tools
+  Read: "view",
+  Write: "create",
+  Edit: "edit",
+  Glob: "glob",
+  Grep: "grep",
+  Bash: "bash",
+  // Notebook
+  NotebookEdit: "edit",
+  // Web tools
+  WebFetch: "web_fetch",
+  WebSearch: "web_search",
+  // Agent/task tools
+  Agent: "spawn_agent",
+  TaskCreate: "task_add",
+  TaskGet: "task_get",
+  TaskList: "task_list",
+  TaskUpdate: "task_update",
+  TaskOutput: "agent_logs",
+  TaskStop: "kill_agent",
+  TodoWrite: "task_add",
+  // Skill tool
+  Skill: "skill_activate",
+  // MCP tools
+  ListMcpResourcesTool: "list_mcp_resources",
+  ReadMcpResourceTool: "read_mcp_resource",
+  ToolSearch: "tool_search",
+  // Plan/worktree (no direct Claw'd equivalents — pass through)
+  // EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree
+  // Cron tools
+  CronCreate: "job_submit",
+  CronDelete: "job_cancel",
+  CronList: "task_list",
+  // Message tool (Claude Code SendMessage → Claw'd chat_send_message)
+  SendMessage: "chat_send_message",
+  // Question tool
+  AskUserQuestion: "chat_send_message",
+};
+
+/**
+ * Resolve a Claude Code tool name to Claw'd equivalent.
+ * Returns the Claw'd tool name, or the original name lowercased if no alias.
+ */
+export function resolveToolAlias(name: string): string {
+  return TOOL_ALIASES[name] || name.toLowerCase();
+}
+
+/**
+ * Resolve a list of tool names from agent file (may contain Claude Code names)
+ * to Claw'd-compatible names. Deduplicates after resolution.
+ */
+export function resolveToolAliases(names: string[]): string[] {
+  const resolved = new Set<string>();
+  for (const name of names) {
+    resolved.add(resolveToolAlias(name));
+  }
+  return Array.from(resolved);
+}

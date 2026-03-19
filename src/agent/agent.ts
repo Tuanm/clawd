@@ -14,6 +14,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isBrowserEnabled, isWorkspacesEnabled } from "../config-file";
+import { resolveToolAliases } from "./agents/loader";
 import type { CompletionRequest, Message, ToolCall, ToolDefinition } from "./api/client";
 import { createProvider } from "./api/factory";
 import { AllKeysSuspendedError } from "./api/key-pool";
@@ -908,14 +909,15 @@ SUMMARY:`;
     }
 
     // Apply agent file tool restrictions (allowlist/denylist)
+    // Resolves Claude Code tool names to Claw'd equivalents (e.g., Read→view, Bash→bash)
     let filtered = tools;
     if (this.config.toolAllowlist && this.config.toolAllowlist.length > 0) {
-      const allowed = new Set(this.config.toolAllowlist.map((t) => t.toLowerCase()));
+      const allowed = new Set(resolveToolAliases(this.config.toolAllowlist));
       filtered = filtered.filter((t) => allowed.has(t.function.name.toLowerCase()));
     }
     if (this.config.toolDenylist && this.config.toolDenylist.length > 0) {
-      const denied = new Set(this.config.toolDenylist.map((t) => t.toLowerCase()));
-      filtered = filtered.filter((t) => !denied.has(t.function.name.toLowerCase()));
+      const denied = new Set(resolveToolAliases(this.config.toolDenylist));
+      filtered = filtered.filter((t) => denied.has(t.function.name.toLowerCase()) === false);
     }
 
     return filtered;
