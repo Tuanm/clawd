@@ -129,6 +129,18 @@ clawd/
 
 ## Agent System Architecture
 
+### Built-in Agents
+
+Three agents available by default with source: "built-in":
+
+| Agent | Description | Model | Tools |
+|-------|-------------|-------|-------|
+| `explore` | Fast read-only codebase explorer for discovery and pattern analysis | Haiku | view, grep, glob, bash, today, get_environment, web_search, web_fetch |
+| `plan` | Research agent for gathering context before planning | inherit | view, grep, glob, bash, today, get_environment, web_search, web_fetch |
+| `general` | Capable general-purpose agent for complex multi-step tasks | inherit | all |
+
+Built-in agents can be overridden by custom agents with the same name via the 4-directory priority system.
+
 ### Agent Files (`src/agent/agents/loader.ts`)
 
 Agent identities defined in markdown with YAML frontmatter (Claude Code-compatible). Loaded from 4 directories with priority override:
@@ -209,6 +221,18 @@ Configuration (config.json):
   "spaceIdleTimeoutMs": 60000
 }
 ```
+
+### Stream Timeouts (State-Based)
+
+Stream timeouts are state-based (not model-name-based):
+
+| State | Timeout | Meaning |
+|-------|---------|---------|
+| **CONNECTING** | 30 seconds | Waiting for HTTP response headers (network/connection issues) |
+| **PROCESSING** | 300 seconds | Headers received but no data (model thinking, extended reasoning) |
+| **STREAMING** | 180 seconds | Active data streaming; timeout if pause between chunks exceeds limit |
+
+Accommodates slow models (Opus, o1, o3) without hardcoding model-specific timeouts.
 
 ### Model Tiering & Tool Filtering
 
@@ -349,11 +373,11 @@ Job scheduling and execution history:
 
 Agents delegate work via `spawn_agent(task, agent="code-reviewer")`:
 
-1. Create isolated channel `{parent}:space:{uuid}`
+1. Create isolated channel `{parent}:{uuid}` (simplified format)
 2. Load agent file config if `agent` parameter provided (system prompt, model, tools, directives)
 3. Sub-agent inherits parent's project, provider, and model (unless overridden by agent file)
 4. Sub-agent processes task independently with friendly name + UUID suffix (e.g., "code-reviewer-a1b2c3")
-5. Sub-agent reports results via `complete_task(result)`
+5. Sub-agent reports results via `complete_task(result)` — the only way to deliver work
 6. Space auto-cleans after completion or timeout (default 300s, configurable to 600s)
 
 **Features:**
@@ -361,6 +385,7 @@ Agents delegate work via `spawn_agent(task, agent="code-reviewer")`:
 - `list_agents(type="running")` shows spawned sub-agents with status, errors, and agent file used
 - `get_agent_report(id)` fetches specific sub-agent's full result or error
 - `agent` parameter optional — without it, sub-agent inherits parent's configuration (backward compatible)
+- **Sub-agent tools** — Limited to `complete_task`, `chat_mark_processed`, `get_environment`, `today` (no chat_send_message)
 
 **Constraints:**
 - Max 5 concurrent spaces per channel

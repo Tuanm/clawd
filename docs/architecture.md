@@ -20,7 +20,8 @@
    - [Plugin System](#64-plugin-system)
    - [Memory System](#65-memory-system)
    - [Heartbeat Monitor](#66-heartbeat-monitor)
-   - [Model Tiering & Tool Filtering](#67-model-tiering--tool-filtering)
+   - [Stream Timeouts (State-Based)](#67-stream-timeouts-state-based)
+   - [Model Tiering & Tool Filtering](#68-model-tiering--tool-filtering)
 7. [Browser Extension](#7-browser-extension)
    - [Architecture Overview](#71-architecture-overview)
    - [Normal Mode (CDP)](#72-normal-mode-cdp)
@@ -330,7 +331,7 @@ This is the primary database for all chat, agent, and scheduling state.
 |--------|------|-------------|
 | `id` | TEXT PK | Space identifier |
 | `channel` | TEXT | Parent channel |
-| `space_channel` | TEXT | Isolated sub-channel (format: `{parent}:space:{uuid}`) |
+| `space_channel` | TEXT | Isolated sub-channel (format: `{parent}:{uuid}`) |
 | `title` | TEXT | Space task description |
 | `status` | TEXT | Status (active, completed, failed, timed_out) |
 
@@ -501,6 +502,32 @@ Each iteration:
 5. **Inject results**: Tool outputs added as `tool` role messages
 6. **Loop or terminate**: If tool calls present, repeat; otherwise, post final text
 
+#### Dynamic System Prompt Builder
+
+**File**: `src/agent/prompt/builder.ts`
+
+System prompts are dynamically assembled from 12 conditional sections based on agent configuration and environment:
+
+| Section | Condition | Token Impact |
+|---------|-----------|--------------|
+| **Identity** | Always | ~150 tokens |
+| **Environment** | Always | ~50 tokens |
+| **Tool Usage** | Always | ~100 tokens |
+| **Output Efficiency** | Always | ~80 tokens |
+| **Safety** | Always | ~100 tokens |
+| **Chat Communication** | Main agents only | ~100 tokens |
+| **Git Rules** | If git tools available | ~80 tokens |
+| **Sub-Agent Guidance** | If spawn_agent available | ~120 tokens |
+| **Task Management** | If task tools available | ~40 tokens |
+| **Artifacts** | Main agents only | ~60 tokens |
+| **Browser Tools** | If browser enabled | ~50 tokens |
+| **Context Awareness** | Always | ~40 tokens |
+| **Sub-Agent Instructions** | Sub-agents only | ~80 tokens |
+
+**Token budget:**
+- **Main agents**: ~1000-1200 tokens (all relevant sections)
+- **Sub-agents**: ~600-800 tokens (stripped to essentials, no chat/artifacts)
+
 ### 6.3 Token Management & Context Compaction
 
 The agent maintains a token budget with dynamic thresholds (contextMode=true) or legacy fixed values:
@@ -634,7 +661,28 @@ A background health monitor keeps agents responsive and recovers from stuck stat
 - `processing_timeout` — Agent cancelled for exceeding processing timeout
 - `space_auto_failed` — Sub-agent space failed after max heartbeat attempts
 
-### 6.7 Model Tiering & Tool Filtering
+### 6.7 Stream Timeouts (State-Based)
+
+**File**: `src/agent/api/client.ts`
+
+Stream timeouts are state-based (not model-name-based) to handle different phases of LLM processing:
+
+| State | Timeout | Meaning |
+|-------|---------|---------|
+| **CONNECTING** | 30 seconds | Waiting for HTTP response headers (network/connection issues) |
+| **PROCESSING** | 300 seconds | Headers received but no data yet (model thinking, extended reasoning) |
+| **STREAMING** | 180 seconds | Active data streaming; timeout if pause between chunks exceeds limit |
+
+**State Transitions:**
+1. Request starts in **CONNECTING** state (30s timeout)
+2. On first response header → transition to **PROCESSING** (300s timeout)
+3. On first data chunk → transition to **STREAMING** (180s timeout)
+4. Each data chunk resets the **STREAMING** timer
+5. If any timeout exceeded → request cancelled with error
+
+This approach accommodates slow models (Opus, o1, o3) with extended thinking without hardcoding model-specific timeouts.
+
+### 6.8 Model Tiering & Tool Filtering
 
 **Files**: `src/agent/agent.ts` (`getIterationModel`), `src/agent/api/factory.ts`
 
@@ -840,7 +888,7 @@ sequenceDiagram
     participant SA as Sub-Agent
 
     PA->>SS: spawn_agent(task, agent="code-reviewer")
-    SS->>SA: Create isolated channel {parent}:space:{uuid}
+    SS->>SA: Create isolated channel {parent}:{uuid}
     SS->>SA: Load agent file config (model, tools, system prompt, directives)
     SS->>SA: Start new WorkerLoop (inherits provider/model if not overridden)
     Note over SA: ... working ...
@@ -852,18 +900,17 @@ sequenceDiagram
 **Key details:**
 
 - **Agent parameter**: Optional `agent="code-reviewer"` loads a specific agent file (system prompt, model, tools, directives). Without it, sub-agent inherits parent's configuration
-- **Isolated channel**: Each space gets its own channel (`{parent}:space:{uuid}`) so
-  conversations don't interfere
+- **Isolated channel**: Each space gets its own channel (`{parent}:{uuid}`) so conversations don't interfere
 - **Inheritance**: Sub-agents inherit the parent's project path, LLM provider, and model (unless overridden by agent file)
 - **Concurrency limit**: **5 per channel**, **20 global**
 - **Timeout**: Default **300 seconds** (5 minutes); `spawn_agent` overrides to 600 seconds
 - **Heartbeat**: Sub-agents automatically get a **5-second heartbeat** interval to stay responsive
 - **Context seeding**: Parent can pass `context` parameter to reduce sub-agent cold start
-- **Result delivery**: Sub-agent calls `complete_task(result)` which posts the result
-  to the parent channel and locks the space (preventing further messages)
+- **Result delivery**: Sub-agent calls `complete_task(result)` which posts the result to the parent channel and locks the space (preventing further messages)
 - **Sub-agent naming**: Sub-agents use friendly names with UUID suffix (e.g., "code-reviewer-a1b2c3") and get colored avatars
+- **Sub-agent tools**: Limited to `complete_task`, `chat_mark_processed`, `get_environment`, `today` — no `chat_send_message` or other tools
 
-**Sub-agent tools**: `complete_task`, `get_environment`. The `retask_agent` tool on the parent allows re-tasking completed sub-agents without cold start.
+**Parent tools for sub-agents**: `retask_agent` allows re-tasking a completed sub-agent without cold start.
 
 **Space statuses**: `active` → `completed` | `failed` | `timed_out`
 

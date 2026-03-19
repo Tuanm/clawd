@@ -386,6 +386,10 @@ Automatic stuck-agent detection and recovery:
 - **Space idle timeout**: Default 60s — injects [HEARTBEAT] signal to idle sub-agents (prevents stuck spaces)
 - **Heartbeat signal**: `[HEARTBEAT]` sent as `<agent_signal>` user message, stripped from context compaction
 - **Smart compaction**: Heartbeat messages dropped automatically during context compression, never persisted
+- **State-based stream timeouts** (not model-based):
+  - **CONNECTING**: 30 seconds — waiting for HTTP response headers (connection issues)
+  - **PROCESSING**: 300 seconds — headers received but no data (model thinking time)
+  - **STREAMING**: 180 seconds — pause between data chunks (mid-response thinking)
 
 ### Agent Files
 
@@ -462,16 +466,17 @@ For full details and examples, see **[docs/custom-tools.md](docs/custom-tools.md
 ### Sub-Agents (Spaces)
 
 Agents can delegate tasks via `spawn_agent(task, agent="agent-name")`:
-- Creates an isolated channel `{parent}:space:{uuid}`
+- Creates an isolated channel `{parent}:{uuid}` (simplified format)
 - Sub-agent inherits parent's project, provider, and model
 - **Friendly naming**: Sub-agents use friendly names with UUID suffix (e.g., "code-reviewer-a1b2c3") and get colored avatars
 - `agent` parameter loads a specific agent file configuration (model, tools, system prompt, directives)
 - Without `agent` parameter, sub-agents inherit parent's full configuration (unchanged behavior)
-- Returns results via `complete_task(result)`
+- Returns results via `complete_task(result)` — the only way to deliver work from sub-agents
 - Configurable timeout (default 300s; spawn_agent overrides to 600s), max 5 per channel / 20 global
 - `context` parameter for seeding sub-agents with parent knowledge
 - `retask_agent(agent_id, task)` — re-task a completed sub-agent without cold-start
-- Stream idle timeout: 120s for slow/thinking models (Opus, o1, o3), 60s for others
+- **Sub-agent tools**: Limited to `complete_task`, `chat_mark_processed`, `get_environment`, `today` (no chat_send_message)
+- **State-based stream timeouts**: CONNECTING (30s), PROCESSING (300s), STREAMING (180s) — not model-based
 
 ### Web Search
 
@@ -491,11 +496,20 @@ Built-in web search with provider-specific backends:
 - HTTP/2 session sharing with error recovery
 - Parallel tool execution when LLM returns multiple tool calls
 
+### Built-in Agents
+
+Three agents available by default (source: "built-in"):
+- **explore** — fast read-only codebase search with Haiku model for file discovery and pattern analysis
+- **plan** — research agent for gathering context before planning, inherits parent model
+- **general** — full-access agent for complex multi-step tasks, inherits parent model
+
+Custom agents override built-in ones via the 4-directory priority system.
+
 ### Agent Discovery & Management Tools
 
 - `list_agents(type)` — unified agent discovery:
   - `type="running"` — spawned sub-agents (status, errors, agent file used)
-  - `type="available"` — agent files from 4-directory priority system
+  - `type="available"` — agent files from 4-directory priority system (includes built-in agents)
   - `query="keyword"` — search available agents by name/description
   - No type specified → returns both sections
 - `get_agent_report(id)` — fetch specific sub-agent's full result or error

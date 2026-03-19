@@ -129,15 +129,28 @@ spawn_agent(task: "Review the auth module", agent: "code-reviewer")
 ```
 
 When the `agent` parameter is provided:
-- The agent file is loaded from the 4-directory priority system
+- The agent file is loaded from the 4-directory priority system (includes built-in agents)
 - Sub-agent gets the agent file's **system prompt** as its identity
 - Sub-agent uses the agent file's **provider** (or inherits from parent)
 - Sub-agent uses the agent file's **model** (or inherits from parent)
 - Sub-agent is restricted to the agent file's **tools** (if specified)
 - Sub-agent's **directives** and **language** are applied
 - Sub-agent's **maxTurns** limits iteration count
+- Sub-agent **cannot use `chat_send_message`** — must return results via `complete_task(result)`
 
 Without the `agent` parameter, `spawn_agent` creates an anonymous sub-agent that inherits the parent's configuration (existing behavior, unchanged).
+
+### Built-in Agents
+
+Three agents are available by default (source: "built-in"):
+
+| Agent | Description | Model | Tools |
+|-------|-------------|-------|-------|
+| `explore` | Fast read-only codebase explorer for file discovery and pattern analysis | Haiku | view, grep, glob, bash, today, get_environment, web_search, web_fetch |
+| `plan` | Research agent for gathering context before implementation planning | inherit | view, grep, glob, bash, today, get_environment, web_search, web_fetch |
+| `general` | Capable general-purpose agent for complex multi-step tasks | inherit | all |
+
+Built-in agents can be overridden by custom agents with the same name using the 4-directory priority system.
 
 ### Provider & Model Override
 
