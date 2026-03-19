@@ -457,11 +457,13 @@ Built-in web search with provider-specific backends:
 
 ### Key Pool & Abuse Prevention
 
-- Per-key RPM tracking with 60s sliding window (conservative 80% of limit)
-- Request spacing: 1200ms + random jitter between requests on same key
+- Per-key RPM tracking with 60s sliding window (90% of limit)
+- Adaptive request spacing: 600ms (idle) → 800ms (moderate) → 1200ms (loaded) + jitter
+- Key selection by earliest available slot (minimizes wait time)
 - Escalating backoff on rate limits: 3min → 10min → 30min (429), 30min → 2h → 24h (403)
 - `suspendStrikes` decay by 1 on success (prevents permanent suspension after transient errors)
 - HTTP/2 session sharing with error recovery
+- Parallel tool execution when LLM returns multiple tool calls
 
 ### Scheduler
 

@@ -2408,64 +2408,103 @@ SUMMARY:`;
             tool_calls: toolCalls,
           });
 
-          // Execute tool calls one by one, checking for interrupt between each
+          // Execute tool calls — parallel when multiple, sequential when single
           let turnToolResultChars = 0;
-          for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
-            const toolCall = toolCalls[tcIdx];
-            // Check for interrupt before each tool
-            await checkInterrupt();
-            if (pendingInterrupt) {
-              // Interrupted during tool execution
-              const remaining = toolCalls.length - tcIdx;
-              logInterrupt(
-                `Interrupted before tool #${tcIdx + 1}/${toolCalls.length} (${toolCall.function.name}), adding ${remaining} interrupt results`,
-              );
-              // Add tool_result for ALL remaining tool calls (API requires it)
-              for (let j = tcIdx; j < toolCalls.length; j++) {
-                const tc = toolCalls[j];
-                try {
-                  this.sessions.addMessage(session.id, {
-                    role: "tool",
-                    content: "[tool execution interrupted by new message]",
-                    tool_call_id: tc.id,
-                  });
-                } catch (err) {
-                  logSilentError("session.addMessage (tool interrupt)", err);
-                }
-                messages.push({
+
+          // Check for interrupt once before starting tool execution batch
+          await checkInterrupt();
+          if (pendingInterrupt) {
+            // Interrupted before any tool execution
+            logInterrupt(`Interrupted before tool execution, adding ${toolCalls.length} interrupt results`);
+            for (const tc of toolCalls) {
+              try {
+                this.sessions.addMessage(session.id, {
                   role: "tool",
                   content: "[tool execution interrupted by new message]",
                   tool_call_id: tc.id,
                 });
+              } catch (err) {
+                logSilentError("session.addMessage (tool interrupt)", err);
               }
-              break; // Exit tool loop, will handle in pendingInterrupt check
+              messages.push({
+                role: "tool",
+                content: "[tool execution interrupted by new message]",
+                tool_call_id: tc.id,
+              });
             }
+            continue; // Will handle in pendingInterrupt check above
+          }
 
-            // Parse args early so we can notify onToolCall BEFORE execution
+          // Parse args and fire pre-execution notifications for all tools
+          const toolPrep = toolCalls.map((toolCall) => {
             const { args: parsedArgs } = parseToolArguments(toolCall.function.arguments);
-
-            // Notify onToolCall BEFORE execution (so UI can show what's about to run)
             try {
               this.config.onToolCall?.(toolCall.function.name, parsedArgs || {});
             } catch (err) {
               logSilentError("onToolCall callback", err);
             }
+            return { toolCall, parsedArgs };
+          });
 
-            // Notify plugins of tool call BEFORE execution (so UI shows tool_start immediately)
-            if (this.plugins) {
+          // Fire plugin onToolCall notifications (sequential — plugins may have side effects)
+          if (this.plugins) {
+            for (const { toolCall, parsedArgs } of toolPrep) {
               try {
                 await this.plugins.onToolCall(toolCall.function.name, parsedArgs || {});
               } catch (err) {
                 logSilentError("plugin.onToolCall", err);
               }
             }
+          }
 
-            // Execute single tool call
+          // Execute tools — parallel for multiple, direct for single
+          const toolResults: Array<{
+            toolCall: ToolCall;
+            parsedArgs: Record<string, any> | null;
+            result: { args: Record<string, any>; result: ToolResult };
+          }> = [];
+
+          if (toolPrep.length > 1) {
+            // Parallel execution via Promise.allSettled
+            const settled = await Promise.allSettled(
+              toolPrep.map(async ({ toolCall, parsedArgs }) => {
+                try {
+                  return await this.executeSingleToolCall(toolCall);
+                } catch (toolError: any) {
+                  return {
+                    args: parsedArgs || {},
+                    result: {
+                      success: false,
+                      output: "",
+                      error: toolError.message || "Tool execution failed",
+                    } as ToolResult,
+                  };
+                }
+              }),
+            );
+            // Collect results in original order
+            for (let i = 0; i < toolPrep.length; i++) {
+              const s = settled[i];
+              const result =
+                s.status === "fulfilled"
+                  ? s.value
+                  : {
+                      args: toolPrep[i].parsedArgs || {},
+                      result: {
+                        success: false,
+                        output: "",
+                        error: s.reason?.message || "Tool execution failed",
+                      } as ToolResult,
+                    };
+              toolResults.push({ toolCall: toolPrep[i].toolCall, parsedArgs: toolPrep[i].parsedArgs, result });
+            }
+          } else {
+            // Single tool — direct execution (no overhead)
+            const { toolCall, parsedArgs } = toolPrep[0];
             let result: { args: Record<string, any>; result: ToolResult };
             try {
               result = await this.executeSingleToolCall(toolCall);
             } catch (toolError: any) {
-              // Tool execution failed - create error result
               result = {
                 args: parsedArgs || {},
                 result: {
@@ -2475,6 +2514,11 @@ SUMMARY:`;
                 },
               };
             }
+            toolResults.push({ toolCall, parsedArgs, result });
+          }
+
+          // Process results sequentially (ordering matters for session/messages/truncation)
+          for (const { toolCall, result } of toolResults) {
             toolCallHistory.push({
               name: toolCall.function.name,
               args: result.args,
