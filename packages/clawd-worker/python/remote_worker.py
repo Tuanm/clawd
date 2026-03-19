@@ -1575,6 +1575,69 @@ def resolve_selector(selector, session_id):
 
 
 # ---------------------------------------------------------------------------
+# Git tool handlers — thin wrappers over shell commands, cross-platform
+# ---------------------------------------------------------------------------
+
+def _run_git(git_args, cwd=None):  # type: (str, Optional[str]) -> Dict[str, Any]
+    """Run a git command via the platform shell and return ToolResult dict."""
+    shell_exe, shell_args = resolve_shell("git " + git_args)
+    try:
+        proc = subprocess.run(
+            [shell_exe] + shell_args,
+            cwd=cwd or os.getcwd(),
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        output = (proc.stdout + ("\n" + proc.stderr if proc.stderr else "")).strip()
+        return {"success": proc.returncode == 0, "output": output[:64000], "error": proc.stderr.strip() if proc.returncode != 0 else None}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "output": "", "error": "Git command timed out after 30s"}
+    except Exception as exc:
+        return {"success": False, "output": "", "error": str(exc)}
+
+
+def _handle_git_tool(tool, args, project_root):  # type: (str, Dict, str) -> Dict[str, Any]
+    cwd = args.get("cwd") or project_root
+    extra = args.get("args", "")
+    if tool == "git_status":
+        return _run_git("status " + extra, cwd)
+    elif tool == "git_diff":
+        staged = "--cached " if args.get("staged") else ""
+        return _run_git("diff " + staged + extra, cwd)
+    elif tool == "git_log":
+        return _run_git("log " + (extra or "--oneline -20"), cwd)
+    elif tool == "git_branch":
+        return _run_git("branch " + extra, cwd)
+    elif tool == "git_checkout":
+        target = args.get("target", "")
+        return _run_git("checkout " + target + " " + extra, cwd)
+    elif tool == "git_add":
+        files = args.get("files", ".")
+        return _run_git("add " + files, cwd)
+    elif tool == "git_commit":
+        message = args.get("message")
+        if not message:
+            return {"success": False, "output": "", "error": "Missing required parameter: message"}
+        msg = message.replace('"', '\\"')
+        return _run_git('commit -m "' + msg + '" ' + extra, cwd)
+    elif tool == "git_push":
+        return _run_git("push " + extra, cwd)
+    elif tool == "git_pull":
+        return _run_git("pull " + extra, cwd)
+    elif tool == "git_fetch":
+        return _run_git("fetch " + extra, cwd)
+    elif tool == "git_stash":
+        action = args.get("action", "")
+        return _run_git("stash " + action + " " + extra, cwd)
+    elif tool == "git_reset":
+        return _run_git("reset " + extra, cwd)
+    elif tool == "git_show":
+        return _run_git("show " + (extra or "HEAD"), cwd)
+    else:
+        return {"success": False, "output": "", "error": "Unknown git tool: " + tool}
+
+
+# ---------------------------------------------------------------------------
 # Browser tool handlers
 # ---------------------------------------------------------------------------
 
@@ -2631,6 +2694,81 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "get_environment",
+        "description": "Get remote machine environment: OS, platform, shell, project root, and runtime info.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "today",
+        "description": "Get current date and time on the remote machine.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "git_status",
+        "description": "Run git status in the project directory.",
+        "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}}, "required": []},
+    },
+    {
+        "name": "git_diff",
+        "description": "Run git diff. Use staged=true for staged changes.",
+        "inputSchema": {"type": "object", "properties": {"args": {"type": "string"}, "staged": {"type": "boolean"}, "cwd": {"type": "string"}}, "required": []},
+    },
+    {
+        "name": "git_log",
+        "description": "Show git commit history.",
+        "inputSchema": {"type": "object", "properties": {"args": {"type": "string"}, "cwd": {"type": "string"}}, "required": []},
+    },
+    {
+        "name": "git_branch",
+        "description": "List, create, or delete branches.",
+        "inputSchema": {"type": "object", "properties": {"args": {"type": "string"}, "cwd": {"type": "string"}}, "required": []},
+    },
+    {
+        "name": "git_checkout",
+        "description": "Switch branches or restore files.",
+        "inputSchema": {"type": "object", "properties": {"target": {"type": "string"}, "args": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["target"]},
+    },
+    {
+        "name": "git_add",
+        "description": "Stage files for commit.",
+        "inputSchema": {"type": "object", "properties": {"files": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["files"]},
+    },
+    {
+        "name": "git_commit",
+        "description": "Create a git commit.",
+        "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "args": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["message"]},
+    },
+    {
+        "name": "git_push",
+        "description": "Push commits to remote.",
+        "inputSchema": {"type": "object", "properties": {"args": {"type": "string"}, "cwd": {"type": "string"}}, "required": []},
+    },
+    {
+        "name": "git_pull",
+        "description": "Pull changes from remote.",
+        "inputSchema": {"type": "object", "properties": {"args": {"type": "string"}, "cwd": {"type": "string"}}, "required": []},
+    },
+    {
+        "name": "git_fetch",
+        "description": "Fetch from remote without merging.",
+        "inputSchema": {"type": "object", "properties": {"args": {"type": "string"}, "cwd": {"type": "string"}}, "required": []},
+    },
+    {
+        "name": "git_stash",
+        "description": "Stash or restore uncommitted changes.",
+        "inputSchema": {"type": "object", "properties": {"action": {"type": "string"}, "args": {"type": "string"}, "cwd": {"type": "string"}}, "required": []},
+    },
+    {
+        "name": "git_reset",
+        "description": "Reset HEAD to a specific state.",
+        "inputSchema": {"type": "object", "properties": {"args": {"type": "string"}, "cwd": {"type": "string"}}, "required": []},
+    },
+    {
+        "name": "git_show",
+        "description": "Show commit details or file contents at a revision.",
+        "inputSchema": {"type": "object", "properties": {"args": {"type": "string"}, "cwd": {"type": "string"}}, "required": []},
+    },
+    {
         "name": "bash",
         "description": "Run a shell command and return output.",
         "inputSchema": {
@@ -2785,6 +2923,30 @@ class RemoteWorker:
                 result = handle_grep(args, self.config.project_root)
             elif tool == "glob":
                 result = handle_glob(args, self.config.project_root)
+            elif tool in ("get_environment", "get_system_info"):
+                import platform as _plat
+                shell_exe, _ = resolve_shell("echo test")
+                shell_type = "bash"
+                if IS_WINDOWS:
+                    shell_type = "powershell" if "powershell" in shell_exe.lower() or "pwsh" in shell_exe.lower() else "cmd"
+                result = {"success": True, "output": json.dumps({
+                    "project_root": self.config.project_root,
+                    "os": sys.platform, "arch": _plat.machine(),
+                    "hostname": _plat.node(), "shell": shell_exe, "shell_type": shell_type,
+                    "user": os.environ.get("USER", os.environ.get("USERNAME", "")),
+                    "runtime": f"Python {sys.version.split()[0]}",
+                    "is_remote": True, "worker_name": self.config.name,
+                }, indent=2)}
+            elif tool == "today":
+                import datetime as _dt
+                now = _dt.datetime.now()
+                result = {"success": True, "output": json.dumps({
+                    "iso": now.isoformat(), "date": now.strftime("%Y-%m-%d"),
+                    "time": now.strftime("%H:%M:%S"), "day": now.strftime("%A"),
+                    "unix": int(now.timestamp()),
+                }, indent=2)}
+            elif tool.startswith("git_"):
+                result = _handle_git_tool(tool, args, self.config.project_root)
             elif tool == "bash":
                 result = handle_bash(
                     call_id, args, self.config.project_root,
