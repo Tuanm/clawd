@@ -486,6 +486,8 @@ Config format:
 ### Key Pool & Rotation
 
 - API keys can be rotated via key pool (single key or array)
+- Adaptive request spacing: 600ms (idle) → 800ms (moderate) → 1200ms (loaded) + jitter
+- Key selection by earliest available slot (minimizes agent wait time)
 - Key health monitoring
 - Fallback to next key on failure
 - Analytics tracking per key

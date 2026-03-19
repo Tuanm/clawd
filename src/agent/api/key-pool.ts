@@ -5,7 +5,7 @@
  *  - Select the best available key for each request (agent vs user initiator)
  *  - Track per-key RPM usage (60-second sliding window, limit ~8 RPM)
  *  - Track premium budget (monthly, daily, per model multiplier)
- *  - Enforce per-key request spacing (2s min + jitter) via slot-advance
+ *  - Enforce adaptive per-key request spacing (600ms–1.2s + jitter) via slot-advance
  *  - Suspend keys on 403/429 with exponential backoff
  *  - Share one HTTP/2 session per key across all CopilotClient instances
  *  - Persist health state across process restarts (~/.clawd/key-pool-state.json)
@@ -26,9 +26,8 @@ const COPILOT_API_BASE = "https://api.githubcopilot.com";
 const GITHUB_API_BASE = "https://api.github.com";
 
 const RPM_WINDOW_MS = 60_000;
-const RPM_LIMIT = 8; // 80% of documented 10 RPM; conservative
-const MIN_SPACING_MS = 1_200; // minimum 1.2s between requests on the same key
-const SPACING_JITTER_MS = 500; // +[0, 500ms] random jitter
+const RPM_LIMIT = 9; // 90% of documented 10 RPM
+const SPACING_JITTER_MS = 200; // +[0, 200ms] random jitter (reduced from 500ms)
 const COOLDOWN_429_DEFAULT_MS = 180_000; // 3 min default when no Retry-After header
 const CONNECT_TIMEOUT_MS = 10_000;
 const PREMIUM_LIMIT_PER_KEY = 300; // Pro plan monthly premium request allowance
@@ -145,6 +144,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Adaptive spacing: faster when idle, cautious when loaded */
+function getAdaptiveSpacingMs(record: KeyRecord): number {
+  const now = Date.now();
+  const rpm = record.window60s.filter((t) => t > now - RPM_WINDOW_MS).length;
+  if (rpm <= 2) return 600; // key idle — safe to go faster
+  if (rpm <= 5) return 800; // moderate load
+  return 1_200; // approaching limit — full caution
+}
+
 // ============================================================================
 // KeyPool class
 // ============================================================================
@@ -248,8 +256,8 @@ class KeyPool {
         (a, b) => a.premiumUnitsUsedCycle - b.premiumUnitsUsedCycle, // least premium usage first
       )[0];
     } else {
-      // Prefer key with fewest RPM requests + inFlight (least loaded)
-      // Randomize among equally-loaded keys to prevent clustering
+      // Prefer key available soonest (minimizes wait time)
+      // Randomize among equally-good keys to prevent clustering
       const viable = available.filter((k) => {
         const rpm = k.window60s.filter((t) => t > now - RPM_WINDOW_MS).length;
         return rpm + k.inFlight < RPM_LIMIT;
@@ -257,12 +265,14 @@ class KeyPool {
       const pool = viable.length > 0 ? viable : available;
       const scored = pool.map((k) => ({
         key: k,
+        availableAt: Math.max(k.nextAvailableAt, now),
         load: k.window60s.filter((t) => t > now - RPM_WINDOW_MS).length + k.inFlight,
       }));
-      scored.sort((a, b) => a.load - b.load);
-      // Pick randomly among keys within 1 load unit of the best (avoids clustering)
-      const minLoad = scored[0].load;
-      const equallyGood = scored.filter((s) => s.load <= minLoad + 1);
+      // Sort by: earliest slot first, then least loaded as tiebreaker
+      scored.sort((a, b) => a.availableAt - b.availableAt || a.load - b.load);
+      // Pick randomly among keys within 100ms of best (avoids clustering)
+      const bestTime = scored[0].availableAt;
+      const equallyGood = scored.filter((s) => s.availableAt <= bestTime + 100);
       best = equallyGood[Math.floor(Math.random() * equallyGood.length)].key;
     }
 
@@ -308,9 +318,10 @@ class KeyPool {
    */
   async waitForSpacing(record: KeyRecord): Promise<void> {
     const now = Date.now();
+    const spacing = getAdaptiveSpacingMs(record);
     const jitter = Math.floor(Math.random() * SPACING_JITTER_MS);
     const mySlot = Math.max(record.nextAvailableAt, now);
-    record.nextAvailableAt = mySlot + MIN_SPACING_MS + jitter; // atomic advance before await
+    record.nextAvailableAt = mySlot + spacing + jitter; // atomic advance before await
     const waitMs = mySlot - now;
     if (waitMs > 0) await sleep(waitMs);
   }
