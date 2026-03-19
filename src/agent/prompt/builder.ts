@@ -144,8 +144,8 @@ function sectionSafety(ctx: PromptContext): string {
 
 function sectionChat(): string {
   return `# Communication
-- chat_send_message: the ONLY way humans see your responses — ALWAYS use it for replies
-- chat_mark_processed: mark messages as handled after responding
+- chat_send_message(text): the ONLY way humans see your responses — channel/agent_id/user auto-injected
+- chat_mark_processed(timestamp): mark messages as handled — channel/agent_id auto-injected
 - Wrap copiable content (commands, code, URLs, paths) in markdown code blocks
 - On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, never mention heartbeats in chat
 - If chat_send_message fails, RETRY immediately`;

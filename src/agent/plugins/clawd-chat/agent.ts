@@ -10,10 +10,10 @@
  */
 
 import { timedFetch as _sharedTimedFetch } from "../../../utils/timed-fetch";
-import type { Plugin, PluginContext } from "../manager";
 import type { ToolPlugin, ToolRegistration } from "../../tools/plugin";
 import { setChatApiUrl, setCurrentAgentId, setCurrentChannel } from "../../tools/tools";
 import { getContextProjectRoot } from "../../utils/agent-context";
+import type { Plugin, PluginContext } from "../manager";
 
 // Module-scoped wrapper with 15s default for chat API calls (longer than the shared 10s default
 // because chat plugin calls include streaming setup and file uploads that need more headroom).
@@ -504,13 +504,7 @@ Your worker ID is: ${workerId}
 Your agent name is: ${config.agentId}
 Channel: ${config.channel}
 
-CRITICAL: When calling chat_send_message, you MUST include these EXACT parameters:
-- channel: "${config.channel}"
-- text: <your message>
-- agent_id: "${config.agentId}"
-- user: "${workerId}"
-
-The "user" parameter is REQUIRED for worker identity. Do not omit it.
+When calling chat_send_message, only "text" is required — channel, agent_id, and user are auto-injected.
 Humans CANNOT see your text output — ALWAYS use chat_send_message for ALL responses.
 Do NOT output text intended for users — it will never reach them.
 When providing copiable content (commands, code, URLs, paths, config values), ALWAYS wrap it in a markdown code block — users can only copy via the Copy button on code blocks.
@@ -732,16 +726,15 @@ LONG-TERM MEMORY:
       },
 
       async transformToolArgs(name: string, args: any, _ctx: PluginContext) {
-        // SP21: Space agents — force channel on ALL chat_* tools
-        if (config.isSpaceAgent && name.startsWith("chat_")) {
-          args = { ...args, channel: config.channel };
+        // Auto-inject channel + agent_id on ALL chat_* tools (for ALL agent types)
+        // LLM can omit these params — they're filled from plugin config
+        if (name.startsWith("chat_") || name.startsWith("schedule_")) {
+          if (!args.channel) args = { ...args, channel: config.channel };
+          if (!args.agent_id) args = { ...args, agent_id: config.agentId };
         }
-        // Auto-inject user ID for chat_send_message when worker or space agent
-        if ((config.isWorker || config.isSpaceAgent) && name === "chat_send_message") {
-          return {
-            ...args,
-            user: userId,
-          };
+        // Auto-inject user ID for chat_send_message (all agent types)
+        if (name === "chat_send_message" && !args.user) {
+          args = { ...args, user: userId };
         }
         // Auto-inject project root for tools that need to save files locally
         if (name === "chat_download_file" || name === "convert_to_markdown") {
