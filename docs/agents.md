@@ -178,6 +178,21 @@ Both can be combined — the allowlist is applied first, then the denylist remov
 
 When neither is specified, the agent inherits all available tools.
 
+### Tool Name Aliases
+
+Claude Code tool names automatically resolve to Claw'd equivalents for compatibility:
+
+| Claude Code | Claw'd | Notes |
+|---|---|---|
+| `Read` | `view` | File viewing |
+| `Write` | `create` | File creation |
+| `Edit` | `edit` | File editing |
+| `Bash` | `bash` | Shell execution |
+| `Grep` | `grep` | Content search |
+| `Glob` | `glob` | File pattern matching |
+
+You can use either tool name in agent files — they resolve automatically.
+
 ---
 
 ## Memory

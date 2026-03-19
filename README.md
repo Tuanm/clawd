@@ -393,7 +393,7 @@ Agent identities are defined in markdown files with YAML frontmatter (Claude Cod
 {projectRoot}/.clawd/agents/{name}.md      # Claw'd project (highest)
 ```
 
-Each agent file contains: name, description, model override, tool restrictions, skills, directives, language, and system prompt. Sub-agents can be spawned with a specific agent file via `spawn_agent(task, agent="code-reviewer")`.
+Each agent file contains: name, description, model override, tool restrictions, skills, directives, language, and system prompt. Sub-agents can be spawned with a specific agent file via `spawn_agent(task, agent="code-reviewer")` — the sub-agent inherits the agent file's system prompt, model, tools, directives, and language settings. Without the `agent` parameter, sub-agents inherit the parent's full configuration (backward compatible).
 
 For full details, see **[docs/agents.md](docs/agents.md)**.
 
@@ -456,9 +456,12 @@ For full details and examples, see **[docs/custom-tools.md](docs/custom-tools.md
 
 ### Sub-Agents (Spaces)
 
-Agents can delegate tasks via `spawn_agent(task, name)`:
+Agents can delegate tasks via `spawn_agent(task, agent="agent-name")`:
 - Creates an isolated channel `{parent}:space:{uuid}`
 - Sub-agent inherits parent's project, provider, and model
+- **Friendly naming**: Sub-agents use friendly names with UUID suffix (e.g., "code-reviewer-a1b2c3") and get colored avatars
+- `agent` parameter loads a specific agent file configuration (model, tools, system prompt, directives)
+- Without `agent` parameter, sub-agents inherit parent's full configuration (unchanged behavior)
 - Returns results via `respond_to_parent(result)`
 - Configurable timeout (default 300s; spawn_agent overrides to 600s), max 5 per channel / 20 global
 - `context` parameter for seeding sub-agents with parent knowledge
@@ -482,6 +485,16 @@ Built-in web search with provider-specific backends:
 - `suspendStrikes` decay by 1 on success (prevents permanent suspension after transient errors)
 - HTTP/2 session sharing with error recovery
 - Parallel tool execution when LLM returns multiple tool calls
+
+### Agent Discovery & Management Tools
+
+- `list_agents(type)` — unified agent discovery:
+  - `type="running"` — spawned sub-agents (status, errors, agent file used)
+  - `type="available"` — agent files from 4-directory priority system
+  - `query="keyword"` — search available agents by name/description
+  - No type specified → returns both sections
+- `get_agent_report(id)` — fetch specific sub-agent's full result or error
+- **Tool name aliases**: Claude Code tool names (Read, Write, Bash, etc.) resolve to Claw'd equivalents (view, create, bash, etc.) in agent file tool restrictions for compatibility
 
 ### Scheduler
 

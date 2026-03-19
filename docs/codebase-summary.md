@@ -134,7 +134,7 @@ clawd/
 Agent identities defined in markdown with YAML frontmatter (Claude Code-compatible). Loaded from 4 directories with priority override:
 1. `~/.claude/agents/` (lowest) → 2. `~/.clawd/agents/` → 3. `{project}/.claude/agents/` → 4. `{project}/.clawd/agents/` (highest)
 
-Fields: name, description, model, tools, disallowedTools, skills, memory, language, directives, maxTurns, background. Sub-agents can be spawned with a specific agent file via `spawn_agent(agent="name")`.
+Fields: name, description, model, tools, disallowedTools, skills, memory, language, directives, maxTurns, background. Sub-agents can be spawned with a specific agent file via `spawn_agent(task, agent="code-reviewer")` — the sub-agent inherits the agent file's system prompt, model, tool restrictions, and directives. Tool name aliases (Read→view, Write→create, Bash→bash, etc.) resolve automatically in agent file tool restrictions for Claude Code compatibility.
 
 ### Worker Loop (`src/worker-loop.ts`)
 
@@ -347,13 +347,20 @@ Job scheduling and execution history:
 
 ### Space Lifecycle
 
-Agents delegate work via `spawn_agent(task, name)`:
+Agents delegate work via `spawn_agent(task, agent="code-reviewer")`:
 
 1. Create isolated channel `{parent}:space:{uuid}`
-2. Sub-agent inherits parent's project, provider, model
-3. Sub-agent processes task independently
-4. Sub-agent reports results via `respond_to_parent(result)`
-5. Space auto-cleans after completion or timeout (default 300s, configurable to 600s)
+2. Load agent file config if `agent` parameter provided (system prompt, model, tools, directives)
+3. Sub-agent inherits parent's project, provider, and model (unless overridden by agent file)
+4. Sub-agent processes task independently with friendly name + UUID suffix (e.g., "code-reviewer-a1b2c3")
+5. Sub-agent reports results via `respond_to_parent(result)`
+6. Space auto-cleans after completion or timeout (default 300s, configurable to 600s)
+
+**Features:**
+- Colored avatars for sub-agents instead of black
+- `list_agents(type="running")` shows spawned sub-agents with status, errors, and agent file used
+- `get_agent_report(id)` fetches specific sub-agent's full result or error
+- `agent` parameter optional — without it, sub-agent inherits parent's configuration (backward compatible)
 
 **Constraints:**
 - Max 5 concurrent spaces per channel

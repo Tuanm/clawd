@@ -839,9 +839,10 @@ sequenceDiagram
     participant SS as Spaces System
     participant SA as Sub-Agent
 
-    PA->>SS: spawn_agent(task, name)
+    PA->>SS: spawn_agent(task, agent="code-reviewer")
     SS->>SA: Create isolated channel {parent}:space:{uuid}
-    SS->>SA: Start new WorkerLoop (inherits provider/model)
+    SS->>SA: Load agent file config (model, tools, system prompt, directives)
+    SS->>SA: Start new WorkerLoop (inherits provider/model if not overridden)
     Note over SA: ... working ...
     SA->>SS: respond_to_parent(result)
     SS->>PA: Result posted to parent channel + space locked
@@ -850,17 +851,19 @@ sequenceDiagram
 
 **Key details:**
 
+- **Agent parameter**: Optional `agent="code-reviewer"` loads a specific agent file (system prompt, model, tools, directives). Without it, sub-agent inherits parent's configuration
 - **Isolated channel**: Each space gets its own channel (`{parent}:space:{uuid}`) so
   conversations don't interfere
-- **Inheritance**: Sub-agents inherit the parent's project path, LLM provider, and model
+- **Inheritance**: Sub-agents inherit the parent's project path, LLM provider, and model (unless overridden by agent file)
 - **Concurrency limit**: **5 per channel**, **20 global**
 - **Timeout**: Default **300 seconds** (5 minutes); `spawn_agent` overrides to 600 seconds
 - **Heartbeat**: Sub-agents automatically get a **5-second heartbeat** interval to stay responsive
 - **Context seeding**: Parent can pass `context` parameter to reduce sub-agent cold start
 - **Result delivery**: Sub-agent calls `respond_to_parent(result)` which posts the result
   to the parent channel and locks the space (preventing further messages)
+- **Sub-agent naming**: Sub-agents use friendly names with UUID suffix (e.g., "code-reviewer-a1b2c3") and get colored avatars
 
-**Sub-agent tools**: `respond_to_parent`, `get_space_info`, `report_progress`. The `retask_agent` tool on the parent allows re-tasking completed sub-agents without cold start.
+**Sub-agent tools**: `respond_to_parent`, `get_space_info`. The `retask_agent` tool on the parent allows re-tasking completed sub-agents without cold start.
 
 **Space statuses**: `active` → `completed` | `failed` | `timed_out`
 
