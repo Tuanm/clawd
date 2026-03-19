@@ -467,7 +467,7 @@ Agents can delegate tasks via `spawn_agent(task, agent="agent-name")`:
 - **Friendly naming**: Sub-agents use friendly names with UUID suffix (e.g., "code-reviewer-a1b2c3") and get colored avatars
 - `agent` parameter loads a specific agent file configuration (model, tools, system prompt, directives)
 - Without `agent` parameter, sub-agents inherit parent's full configuration (unchanged behavior)
-- Returns results via `respond_to_parent(result)`
+- Returns results via `complete_task(result)`
 - Configurable timeout (default 300s; spawn_agent overrides to 600s), max 5 per channel / 20 global
 - `context` parameter for seeding sub-agents with parent knowledge
 - `retask_agent(agent_id, task)` — re-task a completed sub-agent without cold-start

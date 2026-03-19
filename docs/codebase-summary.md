@@ -79,7 +79,7 @@ clawd/
 │   ├── spaces/                       # Sub-agent system
 │   │   ├── manager.ts                # Space lifecycle
 │   │   ├── worker.ts                 # Space worker orchestrator
-│   │   └── plugin.ts                 # spawn_agent, respond_to_parent
+│   │   └── plugin.ts                 # spawn_agent, complete_task
 │   ├── scheduler/                    # Job scheduling
 │   │   ├── manager.ts                # Tick loop (10s interval)
 │   │   ├── runner.ts                 # Job executor
@@ -353,7 +353,7 @@ Agents delegate work via `spawn_agent(task, agent="code-reviewer")`:
 2. Load agent file config if `agent` parameter provided (system prompt, model, tools, directives)
 3. Sub-agent inherits parent's project, provider, and model (unless overridden by agent file)
 4. Sub-agent processes task independently with friendly name + UUID suffix (e.g., "code-reviewer-a1b2c3")
-5. Sub-agent reports results via `respond_to_parent(result)`
+5. Sub-agent reports results via `complete_task(result)`
 6. Space auto-cleans after completion or timeout (default 300s, configurable to 600s)
 
 **Features:**

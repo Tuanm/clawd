@@ -952,7 +952,7 @@ ${
   this.config.isSpaceAgent
     ? `# TASK INSTRUCTIONS
 
-Complete the assigned task. When done, call respond_to_parent(result) with your final result.
+Complete the assigned task. When done, call complete_task(result) with your final result.
 Project root: ${projectRoot}`
     : `# INSTRUCTIONS
 
@@ -981,12 +981,12 @@ Project root: ${projectRoot}`
     const targetTs = unprocessedMessages[unprocessedMessages.length - 1]?.ts || "";
 
     if (this.config.isSpaceAgent) {
-      return `[SYSTEM] CONTINUATION REQUIRED — you did not call respond_to_parent yet.
+      return `[SYSTEM] CONTINUATION REQUIRED — you did not call complete_task yet.
 
 ## UNPROCESSED MESSAGES:
 ${messageContext}
 
-Complete the task and call respond_to_parent(result) with your final result.`;
+Complete the task and call complete_task(result) with your final result.`;
     }
 
     return `[SYSTEM] YOU ARE AGENT: "${agentId}"

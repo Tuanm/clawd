@@ -18,7 +18,7 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
     getTools(): ToolRegistration[] {
       return [
         {
-          name: "respond_to_parent",
+          name: "complete_task",
           description:
             "Send your final result back to the parent channel and complete this sub-space. The sub-space will be locked immediately after calling this tool. Call this once your task is fully done.",
           parameters: {
@@ -34,7 +34,7 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
               return {
                 success: false,
                 output: "",
-                error: "Missing result content. Call respond_to_parent(result='your result text here').",
+                error: "Missing result content. Call complete_task(result='your result text here').",
               };
             }
             const won = spaceManager.lockSpace(config.spaceId, "completed", result);
@@ -68,27 +68,6 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
             config.onComplete?.();
 
             return { success: true, output: "Result sent to parent channel. Sub-space locked." };
-          },
-        },
-        {
-          name: "get_space_info",
-          description: "Get information about this sub-space (title, description, parent channel, status).",
-          parameters: {},
-          required: [],
-          handler: async (): Promise<{ success: boolean; output: string }> => {
-            const space = spaceManager.getSpace(config.spaceId);
-            if (!space) {
-              return { success: false, output: "Space not found." };
-            }
-            return {
-              success: true,
-              output: JSON.stringify({
-                title: space.title,
-                description: space.description,
-                parentChannel: config.mainChannel,
-                status: space.status,
-              }),
-            };
           },
         },
       ];
