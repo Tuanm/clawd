@@ -9,7 +9,7 @@
  * - Read access (Linux): only explicitly mounted system paths
  * - Read access (macOS): system-wide reads allowed (required by dyld), home dir blocked
  * - Home directory: blocked except for specific tool dirs (.bun, .cargo, .clawd, etc.)
- * - {projectRoot}/.clawd/: blocked (agent config/identity, roles, agents.json)
+ * - {projectRoot}/.clawd/: blocked (agent config/identity, agents/ files)
  * - Environment: wiped clean and rebuilt with only safe variables
  */
 

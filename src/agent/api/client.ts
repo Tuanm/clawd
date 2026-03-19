@@ -174,10 +174,10 @@ export class ApiResponseError extends Error {
 // Timeout constants
 const CONNECT_TIMEOUT_MS = 10_000; // 10s to establish HTTP/2 connection
 const REQUEST_TIMEOUT_MS = 120_000; // 120s for non-streaming requests (LLM can be slow)
-const STREAM_IDLE_TIMEOUT_DEFAULT_MS = 60_000; // 60s idle timeout for most models
-const STREAM_IDLE_TIMEOUT_SLOW_MS = 120_000; // 120s for slow/thinking models (Opus, o1, o3)
-/** Models with extended thinking that may delay first token >60s */
-const SLOW_MODEL_PATTERN = /\bopus\b|\bo[13]\b/i;
+// State-based stream timeouts (behavior-driven, not model-name-driven):
+const STREAM_TIMEOUT_CONNECTING_MS = 30_000; // 30s — waiting for HTTP response headers (connection issue)
+const STREAM_TIMEOUT_PROCESSING_MS = 300_000; // 300s — headers received but no data yet (model thinking)
+const STREAM_TIMEOUT_STREAMING_MS = 180_000; // 180s — pause between data chunks (mid-response thinking)
 
 /** Show first 4 + last 4 characters of an API key for debugging failed requests. */
 function truncateKey(key: string): string {
@@ -558,22 +558,34 @@ export class CopilotClient extends EventEmitter {
     let resolver: (() => void) | null = null;
     let aborted = false;
 
-    // Idle timeout: if no data received, abort. Extended for slow/thinking models.
-    const idleTimeoutMs = SLOW_MODEL_PATTERN.test(request.model)
-      ? STREAM_IDLE_TIMEOUT_SLOW_MS
-      : STREAM_IDLE_TIMEOUT_DEFAULT_MS;
+    // State-based stream timeout: different timeouts for different phases
+    // CONNECTING → got headers → PROCESSING → got first chunk → STREAMING
+    let streamState: "connecting" | "processing" | "streaming" = "connecting";
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const getTimeoutForState = (): number => {
+      switch (streamState) {
+        case "connecting":
+          return STREAM_TIMEOUT_CONNECTING_MS; // 30s — connection issue
+        case "processing":
+          return STREAM_TIMEOUT_PROCESSING_MS; // 300s — model thinking
+        case "streaming":
+          return STREAM_TIMEOUT_STREAMING_MS; // 180s — pause between chunks
+      }
+    };
+
     const resetIdleTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
+      const timeoutMs = getTimeoutForState();
       idleTimer = setTimeout(() => {
         if (!done && !aborted) {
-          error = new Error(`Stream idle timeout after ${idleTimeoutMs}ms`);
+          error = new Error(`Stream ${streamState} timeout after ${timeoutMs}ms`);
           req.close();
           resolver?.();
         }
-      }, idleTimeoutMs);
+      }, timeoutMs);
     };
-    resetIdleTimer(); // Start initial idle timer (waiting for first data)
+    resetIdleTimer(); // Start in CONNECTING state (30s)
 
     // Handle abort signal
     if (signal) {
@@ -606,6 +618,8 @@ export class CopilotClient extends EventEmitter {
       responseStatus = respHeaders[":status"] as number;
       logResponse(responseStatus, responseStatus !== 200 ? errorBody : undefined);
       if (responseStatus !== 200) {
+        // Non-200: clear idle timer (error path handles its own timing)
+        if (idleTimer) clearTimeout(idleTimer);
         const retryAfterRaw = respHeaders["retry-after"];
         retryAfterMs = retryAfterRaw ? parseInt(String(retryAfterRaw), 10) * 1000 : undefined;
         req.on("data", (chunk: Buffer) => {
@@ -614,16 +628,23 @@ export class CopilotClient extends EventEmitter {
         req.on("end", () => {
           logResponse(responseStatus, errorBody);
           error = new ApiResponseError(responseStatus, activeToken, retryAfterMs, errorBody);
-          if (idleTimer) clearTimeout(idleTimer);
           resolver?.();
         });
+      } else {
+        // 200 OK — transition to PROCESSING (waiting for first data chunk)
+        streamState = "processing";
+        resetIdleTimer(); // Reset with 300s timeout for model thinking
       }
     });
 
     req.on("data", (chunk: Buffer) => {
       if (aborted) return;
-      resetIdleTimer(); // Reset idle timer on every data chunk
-      buffer += chunk.toString();
+      // Transition to STREAMING on first data chunk
+      if (streamState !== "streaming") {
+        streamState = "streaming";
+      }
+      resetIdleTimer(); // Reset with 180s timeout for chunk gaps
+      buffer += chunk.toString().replace(/\r\n/g, "\n").replace(/\r/g, "\n"); // SSE spec: handle \r\n and \r
 
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
@@ -722,6 +743,7 @@ export class CopilotClient extends EventEmitter {
         continue;
       }
 
+      // Drain complete — check if stream ended
       if (done || error) break;
 
       // Wait for next event
@@ -729,6 +751,12 @@ export class CopilotClient extends EventEmitter {
         resolver = resolve;
       });
       resolver = null;
+
+      // After waking, drain any queued events before checking done/error
+      // (prevents race where done is set while events are still queued)
+      while (queue.length > 0) {
+        yield queue.shift()!;
+      }
     }
 
     if (error && !aborted) {
