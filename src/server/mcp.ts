@@ -83,15 +83,6 @@ re-processing on restart. Use this for polling loops. Call every 2-10 seconds.`,
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID (e.g., 'chat-task')",
-        },
-        agent_id: {
-          type: "string",
-          description: "Agent identifier for tracking seen messages",
-          default: "default",
-        },
         include_bot: {
           type: "boolean",
           description: "Include bot messages for context understanding",
@@ -129,17 +120,9 @@ Flow: poll_and_ack -> process message -> send response -> mark_processed`,
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID (auto-injected if omitted)",
-        },
         timestamp: {
           type: "string",
           description: "Timestamp of the processed message",
-        },
-        agent_id: {
-          type: "string",
-          description: "Agent identifier (auto-injected if omitted)",
         },
       },
       required: ["timestamp"],
@@ -171,21 +154,9 @@ Use this to respond to user messages or send notifications.`,
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID (auto-injected if omitted)",
-        },
         text: {
           type: "string",
           description: "Message text (supports markdown)",
-        },
-        agent_id: {
-          type: "string",
-          description: "Agent identifier (auto-injected if omitted)",
-        },
-        user: {
-          type: "string",
-          description: "User ID (auto-injected if omitted)",
         },
         html_preview: {
           type: "string",
@@ -252,10 +223,6 @@ Use this to get context or review past conversations.`,
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID",
-        },
         limit: {
           type: "number",
           description: "Max messages to return",
@@ -293,10 +260,6 @@ Use this to fetch referenced messages (e.g., @msg:timestamp).`,
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID",
-        },
         ts: {
           type: "string",
           description: "Message timestamp/ID",
@@ -337,10 +300,6 @@ Use this to get all attachments from a message at once.
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID",
-        },
         ts: {
           type: "string",
           description: "Message timestamp/ID",
@@ -529,10 +488,6 @@ The UI will display the file as a clickable attachment with preview for images.`
           type: "string",
           description: "MIME type (e.g., 'text/plain', 'image/png')",
         },
-        channel: {
-          type: "string",
-          description: "Channel ID for association",
-        },
       },
       required: ["content_base64", "filename", "mimetype"],
     },
@@ -597,10 +552,6 @@ chat_send_message_with_files(
           type: "string",
           description: "Absolute path to the file on the local filesystem",
         },
-        channel: {
-          type: "string",
-          description: "Channel ID for association",
-        },
         filename: {
           type: "string",
           description: "Optional display name (defaults to basename of file_path)",
@@ -641,10 +592,6 @@ Use after uploading files with chat_upload_file.`,
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID",
-        },
         text: {
           type: "string",
           description: "Message text",
@@ -653,10 +600,6 @@ Use after uploading files with chat_upload_file.`,
           type: "array",
           items: { type: "string" },
           description: "Array of file IDs to attach",
-        },
-        agent_id: {
-          type: "string",
-          description: "Agent identifier (your agent name)",
         },
       },
       required: ["text", "file_ids"],
@@ -688,10 +631,6 @@ Note: Deletion is permanent and broadcasts to all connected clients.`,
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID",
-        },
         ts: {
           type: "string",
           description: "Message timestamp/ID to delete",
@@ -731,10 +670,6 @@ Note: Updates broadcast to all connected WebSocket clients in real-time.`,
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID",
-        },
         ts: {
           type: "string",
           description: "Message timestamp/ID to update",
@@ -783,10 +718,6 @@ Note: Updates broadcast to all connected WebSocket clients in real-time.`,
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID",
-        },
         ts: {
           type: "string",
           description: "Message timestamp/ID to append to",
@@ -853,10 +784,6 @@ Examples:
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID (e.g., 'chat-task')",
-        },
         search: {
           type: "string",
           description: "Text search (case-insensitive substring match)",
@@ -923,17 +850,7 @@ If no summary exists, returns the channel's first message timestamp as from_ts
 with has_summary=false, so you know where the conversation begins.`,
     inputSchema: {
       type: "object",
-      properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID",
-        },
-        agent_id: {
-          type: "string",
-          description: "Agent identifier",
-          default: "default",
-        },
-      },
+      properties: {},
       required: [],
     },
     annotations: {
@@ -972,10 +889,6 @@ Best practices:
     inputSchema: {
       type: "object",
       properties: {
-        channel: {
-          type: "string",
-          description: "Channel ID",
-        },
         summary: {
           type: "string",
           description: "The summary text",
@@ -987,11 +900,6 @@ Best practices:
         to_ts: {
           type: "string",
           description: "Last message timestamp in summary",
-        },
-        agent_id: {
-          type: "string",
-          description: "Agent identifier",
-          default: "default",
         },
       },
       required: ["summary", "from_ts", "to_ts"],
@@ -1010,7 +918,6 @@ Best practices:
     inputSchema: {
       type: "object",
       properties: {
-        channel: { type: "string", description: "Channel ID" },
         title: { type: "string", description: "Plan title" },
         description: { type: "string", description: "Plan description/goals" },
         agent_in_charge: {
@@ -1033,9 +940,7 @@ Best practices:
     description: "List all plans in the channel.",
     inputSchema: {
       type: "object",
-      properties: {
-        channel: { type: "string", description: "Channel ID" },
-      },
+      properties: {},
       required: [],
     },
     annotations: {
@@ -1176,8 +1081,6 @@ Best practices:
     inputSchema: {
       type: "object",
       properties: {
-        channel: { type: "string", description: "Channel ID" },
-        agent_id: { type: "string", description: "Agent ID creating the schedule" },
         title: { type: "string", description: "Job/reminder title (max 200 chars)" },
         prompt: { type: "string", description: "Task prompt or reminder message" },
         schedule: { type: "string", description: 'Schedule: "in 5 minutes", "every 2 hours", cron, or ISO 8601' },
@@ -1195,7 +1098,6 @@ Best practices:
     inputSchema: {
       type: "object",
       properties: {
-        channel: { type: "string", description: "Channel ID" },
         status: { type: "string", description: "Filter by status: active, paused, completed, failed, cancelled" },
       },
       required: [],
@@ -1209,8 +1111,6 @@ Best practices:
       type: "object",
       properties: {
         id: { type: "string", description: "Job/reminder ID" },
-        agent_id: { type: "string", description: "Agent ID (for authorization)" },
-        channel: { type: "string", description: "Channel ID (for authorization)" },
       },
       required: ["id"],
     },
