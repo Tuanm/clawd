@@ -306,7 +306,10 @@ Returns workspace IDs, images, status, and creation time.`,
 
   private async handleDestroy(args: Record<string, any>): Promise<ToolResult> {
     await this.reconnectReady;
-    const workspaceId = args.workspace_id as string;
+    const workspaceId = (args.workspace_id || args.id || args.workspace) as string;
+    if (!workspaceId) {
+      return { success: false, output: "", error: "Missing required parameter: workspace_id" };
+    }
 
     // Only allow destroying workspaces owned by this plugin instance
     if (!this.ownedWorkspaceIds.has(workspaceId)) {
