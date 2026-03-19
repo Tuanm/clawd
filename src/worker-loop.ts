@@ -18,7 +18,8 @@ import { createCopilotAnalyticsPlugin } from "./agent/plugins/copilot-analytics-
 import { createMemoryPlugin, isMemoryEnabled } from "./agent/plugins/memory-plugin";
 import { RemoteWorkerBridge } from "./agent/plugins/remote-worker-bridge";
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
-import { runWithAgentContext, setProjectHash } from "./agent/tools/tools";
+import type { PromptContext } from "./agent/prompt/builder";
+import { runWithAgentContext, setProjectHash, toolDefinitions } from "./agent/tools/tools";
 import { setDebug } from "./agent/utils/debug";
 import { initializeSandbox } from "./agent/utils/sandbox";
 import { smartTruncate } from "./agent/utils/smart-truncation";
@@ -1082,6 +1083,20 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
           const clawdContext = this.loadClawdInstructions();
 
           // Create agent config
+          // Build prompt context for dynamic system prompt assembly
+          const promptContext: PromptContext = {
+            agentId: this.config.agentId,
+            projectRoot: this.config.projectRoot,
+            isSpaceAgent: !!this.config.isSpaceAgent,
+            availableTools: toolDefinitions.map((t) => t.function.name),
+            platform: process.platform,
+            model,
+            gitRepo: existsSync(join(this.config.projectRoot, ".git")),
+            browserEnabled: false, // updated below if browser plugin registers
+            contextMode: this.config.contextMode,
+            agentFileConfig: this.config.agentFileConfig,
+          };
+
           const agentConfig: AgentConfig = {
             provider,
             model,
@@ -1091,6 +1106,7 @@ DO NOT skip marking as processed - this is why you're being prompted again.`;
             sharedMcpManager: this.config.channelMcpManager,
             toolAllowlist: this.config.agentFileConfig?.tools,
             toolDenylist: this.config.agentFileConfig?.disallowedTools,
+            promptContext,
             onToken: (token) => {
               process.stdout.write(token);
             },

@@ -30,6 +30,7 @@ import { type Plugin, PluginManager } from "./plugins/manager";
 import { createStatePersistencePlugin } from "./plugins/state-persistence-plugin";
 import { TunnelPlugin } from "./plugins/tunnel-plugin";
 import { WorkspaceToolPlugin } from "./plugins/workspace-plugin";
+import { buildDynamicSystemPrompt, type PromptContext } from "./prompt/builder";
 import { type Checkpoint, CheckpointManager } from "./session/checkpoint";
 import { getSessionManager, type Session, type SessionManager } from "./session/manager";
 import { getSkillManager } from "./skills/manager";
@@ -85,6 +86,8 @@ export interface AgentConfig {
   toolAllowlist?: string[];
   /** Tool denylist from agent file — these tools removed from available set */
   toolDenylist?: string[];
+  /** Prompt context for dynamic system prompt assembly */
+  promptContext?: PromptContext;
 }
 
 export interface AgentResult {
@@ -862,6 +865,23 @@ SUMMARY:`;
 
   isRunning(): boolean {
     return this.abortController !== null && !this.abortController.signal.aborted;
+  }
+
+  // ============================================================================
+  // System Prompt (dynamic assembly)
+  // ============================================================================
+
+  private _cachedBasePrompt: string | null = null;
+
+  /** Build system prompt dynamically from PromptContext, or fall back to legacy DEFAULT_SYSTEM_PROMPT */
+  private getBaseSystemPrompt(): string {
+    if (this._cachedBasePrompt) return this._cachedBasePrompt;
+    if (this.config.promptContext) {
+      this._cachedBasePrompt = buildDynamicSystemPrompt(this.config.promptContext);
+    } else {
+      this._cachedBasePrompt = DEFAULT_SYSTEM_PROMPT;
+    }
+    return this._cachedBasePrompt;
   }
 
   // ============================================================================
@@ -1667,7 +1687,7 @@ SUMMARY:`;
     if (this.contextTracker) {
       try {
         const currentTokens = estimateMessagesTokens(history);
-        const systemTokens = estimateTokens(this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT);
+        const systemTokens = estimateTokens(this.config.systemPrompt || this.getBaseSystemPrompt());
         const hint = this.contextTracker.getContextHint(currentTokens + systemTokens, systemTokens);
         if (hint) contextHint = `\n\n${hint}`;
       } catch {}
@@ -1690,7 +1710,7 @@ SUMMARY:`;
     }
 
     const systemPrompt =
-      (this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT) +
+      (this.config.systemPrompt || this.getBaseSystemPrompt()) +
       contextHint +
       (this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "") +
       browserInstructions +
@@ -1710,7 +1730,7 @@ SUMMARY:`;
       // 4. Additional context (CLAWD.md — user-authored, shed last among optional)
       // 5. contextHint (tiny, always kept — most useful under pressure)
       // 6. Base prompt (never truncated)
-      const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+      const basePrompt = this.config.systemPrompt || this.getBaseSystemPrompt();
       const additionalCtx = this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "";
 
       // Try shedding in priority order
@@ -1929,7 +1949,7 @@ SUMMARY:`;
               updatedCheckpointContext = `\n\n${this.checkpointManager.formatForContext(this.currentCheckpoint)}`;
             }
             const updatedSystemPrompt =
-              (this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT) +
+              (this.config.systemPrompt || this.getBaseSystemPrompt()) +
               (this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "") +
               browserInstructions +
               updatedCheckpointContext +
@@ -2150,7 +2170,7 @@ SUMMARY:`;
                 updatedCheckpointContext = `\n\n${this.checkpointManager.formatForContext(this.currentCheckpoint)}`;
               }
               const updatedSystemPrompt =
-                (this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT) +
+                (this.config.systemPrompt || this.getBaseSystemPrompt()) +
                 (this.config.additionalContext ? `\n\n${this.config.additionalContext}` : "") +
                 browserInstructions +
                 updatedCheckpointContext +
