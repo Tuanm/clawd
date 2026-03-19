@@ -2364,6 +2364,71 @@ async function handleBrowserFrames(): Promise<ToolResult> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 8b. Git tools — thin wrappers over shell commands, cross-platform
+// ---------------------------------------------------------------------------
+
+async function runGitCommand(gitArgs: string, cwd?: string): Promise<ToolResult> {
+  const workDir = cwd || config.projectRoot || process.cwd();
+  const shell = resolveShell(`git ${gitArgs}`);
+  return new Promise((resolve) => {
+    const proc = spawn(shell.exe, shell.args, {
+      cwd: workDir,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      timeout: 30_000,
+    } as SpawnOptions);
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+    proc.on("close", (code) => {
+      const output = (stdout + (stderr ? `\n${stderr}` : "")).trim();
+      resolve({ success: code === 0, output: output.slice(0, 64_000), error: code !== 0 ? stderr.trim() : undefined });
+    });
+    proc.on("error", (e) => resolve({ success: false, output: "", error: e.message }));
+  });
+}
+
+async function handleGitTool(tool: string, args: any): Promise<ToolResult> {
+  const cwd = args.cwd as string | undefined;
+  const extra = (args.args as string) || "";
+  switch (tool) {
+    case "git_status":
+      return runGitCommand(`status ${extra}`.trim(), cwd);
+    case "git_diff":
+      return runGitCommand(`diff ${args.staged ? "--cached " : ""}${extra}`.trim(), cwd);
+    case "git_log":
+      return runGitCommand(`log ${extra || "--oneline -20"}`.trim(), cwd);
+    case "git_branch":
+      return runGitCommand(`branch ${extra}`.trim(), cwd);
+    case "git_checkout":
+      return runGitCommand(`checkout ${args.target || ""} ${extra}`.trim(), cwd);
+    case "git_add":
+      return runGitCommand(`add ${args.files || "."}`, cwd);
+    case "git_commit": {
+      if (!args.message) return { success: false, output: "", error: "Missing required parameter: message" };
+      // Use -m with properly escaped message
+      const msg = (args.message as string).replace(/"/g, '\\"');
+      return runGitCommand(`commit -m "${msg}" ${extra}`.trim(), cwd);
+    }
+    case "git_push":
+      return runGitCommand(`push ${extra}`.trim(), cwd);
+    case "git_pull":
+      return runGitCommand(`pull ${extra}`.trim(), cwd);
+    case "git_fetch":
+      return runGitCommand(`fetch ${extra}`.trim(), cwd);
+    case "git_stash":
+      return runGitCommand(`stash ${args.action || ""} ${extra}`.trim(), cwd);
+    case "git_reset":
+      return runGitCommand(`reset ${extra}`.trim(), cwd);
+    case "git_show":
+      return runGitCommand(`show ${extra || "HEAD"}`.trim(), cwd);
+    default:
+      return { success: false, output: "", error: `Unknown git tool: ${tool}` };
+  }
+}
+
 async function handleBrowserTool(tool: string, args: any): Promise<ToolResult> {
   switch (tool) {
     case "browser_status":
@@ -2489,9 +2554,79 @@ const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
-    name: "get_system_info",
-    description: "Get remote machine architecture: OS, platform, shell, and runtime info.",
+    name: "get_environment",
+    description: "Get remote machine environment: OS, platform, shell, project root, and runtime info.",
     inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "today",
+    description: "Get current date and time on the remote machine.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "git_status",
+    description: "Run git status in the project directory.",
+    inputSchema: { type: "object", properties: { cwd: { type: "string", description: "Working directory" } }, required: [] },
+  },
+  {
+    name: "git_diff",
+    description: "Run git diff. Use staged=true for staged changes.",
+    inputSchema: { type: "object", properties: { args: { type: "string", description: "Additional git diff arguments" }, staged: { type: "boolean" }, cwd: { type: "string" } }, required: [] },
+  },
+  {
+    name: "git_log",
+    description: "Show git commit history.",
+    inputSchema: { type: "object", properties: { args: { type: "string", description: "Additional git log arguments (e.g. '-5 --oneline')" }, cwd: { type: "string" } }, required: [] },
+  },
+  {
+    name: "git_branch",
+    description: "List, create, or delete branches.",
+    inputSchema: { type: "object", properties: { args: { type: "string", description: "Branch arguments (e.g. '-a', 'new-branch', '-d old-branch')" }, cwd: { type: "string" } }, required: [] },
+  },
+  {
+    name: "git_checkout",
+    description: "Switch branches or restore files.",
+    inputSchema: { type: "object", properties: { target: { type: "string", description: "Branch name or file path" }, args: { type: "string" }, cwd: { type: "string" } }, required: ["target"] },
+  },
+  {
+    name: "git_add",
+    description: "Stage files for commit.",
+    inputSchema: { type: "object", properties: { files: { type: "string", description: "Files to stage (space-separated, or '.' for all)" }, cwd: { type: "string" } }, required: ["files"] },
+  },
+  {
+    name: "git_commit",
+    description: "Create a git commit.",
+    inputSchema: { type: "object", properties: { message: { type: "string", description: "Commit message" }, args: { type: "string" }, cwd: { type: "string" } }, required: ["message"] },
+  },
+  {
+    name: "git_push",
+    description: "Push commits to remote.",
+    inputSchema: { type: "object", properties: { args: { type: "string", description: "Push arguments (e.g. 'origin main', '-u origin feature')" }, cwd: { type: "string" } }, required: [] },
+  },
+  {
+    name: "git_pull",
+    description: "Pull changes from remote.",
+    inputSchema: { type: "object", properties: { args: { type: "string", description: "Pull arguments (e.g. 'origin main', '--rebase')" }, cwd: { type: "string" } }, required: [] },
+  },
+  {
+    name: "git_fetch",
+    description: "Fetch from remote without merging.",
+    inputSchema: { type: "object", properties: { args: { type: "string" }, cwd: { type: "string" } }, required: [] },
+  },
+  {
+    name: "git_stash",
+    description: "Stash or restore uncommitted changes.",
+    inputSchema: { type: "object", properties: { action: { type: "string", description: "'push', 'pop', 'list', 'drop'" }, args: { type: "string" }, cwd: { type: "string" } }, required: [] },
+  },
+  {
+    name: "git_reset",
+    description: "Reset HEAD to a specific state.",
+    inputSchema: { type: "object", properties: { args: { type: "string", description: "Reset arguments (e.g. '--soft HEAD~1', '--hard')" }, cwd: { type: "string" } }, required: [] },
+  },
+  {
+    name: "git_show",
+    description: "Show commit details or file contents at a revision.",
+    inputSchema: { type: "object", properties: { args: { type: "string", description: "Show arguments (e.g. 'HEAD', 'HEAD:path/to/file')" }, cwd: { type: "string" } }, required: [] },
   },
   {
     name: "bash",
@@ -3017,6 +3152,7 @@ async function handleToolCall(msg: { id: string; tool: string; args: any }): Pro
       case "glob":
         result = await handleGlob(msg.args);
         break;
+      case "get_environment":
       case "get_system_info": {
         const os = await import("node:os");
         const shell = resolveShell("echo test");
@@ -3024,6 +3160,7 @@ async function handleToolCall(msg: { id: string; tool: string; args: any }): Pro
           success: true,
           output: JSON.stringify(
             {
+              project_root: config.projectRoot || process.cwd(),
               os: process.platform,
               os_version: os.release(),
               arch: os.arch(),
@@ -3051,6 +3188,36 @@ async function handleToolCall(msg: { id: string; tool: string; args: any }): Pro
         };
         break;
       }
+      case "today": {
+        const now = new Date();
+        result = {
+          success: true,
+          output: JSON.stringify({
+            iso: now.toISOString(),
+            date: now.toLocaleDateString("en-CA"),
+            time: now.toLocaleTimeString("en-US", { hour12: false }),
+            day: now.toLocaleDateString("en-US", { weekday: "long" }),
+            unix: Math.floor(now.getTime() / 1000),
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          }, null, 2),
+        };
+        break;
+      }
+      case "git_status":
+      case "git_diff":
+      case "git_log":
+      case "git_branch":
+      case "git_checkout":
+      case "git_add":
+      case "git_commit":
+      case "git_push":
+      case "git_pull":
+      case "git_fetch":
+      case "git_stash":
+      case "git_reset":
+      case "git_show":
+        result = await handleGitTool(msg.tool, msg.args);
+        break;
       case "bash":
         result = await handleBash(msg.id, msg.args);
         break;
