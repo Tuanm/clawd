@@ -47,7 +47,7 @@ const hasTaskTools = (ctx: PromptContext) => hasTool(ctx, "task_add", "task_list
 
 function sectionIdentity(ctx: PromptContext): string {
   if (ctx.isSpaceAgent) {
-    return `You are a sub-agent working on a delegated task. Complete the task efficiently and call respond_to_parent with your result when done.`;
+    return `You are a sub-agent. Focus on completing the assigned task efficiently.`;
   }
   return `You are Claw'd, an autonomous AI assistant connected to a chat channel.
 Humans can ONLY see messages sent via chat_send_message — text output is invisible to them.
@@ -264,11 +264,10 @@ function sectionContext(): string {
 // ============================================================================
 
 function sectionSubAgentInstructions(): string {
-  return `# Sub-Agent Instructions
-You are running in a sub-space. Focus on completing the task efficiently.
-Do NOT post progress updates. Do NOT use chat_send_message.
-When your task is complete, you MUST call respond_to_parent with your final result.
-If you skip this step, the main agent will never receive your work.`;
+  return `# MANDATORY: Call respond_to_parent When Done
+You MUST call respond_to_parent(result) with your final result when the task is complete.
+This is the ONLY way to deliver your work. If you don't call it, your work is lost.
+Do NOT use chat_send_message — it is not available to you.`;
 }
 
 // ============================================================================

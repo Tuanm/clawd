@@ -102,11 +102,11 @@ export class SpaceWorkerManager {
         heartbeatInterval: 5, // Sub-agents always get a 5-second heartbeat to stay responsive
         channelMcpManager: this.getChannelMcp?.(space.channel),
         onLoopExit: () => {
-          // If the loop exits without the promise being settled, reject it
+          // If the loop exits without respond_to_parent being called, reject
           if (!state.settled) {
             state.settled = true;
             this.workers.delete(space.id);
-            reject(new Error("Space worker loop exited without completing"));
+            reject(new Error("Space worker loop exited without calling respond_to_parent"));
           }
         },
         additionalPlugins: [{ plugin: { name: "space-tools", version: "1.0.0", hooks: {} }, toolPlugin: spacePlugin }],
