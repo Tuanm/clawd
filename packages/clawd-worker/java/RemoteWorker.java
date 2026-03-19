@@ -616,6 +616,15 @@ public class RemoteWorker {
     static final ConcurrentHashMap<String, Process> activeProcesses = new ConcurrentHashMap<>();
     static final Set<String> cancelledCalls = ConcurrentHashMap.newKeySet();
 
+    /** Apply non-interactive env vars to prevent any interactive prompts. */
+    static void applyNonInteractiveEnv(ProcessBuilder pb) {
+        var env = pb.environment();
+        env.put("GIT_TERMINAL_PROMPT", "0");
+        env.put("GIT_SSH_COMMAND", "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes");
+        env.put("DEBIAN_FRONTEND", "noninteractive");
+        env.put("GCM_INTERACTIVE", "never");
+    }
+
     static void killProcessTree(long pid) {
         if (IS_WINDOWS) {
             try {
@@ -1017,6 +1026,87 @@ public class RemoteWorker {
         return sb.toString();
     }
 
+    // -- get_environment --
+
+    static Map<String, Object> handleGetEnvironment(Config config) {
+        ShellCmd shell = resolveShell("echo test");
+        String shellType = IS_WINDOWS
+            ? (shell.exe().toLowerCase().contains("powershell") || shell.exe().toLowerCase().contains("pwsh") ? "powershell" : "cmd")
+            : "bash";
+        return toolOk(Json.serialize(Json.obj(
+            "project_root", config.projectRoot(),
+            "os", System.getProperty("os.name"),
+            "arch", System.getProperty("os.arch"),
+            "hostname", safeHostname(),
+            "shell", shell.exe(),
+            "shell_type", shellType,
+            "user", System.getProperty("user.name", ""),
+            "runtime", "Java " + System.getProperty("java.version"),
+            "is_remote", true,
+            "worker_name", config.name()
+        )));
+    }
+
+    private static String safeHostname() {
+        try { return InetAddress.getLocalHost().getHostName(); }
+        catch (Exception e) { return "unknown"; }
+    }
+
+    // -- today --
+
+    static Map<String, Object> handleToday() {
+        var now = java.time.ZonedDateTime.now();
+        return toolOk(Json.serialize(Json.obj(
+            "iso", now.toInstant().toString(),
+            "date", now.toLocalDate().toString(),
+            "time", now.toLocalTime().toString().substring(0, 8),
+            "day", now.getDayOfWeek().toString(),
+            "unix", now.toEpochSecond(),
+            "timezone", now.getZone().getId()
+        )));
+    }
+
+    // -- git tools --
+
+    static Map<String, Object> runGitCommand(String gitArgs, String cwd) {
+        String fullCmd = "git -c commit.gpgsign=false -c tag.gpgsign=false --no-pager " + gitArgs;
+        ShellCmd shell = resolveShell(fullCmd);
+        var cmdList = new ArrayList<String>();
+        cmdList.add(shell.exe());
+        cmdList.addAll(shell.args());
+        var result = runCommand(cmdList, cwd, 30);
+        String output = (result.output() + (result.error().isEmpty() ? "" : "\n" + result.error())).trim();
+        if (output.length() > 64000) output = output.substring(0, 64000);
+        return result.exitCode() == 0
+            ? toolOk(output)
+            : Map.of("success", false, "output", output, "error", result.error().trim());
+    }
+
+    static Map<String, Object> handleGitTool(String tool, Map<String, Object> args, String projectRoot) {
+        String cwd = strArg(args, "cwd", projectRoot);
+        String extra = strArg(args, "args", "");
+        return switch (tool) {
+            case "git_status"   -> runGitCommand("status " + extra, cwd);
+            case "git_diff"     -> runGitCommand("diff " + (Boolean.TRUE.equals(args.get("staged")) ? "--cached " : "") + extra, cwd);
+            case "git_log"      -> runGitCommand("log " + (extra.isEmpty() ? "--oneline -20" : extra), cwd);
+            case "git_branch"   -> runGitCommand("branch " + extra, cwd);
+            case "git_checkout" -> runGitCommand("checkout " + strArg(args, "target", "") + " " + extra, cwd);
+            case "git_add"      -> runGitCommand("add " + strArg(args, "files", "."), cwd);
+            case "git_commit"   -> {
+                String msg = strArg(args, "message", "");
+                if (msg.isEmpty()) yield toolError("Missing required parameter: message");
+                yield runGitCommand("commit -m \"" + msg.replace("\"", "\\\"") + "\" " + extra, cwd);
+            }
+            case "git_push"     -> runGitCommand("push " + extra, cwd);
+            case "git_pull"     -> runGitCommand("pull " + extra, cwd);
+            case "git_fetch"    -> runGitCommand("fetch " + extra, cwd);
+            case "git_stash"    -> runGitCommand("stash " + strArg(args, "action", "") + " " + extra, cwd);
+            case "git_reset"    -> runGitCommand("reset " + extra, cwd);
+            case "git_show"     -> runGitCommand("show " + (extra.isEmpty() ? "HEAD" : extra), cwd);
+            default             -> toolError("Unknown git tool: " + tool);
+        };
+    }
+
     // -- bash --
 
     static Map<String, Object> handleBash(String callId, Map<String, Object> args,
@@ -1043,8 +1133,8 @@ public class RemoteWorker {
         ProcessBuilder pb = new ProcessBuilder(cmdList);
         pb.directory(new File(cwdV.resolved()));
         pb.redirectInput(ProcessBuilder.Redirect.PIPE);
-        // Don't merge — we capture separately
         pb.redirectErrorStream(false);
+        applyNonInteractiveEnv(pb);
 
         Process proc;
         try {
@@ -1146,6 +1236,7 @@ public class RemoteWorker {
             var pb = new ProcessBuilder(cmd);
             if (cwd != null) pb.directory(new File(cwd));
             pb.redirectInput(ProcessBuilder.Redirect.PIPE);
+            applyNonInteractiveEnv(pb);
             Process proc = pb.start();
             proc.getOutputStream().close();
 
@@ -2605,6 +2696,42 @@ public class RemoteWorker {
                 )
             ),
             Json.obj(
+                "name", "get_environment",
+                "description", "Get remote machine environment: OS, platform, shell, project root, and runtime info.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(), "required", Json.arr())
+            ),
+            Json.obj(
+                "name", "today",
+                "description", "Get current date and time on the remote machine.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj(), "required", Json.arr())
+            ),
+            Json.obj("name", "git_status", "description", "Run git status.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("cwd", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "git_diff", "description", "Run git diff. Use staged=true for staged changes.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("args", Json.obj("type", "string"), "staged", Json.obj("type", "boolean"), "cwd", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "git_log", "description", "Show git commit history.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("args", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "git_branch", "description", "List, create, or delete branches.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("args", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "git_checkout", "description", "Switch branches or restore files.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("target", Json.obj("type", "string"), "args", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr("target"))),
+            Json.obj("name", "git_add", "description", "Stage files for commit.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("files", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr("files"))),
+            Json.obj("name", "git_commit", "description", "Create a git commit.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("message", Json.obj("type", "string"), "args", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr("message"))),
+            Json.obj("name", "git_push", "description", "Push commits to remote.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("args", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "git_pull", "description", "Pull changes from remote.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("args", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "git_fetch", "description", "Fetch from remote without merging.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("args", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "git_stash", "description", "Stash or restore uncommitted changes.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("action", Json.obj("type", "string"), "args", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "git_reset", "description", "Reset HEAD to a specific state.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("args", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj("name", "git_show", "description", "Show commit details or file contents at a revision.",
+                "inputSchema", Json.obj("type", "object", "properties", Json.obj("args", Json.obj("type", "string"), "cwd", Json.obj("type", "string")), "required", Json.arr())),
+            Json.obj(
                 "name", "bash",
                 "description", "Run a shell command and return output.",
                 "inputSchema", Json.obj(
@@ -3057,6 +3184,11 @@ public class RemoteWorker {
                     case "create" -> handleCreate(args, config.projectRoot(), config.readOnly());
                     case "grep"   -> handleGrep(args, config.projectRoot());
                     case "glob"   -> handleGlob(args, config.projectRoot());
+                    case "get_environment", "get_system_info" -> handleGetEnvironment(config);
+                    case "today"  -> handleToday();
+                    case "git_status", "git_diff", "git_log", "git_branch", "git_checkout",
+                         "git_add", "git_commit", "git_push", "git_pull", "git_fetch",
+                         "git_stash", "git_reset", "git_show" -> handleGitTool(tool, args, config.projectRoot());
                     case "bash"   -> handleBash(callId, args, config.projectRoot(), config.readOnly(), this::wsSend);
                     default       -> tool.startsWith("browser_") ? dispatchBrowserTool(tool, args) : toolError("Unknown tool: " + tool);
                 };

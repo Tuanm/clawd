@@ -518,12 +518,23 @@ def kill_process_tree(pid):  # type: (int) -> None
             pass
 
 
+def _non_interactive_env():  # type: () -> Dict[str, str]
+    """Non-interactive env vars applied to ALL spawned processes."""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_SSH_COMMAND"] = "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+    env["GCM_INTERACTIVE"] = "never"  # Git Credential Manager
+    return env
+
+
 def get_spawn_kwargs(cwd):  # type: (str) -> Dict[str, Any]
     kwargs = {
         "cwd": cwd,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "stdin": subprocess.DEVNULL,
+        "env": _non_interactive_env(),
     }  # type: Dict[str, Any]
     if IS_WINDOWS:
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -547,6 +558,7 @@ def run_command(cmd, args, cwd=None, timeout=60):
             stdin=subprocess.DEVNULL,
             cwd=cwd,
             timeout=timeout,
+            env=_non_interactive_env(),
         )
         return (
             proc.returncode,
@@ -1579,14 +1591,16 @@ def resolve_selector(selector, session_id):
 # ---------------------------------------------------------------------------
 
 def _run_git(git_args, cwd=None):  # type: (str, Optional[str]) -> Dict[str, Any]
-    """Run a git command via the platform shell and return ToolResult dict."""
-    shell_exe, shell_args = resolve_shell("git " + git_args)
+    """Run a git command via the platform shell and return ToolResult dict.
+    Git-specific flags (-c gpgsign, --no-pager); env-level flags via _non_interactive_env()."""
+    full_cmd = "git -c commit.gpgsign=false -c tag.gpgsign=false --no-pager " + git_args
+    shell_exe, shell_args = resolve_shell(full_cmd)
     try:
         proc = subprocess.run(
             [shell_exe] + shell_args,
             cwd=cwd or os.getcwd(),
             capture_output=True, text=True, timeout=30,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env=_non_interactive_env(),
         )
         output = (proc.stdout + ("\n" + proc.stderr if proc.stderr else "")).strip()
         return {"success": proc.returncode == 0, "output": output[:64000], "error": proc.stderr.strip() if proc.returncode != 0 else None}
