@@ -70,7 +70,7 @@ export interface ReactionsRequest {
 // POST /api/chat.postMessage - uses prepared statement
 export function postMessage(req: PostMessageRequest) {
   // Lock check for space channels
-  if (req.channel.includes(":space:")) {
+  if (req.channel.includes(":")) {
     const space = db
       .query<{ locked: number }, [string]>(`SELECT locked FROM spaces WHERE space_channel = ?`)
       .get(req.channel);
@@ -92,7 +92,7 @@ export function postMessage(req: PostMessageRequest) {
   }
 
   // Auto-create channel if it doesn't exist (ensures FK consistency)
-  if (!req.channel.includes(":space:")) {
+  if (!req.channel.includes(":")) {
     db.run(`INSERT OR IGNORE INTO channels (id, name, created_by) VALUES (?, ?, ?)`, [
       req.channel,
       req.channel,
@@ -167,7 +167,7 @@ export function postMessage(req: PostMessageRequest) {
 // POST /api/chat.update - uses prepared statement
 export function updateMessage(req: UpdateMessageRequest) {
   // Lock check for space channels (SP2)
-  if (req.channel.includes(":space:")) {
+  if (req.channel.includes(":")) {
     const space = db
       .query<{ locked: number }, [string]>(`SELECT locked FROM spaces WHERE space_channel = ?`)
       .get(req.channel);
@@ -204,7 +204,7 @@ export function updateMessage(req: UpdateMessageRequest) {
 // POST /api/chat.append - append text to existing message
 export function appendMessage(req: AppendMessageRequest) {
   // Lock check for space channels
-  if (req.channel.includes(":space:")) {
+  if (req.channel.includes(":")) {
     const space = db
       .query<{ locked: number }, [string]>(`SELECT locked FROM spaces WHERE space_channel = ?`)
       .get(req.channel);
@@ -564,7 +564,7 @@ export function clearChannelHistory(channel: string): { ok: boolean; error?: str
 // POST /api/chat.delete - Delete a message
 export function deleteMessage(channel: string, ts: string) {
   // Lock check for space channels
-  if (channel.includes(":space:")) {
+  if (channel.includes(":")) {
     const space = db
       .query<{ locked: number }, [string]>(`SELECT locked FROM spaces WHERE space_channel = ?`)
       .get(channel);

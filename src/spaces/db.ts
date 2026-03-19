@@ -32,7 +32,7 @@ export interface CreateSpaceParams {
 }
 
 export function createSpaceRecord(params: CreateSpaceParams): Space {
-  const spaceChannel = `${params.channel}:space:${params.id}`;
+  const spaceChannel = `${params.channel}:${params.id}`;
   const now = Date.now();
 
   const txn = db.transaction(() => {

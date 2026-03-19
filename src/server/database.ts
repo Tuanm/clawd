@@ -475,8 +475,8 @@ export function migrateChannelIds() {
   }
 
   for (const { id: oldId, name } of mismatchedChannels) {
-    // Skip space channels (they use composite IDs like "demo:space:uuid")
-    if (oldId.includes(":space:")) continue;
+    // Skip space channels (they use composite IDs like "demo:uuid")
+    if (oldId.includes(":")) continue;
 
     const newId = name;
 
