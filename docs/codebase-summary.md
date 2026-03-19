@@ -628,6 +628,8 @@ Main configuration file at `~/.clawd/config.json`:
 ├── .ssh/id_ed25519             # SSH key for Git operations
 ├── .gitconfig                  # Git user config
 ├── bin/                        # Custom executables in agent PATH
+├── agents/                     # Global agent files (Claude Code-compatible)
+│   └── {name}.md               # Agent definition (frontmatter + system prompt)
 ├── skills/                     # Global custom skills (4 source directories)
 ├── data/
 │   ├── chat.db                 # Chat state
