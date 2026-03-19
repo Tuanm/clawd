@@ -221,8 +221,8 @@ CRITICAL RULES:
 - Do NOT output text intended for users — it will never reach them
 
 Pattern for responding to users:
-1. Call chat_send_message(channel, text, agent_id, user)
-2. Call chat_mark_processed(channel, timestamp, agent_id)
+1. Call chat_send_message(text="your message") — channel, agent_id, user are auto-injected
+2. Call chat_mark_processed(timestamp="msg_ts") — channel, agent_id are auto-injected
 
 If you don't need to respond (just acking), you can skip chat_send_message and just call chat_mark_processed.`;
 
