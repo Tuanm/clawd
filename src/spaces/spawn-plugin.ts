@@ -5,7 +5,7 @@
  * so no wait/poll/report tools are needed — the parent sees results in chat.
  */
 
-import { type AgentFileConfig, loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
+import { type AgentFileConfig, listAgentFiles, loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
 import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
 import type { ToolResult } from "../agent/tools/tools";
 import { getOrRegisterAgent } from "../server/database";
@@ -53,6 +53,14 @@ export function createSpawnAgentPlugin(
   ) => Promise<{ provider: string; model: string; agentId: string; project?: string; avatar_color?: string } | null>,
   trackedSpaces: Map<string, TrackedSpace>,
 ): ToolPlugin {
+  // Cache project root for synchronous access in getTools()
+  let _cachedProjectRoot: string | null = null;
+  getAgentConfig(config.channel)
+    .then((cfg) => {
+      if (cfg?.project) _cachedProjectRoot = cfg.project;
+    })
+    .catch(() => {});
+
   return {
     name: "spawn-agent-spaces",
 
@@ -61,14 +69,14 @@ export function createSpawnAgentPlugin(
         {
           name: "spawn_agent",
           description:
-            "Spawn a sub-agent in a sub-space to handle a task. The sub-agent will respond directly to this chat channel when done — no need to wait or poll for results.",
+            "Spawn a sub-agent in a sub-space to handle a task. The sub-agent will respond directly to this chat channel when done — no need to wait or poll for results. Use list_available_agents to discover specialized agents you can spawn.",
           parameters: {
             task: { type: "string", description: "The task for the sub-agent" },
             name: { type: "string", description: "Optional friendly name" },
             agent: {
               type: "string",
               description:
-                "Optional agent file name to load config from (e.g., 'code-reviewer'). The sub-agent uses the agent file's system prompt, model, tools, and skills.",
+                "Optional agent file name to load config from (e.g., 'code-reviewer'). The sub-agent uses the agent file's system prompt, model, tools, and skills. Use list_available_agents to see what's available.",
             },
             context: {
               type: "string",
@@ -82,18 +90,97 @@ export function createSpawnAgentPlugin(
         {
           name: "list_agents",
           description:
-            "List all spawned sub-agents and their current status. Useful to check which agents are running before using kill_agent.",
-          parameters: {},
+            "List agents. Use type='running' for spawned sub-agents, type='available' for agent files you can spawn, or omit for both. Use query to search available agents by keyword.",
+          parameters: {
+            type: {
+              type: "string",
+              description: "'running' = spawned sub-agents, 'available' = agent files on disk, omit = both",
+            },
+            query: {
+              type: "string",
+              description:
+                "Search available agents by keyword (matches name and description). Only applies to available agents.",
+            },
+          },
           required: [],
-          handler: async () => {
-            const agents = Array.from(trackedSpaces.values()).map((t) => ({
-              id: t.spaceId,
-              name: t.name,
-              status: t.status,
-              started_at: new Date(t.startedAt).toISOString(),
-              duration_ms: Date.now() - t.startedAt,
-            }));
-            return { success: true, output: JSON.stringify({ count: agents.length, agents }, null, 2) };
+          handler: async (args) => {
+            const type = args.type as string | undefined;
+            const query = (args.query as string | undefined)?.toLowerCase();
+            const result: Record<string, unknown> = {};
+
+            // Spawned sub-agents (running, completed, and failed)
+            if (!type || type === "running") {
+              const spawned = Array.from(trackedSpaces.values()).map((t) => {
+                const entry: Record<string, unknown> = {
+                  id: t.spaceId,
+                  name: t.name,
+                  status: t.status,
+                  started_at: new Date(t.startedAt).toISOString(),
+                  duration_ms: Date.now() - t.startedAt,
+                };
+                if (t.result) entry.has_result = true;
+                if (t.error) entry.error = t.error;
+                if (t.agentFileConfig) entry.agent = t.agentFileConfig.name;
+                return entry;
+              });
+              result.spawned = { count: spawned.length, agents: spawned };
+            }
+
+            // Available agent files
+            if (!type || type === "available") {
+              try {
+                let available = listAgentFiles(_cachedProjectRoot || "").map((a) => ({
+                  name: a.name,
+                  description: a.description || "",
+                  model: a.model || "inherit",
+                  tools: a.tools || "all (inherited)",
+                  source: a.source,
+                }));
+                // Filter by query if provided
+                if (query) {
+                  available = available.filter(
+                    (a) => a.name.toLowerCase().includes(query) || a.description.toLowerCase().includes(query),
+                  );
+                }
+                result.available = { count: available.length, agents: available };
+              } catch {
+                result.available = { count: 0, agents: [] };
+              }
+            }
+
+            return { success: true, output: JSON.stringify(result, null, 2) };
+          },
+        },
+        {
+          name: "get_agent_report",
+          description:
+            "Get a spawned sub-agent's full result or error report by ID. Use after list_agents shows a completed or failed agent.",
+          parameters: {
+            agent_id: { type: "string", description: "The sub-agent ID (from list_agents output)" },
+          },
+          required: ["agent_id"],
+          handler: async (args) => {
+            const id = args.agent_id as string;
+            if (!id) return { success: false, output: "", error: "Missing required parameter: agent_id" };
+
+            const tracked = trackedSpaces.get(id);
+            if (!tracked) {
+              return { success: false, output: "", error: `No tracked agent with id '${id}'` };
+            }
+
+            const report: Record<string, unknown> = {
+              id: tracked.spaceId,
+              name: tracked.name,
+              status: tracked.status,
+              started_at: new Date(tracked.startedAt).toISOString(),
+              duration_ms: Date.now() - tracked.startedAt,
+            };
+            if (tracked.agentFileConfig) report.agent = tracked.agentFileConfig.name;
+            if (tracked.result) report.result = tracked.result;
+            if (tracked.error) report.error = tracked.error;
+            if (tracked.status === "running") report.note = "Agent is still running. Result not yet available.";
+
+            return { success: true, output: JSON.stringify(report, null, 2) };
           },
         },
         {
@@ -124,6 +211,7 @@ export function createSpawnAgentPlugin(
       if (!agentConfig) {
         return { success: false, output: "", error: `No agent configured for channel ${config.channel}` };
       }
+      if (agentConfig.project) _cachedProjectRoot = agentConfig.project;
 
       // Load agent file config if agent= parameter provided
       let agentFileConfig: AgentFileConfig | null = null;
