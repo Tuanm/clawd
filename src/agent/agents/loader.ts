@@ -28,7 +28,7 @@ import { basename, join } from "node:path";
 // Types
 // ============================================================================
 
-export type AgentSource = "claude-global" | "clawd-global" | "claude-project" | "clawd-project";
+export type AgentSource = "built-in" | "claude-global" | "clawd-global" | "claude-project" | "clawd-project";
 
 export interface AgentFileConfig {
   name: string;
@@ -228,6 +228,91 @@ export function getAgentDirs(projectRoot: string): AgentDir[] {
 }
 
 // ============================================================================
+// Built-in Agents (lowest priority — overridable by any directory)
+// ============================================================================
+
+const BUILTIN_AGENTS: AgentFileConfig[] = [
+  {
+    name: "explore",
+    description:
+      "Fast read-only agent for searching and analyzing codebases. Use for file discovery, code search, and codebase exploration without making changes.",
+    model: "haiku",
+    tools: ["view", "grep", "glob", "bash", "today", "get_environment", "web_search", "web_fetch"],
+    disallowedTools: ["edit", "create"],
+    systemPrompt: `You are a fast, read-only codebase explorer. Your job is to search, read, and analyze code efficiently.
+
+When invoked, determine the thoroughness needed:
+- **Quick**: Targeted lookup — find a specific file, function, or pattern
+- **Medium**: Balanced exploration — understand a module or feature
+- **Thorough**: Comprehensive analysis — map dependencies, trace data flow, audit patterns
+
+Guidelines:
+- Use grep for content search, glob for file discovery, view for reading files
+- Use bash for git log, wc, find, or other read-only commands
+- Summarize findings concisely — the main agent needs actionable information, not raw output
+- Never modify files — you are read-only`,
+    source: "built-in",
+    filePath: "(built-in)",
+    rawFrontmatter: {},
+  },
+  {
+    name: "plan",
+    description:
+      "Research agent for gathering context before creating implementation plans. Use when planning features or changes that need codebase understanding first.",
+    model: "inherit",
+    tools: ["view", "grep", "glob", "bash", "today", "get_environment", "web_search", "web_fetch"],
+    disallowedTools: ["edit", "create"],
+    systemPrompt: `You are a planning research agent. Your job is to gather codebase context needed for implementation planning.
+
+When invoked:
+1. Understand what is being planned (feature, refactor, fix)
+2. Explore relevant code: architecture, patterns, dependencies
+3. Identify files that would need changes
+4. Note constraints, risks, and existing patterns to follow
+5. Return a structured research summary
+
+Focus on:
+- Current architecture and how the planned work fits in
+- Existing patterns the implementation should follow
+- Dependencies and potential impact areas
+- Technical constraints or blockers
+
+Return findings as a structured report, not raw code. The main agent will use your research to create the actual plan.`,
+    source: "built-in",
+    filePath: "(built-in)",
+    rawFrontmatter: {},
+  },
+  {
+    name: "general",
+    description:
+      "Capable general-purpose agent for complex multi-step tasks requiring both exploration and action. Use for tasks needing code modifications, multi-step operations, or complex reasoning.",
+    model: "inherit",
+    systemPrompt: `You are a capable general-purpose agent. You can explore codebases, modify files, run commands, and complete complex multi-step tasks.
+
+When invoked:
+1. Understand the task fully before acting
+2. Explore relevant code to build context
+3. Implement changes carefully with verification
+4. Test your changes when possible
+5. Return a clear summary of what you did and any remaining items
+
+Guidelines:
+- Read before writing — understand existing patterns first
+- Make minimal, focused changes
+- Verify changes compile/pass basic checks before reporting completion
+- If the task is ambiguous, make reasonable assumptions and state them`,
+    source: "built-in",
+    filePath: "(built-in)",
+    rawFrontmatter: {},
+  },
+];
+
+/** Get a built-in agent by name */
+export function getBuiltinAgent(name: string): AgentFileConfig | null {
+  return BUILTIN_AGENTS.find((a) => a.name === name) || null;
+}
+
+// ============================================================================
 // Public API
 // ============================================================================
 
@@ -237,6 +322,11 @@ export function getAgentDirs(projectRoot: string): AgentDir[] {
 export function listAgentFiles(projectRoot: string): AgentFileConfig[] {
   const dirs = getAgentDirs(projectRoot);
   const agentMap = new Map<string, AgentFileConfig>();
+
+  // Seed with built-in agents (lowest priority — overridden by any directory)
+  for (const agent of BUILTIN_AGENTS) {
+    agentMap.set(agent.name, agent);
+  }
 
   for (const { dir, source } of dirs) {
     if (!existsSync(dir)) continue;
@@ -279,7 +369,8 @@ export function loadAgentFile(name: string, projectRoot: string): AgentFileConfi
     if (agent) return agent;
   }
 
-  return null;
+  // Fall back to built-in agents
+  return getBuiltinAgent(name);
 }
 
 /**
