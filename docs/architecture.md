@@ -1435,6 +1435,8 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
 ├── .ssh/                # SSH keys for Git operations (id_ed25519)
 ├── .gitconfig           # Git config for agent-initiated Git operations
 ├── bin/                 # Custom binaries added to agent PATH
+├── agents/              # Global agent files (Claude Code-compatible)
+│   └── {name}.md        # Agent definition (YAML frontmatter + system prompt)
 ├── data/
 │   ├── chat.db          # Chat messages, agents, channels, spaces
 │   ├── kanban.db        # Tasks, plans, phases
@@ -1451,6 +1453,7 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
 | `.ssh/` | SSH keys used by agents for Git clone/push operations |
 | `.gitconfig` | Git user config (name, email) for agent commits |
 | `bin/` | Custom executables available in agent's PATH |
+| `agents/` | Global agent files — Claude Code-compatible markdown with YAML frontmatter |
 | `data/chat.db` | All chat state — messages, agents, channels, spaces |
 | `data/scheduler.db` | Scheduled jobs and execution state |
 | `data/attachments/` | File storage for uploads and generated images |

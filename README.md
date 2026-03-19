@@ -200,6 +200,8 @@ These are injected into the agent sandbox environment. The file is never exposed
 │   └── id_ed25519               # SSH key for agent Git operations
 ├── .gitconfig                   # Git config for agents
 ├── bin/                         # Custom binaries added to agent PATH
+├── agents/                      # Global agent files (Claude Code-compatible)
+│   └── {name}.md                # Agent definition (YAML frontmatter + system prompt)
 ├── skills/                      # Global custom skills
 │   └── {name}/SKILL.md          # Skill folder with SKILL.md
 ├── data/
@@ -211,6 +213,8 @@ These are injected into the agent sandbox environment. The file is never exposed
 └── mcp-oauth-tokens.json        # OAuth tokens for external MCP servers
 
 {projectRoot}/.clawd/            # Project-specific config (not directly accessible by agents)
+├── agents/                      # Project-scoped agent files (highest priority)
+│   └── {name}.md                # Agent definition (YAML frontmatter + system prompt)
 ├── tools/                       # Custom tools
 │   └── {toolId}/
 │       ├── tool.json            # Tool metadata
@@ -294,6 +298,7 @@ clawd/
 │   │   └── remote-worker.ts      # Remote worker WebSocket bridge
 │   ├── agent/
 │   │   ├── agent.ts              # Agent class, reasoning loop, compaction
+│   │   ├── agents/               # Agent file loader (4-directory priority, Claude Code compat)
 │   │   ├── api/                  # LLM provider clients, key pool, factory
 │   │   ├── tools/                # Tool definitions, web search, document converter
 │   │   ├── plugins/              # All plugins (chat, browser, workspace, tunnel, etc.)
