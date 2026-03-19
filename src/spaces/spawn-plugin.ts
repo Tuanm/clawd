@@ -8,6 +8,7 @@
 import { type AgentFileConfig, loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
 import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
 import type { ToolResult } from "../agent/tools/tools";
+import { getOrRegisterAgent } from "../server/database";
 import { timedFetch } from "../utils/timed-fetch";
 import type { SpaceManager } from "./manager";
 import type { SpaceWorkerManager } from "./worker";
@@ -144,7 +145,9 @@ export function createSpawnAgentPlugin(
         .replace(/[\n\r]/g, " ")
         .trim()
         .slice(0, 100);
-      const subAgentId = `Agent-${spaceId.slice(0, 8)}`;
+      // Use friendly name as sub-agent ID (sanitized), with UUID suffix for uniqueness
+      const safeName = sanitizedTitle.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40);
+      const subAgentId = `${safeName}-${spaceId.slice(0, 6)}`;
 
       // 1. Create space (sub-agent registered as non-worker gets proper avatar color)
       const space = spaceManager.createSpace({
@@ -157,6 +160,9 @@ export function createSpawnAgentPlugin(
         source: "spawn_agent",
         timeout_seconds: 600,
       });
+
+      // Register sub-agent in parent channel so avatar color resolves for messages
+      getOrRegisterAgent(subAgentId, config.channel, false);
 
       // 2+3. Post preview card and task in parallel (no data dependency)
       const [cardRes, taskRes] = await Promise.all([
@@ -244,7 +250,7 @@ export function createSpawnAgentPlugin(
             body: JSON.stringify({
               channel: config.channel,
               text: `${prefix}: ${sanitizedTitle}`,
-              user: "UWORKER-SUBAGENT",
+              user: subAgentId,
               agent_id: subAgentId,
             }),
           }).catch(() => {});
@@ -367,7 +373,8 @@ export function createSpawnAgentPlugin(
         return { success: false, output: "", error: `No agent configured for channel ${config.channel}` };
       }
 
-      const subAgentId = `Agent-${agentId.slice(0, 8)}`;
+      // Reuse the original sub-agent ID from the space record
+      const subAgentId = space.agent_id;
 
       // Post follow-up task to space channel
       const taskRes = await timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
@@ -424,7 +431,7 @@ export function createSpawnAgentPlugin(
             body: JSON.stringify({
               channel: config.channel,
               text: `${prefix}: ${tracked.name}`,
-              user: "UWORKER-SUBAGENT",
+              user: subAgentId,
               agent_id: subAgentId,
             }),
           }).catch(() => {});

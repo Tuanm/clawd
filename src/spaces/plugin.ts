@@ -50,7 +50,7 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
                 body: JSON.stringify({
                   channel: config.mainChannel,
                   text: truncated,
-                  user: "UWORKER-SUBAGENT",
+                  user: config.agentId,
                   agent_id: config.agentId,
                 }),
               });
@@ -109,7 +109,7 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
                 body: JSON.stringify({
                   channel: config.mainChannel,
                   text: `[Progress: ${config.agentId}] ${progressText}`,
-                  user: "UWORKER-SUBAGENT",
+                  user: config.agentId,
                   agent_id: config.agentId,
                   subtype: "progress",
                 }),
