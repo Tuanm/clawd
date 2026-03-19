@@ -450,9 +450,9 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const [activeChannel, setActiveChannel] = useState(initialChannel);
 
   // Space mode detection
-  const isSpaceChannel = activeChannel.includes(":space:");
-  const parentChannel = isSpaceChannel ? activeChannel.split(":space:")[0] : null;
-  const spaceId = isSpaceChannel ? activeChannel.split(":space:")[1] : null;
+  const isSpaceChannel = activeChannel.includes(":");
+  const parentChannel = isSpaceChannel ? activeChannel.split(":")[0] : null;
+  const spaceId = isSpaceChannel ? activeChannel.split(":")[1] : null;
 
   // Per-channel state stored in a Map
   const [channelStates, setChannelStates] = useState<Map<string, ChannelState>>(() => {
@@ -488,7 +488,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const [openChannels, setOpenChannels] = useState<string[]>(() => {
     const stored = getStoredChannels();
     // Always include current channel
-    if (!stored.includes(initialChannel) && !initialChannel.includes(":space:")) {
+    if (!stored.includes(initialChannel) && !initialChannel.includes(":")) {
       return addStoredChannel(initialChannel);
     }
     return stored;
@@ -710,7 +710,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   // Add current channel to stored list on mount (skip space channels)
   useEffect(() => {
-    if (!initialChannel.includes(":space:")) {
+    if (!initialChannel.includes(":")) {
       const updated = addStoredChannel(initialChannel);
       setOpenChannels(updated);
     }

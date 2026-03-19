@@ -1,7 +1,6 @@
 import DOMPurify from "dompurify";
 import mermaid from "mermaid";
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { authFetch } from "./auth-fetch";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -9,14 +8,15 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { authFetch } from "./auth-fetch";
 import "katex/dist/katex.min.css";
-import { UnreadSeparator } from "./UnreadSeparator";
-import { highlightCode } from "./prism-setup";
+import { ArtifactPreviewCard, type ArtifactType, StreamingArtifactCard } from "./artifact-card";
 import { FilePreviewCard, isPreviewableFile } from "./file-preview";
 import LazyViewport from "./lazy-viewport";
+import { highlightCode } from "./prism-setup";
 import { markdownSanitizeSchema } from "./sanitize-schema";
-import { CopyIcon, CheckIcon, PreBlock } from "./ui-primitives";
-import { ArtifactPreviewCard, StreamingArtifactCard, type ArtifactType } from "./artifact-card";
+import { UnreadSeparator } from "./UnreadSeparator";
+import { CheckIcon, CopyIcon, PreBlock } from "./ui-primitives";
 
 // Lazy-load ChartRenderer (Recharts) for inline chart rendering in messages
 const LazyChartRenderer = React.lazy(() => import("./chart-renderer"));
@@ -162,7 +162,7 @@ function EditIcon() {
 }
 
 // Re-export for backward compat (ArticlePage imports CopyIcon from here)
-export { CopyIcon, CheckIcon } from "./ui-primitives";
+export { CheckIcon, CopyIcon } from "./ui-primitives";
 
 // Arrow down icon
 function ArrowDownIcon() {
@@ -2513,12 +2513,11 @@ export default function MessageList({
                 {msg.subspace && (
                   <div
                     className={`message-subspace-card ${msg.subspace.status === "failed" || msg.subspace.status === "timed_out" ? "subspace-card-failed" : msg.subspace.status === "completed" ? "subspace-card-completed" : ""}`}
-                    onClick={() => (window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`)}
+                    onClick={() => (window.location.href = `/${msg.subspace!.channel}/${msg.subspace!.id}`)}
                     role="button"
                     tabIndex={0}
                     onKeyDown={(e) =>
-                      e.key === "Enter" &&
-                      (window.location.href = `/${msg.subspace!.channel}/space/${msg.subspace!.id}`)
+                      e.key === "Enter" && (window.location.href = `/${msg.subspace!.channel}/${msg.subspace!.id}`)
                     }
                   >
                     <div className="subspace-card-icon">

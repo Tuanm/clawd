@@ -24,8 +24,8 @@ export function listChannels() {
 
 // POST /api/conversations.create
 export function createChannel(name: string, userId = "UHUMAN") {
-  if (name.includes(":space:")) {
-    return { ok: false, error: "Channel names cannot contain ':space:'" };
+  if (name.includes(":")) {
+    return { ok: false, error: "Channel names cannot contain ':' (reserved for sub-spaces)" };
   }
 
   // Use name as ID — the entire system (worker loops, messages, agent_seen, spaces)

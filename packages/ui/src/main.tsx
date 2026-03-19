@@ -40,19 +40,17 @@ function Router() {
     return <App channel="articles" articleId={articleMatch[1]} />;
   }
 
-  // Match both patterns:
-  // - /spaces/{channel-id} (legacy)
-  // - /{channel-id} (new, direct)
-  // Match space paths: /{channel}/space/{spaceId}
-  const spacePageMatch = path.match(/^\/([^/]+)\/space\/([^/]+)\/?$/);
+  // Match sub-space paths: /{channel}/{spaceId}
+  const spacePageMatch = path.match(/^\/([^/]+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i);
   if (spacePageMatch) {
     const parentChannel = spacePageMatch[1];
     const spaceId = spacePageMatch[2];
-    const spaceChannel = `${parentChannel}:space:${spaceId}`;
+    const spaceChannel = `${parentChannel}:${spaceId}`;
     return <App channel={spaceChannel} />;
   }
 
-  const spaceMatch = path.match(/^\/spaces\/([^/]+)\/?$/) || path.match(/^\/([^/]+)\/?$/);
+  // Match channel paths: /{channel}
+  const spaceMatch = path.match(/^\/([^/]+)\/?$/);
 
   if (spaceMatch) {
     const channel = spaceMatch[1];
