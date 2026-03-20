@@ -983,27 +983,194 @@ Uses `sandbox-exec` with Seatbelt profiles:
 
 ### 9.4 Git Worktree Isolation
 
-When enabled, agents in multi-agent channels each get an isolated **git worktree branch** to prevent file conflicts:
+Multi-agent file isolation via git worktrees. When enabled, each agent in a channel gets its own isolated working directory with a dedicated branch (`clawd/{randomId}`), enabling concurrent edits without conflicts.
 
-**Worktree Location**: `{projectRoot}/.clawd/worktrees/{agentId}/`
-**Branch Naming**: `clawd/{randomId}` (6-char hex suffix)
+**Files**: `src/agent/workspace/worktree.ts` (lifecycle), `src/api/worktree.ts` (18 REST endpoints), `src/worker-manager.ts` (DB persistence), UI components (WorktreeDialog, worktree-diff-viewer, worktree-file-list)
 
-**Key Features**:
-- **Near-zero disk overhead**: Git hard-links files from main repository
-- **Non-git projects**: Worktree feature skipped; agent uses original project root
-- **Automatic dependency install**: bun/npm/pip deps auto-installed in new worktree
-- **Submodule support**: Recursively initialized on worktree creation
+#### Worktree Lifecycle
 
-**Git Tool Guards**:
-- **`git commit`**: Author/Co-Author set from config.json `author` field
-- **`git push`**: Protected branches (main, master, develop) blocked
-- **`git checkout`**: Branch switching blocked (agents stay on assigned worktree branch)
-- **`git pull`**: Pull operations blocked (worktrees are ephemeral, no sync needed)
+**Location**: `{projectRoot}/.clawd/worktrees/{agentId}/`
+**Branch Naming**: `clawd/{6-char-hex}` (e.g., `clawd/a1b2c3`)
+
+**Creation Flow**:
+1. `createWorktree(projectPath, agentId)` checks if valid git repo exists
+2. Generates random 6-char hex branch name
+3. Executes `git worktree add -b {branchName} {worktreePath}`
+4. Initializes submodules (if present) with 5-min timeout
+5. Auto-installs dependencies (bun/npm/yarn/pnpm) — non-blocking, best-effort
+6. Returns `{ path, branch }`
+
+**Reuse on Restart**:
+- `channel_agents.worktree_path` + `worktree_branch` persisted in DB
+- On agent start, checks if worktree still valid (runs `git rev-parse --abbrev-ref HEAD`)
+- If valid: reuses existing worktree + branch (preserves uncommitted work)
+- If invalid: force-removes and recreates from scratch
+
+**Deletion**:
+- `safeDeleteWorktree()` checks for uncommitted changes first
+- Returns `{ deleted: true }` or `{ deleted: false, reason: "has_uncommitted_changes" }`
+- Forces removal if worktree `.git` is corrupt
+
+#### Disk Overhead
+
+- **Near-zero**: Git hard-links identical files from main repository
+- **Only unique changes** consume additional disk space
+- Multi-agent channels with many worktrees impose minimal storage cost
+
+#### Agent Awareness & System Prompt
+
+**Critical: Agents are NOT aware they're in a worktree.**
+
+- System prompt sections for worktree and normal git are **identical** (`sectionWorktree === sectionGit`)
+- Agents see worktree as the project root; original `.git/` is mounted read-only
+- Git tool error messages are generic (no "worktree" terminology)
+- Configuration toggle behavior:
+  - `"worktree": true` in config.json → enable for all channels
+  - `"worktree": ["ch1", "ch2"]` → enable only for listed channels
+  - `"worktree": false` or omitted → disabled (use project root directly)
+  - If disabled, DB entries are cleared on agent restart
+
+**Humans control integration:**
+- Agent makes commits to worktree branch
+- Only humans apply changes to main project via Git dialog UI
+- Agent cannot force-merge to main; only humans do this via UI button
+
+#### Non-Git Projects
+
+- Detection: `isGitRepo(path)` returns `false` → git worktree isolation skipped
+- Agent works directly in original project root
+- Git dialog still available if any agent has a git repo (enables UI)
+- Worktree endpoints return `{ enabled: false }` or 404
+- Agent can still commit/push via direct repo access (no git worktree isolation)
+
+#### API Endpoints (18 Total)
+
+**Read Endpoints (GET)**:
+- `app.worktree.enabled?channel=X` — Returns `{ enabled: true|false }`
+  - `true` if worktree enabled for channel OR any agent has git repo
+  - Enables UI to show Git dialog even without git worktree isolation
+
+- `app.worktree.status?channel=X` — Returns array of agents with:
+  ```json
+  [{
+    "agent_id": "agent1",
+    "branch": "clawd/a1b2c3",
+    "base_branch": "main",
+    "worktree_path": "/project/.clawd/worktrees/agent1",
+    "original_project": "/project",
+    "clean": true,
+    "ahead": 3,
+    "behind": 0,
+    "has_conflicts": false,
+    "merge_in_progress": false,
+    "files": {
+      "staged": ["file1.ts"],
+      "modified": ["file2.ts"],
+      "untracked": [],
+      "deleted": [],
+      "conflicted": []
+    }
+  }]
+  ```
+
+- `app.worktree.diff?agent_id=X&file_path=path&source=unstaged|staged` — Returns `FileDiff`:
+  ```json
+  {
+    "path": "src/app.ts",
+    "status": "M",
+    "binary": false,
+    "additions": 10,
+    "deletions": 2,
+    "hunks": [{
+      "header": "@@ -10,5 +10,7 @@",
+      "oldStart": 10,
+      "oldLines": 5,
+      "newStart": 10,
+      "newLines": 7,
+      "hash": "sha1_of_hunk_content",
+      "lines": [
+        {"type": "context", "content": "existing line"},
+        {"type": "addition", "content": "new line", "newNo": 11},
+        {"type": "deletion", "content": "old line", "oldNo": 12}
+      ]
+    }]
+  }
+  ```
+
+- `app.worktree.log?agent_id=X[&lines=50]` — Git log for agent's branch (commit hash, author, date, message)
+
+**Write Endpoints (POST)**:
+
+*File Staging*:
+- `app.worktree.stage` — Stage file: `{ agent_id, file_path }`
+- `app.worktree.unstage` — Unstage file: `{ agent_id, file_path }`
+- `app.worktree.discard` — Discard working tree changes: `{ agent_id, file_path }`
+
+*Per-Hunk Granular Control*:
+- `app.worktree.stage_hunk` — Stage single hunk: `{ agent_id, file_path, hunk_hash }`
+  - Hunk identified by SHA1 content hash (enables server to detect if diff changed)
+  - Returns `{ ok: true, remainingHunks: N }` or `{ ok: false, error: "hunk_not_found" }` (409-equivalent)
+  - Uses `git apply --cached` to apply minimal patch
+
+- `app.worktree.unstage_hunk` — Unstage single hunk: `{ agent_id, file_path, hunk_hash }`
+- `app.worktree.revert_hunk` — Discard hunk from working tree: `{ agent_id, file_path, hunk_hash }`
+
+*Commit & Push*:
+- `app.worktree.commit` — Create commit: `{ agent_id, message }`
+  - Priority: git local config (main author) + config.author (Co-Authored-By trailer)
+  - OR: config.author as main author if no local config (via `-c` flags)
+  - Throws if neither configured
+  - Returns commit hash on success
+
+- `app.worktree.push` — Push branch: `{ agent_id }`
+  - Guard: blocks push to main, master, develop
+  - Only permits clawd/* branches
+  - Returns success or error
+
+*Conflict Resolution*:
+- `app.worktree.merge` — Merge base branch: `{ agent_id }`
+  - Fetches latest base branch, merges into worktree
+  - Returns status with conflicts (if any)
+
+- `app.worktree.resolve` — Mark file as resolved: `{ agent_id, file_path }`
+- `app.worktree.abort` — Abort merge: `{ agent_id }`
+
+*Stash*:
+- `app.worktree.stash` — Stash changes: `{ agent_id }`
+- `app.worktree.stash_pop` — Pop stash: `{ agent_id }`
+
+*Integration*:
+- `app.worktree.apply` — Apply worktree branch to base: `{ agent_id, strategy="merge"|"cherry-pick" }`
+
+#### Hunk Staging Protocol
+
+Per-hunk staging identifies hunks using SHA1 content hashing (not index-based):
+
+1. **Fetch diff**: Client calls `GET .../app.worktree.diff?agent_id=X&file_path=path&source=unstaged|staged`
+2. **Server computes hunk hash**: SHA1 of raw hunk text
+   ```
+   hash = SHA1(hunkHeader + lines.join('\n'))
+   e.g., hunkRawLines = ["@@ -10,5 +10,7 @@", " context", "+new", "-old", ...]
+   ```
+3. **Client displays hunks**: UI shows diffs with hash embedded in each hunk
+4. **User selects hunk**: Clicks "Stage", "Unstage", or "Discard" button
+5. **Client sends request**: POST with `hunk_hash` in body
+   ```json
+   { "agent_id": "agent1", "file": "src/app.ts", "hunk_hash": "abc123def456" }
+   ```
+6. **Server validates hash**: Fetches current diff, finds matching hunk by hash
+   - If hash matches: hunks haven't changed since UI render → proceed
+   - If hash doesn't match: diff modified since UI render → return `{ ok: false, error: "hunk_not_found" }` with HTTP 409 Conflict
+   - UI handles 409 by refreshing diff and alerting user
+7. **Apply operation**: Builds minimal patch for that hunk, uses `git apply --cached` (or `git apply -R --unidiff-zero` for revert)
+8. **Return result**: `{ ok: true, remainingHunks: N }` where remainingHunks = other unstaged hunks in same file
+
+#### Commit Author Handling
 
 **Configuration** (`~/.clawd/config.json`):
-```json
+```jsonc
 {
-  "worktree": true,                           // or ["channel1", "channel2"]
+  "worktree": true,              // or ["channel1", "channel2"]
   "author": {
     "name": "Claw'd Agent",
     "email": "agent@clawd.local"
@@ -1011,10 +1178,76 @@ When enabled, agents in multi-agent channels each get an isolated **git worktree
 }
 ```
 
-**Sandbox Integration**:
-- Original `.git/` directory mounted **read-only** inside sandbox
-- Worktree `.git/` directory fully writable in sandbox
-- Sibling worktrees blocked by `.clawd/` tmpfs isolation
+**Priority**:
+1. **If git local config has user.name + user.email**:
+   - Main author: local config
+   - Co-Author: `config.author` injected via `git interpret-trailers --trailer "Co-Authored-By: ..."`
+   - Fallback if trailers fails: simple append to message
+
+2. **If no local config**:
+   - Main author: `config.author` injected via `-c user.name=... -c user.email=...` git flags
+   - Error if `config.author` missing
+
+#### Git Tool Guards (Sandbox)
+
+Tools running in agent sandbox are wrapped with guards:
+
+| Tool | Guard | Behavior |
+|------|-------|----------|
+| `git commit` | Author validation | Automatically injects Co-Authored-By trailer or -c flags |
+| `git push` | Branch protection | Blocks push to main, master, develop (only clawd/* allowed) |
+| `git checkout` | Branch locking | Prevents checkout to other branches (agents stay on assigned branch) |
+| `git pull` | Disabled | Blocks pull (worktrees ephemeral; use merge/apply instead) |
+
+#### Sandbox Path Isolation
+
+**Mounted in sandbox**:
+- Original `.git/` directory: **Read-only** — agents can examine history but not modify
+- Worktree `.git/` directory: **Fully writable** — agents can commit, stage, stash in worktree
+- Project root `.clawd/` directory: **Blocked** — protects agent config and identity files
+
+**Worktree constraints**:
+- Sibling worktrees not accessible (`.clawd/` tmpfs barrier)
+- Agents cannot enumerate other agents' worktrees
+- Each agent sees only their own worktree as `{projectRoot}`'s git state
+
+#### UI Components
+
+**WorktreeDialog.tsx** — "Git" dialog (unified interface for worktree or direct repo):
+- Agent selector dropdown
+- File status sidebar (resizable, collapsible on mobile)
+- Unified diff viewer (center pane)
+- Commit message input + "Commit" button
+- Merge conflict UI with "Resolve" / "Abort" buttons
+- "Refresh" button to reload status + branch info
+- Works for both git worktree isolation and direct git repo access
+
+**worktree-diff-viewer.tsx** — Diff renderer:
+- Displays unified diff with line numbers (old/new)
+- Per-hunk inline controls (Stage/Unstage/Discard buttons)
+- Right-click context menu for hunk actions
+- Syntax highlighting via Prism (32+ languages)
+- Inline annotations: added (green +), deleted (red -), context (gray)
+- Handles both unstaged and staged diffs
+
+**worktree-file-list.tsx** — File tree sidebar:
+- Tree view grouped by status: Staged, Modified, Untracked, Deleted, Conflicted
+- Click file to show diff in main viewer
+- Resizable sidebar (horizontal drag divider)
+- Fullscreen layout on mobile (stacked vertical)
+- File icons by extension (TypeScript, JSON, Markdown, etc.)
+- Conflict indicators with merge UI buttons
+- Search/filter support for large file lists
+
+#### Database Persistence
+
+**channel_agents table** tracks:
+```sql
+worktree_path TEXT,     -- Path to worktree dir (.clawd/worktrees/{agentId})
+worktree_branch TEXT    -- Assigned branch (clawd/a1b2c3)
+```
+
+Reused on server restart to avoid orphaned branches and recreating worktrees.
 
 ---
 
@@ -1536,7 +1769,7 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
     "token": "your-secret-token"
   },
 
-  // Git worktree isolation for multi-agent channels
+  // Git isolated mode for multi-agent channels
   // Each agent gets an isolated worktree branch to prevent file conflicts
   // - true = all channels, false = disabled, ["channel"] = specific channels
   "worktree": true,

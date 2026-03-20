@@ -65,11 +65,31 @@ export function getAgentContext(): AgentContext | undefined {
 
 /**
  * Get the project root from context, falling back to process.cwd().
- * This is a convenience function for the common case.
+ * In worktree mode, this returns the worktree path (agent's working directory).
  */
 export function getContextProjectRoot(): string {
   const ctx = getAgentContext();
   return ctx?.projectRoot || process.cwd();
+}
+
+/**
+ * Get the original project root (never the worktree path).
+ * Use this for .clawd/ config paths (files, agents, tools, skills) which
+ * must always reference the real project, not the worktree copy.
+ * Falls back to projectRoot if not in worktree mode, then to
+ * ~/.clawd/projects/{channel} if channel is available.
+ */
+export function getContextConfigRoot(): string {
+  const ctx = getAgentContext();
+  if (ctx?.originalProjectRoot) return ctx.originalProjectRoot;
+  if (ctx?.projectRoot) return ctx.projectRoot;
+  // Fallback: channel-based default project root
+  if (ctx?.channel) {
+    const { homedir } = require("node:os");
+    const { join } = require("node:path");
+    return join(homedir(), ".clawd", "projects", ctx.channel);
+  }
+  return process.cwd();
 }
 
 /**

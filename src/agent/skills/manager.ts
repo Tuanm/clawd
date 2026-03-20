@@ -495,7 +495,9 @@ export class SkillManager {
 const _managers = new Map<string, SkillManager>();
 
 export function getSkillManager(projectRoot?: string): SkillManager {
-  const root = projectRoot || getContextProjectRoot();
+  // Use original project root for skills (not worktree path)
+  const { getContextConfigRoot } = require("../utils/agent-context");
+  const root = projectRoot || getContextConfigRoot();
   const key = root || "__global__";
 
   if (!_managers.has(key)) {

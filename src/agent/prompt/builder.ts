@@ -198,7 +198,9 @@ function sectionSubAgents(ctx: PromptContext): string {
 - general: full-access agent for complex multi-step tasks (inherit model)`;
 
   try {
-    const custom = listAgentFiles(ctx.projectRoot).filter(
+    const { getContextConfigRoot } = require("../utils/agent-context");
+    const configRoot = getContextConfigRoot() || ctx.projectRoot;
+    const custom = listAgentFiles(configRoot).filter(
       (a) => a.name !== "explore" && a.name !== "plan" && a.name !== "general",
     );
     if (custom.length > 0) {

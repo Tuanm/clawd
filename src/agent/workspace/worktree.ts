@@ -10,7 +10,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAuthorConfig } from "../../config-file";
 
@@ -72,6 +72,32 @@ export interface WorktreeResult {
 }
 
 /**
+ * Ensure {projectRoot}/.clawd/.gitignore includes files/ and worktrees/.
+ * Prevents agent-generated files and worktree directories from being tracked.
+ */
+function ensureClawdGitignore(projectRoot: string): void {
+  const clawdDir = join(projectRoot, ".clawd");
+  const gitignorePath = join(clawdDir, ".gitignore");
+  const requiredEntries = ["files/", "worktrees/"];
+
+  try {
+    mkdirSync(clawdDir, { recursive: true });
+    let content = "";
+    if (existsSync(gitignorePath)) {
+      content = readFileSync(gitignorePath, "utf-8");
+    }
+    const lines = content.split("\n").map((l) => l.trim());
+    const missing = requiredEntries.filter((e) => !lines.includes(e));
+    if (missing.length > 0) {
+      const append = (content.length > 0 && !content.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n";
+      writeFileSync(gitignorePath, content + append, "utf-8");
+    }
+  } catch {
+    // Best-effort — don't block worktree creation
+  }
+}
+
+/**
  * Get the worktree base directory for a project.
  * Worktrees are stored at {projectRoot}/.clawd/worktrees/
  */
@@ -91,6 +117,7 @@ export async function createWorktree(projectPath: string, agentId: string): Prom
 
   const base = getWorktreeBase(projectPath);
   mkdirSync(base, { recursive: true });
+  ensureClawdGitignore(projectPath);
   const worktreePath = join(base, agentId);
 
   // Reuse existing worktree if it's still valid (preserves uncommitted work across restarts)
@@ -292,6 +319,44 @@ export interface WorktreeStatus {
 }
 
 /**
+ * Unquote a git path that may be surrounded by quotes with octal escape sequences.
+ * Git quotes paths containing non-ASCII characters: "path/\303\251file" → path/éfile
+ * Octal sequences are UTF-8 bytes that must be decoded together.
+ */
+function unquoteGitPath(p: string): string {
+  if (!p.startsWith('"') || !p.endsWith('"')) return p;
+  const inner = p.slice(1, -1);
+  // Collect segments: plain text and octal byte sequences
+  const bytes: number[] = [];
+  const result: string[] = [];
+  let i = 0;
+
+  const flushBytes = () => {
+    if (bytes.length > 0) {
+      result.push(Buffer.from(bytes).toString("utf-8"));
+      bytes.length = 0;
+    }
+  };
+
+  while (i < inner.length) {
+    if (inner[i] === "\\" && i + 3 < inner.length && /^[0-7]{3}$/.test(inner.slice(i + 1, i + 4))) {
+      bytes.push(parseInt(inner.slice(i + 1, i + 4), 8));
+      i += 4;
+    } else if (inner[i] === "\\" && i + 1 < inner.length) {
+      flushBytes();
+      result.push(inner[i + 1] === "n" ? "\n" : inner[i + 1] === "t" ? "\t" : inner[i + 1]);
+      i += 2;
+    } else {
+      flushBytes();
+      result.push(inner[i]);
+      i++;
+    }
+  }
+  flushBytes();
+  return result.join("");
+}
+
+/**
  * Get the status of a worktree (staged, unstaged, untracked files).
  */
 export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
@@ -305,7 +370,8 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
   };
 
   try {
-    const status = execFileSync("git", ["status", "--porcelain=v2", "--branch"], {
+    // --untracked-files=all ensures individual files inside untracked dirs are listed
+    const status = execFileSync("git", ["status", "--porcelain=v2", "--branch", "--untracked-files=all"], {
       cwd: worktreePath,
       encoding: "utf-8",
       stdio: "pipe",
@@ -324,16 +390,17 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
       } else if (line.startsWith("1 ") || line.startsWith("2 ")) {
         // Changed entry: "1 XY sub mH mI mW hH hI path" or "2 XY sub mH mI mW hH hI path1\tpath2"
         const xy = line.slice(2, 4);
-        const path = line.startsWith("2 ") ? line.split("\t")[0].split(" ").pop()! : line.split(" ").pop()!;
+        const rawPath = line.startsWith("2 ") ? line.split("\t")[0].split(" ").pop()! : line.split(" ").pop()!;
+        const path = unquoteGitPath(rawPath);
         if (xy[0] !== ".") files.staged.push(path);
         if (xy[1] === "M") files.modified.push(path);
         else if (xy[1] === "D") files.deleted.push(path);
       } else if (line.startsWith("u ")) {
         // Unmerged (conflict)
-        const path = line.split(" ").pop()!;
+        const path = unquoteGitPath(line.split(" ").pop()!);
         files.conflicted.push(path);
       } else if (line.startsWith("? ")) {
-        files.untracked.push(line.slice(2));
+        files.untracked.push(unquoteGitPath(line.slice(2)));
       }
     }
 

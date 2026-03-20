@@ -1237,10 +1237,12 @@ Please:
 
   /** Load agent identity from agents/{name}.md (4-directory priority) */
   private loadAgentIdentity(): string {
-    const { projectRoot, agentId } = this.config;
-    const agent = loadAgentFile(agentId, projectRoot);
+    const { agentId } = this.config;
+    // Use original project root for agent files (not worktree path)
+    const configRoot = this.config.originalProjectRoot || this.config.projectRoot;
+    const agent = loadAgentFile(agentId, configRoot);
     if (!agent) return "";
-    const allAgents = listAgentFiles(projectRoot);
+    const allAgents = listAgentFiles(configRoot);
     return buildAgentSystemPrompt(agent, allAgents);
   }
 
