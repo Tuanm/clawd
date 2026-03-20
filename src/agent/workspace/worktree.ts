@@ -460,7 +460,34 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
         const path = unquoteGitPath(line.split(" ").pop()!);
         files.conflicted.push(path);
       } else if (line.startsWith("? ")) {
-        files.untracked.push(unquoteGitPath(line.slice(2)));
+        let untrackedPath = unquoteGitPath(line.slice(2));
+        // Strip trailing slash from directory entries
+        if (untrackedPath.endsWith("/")) untrackedPath = untrackedPath.slice(0, -1);
+
+        // Check if this is a nested git repo (has its own .git) — expand its files
+        const fullUntrackedPath = join(worktreePath, untrackedPath);
+        if (existsSync(join(fullUntrackedPath, ".git"))) {
+          try {
+            const nestedStatus = execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+              cwd: fullUntrackedPath,
+              encoding: "utf-8",
+              stdio: "pipe",
+            }).trim();
+            if (nestedStatus) {
+              for (const nestedLine of nestedStatus.split("\n")) {
+                if (!nestedLine.trim()) continue;
+                const nestedFile = unquoteGitPath(nestedLine.slice(3));
+                if (nestedFile) files.untracked.push(`${untrackedPath}/${nestedFile}`);
+              }
+            } else {
+              // Nested repo with no changes — skip it
+            }
+          } catch {
+            files.untracked.push(untrackedPath);
+          }
+        } else {
+          files.untracked.push(untrackedPath);
+        }
       }
     }
 
