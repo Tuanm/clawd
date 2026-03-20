@@ -247,57 +247,21 @@ function getGitContextForFolder(
 }
 
 /**
- * Check if a path should be shown based on git tracking.
- * For directories, checks if any tracked file is inside it.
- * Falls back to default ignore patterns if not a git repo.
+ * Check if a path should be shown in the project tree.
+ * Shows ALL files and folders (no .gitignore filtering) except:
+ * - .git/ directory (internal git data)
+ * - node_modules/ (too large, rarely useful to browse)
  */
 function shouldShowInTree(
-  projectRoot: string,
+  _projectRoot: string,
   relativePath: string,
-  isDirectory: boolean,
-  trackedFiles: Set<string> | null,
+  _isDirectory: boolean,
+  _trackedFiles: Set<string> | null,
 ): boolean {
-  // Always hide .git directory itself
-  if (relativePath === ".git" || relativePath.startsWith(".git/")) {
-    return false;
-  }
-
-  // If we have git tracking info
-  if (trackedFiles !== null) {
-    if (isDirectory) {
-      // Show directory if any tracked file is inside it
-      const prefix = relativePath + "/";
-      for (const file of trackedFiles) {
-        if (file.startsWith(prefix) || file === relativePath) {
-          return true;
-        }
-      }
-      return false;
-    } else {
-      // Show file if it's tracked
-      return trackedFiles.has(relativePath);
-    }
-  }
-
-  // Fallback: use default ignore patterns (not a git repo)
-  const FALLBACK_IGNORE = [
-    "node_modules",
-    "dist",
-    "build",
-    ".env",
-    ".clawd",
-    "__pycache__",
-    ".venv",
-    "vendor",
-    ".next",
-    ".nuxt",
-    "coverage",
-    ".cache",
-    ".turbo",
-  ];
-
   const name = basename(relativePath);
-  return !FALLBACK_IGNORE.includes(name);
+  // Hide .git internals and heavy dependency dirs
+  if (name === ".git" || name === "node_modules") return false;
+  return true;
 }
 
 /** Available AI models */
