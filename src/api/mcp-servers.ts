@@ -5,7 +5,6 @@
  * Follows the same pattern as agents.ts.
  */
 
-import { COPILOT_LOGO, isCopilotEnabled, setCopilotEnabled } from "../agent/plugins/copilot-analytics-plugin";
 import {
   getChannelMCPServers,
   removeChannelMCPServer as removeFromConfig,
@@ -13,6 +12,7 @@ import {
   setChannelMCPServerEnabled,
 } from "../agent/api/provider-config";
 import type { MCPServerConfig } from "../agent/api/providers";
+import { COPILOT_LOGO, isCopilotEnabled, setCopilotEnabled } from "../agent/plugins/copilot-analytics-plugin";
 import { discoverOAuthMetadata, loadOAuthToken, removeOAuthToken, startOAuthFlow } from "../mcp-oauth";
 import type { WorkerManager } from "../worker-manager";
 

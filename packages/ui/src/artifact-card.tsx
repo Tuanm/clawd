@@ -3,9 +3,10 @@
 // Both follow the .message-article-card UX pattern from MessageList.tsx.
 
 import DOMPurify from "dompurify";
-import React, { useEffect, useRef, useState } from "react";
+import type React from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArtifactModal } from "./artifact-modal";
-import { type ArtifactType, TYPE_CONFIG, ARTIFACT_EXTENSION_MAP } from "./artifact-types";
+import { ARTIFACT_EXTENSION_MAP, type ArtifactType, TYPE_CONFIG } from "./artifact-types";
 
 export type { ArtifactType };
 export { ARTIFACT_EXTENSION_MAP };
