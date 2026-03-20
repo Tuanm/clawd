@@ -406,13 +406,55 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
           behind = parseInt(match[2]);
         }
       } else if (line.startsWith("1 ") || line.startsWith("2 ")) {
-        // Changed entry: "1 XY sub mH mI mW hH hI path" or "2 XY sub mH mI mW hH hI path1\tpath2"
-        const xy = line.slice(2, 4);
+        // Porcelain v2 changed entry:
+        // Type 1: "1 XY sub mH mI mW hH hI path"
+        // Type 2: "2 XY sub mH mI mW hH hI X-score path\torigPath"
+        const parts = line.split("\t")[0].split(" ");
+        const xy = parts[1]; // XY status
+        const sub = parts[2]; // submodule indicator (N... or S...)
+        const isSubmodule = sub.startsWith("S");
+
+        // Path is always the last field (after tab split for renames)
         const rawPath = line.startsWith("2 ") ? line.split("\t")[0].split(" ").pop()! : line.split(" ").pop()!;
         const path = unquoteGitPath(rawPath);
-        if (xy[0] !== ".") files.staged.push(path);
-        if (xy[1] === "M") files.modified.push(path);
-        else if (xy[1] === "D") files.deleted.push(path);
+
+        if (isSubmodule) {
+          // For submodules, get the changed files INSIDE the submodule
+          const subPath = join(worktreePath, path);
+          if (existsSync(subPath)) {
+            try {
+              const subStatus = execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+                cwd: subPath,
+                encoding: "utf-8",
+                stdio: "pipe",
+              }).trim();
+              if (subStatus) {
+                for (const subLine of subStatus.split("\n")) {
+                  if (!subLine.trim()) continue;
+                  const subXY = subLine.slice(0, 2);
+                  const subFile = unquoteGitPath(subLine.slice(3));
+                  const fullPath = `${path}/${subFile}`;
+                  if (subXY[0] !== " " && subXY[0] !== "?") files.staged.push(fullPath);
+                  if (subXY[1] === "M" || subXY[1] === "A") files.modified.push(fullPath);
+                  else if (subXY[1] === "D") files.deleted.push(fullPath);
+                  else if (subXY === "??") files.untracked.push(fullPath);
+                }
+              } else {
+                // Submodule commit changed but no file changes inside — show as modified entry
+                files.modified.push(path);
+              }
+            } catch {
+              // Can't read submodule status — show the submodule itself
+              files.modified.push(path);
+            }
+          } else {
+            files.modified.push(path);
+          }
+        } else {
+          if (xy[0] !== ".") files.staged.push(path);
+          if (xy[1] === "M") files.modified.push(path);
+          else if (xy[1] === "D") files.deleted.push(path);
+        }
       } else if (line.startsWith("u ")) {
         // Unmerged (conflict)
         const path = unquoteGitPath(line.split(" ").pop()!);
@@ -483,7 +525,26 @@ export interface FileDiff {
 }
 
 /**
+ * Detect if a file path is inside a git submodule. Returns { submoduleRoot, relativePath }
+ * or null if not a submodule path.
+ */
+function resolveSubmodulePath(worktreePath: string, filePath: string): { cwd: string; relativePath: string } | null {
+  // Check if any prefix of the path is a submodule (has .git file/dir inside worktreePath)
+  const parts = filePath.split("/");
+  for (let i = 1; i < parts.length; i++) {
+    const prefix = parts.slice(0, i).join("/");
+    const subPath = join(worktreePath, prefix);
+    const gitMarker = join(subPath, ".git");
+    if (existsSync(gitMarker)) {
+      return { cwd: subPath, relativePath: parts.slice(i).join("/") };
+    }
+  }
+  return null;
+}
+
+/**
  * Get the unified diff for a specific file in a worktree.
+ * Automatically detects submodule files and runs diff inside the submodule.
  * @param source - "unstaged" (working tree vs index) or "staged" (index vs HEAD)
  */
 export function getFileDiff(
@@ -491,15 +552,21 @@ export function getFileDiff(
   filePath: string,
   source: "unstaged" | "staged" = "unstaged",
 ): FileDiff | null {
-  const args =
-    source === "staged"
-      ? ["diff", "--cached", "-U3", "--ignore-submodules=none", "--submodule=diff", "--", filePath]
-      : ["diff", "-U3", "--ignore-submodules=none", "--submodule=diff", "--", filePath];
+  // Check if file is inside a submodule
+  const sub = resolveSubmodulePath(worktreePath, filePath);
+  const cwd = sub ? sub.cwd : worktreePath;
+  const diffPath = sub ? sub.relativePath : filePath;
+
+  const args = source === "staged" ? ["diff", "--cached", "-U3", "--", diffPath] : ["diff", "-U3", "--", diffPath];
 
   try {
-    const raw = execFileSync("git", args, { cwd: worktreePath, encoding: "utf-8", stdio: "pipe" });
+    const raw = execFileSync("git", args, { cwd, encoding: "utf-8", stdio: "pipe" });
     if (!raw.trim()) return null;
     const diffs = parseDiffOutput(raw);
+    if (diffs[0]) {
+      // Restore the full path (including submodule prefix) for UI display
+      diffs[0].path = filePath;
+    }
     return diffs[0] || null;
   } catch {
     return null;
@@ -522,6 +589,15 @@ export function getAllDiffs(worktreePath: string, source: "unstaged" | "staged" 
   } catch {
     return [];
   }
+}
+
+/**
+ * Resolve the correct git working directory and relative path for a file.
+ * Handles submodule files transparently.
+ */
+export function resolveGitPath(worktreePath: string, filePath: string): { cwd: string; relativePath: string } {
+  const sub = resolveSubmodulePath(worktreePath, filePath);
+  return sub || { cwd: worktreePath, relativePath: filePath };
 }
 
 /**
@@ -664,10 +740,11 @@ export function stageHunk(
     return { ok: false, error: "hunk_not_found" };
   }
 
-  const patch = buildHunkPatch(filePath, result.hunk, result.fileDiff);
+  const { cwd, relativePath } = resolveGitPath(worktreePath, filePath);
+  const patch = buildHunkPatch(relativePath, result.hunk, result.fileDiff);
   try {
     execFileSync("git", ["apply", "--cached", "--unidiff-zero"], {
-      cwd: worktreePath,
+      cwd,
       input: patch,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -692,10 +769,11 @@ export function revertHunk(
     return { ok: false, error: "hunk_not_found" };
   }
 
-  const patch = buildHunkPatch(filePath, result.hunk, result.fileDiff);
+  const { cwd, relativePath } = resolveGitPath(worktreePath, filePath);
+  const patch = buildHunkPatch(relativePath, result.hunk, result.fileDiff);
   try {
     execFileSync("git", ["apply", "-R", "--unidiff-zero"], {
-      cwd: worktreePath,
+      cwd,
       input: patch,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -720,10 +798,11 @@ export function unstageHunk(
     return { ok: false, error: "hunk_not_found" };
   }
 
-  const patch = buildHunkPatch(filePath, result.hunk, result.fileDiff);
+  const { cwd, relativePath } = resolveGitPath(worktreePath, filePath);
+  const patch = buildHunkPatch(relativePath, result.hunk, result.fileDiff);
   try {
     execFileSync("git", ["apply", "-R", "--cached", "--unidiff-zero"], {
-      cwd: worktreePath,
+      cwd,
       input: patch,
       stdio: ["pipe", "pipe", "pipe"],
     });
