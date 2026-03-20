@@ -332,19 +332,12 @@ registerTool(
   [],
   async () => {
     const now = new Date();
+    const date = now.toLocaleDateString("en-CA"); // YYYY-MM-DD
+    const time = now.toLocaleTimeString("en-US", { hour12: false });
+    const day = now.toLocaleDateString("en-US", { weekday: "long" });
     return {
       success: true,
-      output: JSON.stringify(
-        {
-          iso: now.toISOString(),
-          date: now.toLocaleDateString("en-CA"), // YYYY-MM-DD
-          time: now.toLocaleTimeString("en-US", { hour12: false }),
-          day: now.toLocaleDateString("en-US", { weekday: "long" }),
-          unix: Math.floor(now.getTime() / 1000),
-        },
-        null,
-        2,
-      ),
+      output: `${day}, ${date} ${time}`,
     };
   },
 );

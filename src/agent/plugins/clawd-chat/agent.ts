@@ -758,7 +758,14 @@ LONG-TERM MEMORY:
       async onToolResult(name: string, result: any, _ctx: PluginContext) {
         // Stream tool result to chat UI - use "error" status when tool failed
         const status = result && result.success === false ? "error" : "completed";
-        await streamToolCall(name, {}, status, result);
+        // Extract formatted text from ToolResult to avoid sending raw {success,output,error} JSON
+        const resultText =
+          result && typeof result === "object"
+            ? result.success === false
+              ? result.error || result.output || "Unknown error"
+              : result.output || ""
+            : result;
+        await streamToolCall(name, {}, status, resultText);
       },
 
       async onInterrupt(message: string, _ctx: PluginContext) {
