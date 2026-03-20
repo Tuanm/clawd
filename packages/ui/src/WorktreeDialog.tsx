@@ -249,11 +249,19 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
     [channel, selectedAgentId, refresh],
   );
 
-  const handleStageFile = (path: string) => postAction("app.worktree.stage", { paths: [path] });
-  const handleUnstageFile = (path: string) => postAction("app.worktree.unstage", { paths: [path] });
-  const handleDiscardFile = (path: string) => {
-    if (!confirm(`Discard changes to "${path}"?`)) return;
-    postAction("app.worktree.discard", { paths: [path], confirm: true });
+  const handleStageFile = (paths: string | string[]) => {
+    const arr = Array.isArray(paths) ? paths : [paths];
+    postAction("app.worktree.stage", { paths: arr });
+  };
+  const handleUnstageFile = (paths: string | string[]) => {
+    const arr = Array.isArray(paths) ? paths : [paths];
+    postAction("app.worktree.unstage", { paths: arr });
+  };
+  const handleDiscardFile = (paths: string | string[]) => {
+    const arr = Array.isArray(paths) ? paths : [paths];
+    const label = arr.length === 1 ? `"${arr[0]}"` : `${arr.length} files`;
+    if (!confirm(`Discard changes to ${label}?`)) return;
+    postAction("app.worktree.discard", { paths: arr, confirm: true });
   };
   const handleStageAll = () => {
     const unstaged = files.filter((f) => !f.staged).map((f) => f.path);
@@ -404,7 +412,7 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
                   file={selectedFile?.path ?? null}
                   source={diffSource}
                   onRefresh={refreshFiles}
-                  onOpenInProjects={onOpenInProjects}
+                  onOpenInProjects={selectedFile?.status !== "D" ? onOpenInProjects : undefined}
                 />
               </div>
             </div>
