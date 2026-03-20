@@ -391,7 +391,15 @@ export function hasMCPServers(): boolean {
  */
 export function getChannelMCPServers(channel: string): Record<string, MCPServerConfig> {
   const config = loadConfig();
-  return config.mcp_servers?.[channel] || {};
+  const mcpServers = config.mcp_servers;
+  if (!mcpServers) return {};
+
+  // Merge global ("*") servers with channel-specific servers.
+  // Channel-specific configs take precedence over global ones with the same name.
+  const globalServers = channel !== "*" ? mcpServers["*"] || {} : {};
+  const channelServers = mcpServers[channel] || {};
+
+  return { ...globalServers, ...channelServers };
 }
 
 // ============================================================================
