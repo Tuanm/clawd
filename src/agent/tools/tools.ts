@@ -3513,12 +3513,13 @@ registerTool(
       return { success: false, output: "", error: result.error };
     }
 
-    // Save to {projectRoot}/.clawd/files/
+    // Save to {originalProjectRoot}/.clawd/files/ (not worktree)
     const { writeFile, mkdir } = await import("node:fs/promises");
     const { basename, extname, join } = await import("node:path");
+    const { getContextConfigRoot } = await import("../utils/agent-context");
 
-    const projectRoot = getSandboxProjectRoot();
-    const filesDir = join(projectRoot, ".clawd", "files");
+    const configRoot = getContextConfigRoot();
+    const filesDir = join(configRoot, ".clawd", "files");
     await mkdir(filesDir, { recursive: true });
 
     const base = basename(resolvedPath, extname(resolvedPath)).replace(/[^a-zA-Z0-9._-]/g, "_") || "converted";

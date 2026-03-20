@@ -1548,9 +1548,10 @@ SUMMARY:`;
         this.toolPluginManager.register(customPlugin);
         this._customToolPluginRegistered = true;
         // Discover existing custom tools and register as first-class ct_* tools
-        const projectRoot = ctx?.projectRoot || getContextProjectRoot();
-        if (projectRoot && projectRoot !== "/" && existsSync(join(projectRoot, ".clawd"))) {
-          const discovered = customPlugin.getDiscoveredTools(projectRoot);
+        // Use original project root for custom tools (not worktree)
+        const configRoot = ctx?.originalProjectRoot || ctx?.projectRoot || getContextProjectRoot();
+        if (configRoot && configRoot !== "/" && existsSync(join(configRoot, ".clawd"))) {
+          const discovered = customPlugin.getDiscoveredTools(configRoot);
           for (const tool of discovered) {
             try {
               this.toolPluginManager.register({

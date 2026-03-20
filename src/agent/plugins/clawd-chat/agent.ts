@@ -738,9 +738,11 @@ LONG-TERM MEMORY:
         }
         // Auto-inject project root for tools that need to save files locally
         if (name === "chat_download_file" || name === "convert_to_markdown") {
-          const projectRoot = getContextProjectRoot();
-          if (projectRoot) {
-            args = { ...args, _project_root: projectRoot };
+          // Use original project root for .clawd/files/ — not worktree path
+          const { getContextConfigRoot } = require("../../utils/agent-context");
+          const configRoot = getContextConfigRoot();
+          if (configRoot) {
+            args = { ...args, _project_root: configRoot };
           }
         }
         return args;
