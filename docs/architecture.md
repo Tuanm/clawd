@@ -981,6 +981,41 @@ Uses `sandbox-exec` with Seatbelt profiles:
 - `~/.bun/install` mounted read-write (overrides the read-only `~/.bun` mount)
 - `.clawd/skills/`, `.clawd/tools/`, `.clawd/files/` re-mounted read-only as exceptions to the blocked `.clawd/` rule
 
+### 9.4 Git Worktree Isolation
+
+When enabled, agents in multi-agent channels each get an isolated **git worktree branch** to prevent file conflicts:
+
+**Worktree Location**: `{projectRoot}/.clawd/worktrees/{agentId}/`
+**Branch Naming**: `clawd/{randomId}` (6-char hex suffix)
+
+**Key Features**:
+- **Near-zero disk overhead**: Git hard-links files from main repository
+- **Non-git projects**: Worktree feature skipped; agent uses original project root
+- **Automatic dependency install**: bun/npm/pip deps auto-installed in new worktree
+- **Submodule support**: Recursively initialized on worktree creation
+
+**Git Tool Guards**:
+- **`git commit`**: Author/Co-Author set from config.json `author` field
+- **`git push`**: Protected branches (main, master, develop) blocked
+- **`git checkout`**: Branch switching blocked (agents stay on assigned worktree branch)
+- **`git pull`**: Pull operations blocked (worktrees are ephemeral, no sync needed)
+
+**Configuration** (`~/.clawd/config.json`):
+```json
+{
+  "worktree": true,                           // or ["channel1", "channel2"]
+  "author": {
+    "name": "Claw'd Agent",
+    "email": "agent@clawd.local"
+  }
+}
+```
+
+**Sandbox Integration**:
+- Original `.git/` directory mounted **read-only** inside sandbox
+- Worktree `.git/` directory fully writable in sandbox
+- Sibling worktrees blocked by `.clawd/` tmpfs isolation
+
 ---
 
 ## 10. Remote Worker Bridge
@@ -1176,6 +1211,36 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `custom_tool` | POST | Create/edit/delete/execute custom tools |
+
+### 12.9g Worktree APIs
+
+**Read Endpoints** (query params: `?channel=...&agent_id=...`):
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `app.worktree.enabled` | GET | Check if worktree is enabled for this channel |
+| `app.worktree.status` | GET | Get worktree info for all agents in channel (status, branch, diffs) |
+| `app.worktree.diff` | GET | Get unified diff for a specific file (params: `file`, `source=unstaged\|staged`) |
+| `app.worktree.log` | GET | Get commit log for agent's worktree branch (param: `limit=20`) |
+
+**Write Endpoints** (POST with `channel`, `agent_id` in body):
+
+| Endpoint | Description |
+|----------|-------------|
+| `app.worktree.stage` | Stage files for commit (`paths`: string[]) |
+| `app.worktree.unstage` | Unstage files (`paths`: string[]) |
+| `app.worktree.discard` | Discard changes (`paths`: string[], `confirm`: true) |
+| `app.worktree.commit` | Create commit (`message`: string) |
+| `app.worktree.merge` | Merge another agent's branch (`source_agent_id`: string) |
+| `app.worktree.resolve` | Resolve merge conflicts (`path`: string, `resolution`: "ours"\|"theirs"\|"both") |
+| `app.worktree.abort` | Abort in-progress merge/rebase |
+| `app.worktree.apply` | Merge worktree branch into base branch (`strategy`: "merge"\|"squash") |
+| `app.worktree.stash` | Stash changes (`message`?: string) |
+| `app.worktree.stash_pop` | Pop stashed changes |
+| `app.worktree.push` | Push worktree branch to remote (`remote`: "origin") |
+| `app.worktree.stage_hunk` | Stage a specific diff hunk (`file`: string, `hunk_hash`: string) |
+| `app.worktree.unstage_hunk` | Unstage a specific hunk (`file`: string, `hunk_hash`: string) |
+| `app.worktree.revert_hunk` | Revert a specific hunk (`file`: string, `hunk_hash`: string) |
 
 ### 12.10 Special Endpoints
 
@@ -1469,6 +1534,19 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
   // When set, all API requests require: Authorization: Bearer <token>
   "auth": {
     "token": "your-secret-token"
+  },
+
+  // Git worktree isolation for multi-agent channels
+  // Each agent gets an isolated worktree branch to prevent file conflicts
+  // - true = all channels, false = disabled, ["channel"] = specific channels
+  "worktree": true,
+
+  // Author identity for worktree commits
+  // If git local config has user.name/email: those are main author, this becomes Co-Authored-By
+  // If git local config is missing: this becomes main author via git -c flags
+  "author": {
+    "name": "Claw'd Agent",
+    "email": "agent@clawd.local"
   }
 }
 ```

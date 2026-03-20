@@ -11,8 +11,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getChannelMCPServers } from "./agent/api/provider-config";
 import { MCPManager } from "./agent/mcp/client";
+import {
+  createWorktree,
+  isGitInstalled,
+  isGitRepo,
+  pruneWorktrees,
+  safeDeleteWorktree,
+} from "./agent/workspace/worktree";
 import type { AppConfig } from "./config";
-import { getAuthToken } from "./config-file";
+import { getAuthToken, isWorktreeEnabled } from "./config-file";
 import { loadOAuthToken } from "./mcp-oauth";
 import type { SchedulerManager } from "./scheduler/manager";
 import { setAgentStreaming } from "./server/database";
@@ -50,6 +57,10 @@ export interface AgentConfig {
   workerToken?: string;
   /** Per-agent heartbeat interval in seconds (0 = disabled) */
   heartbeatInterval?: number;
+  /** Persisted worktree path (loaded from DB on restart) */
+  worktreePath?: string;
+  /** Persisted worktree branch (loaded from DB on restart) */
+  worktreeBranch?: string;
 }
 
 export class WorkerManager {
@@ -62,6 +73,8 @@ export class WorkerManager {
   private channelMcp: Map<string, MCPManager> = new Map();
   /** Pending MCP setup promises to prevent double-creation on concurrent agent starts */
   private channelMcpPending: Map<string, Promise<MCPManager | null>> = new Map();
+  /** Worktree tracking: key → { path, branch, originalRoot } */
+  private worktreeInfo: Map<string, { path: string; branch: string; originalRoot: string }> = new Map();
 
   // Heartbeat monitor state
   private heartbeatConfig: HeartbeatConfig;
@@ -158,12 +171,62 @@ export class WorkerManager {
     // Ensure channel MCP servers are running (starts on first agent in channel)
     const channelMcpManager = await this.ensureChannelMcp(agent.channel);
 
+    let effectiveProjectRoot = agent.project || this.defaultProjectRoot(agent.channel);
+    let worktreePath: string | undefined;
+    let worktreeBranch: string | undefined;
+    const originalProjectRoot = effectiveProjectRoot;
+
+    // Create worktree if enabled for this channel (skip remote workers — they manage their own filesystem)
+    if (isWorktreeEnabled(agent.channel) && !agent.workerToken) {
+      if (!isGitInstalled()) {
+        console.warn(`[WorkerManager] Worktree enabled but git is not installed — skipping isolation for ${key}`);
+      } else if (!isGitRepo(effectiveProjectRoot)) {
+        console.warn(
+          `[WorkerManager] Worktree enabled but ${effectiveProjectRoot} is not a git repo — skipping isolation for ${key}`,
+        );
+      } else {
+        try {
+          // Prune stale worktree entries first (crash recovery)
+          pruneWorktrees(effectiveProjectRoot);
+          const wt = await createWorktree(effectiveProjectRoot, agent.agentId);
+          worktreePath = wt.path;
+          worktreeBranch = wt.branch;
+          effectiveProjectRoot = wt.path;
+          this.worktreeInfo.set(key, { path: wt.path, branch: wt.branch, originalRoot: originalProjectRoot });
+          // Persist to DB so worktree survives server restart
+          this.persistWorktreeInfo(agent.channel, agent.agentId, wt.path, wt.branch);
+          console.log(`[WorkerManager] Worktree ready: ${wt.path} (branch: ${wt.branch})`);
+        } catch (err) {
+          console.error(`[WorkerManager] Worktree creation failed for ${key}, using original project:`, err);
+        }
+      }
+    } else if (agent.worktreePath && agent.worktreeBranch) {
+      // Restore worktree info from DB (persisted from previous session)
+      const { existsSync } = require("node:fs");
+      if (existsSync(agent.worktreePath)) {
+        worktreePath = agent.worktreePath;
+        worktreeBranch = agent.worktreeBranch;
+        effectiveProjectRoot = agent.worktreePath;
+        this.worktreeInfo.set(key, {
+          path: agent.worktreePath,
+          branch: agent.worktreeBranch,
+          originalRoot: originalProjectRoot,
+        });
+        console.log(
+          `[WorkerManager] Restored worktree from DB: ${agent.worktreePath} (branch: ${agent.worktreeBranch})`,
+        );
+      } else {
+        // Worktree path from DB no longer exists — clear it
+        this.persistWorktreeInfo(agent.channel, agent.agentId, null, null);
+      }
+    }
+
     const loopConfig: WorkerLoopConfig = {
       channel: agent.channel,
       agentId: agent.agentId,
       provider: agent.provider,
       model: agent.model,
-      projectRoot: agent.project || this.defaultProjectRoot(agent.channel),
+      projectRoot: effectiveProjectRoot,
       chatApiUrl: this.config.chatApiUrl,
       wsUrl: this.config.chatApiUrl.replace(/^http(s?):\/\//, "ws$1://"),
       debug: this.config.debug,
@@ -179,6 +242,9 @@ export class WorkerManager {
       heartbeatInterval: agent.heartbeatInterval,
       // Pass auth token so internal HTTP self-calls include Authorization header
       authToken: getAuthToken() ?? undefined,
+      worktreePath,
+      worktreeBranch,
+      originalProjectRoot: worktreePath ? originalProjectRoot : undefined,
     };
 
     const loop = new WorkerLoop(loopConfig);
@@ -193,7 +259,7 @@ export class WorkerManager {
     loop.start();
 
     console.log(
-      `[WorkerManager] Started agent: ${key} (provider: ${agent.provider || "copilot"}, model: ${agent.model}, sleeping: ${agent.sleeping || false})`,
+      `[WorkerManager] Started agent: ${key} (provider: ${agent.provider || "copilot"}, model: ${agent.model}${worktreeBranch ? `, worktree: ${worktreeBranch}` : ""}, sleeping: ${agent.sleeping || false})`,
     );
     return true;
   }
@@ -211,11 +277,112 @@ export class WorkerManager {
     await loop.stop();
     this.loops.delete(key);
 
+    // Clean up worktree if one was created
+    const wtInfo = this.worktreeInfo.get(key);
+    if (wtInfo) {
+      try {
+        const result = await safeDeleteWorktree(wtInfo.path, wtInfo.originalRoot);
+        if (result.deleted) {
+          console.log(`[WorkerManager] Cleaned up worktree: ${wtInfo.path}`);
+        } else {
+          console.warn(`[WorkerManager] Worktree kept (${result.reason}): ${wtInfo.path}`);
+        }
+      } catch (err) {
+        console.error(`[WorkerManager] Failed to clean up worktree ${wtInfo.path}:`, err);
+      }
+      this.worktreeInfo.delete(key);
+    }
+
     // Tear down channel MCP if this was the last agent in the channel
     await this.teardownChannelMcpIfEmpty(channel);
 
     console.log(`[WorkerManager] Stopped agent: ${key}`);
     return true;
+  }
+
+  /** Get worktree info for an agent (used by API endpoints) */
+  getAgentWorktreeInfo(
+    channel: string,
+    agentId: string,
+  ): { path: string; branch: string; originalRoot: string } | null {
+    return this.worktreeInfo.get(`${channel}:${agentId}`) || null;
+  }
+
+  /** Get all worktree info for a channel */
+  getChannelWorktreeInfo(
+    channel: string,
+  ): Array<{ agentId: string; path: string; branch: string; originalRoot: string }> {
+    const results: Array<{ agentId: string; path: string; branch: string; originalRoot: string }> = [];
+    for (const [key, info] of this.worktreeInfo) {
+      if (key.startsWith(`${channel}:`)) {
+        const agentId = key.slice(channel.length + 1);
+        results.push({ agentId, ...info });
+      }
+    }
+    return results;
+  }
+
+  /** Get all git-capable agent info for a channel (worktree + non-worktree) */
+  getChannelGitInfo(
+    channel: string,
+  ): Array<{ agentId: string; path: string; branch: string; originalRoot: string; isWorktree: boolean }> {
+    const results: Array<{ agentId: string; path: string; branch: string; originalRoot: string; isWorktree: boolean }> =
+      [];
+    const seen = new Set<string>();
+
+    // First: agents with worktrees
+    for (const [key, info] of this.worktreeInfo) {
+      if (key.startsWith(`${channel}:`)) {
+        const agentId = key.slice(channel.length + 1);
+        results.push({
+          agentId,
+          path: info.path,
+          branch: info.branch,
+          originalRoot: info.originalRoot,
+          isWorktree: true,
+        });
+        seen.add(agentId);
+      }
+    }
+
+    // Second: agents without worktrees but with git repos
+    for (const [key, loop] of this.loops) {
+      if (key.startsWith(`${channel}:`)) {
+        const agentId = key.slice(channel.length + 1);
+        if (!seen.has(agentId)) {
+          const projectRoot = loop.getProjectRoot();
+          if (projectRoot && isGitRepo(projectRoot)) {
+            results.push({ agentId, path: projectRoot, branch: "", originalRoot: projectRoot, isWorktree: false });
+          }
+        }
+      }
+    }
+
+    return results;
+  }
+
+  /** Persist worktree info to DB so it survives server restart */
+  private persistWorktreeInfo(channel: string, agentId: string, path: string | null, branch: string | null): void {
+    try {
+      const authToken = getAuthToken();
+      timedFetch(`${this.config.chatApiUrl}/api/app.agents.update`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          channel,
+          agent_id: agentId,
+          worktree_path: path,
+          worktree_branch: branch,
+        }),
+      }).catch(() => {
+        // Best-effort — don't block agent startup
+      });
+    } catch {
+      // Best-effort
+    }
   }
 
   /** Set agent sleeping state */
@@ -526,6 +693,8 @@ export class WorkerManager {
           sleeping: a.sleeping === true,
           workerToken: a.worker_token || undefined,
           heartbeatInterval: a.heartbeat_interval || 0,
+          worktreePath: a.worktree_path || undefined,
+          worktreeBranch: a.worktree_branch || undefined,
         }));
       }
     } catch (error) {

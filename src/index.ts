@@ -100,6 +100,7 @@ import {
 import { registerAgentRoutes } from "./api/agents";
 import { registerArticleRoutes } from "./api/articles";
 import { getPublicOrigin, registerMcpServerRoutes } from "./api/mcp-servers";
+import { registerWorktreeRoutes } from "./api/worktree";
 import { loadConfig, validateConfig } from "./config";
 import { getAuthToken, isBrowserEnabled, isWorkspacesEnabled, loadConfigFile, reloadConfigFile } from "./config-file";
 import { extensionZipSize, getExtensionZip } from "./embedded-extension";
@@ -368,6 +369,9 @@ const handleMcpServerRoute = registerMcpServerRoutes(workerManager);
 
 // Register article management API routes
 const handleArticleRoute = registerArticleRoutes(db);
+
+// Register worktree management API routes
+const handleWorktreeRoute = registerWorktreeRoutes(workerManager);
 
 // ============================================================================
 // UI static file serving
@@ -753,6 +757,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     // MCP server management routes
     const mcpResponse = handleMcpServerRoute(req, url, path);
     if (mcpResponse) return mcpResponse;
+
+    // Worktree management routes
+    const worktreeResponse = handleWorktreeRoute(req, url, path);
+    if (worktreeResponse) return worktreeResponse;
 
     // CIMD: Serve client metadata document for MCP OAuth (SEP-991)
     if (path === "/.well-known/oauth-client.json") {

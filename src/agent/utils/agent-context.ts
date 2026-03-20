@@ -29,6 +29,12 @@ export interface AgentContext {
   channel?: string;
   /** LLM provider type (e.g., "copilot", "openai", "anthropic") */
   provider?: string;
+  /** Git worktree path (undefined = not using worktree isolation) */
+  worktreePath?: string;
+  /** Git worktree branch name, e.g., "clawd/a3f7b2" */
+  worktreeBranch?: string;
+  /** Original project root before worktree (for diff base / sandbox .git mount) */
+  originalProjectRoot?: string;
 }
 
 // AsyncLocalStorage instance - automatically propagates through async calls

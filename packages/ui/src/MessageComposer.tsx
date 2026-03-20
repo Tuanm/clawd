@@ -136,6 +136,168 @@ interface Props {
   projectsButton?: React.ReactNode;
   mcpButton?: React.ReactNode;
   skillsButton?: React.ReactNode;
+  worktreeButton?: React.ReactNode;
+}
+
+/**
+ * Always-collapsed tools menu: shows only a three-dot button that opens a dropdown.
+ * Used in the formatting toolbar where space is limited.
+ */
+function ToolsMenuButton({ children }: { children: React.ReactNode }) {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node) &&
+        btnRef.current &&
+        !btnRef.current.contains(e.target as Node)
+      ) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
+
+  const openMenu = useCallback(() => {
+    if (!btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    const openAbove = rect.top > 60;
+    const top = openAbove ? rect.top - 6 : rect.bottom + 6;
+    setDropdownStyle({
+      position: "fixed",
+      ...(openAbove ? { bottom: window.innerHeight - top } : { top }),
+      right: Math.max(8, window.innerWidth - rect.right),
+      zIndex: 10000,
+    });
+    setMenuOpen((v) => !v);
+  }, []);
+
+  return (
+    <>
+      <button ref={btnRef} className="toolbar-btn" onClick={openMenu} title="Tools">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+          <circle cx="12" cy="5" r="2" />
+          <circle cx="12" cy="12" r="2" />
+          <circle cx="12" cy="19" r="2" />
+        </svg>
+      </button>
+      {menuOpen &&
+        createPortal(
+          <div
+            ref={dropdownRef}
+            className="composer-overflow-dropdown"
+            style={dropdownStyle}
+            onClick={() => setMenuOpen(false)}
+          >
+            {children}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+/**
+ * Icon button row with auto-overflow: shows buttons inline when they fit,
+ * collapses hidden ones into a three-dot dropdown when container is too narrow.
+ * Dropdown rendered via portal to avoid overflow clipping by parent containers.
+ */
+function IconButtonRow({ children }: { children: React.ReactNode }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
+
+  // Detect overflow via ResizeObserver
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const check = () => setOverflowing(el.scrollWidth > el.clientWidth + 4);
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    check();
+    return () => ro.disconnect();
+  }, [children]);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node) &&
+        btnRef.current &&
+        !btnRef.current.contains(e.target as Node)
+      ) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
+
+  // Position the dropdown relative to the button using fixed positioning
+  const openMenu = useCallback(() => {
+    if (!btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    const vw = window.innerWidth;
+
+    // Try to open above the button; if near top of screen, open below
+    const openAbove = rect.top > 60;
+    const top = openAbove ? rect.top - 6 : rect.bottom + 6;
+
+    // Align right edge to button's right edge; clamp to stay within viewport
+    const right = vw - rect.right;
+    const maxLeft = Math.max(8, right); // at least 8px from right edge
+
+    setDropdownStyle({
+      position: "fixed",
+      ...(openAbove ? { bottom: window.innerHeight - top } : { top }),
+      right: Math.max(8, maxLeft),
+      zIndex: 10000,
+    });
+    setMenuOpen((v) => !v);
+  }, []);
+
+  return (
+    <>
+      <div className="composer-icon-btns" ref={containerRef}>
+        {children}
+      </div>
+      {overflowing && (
+        <>
+          <button ref={btnRef} className="action-btn" onClick={openMenu} title="More" style={{ flexShrink: 0 }}>
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+              <circle cx="12" cy="5" r="2" />
+              <circle cx="12" cy="12" r="2" />
+              <circle cx="12" cy="19" r="2" />
+            </svg>
+          </button>
+          {menuOpen &&
+            createPortal(
+              <div
+                ref={dropdownRef}
+                className="composer-overflow-dropdown"
+                style={dropdownStyle}
+                onClick={() => setMenuOpen(false)}
+              >
+                {children}
+              </div>,
+              document.body,
+            )}
+        </>
+      )}
+    </>
+  );
 }
 
 export default function MessageComposer({
@@ -148,6 +310,7 @@ export default function MessageComposer({
   projectsButton,
   mcpButton,
   skillsButton,
+  worktreeButton,
 }: Props) {
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -158,7 +321,7 @@ export default function MessageComposer({
     const stored = localStorage.getItem("chat-composer-toolbar");
     return stored === "true";
   });
-  const [showPreview, setShowPreview] = useState(false);
+  const [showPreview] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCounterRef = useRef(0);
@@ -455,28 +618,16 @@ export default function MessageComposer({
                 <path d="M4 3h16c.55 0 1 .45 1 1v16c0 .55-.45 1-1 1H4c-.55 0-1-.45-1-1V4c0-.55.45-1 1-1zm1 2v14h14V5H5zm3.4 10.6L4.8 12l3.6-3.6L9.8 7l-5 5 5 5-1.4-1.4zm7.2 0l3.6-3.6-3.6-3.6L14.2 7l5 5-5 5 1.4-1.4z" />
               </svg>
             </button>
-            {searchButton && (
+            {(searchButton || projectsButton || worktreeButton || mcpButton || skillsButton) && (
               <>
                 <div className="toolbar-divider" />
-                {searchButton}
-              </>
-            )}
-            {projectsButton && (
-              <>
-                <div className="toolbar-divider" />
-                {projectsButton}
-              </>
-            )}
-            {mcpButton && (
-              <>
-                <div className="toolbar-divider" />
-                {mcpButton}
-              </>
-            )}
-            {skillsButton && (
-              <>
-                <div className="toolbar-divider" />
-                {skillsButton}
+                <ToolsMenuButton>
+                  {searchButton}
+                  {projectsButton}
+                  {worktreeButton}
+                  {mcpButton}
+                  {skillsButton}
+                </ToolsMenuButton>
               </>
             )}
           </div>
@@ -607,24 +758,16 @@ export default function MessageComposer({
                 <path d="M5 17v2h14v-2H5zm4.5-4.2h5l.9 2.2h2.1L12.75 4h-1.5L6.5 15h2.1l.9-2.2zM12 5.98L13.87 11h-3.74L12 5.98z" />
               </svg>
             </button>
-            {/* Preview toggle button - only show when toolbar is enabled */}
-            {showToolbar && (
-              <button
-                className={`action-btn preview-toggle ${showPreview ? "active" : ""}`}
-                onClick={() => setShowPreview(!showPreview)}
-                title={showPreview ? "Show raw text" : "Preview rendered markdown"}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                  <circle cx="12" cy="12" r="3" />
-                </svg>
-              </button>
+            {/* Icon buttons — auto-collapses into ⋮ when container overflows */}
+            {!showToolbar && (searchButton || projectsButton || mcpButton || skillsButton || worktreeButton) && (
+              <IconButtonRow>
+                {searchButton}
+                {projectsButton}
+                {worktreeButton}
+                {mcpButton}
+                {skillsButton}
+              </IconButtonRow>
             )}
-            {/* Search, Projects, MCP, and Skills buttons - show when toolbar is hidden */}
-            {!showToolbar && searchButton && searchButton}
-            {!showToolbar && projectsButton && projectsButton}
-            {!showToolbar && mcpButton && mcpButton}
-            {!showToolbar && skillsButton && skillsButton}
           </div>
           <input
             ref={fileInputRef}

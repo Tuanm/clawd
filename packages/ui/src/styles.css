@@ -3496,6 +3496,26 @@ body {
   gap: 4px;
 }
 
+/* Icon buttons row: overflows hidden, three-dot shows when clipped */
+.composer-icon-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  overflow: hidden;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.composer-overflow-dropdown {
+  background: hsl(var(--bg-center));
+  border: 1px solid hsl(var(--text) / 12%);
+  border-radius: 8px;
+  padding: 6px;
+  display: flex;
+  gap: 4px;
+  box-shadow: 0 4px 16px hsl(var(--text) / 10%);
+}
+
 .action-btn {
   width: 32px;
   height: 32px;
@@ -5232,6 +5252,69 @@ textarea {
   flex-direction: column;
 }
 
+@media (max-width: 600px) {
+  /* Fullscreen dialogs on mobile */
+  .projects-dialog {
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+
+  /* Stack sidebar above content */
+  .projects-main {
+    flex-direction: column;
+  }
+
+  .projects-sidebar {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    max-height: 40vh;
+    border-right: none !important;
+    border-bottom: 1px solid hsl(var(--border-dim));
+  }
+
+  /* Mobile collapsed: full-width horizontal bar, arrow at right */
+  .projects-sidebar.collapsed {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    max-height: 36px;
+    min-height: 36px;
+    padding: 0;
+    border-bottom: 1px solid hsl(var(--border-dim));
+  }
+
+  .projects-sidebar.collapsed .projects-root-path {
+    justify-content: flex-end;
+    padding: 6px 12px;
+  }
+
+  .projects-content {
+    min-height: 30vh;
+  }
+
+  /* Mobile expanded: arrow points UP (← rotated 90° CW = ↑) */
+  .projects-sidebar-toggle svg {
+    transform: rotate(90deg);
+  }
+
+  /* Mobile collapsed: arrow points DOWN (← rotated -90° = ↓) */
+  .projects-sidebar.collapsed .projects-sidebar-toggle svg {
+    transform: rotate(-90deg);
+  }
+
+  /* Resize divider is horizontal on mobile */
+  .resize-divider--horizontal {
+    width: 100% !important;
+    height: 4px !important;
+    cursor: row-resize !important;
+  }
+}
+
 .projects-dialog-body {
   flex: 1;
   overflow: hidden;
@@ -5249,11 +5332,10 @@ textarea {
 /* Sidebar (file tree) */
 .projects-sidebar {
   width: 280px;
-  min-width: 200px;
-  max-width: 400px;
+  min-width: 0;
+  max-width: 600px;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid hsl(var(--border-dim));
   background: hsl(var(--bg-dim) / 0.5);
 }
 
@@ -5300,41 +5382,42 @@ textarea {
 
 /* Collapsed sidebar state */
 .projects-sidebar.collapsed {
-  width: 0;
-  min-width: 0;
-  border-right: none;
   overflow: hidden;
 }
 
-.projects-sidebar.collapsed .projects-root-path,
 .projects-sidebar.collapsed .projects-tree,
 .projects-sidebar.collapsed .projects-loading,
 .projects-sidebar.collapsed .projects-error,
-.projects-sidebar.collapsed .projects-empty {
+.projects-sidebar.collapsed .projects-empty,
+.projects-sidebar.collapsed .projects-root-name {
   display: none;
 }
 
-/* Expand button shown when sidebar is collapsed */
-.projects-expand-btn {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 32px;
-  height: 100%;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 8px;
-  border: none;
-  background: hsl(var(--bg-dim) / 0.8);
-  border-right: 1px solid hsl(var(--border-dim));
-  color: hsl(var(--text-dim));
+.projects-sidebar.collapsed .projects-root-path {
   cursor: pointer;
+  border-bottom: none;
 }
 
-.projects-expand-btn:hover {
+.projects-sidebar.collapsed .projects-root-path:hover {
   background: hsl(var(--bg-highlight));
-  color: hsl(var(--text));
+}
+
+/* Desktop collapsed: narrow vertical strip, arrow centered */
+@media (min-width: 601px) {
+  .projects-sidebar.collapsed {
+    width: 32px !important;
+    min-width: 32px !important;
+    max-width: 32px !important;
+  }
+
+  .projects-sidebar.collapsed .projects-root-path {
+    justify-content: center;
+    padding: 8px 0;
+  }
+
+  .projects-sidebar.collapsed .projects-sidebar-toggle svg {
+    transform: rotate(180deg);
+  }
 }
 
 .projects-tree {
@@ -5425,6 +5508,29 @@ textarea {
   flex-direction: column;
   overflow: hidden;
   background: hsl(var(--bg));
+}
+
+/* Resize divider between sidebar and content */
+.resize-divider {
+  flex-shrink: 0;
+  background: transparent;
+  transition: background 0.15s;
+  touch-action: none;
+}
+
+.resize-divider--horizontal {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.resize-divider--vertical {
+  height: 4px;
+  cursor: row-resize;
+}
+
+.resize-divider:hover,
+.resize-divider:active {
+  background: hsl(var(--accent) / 30%);
 }
 
 .projects-content-loading,
@@ -7144,4 +7250,461 @@ textarea {
 
 .csv-table tr:hover td {
   background: hsl(var(--text) / 3%);
+}
+
+/* ============================================================================
+   Worktree Dialog (reuses projects-dialog, agent-fields, agent-buttons styles)
+   ============================================================================ */
+
+/* Worktree button in input area (same style as projects-btn) */
+.worktree-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  color: hsl(var(--text) / 60%);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+
+.worktree-btn:hover {
+  color: hsl(var(--accent));
+  background: hsl(var(--text) / 5%);
+}
+
+/* Refresh button next to dialog title */
+.worktree-refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: none;
+  color: hsl(var(--text) / 50%);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 8px;
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+
+.worktree-refresh-btn:hover:not(:disabled) {
+  color: hsl(var(--text));
+  background: hsl(var(--text) / 8%);
+}
+
+.worktree-refresh-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* File list section headers (CHANGES / STAGED / CONFLICTS) */
+.worktree-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: hsl(var(--text) / 55%);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.worktree-section-btn {
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  border: none;
+  background: none;
+  color: hsl(var(--text) / 50%);
+  cursor: pointer;
+  transition: color 0.12s;
+}
+
+.worktree-section-btn:hover:not(:disabled) {
+  color: hsl(var(--text));
+}
+
+/* Per-file hover action buttons (+, −, ↩) — positioned absolute so they don't change row height */
+.worktree-file-actions {
+  display: none;
+  gap: 2px;
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: hsl(var(--bg-highlight));
+  padding-left: 4px;
+}
+
+.projects-tree-item {
+  position: relative;
+}
+
+.projects-tree-item:hover .worktree-file-actions {
+  display: flex;
+}
+
+.worktree-file-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  color: hsl(var(--text) / 50%);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: color 0.1s;
+}
+
+.worktree-file-btn:hover:not(:disabled) {
+  color: hsl(var(--text));
+}
+
+.worktree-file-btn--danger:hover:not(:disabled) {
+  color: hsl(0 72% 51%);
+}
+
+/* Conflict resolution */
+.worktree-conflict-row {
+  padding: 4px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.worktree-conflict-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.worktree-conflict-actions button {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: none;
+  background: none;
+  color: hsl(var(--text) / 60%);
+  cursor: pointer;
+  transition: color 0.12s;
+}
+
+.worktree-conflict-actions button:hover:not(:disabled) {
+  color: hsl(var(--text));
+}
+
+/* ---- Diff viewer ---- */
+
+.diff-viewer {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+.diff-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid hsl(var(--text) / 8%);
+  background: hsl(var(--text) / 2%);
+  flex-shrink: 0;
+  font-size: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.diff-viewer-file {
+  font-weight: 600;
+  color: hsl(var(--text) / 80%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-viewer-source {
+  font-size: 11px;
+  color: hsl(var(--text) / 40%);
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.diff-empty,
+.diff-loading,
+.diff-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 40px 20px;
+  font-size: 13px;
+  color: hsl(var(--text) / 40%);
+}
+
+.diff-error {
+  color: hsl(0 72% 51%);
+}
+
+.diff-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.diff-hunks {
+  padding-bottom: 24px;
+}
+
+.diff-hunk {
+  margin-bottom: 8px;
+}
+
+.diff-hunk-header {
+  display: flex;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  left: 0;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: hsl(var(--bg));
+  color: hsl(var(--text) / 85%);
+  font-size: 11px;
+  font-family: inherit;
+  border-top: 1px solid hsl(var(--text) / 10%);
+  border-bottom: 1px solid hsl(var(--text) / 10%);
+  gap: 8px;
+}
+
+.diff-hunk-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+.diff-hunk-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.diff-hunk-btn {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 4px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    color 0.12s,
+    background 0.12s;
+}
+
+.diff-hunk-btn--stage {
+  color: #4ec94e;
+}
+
+.diff-hunk-btn--stage:hover:not(:disabled) {
+  color: #6ddf6d;
+  background: hsl(142 60% 40% / 12%);
+}
+
+.diff-hunk-btn--unstage {
+  color: #6ba3f7;
+}
+
+.diff-hunk-btn--unstage:hover:not(:disabled) {
+  color: #8db8ff;
+  background: hsl(220 60% 55% / 12%);
+}
+
+.diff-hunk-btn--revert {
+  color: #e55050;
+}
+
+.diff-hunk-btn--revert:hover:not(:disabled) {
+  color: #f06060;
+  background: hsl(0 70% 55% / 12%);
+}
+
+.diff-hunk-btn--open {
+  color: hsl(var(--text) / 70%);
+}
+
+.diff-hunk-btn--open:hover:not(:disabled) {
+  color: hsl(var(--text));
+  background: hsl(var(--text) / 8%);
+}
+
+.diff-hunk-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.diff-table-wrap {
+  overflow-x: auto;
+}
+
+/* Diff line table */
+.diff-lines-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diff-lineno {
+  width: 40px;
+  padding: 0 6px;
+  text-align: right;
+  color: hsl(var(--text) / 30%);
+  user-select: none;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.diff-line-sign {
+  width: 14px;
+  padding: 0 2px;
+  text-align: center;
+  user-select: none;
+  color: hsl(var(--text) / 40%);
+  vertical-align: top;
+}
+
+.diff-line-content {
+  padding: 0 8px 0 4px;
+  white-space: pre;
+  word-break: break-all;
+}
+
+.diff-line--add {
+  background: hsl(142 60% 40% / 10%);
+}
+
+.diff-line--add .diff-line-sign {
+  color: hsl(142 60% 40%);
+}
+
+.diff-line--remove {
+  background: hsl(0 70% 55% / 10%);
+}
+
+.diff-line--remove .diff-line-sign {
+  color: hsl(0 70% 55%);
+}
+
+.diff-line--context {
+  /* default — no background */
+}
+
+/* Truncation notice */
+.diff-truncated {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: hsl(var(--text) / 50%);
+  border-top: 1px solid hsl(var(--text) / 8%);
+}
+
+.diff-show-full-btn {
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 4px;
+  border: 1px solid hsl(var(--text) / 20%);
+  background: none;
+  color: hsl(var(--accent));
+  cursor: pointer;
+}
+
+.diff-show-full-btn:hover {
+  background: hsl(var(--accent) / 8%);
+}
+
+/* Combined Commit/Options button with dropdown arrow */
+.worktree-commit-group {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.worktree-commit-group .agent-action-btn {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.worktree-dropdown {
+  position: absolute;
+  right: 0;
+  background: hsl(var(--bg-center));
+  border: 1px solid hsl(var(--text) / 12%);
+  border-radius: 8px;
+  padding: 4px 0;
+  min-width: 160px;
+  z-index: 100;
+  box-shadow: 0 4px 16px hsl(var(--text) / 10%);
+}
+
+.worktree-dropdown--up {
+  bottom: calc(100% + 4px);
+  top: auto;
+}
+
+.worktree-dropdown button {
+  display: block;
+  width: 100%;
+  padding: 7px 14px;
+  text-align: left;
+  font-size: 13px;
+  background: none;
+  border: none;
+  color: hsl(var(--text));
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.worktree-dropdown button:hover:not(:disabled) {
+  background: hsl(var(--text) / 6%);
+}
+
+.worktree-dropdown button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.worktree-dropdown-danger {
+  color: hsl(0 72% 51%) !important;
+}
+
+.worktree-dropdown-danger:hover:not(:disabled) {
+  background: hsl(0 72% 51% / 10%) !important;
 }

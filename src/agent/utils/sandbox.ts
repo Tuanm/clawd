@@ -261,6 +261,17 @@ function getBwrapPrefix(options: BwrapOptions): string {
     if (existsSync(filesDir)) args.push("--ro-bind", filesDir, filesDir);
   }
 
+  // Worktree support: mount the original repo's .git/ read-only
+  // Worktrees have a .git file (not dir) that points to {originalRoot}/.git/worktrees/{name}/
+  // Git commands inside the worktree need read access to the original .git/ object store
+  const ctx = getAgentContext();
+  if (ctx?.originalProjectRoot && ctx.originalProjectRoot !== projectRoot) {
+    const originalGitDir = join(ctx.originalProjectRoot, ".git");
+    if (existsSync(originalGitDir)) {
+      args.push("--ro-bind", originalGitDir, originalGitDir);
+    }
+  }
+
   // Mount {projectRoot}/.claude/skills/ read-only (Claude Code compatible skill scripts)
   const projectClaudeSkillsDir = join(projectRoot, ".claude", "skills");
   if (existsSync(projectClaudeSkillsDir)) {
@@ -434,6 +445,11 @@ function getMacOSSandboxProfile(): string {
   (subpath (string-append (param "HOME_DIR") "/.config"))
   (subpath (string-append (param "HOME_DIR") "/.gitconfig")))
 
+; Worktree support: allow reading the original repo's .git/ directory
+; Worktree .git file points to the original repo's .git/worktrees/ directory
+(allow file-read*
+  (subpath (param "ORIGINAL_GIT_DIR")))
+
 ; Allow all network access (agents need git, web fetch, APIs)
 (allow network*)
 `;
@@ -462,6 +478,12 @@ function getMacOSCommandPrefix(workDir: string): string {
 
   const envPrefix = getEnvPrefix();
 
+  // Worktree support: resolve the original repo's .git/ for read-only access
+  const ctx = getAgentContext();
+  const originalGitDir = ctx?.originalProjectRoot
+    ? safeRealpath(join(ctx.originalProjectRoot, ".git"))
+    : realProjectDir;
+
   // Use -D params to inject resolved paths into the Seatbelt profile
   const dParams = [
     `-D PROJECT_DIR=${realProjectDir}`,
@@ -469,6 +491,7 @@ function getMacOSCommandPrefix(workDir: string): string {
     `-D HOME_DIR=${realHomeDir}`,
     `-D PRIVATE_HOME_DIR=${privateHomeDir}`,
     `-D CLAWD_DIR=${realClawdDir}`,
+    `-D ORIGINAL_GIT_DIR=${originalGitDir}`,
   ].join(" ");
 
   return `${envPrefix} sandbox-exec ${dParams} -f ${profilePath} bash -c`;

@@ -2611,6 +2611,14 @@ registerTool(
   },
   [],
   async ({ path, name, delete: del, all }) => {
+    const ctx = getAgentContext();
+    if (ctx?.worktreePath && del && name?.startsWith("clawd/")) {
+      return {
+        success: false,
+        output: "",
+        error: "Cannot delete worktree branches. Use the Worktree dialog to manage branches.",
+      };
+    }
     const args = ["branch"];
     if (all) args.push("-a");
     if (name && del) {
@@ -2632,6 +2640,40 @@ registerTool(
   },
   ["target"],
   async ({ path, target, create }) => {
+    const ctx = getAgentContext();
+    const isWorktree = !!ctx?.worktreePath;
+
+    if (isWorktree) {
+      if (create) {
+        // Task switch: only allow creating clawd/* branches
+        if (!target?.startsWith("clawd/")) {
+          return { success: false, output: "", error: "In worktree mode, new branches must use 'clawd/' prefix." };
+        }
+        // Server generates the random ID — override whatever agent passes
+        if (!/^clawd\/[a-f0-9]{1,20}$/.test(target)) {
+          const { randomBytes } = await import("node:crypto");
+          target = `clawd/${randomBytes(3).toString("hex")}`;
+        }
+        // Allow: git checkout -b clawd/xxx main
+      } else if (target && !target.startsWith("--")) {
+        // Block branch switching (not file restore)
+        // Use show-ref (precise: only matches branches, not tags/commits)
+        try {
+          const { execFileSync } = await import("node:child_process");
+          const cwd = path || ctx.projectRoot;
+          execFileSync("git", ["show-ref", "--verify", `refs/heads/${target}`], { cwd, stdio: "pipe" });
+          // It's a branch — block
+          return {
+            success: false,
+            output: "",
+            error: "Cannot switch branches in a worktree. Use 'git checkout -- <file>' to restore files.",
+          };
+        } catch {
+          // Not a branch — allow (file restore or commit ref)
+        }
+      }
+    }
+
     const args = ["checkout"];
     if (create) args.push("-b");
     args.push(target);
@@ -2663,6 +2705,43 @@ registerTool(
   },
   ["message"],
   async ({ path, message, all }) => {
+    const ctx = getAgentContext();
+    const isWorktree = !!ctx?.worktreePath;
+
+    if (isWorktree && message) {
+      // Worktree mode: handle author/co-author
+      const { getAuthorConfig } = await import("../../config-file");
+      const { hasGitUserConfig } = await import("../workspace/worktree");
+      const cwd = path || ctx.projectRoot;
+      const author = getAuthorConfig();
+      const hasLocal = hasGitUserConfig(cwd);
+
+      if (hasLocal && author) {
+        // Use git interpret-trailers for safe Co-Authored-By injection
+        try {
+          const { execFileSync } = await import("node:child_process");
+          message = execFileSync(
+            "git",
+            ["interpret-trailers", "--trailer", `Co-Authored-By: ${author.name} <${author.email}>`],
+            {
+              cwd,
+              input: message,
+              encoding: "utf-8",
+              stdio: ["pipe", "pipe", "pipe"],
+            },
+          ).trim();
+        } catch {
+          // Fallback: simple append
+          message = `${message}\n\nCo-Authored-By: ${author.name} <${author.email}>`;
+        }
+      } else if (!hasLocal && author) {
+        // No git config — use config.author as main author
+        const args = ["-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`, "commit", "-m", message];
+        if (all) args.push("-a");
+        return execGitCommand(args, path);
+      }
+    }
+
     const args = ["commit", "-m", message];
     if (all) args.push("-a");
     return execGitCommand(args, path);
@@ -2681,6 +2760,20 @@ registerTool(
   },
   [],
   async ({ path, remote = "origin", branch, force, setUpstream }) => {
+    const ctx = getAgentContext();
+    if (ctx?.worktreePath) {
+      // Worktree mode: block pushing to protected branches
+      // If branch not specified, resolve current branch to prevent bypass
+      const protectedBranches = ["main", "master", "develop", "release"];
+      const effectiveBranch = branch || ctx.worktreeBranch || "";
+      if (protectedBranches.some((p) => effectiveBranch === p || effectiveBranch.startsWith(`${p}/`))) {
+        return {
+          success: false,
+          output: "",
+          error: "Cannot push to protected branch from worktree. Use the Worktree dialog to apply changes.",
+        };
+      }
+    }
     const args = ["push"];
     if (force) args.push("-f");
     if (setUpstream) args.push("-u");
@@ -2701,6 +2794,14 @@ registerTool(
   },
   [],
   async ({ path, remote, branch, rebase }) => {
+    const ctx = getAgentContext();
+    if (ctx?.worktreePath) {
+      return {
+        success: false,
+        output: "",
+        error: "Pull is disabled in worktrees. Use git_fetch + the Worktree dialog to merge changes.",
+      };
+    }
     const args = ["pull", "--no-edit"];
     if (rebase) args.push("--rebase");
     if (remote) args.push(remote);

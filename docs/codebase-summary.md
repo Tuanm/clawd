@@ -17,6 +17,7 @@ Claw'd is a sophisticated open-source agentic collaborative chat platform built 
 - 3-tier agent memory system (session, knowledge base, long-term)
 - Sub-agent spaces for parallel execution
 - Scheduled task system (cron/interval/once)
+- Git worktree isolation for multi-agent channels (18 API endpoints)
 
 ---
 
@@ -45,6 +46,7 @@ Chrome Extension (packages/browser-extension/)
 | **Agent System** | Multi-agent orchestration, reasoning loop | `src/worker-loop.ts`, `src/agent/` |
 | **Database** | SQLite (chat.db, memory.db, kanban.db) | `src/server/database.ts` |
 | **Browser Automation** | Chrome extension bridge + 26 tools | `packages/browser-extension/`, `src/server/browser-bridge.ts` |
+| **Git Worktree** | Isolated worktrees for multi-agent channels, diff/commit UI | `src/api/worktree.ts`, `src/agent/workspace/worktree.ts`, `packages/ui/WorktreeDialog.tsx` |
 | **Sub-Agents** | Parallel task delegation (Spaces) | `src/spaces/` |
 | **Scheduler** | Cron/interval/once jobs | `src/scheduler/` |
 | **UI** | React SPA with artifacts, websocket handling | `packages/ui/` |
@@ -74,6 +76,10 @@ clawd/
 │   │   ├── plugins/                  # All plugins (chat, browser, workspace, tunnel, etc.)
 │   │   ├── session/                  # Session manager, checkpoints, summarizer
 │   │   ├── memory/                   # session.ts, knowledge-base.ts, agent-memory.ts
+│   │   ├── workspace/                # Git worktree isolation for multi-agent channels
+│   │   │   ├── worktree.ts           # Worktree lifecycle, diff/commit/merge/hunk operations
+│   │   │   ├── index.ts              # Workspace plugin entry
+│   │   │   └── pool.ts               # Worktree pool management
 │   │   ├── mcp/                      # MCP client connections
 │   │   └── utils/                    # sandbox.ts, debug, context helpers
 │   ├── spaces/                       # Sub-agent system
@@ -97,6 +103,9 @@ clawd/
 │   │   │   ├── SidebarPanel.tsx      # Sidebar for artifacts/files
 │   │   │   ├── SkillsDialog.tsx      # Skill management UI
 │   │   │   ├── AgentDialog.tsx       # Agent config (heartbeat, model, etc.)
+│   │   │   ├── WorktreeDialog.tsx    # Git worktree diff/commit UI
+│   │   │   ├── worktree-diff-viewer.tsx # Unified diff renderer with per-hunk controls
+│   │   │   ├── worktree-file-list.tsx  # File tree for worktree status
 │   │   │   ├── auth-fetch.ts         # Token-based auth wrapper
 │   │   │   └── styles.css            # All styles
 │   │   └── public/                   # Static assets
@@ -463,6 +472,69 @@ Per-channel browser auth:
   "channel1": ["auth_token_1", "auth_token_2"]
 }
 ```
+
+---
+
+## Git Worktree Isolation
+
+When enabled, each agent in a multi-agent channel gets an isolated git worktree to prevent file conflicts.
+
+### Key Features
+
+- **Location**: `{projectRoot}/.clawd/worktrees/{agentId}/`
+- **Branch**: Unique `clawd/{randomId}` per agent (e.g., `clawd/a1b2c3`)
+- **Disk overhead**: Near-zero (git hard-links files from main repository)
+- **Non-git projects**: Worktree skipped; agent uses original project root
+- **Auto-install**: Dependencies (bun/npm/pip) auto-installed in new worktrees
+- **Submodule support**: Recursively initialized on creation
+
+### API Endpoints (18 total)
+
+**Read endpoints** (GET):
+- `app.worktree.enabled` — Check if feature enabled for channel
+- `app.worktree.status` — Get all agents' worktree info (branch, status, diffs)
+- `app.worktree.diff` — Get unified diff for a file (per-hunk controls included)
+- `app.worktree.log` — Get commit history for agent's branch
+
+**Write endpoints** (POST):
+- `stage`, `unstage`, `discard` — File staging
+- `commit` — Create commits with auto-author from config
+- `merge`, `resolve`, `abort` — Conflict resolution
+- `apply` — Merge worktree branch into base
+- `stash`, `stash_pop` — Stash management
+- `push` — Push to remote
+- `stage_hunk`, `unstage_hunk`, `revert_hunk` — Per-hunk granular control
+
+### Configuration
+
+```json
+{
+  "worktree": true,                    // or ["channel1", "channel2"]
+  "author": {
+    "name": "Claw'd Agent",
+    "email": "agent@clawd.local"
+  }
+}
+```
+
+### UI Components
+
+- `WorktreeDialog.tsx` — Main dialog for diff/commit workflow
+- `worktree-diff-viewer.tsx` — Unified diff renderer with hunk controls
+- `worktree-file-list.tsx` — File tree showing staged/unstaged changes
+
+### Git Tool Guards
+
+- **commit**: Author/Co-Author configured from `author` field
+- **push**: Protected branches (main, master, develop) blocked
+- **checkout**: Branch switching blocked (agents stay on assigned branch)
+- **pull**: Pull operations blocked (worktrees are ephemeral)
+
+### Sandbox Integration
+
+- Original `.git/` mounted **read-only** in sandbox
+- Worktree `.git/` fully writable
+- Sibling worktrees blocked by `.clawd/` tmpfs isolation
 
 ---
 
