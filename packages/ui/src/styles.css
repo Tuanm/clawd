@@ -5247,7 +5247,7 @@ textarea {
 
 .projects-dialog {
   width: min(95vw, 1200px);
-  height: min(95vh, 900px);
+  height: min(92vh, 1000px);
   display: flex;
   flex-direction: column;
 }
@@ -5547,15 +5547,15 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 16px;
+  padding: 6px 12px;
   background: hsl(var(--bg-dim));
-  border-bottom: 1px solid hsl(var(--border-dim));
+  flex-shrink: 0;
+  font-size: 12px;
 }
 
 .projects-file-path {
-  font-size: 13px;
-  font-weight: 500;
-  color: hsl(var(--text));
+  font-weight: 600;
+  color: hsl(var(--text) / 80%);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7424,8 +7424,7 @@ textarea {
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  border-bottom: 1px solid hsl(var(--text) / 8%);
-  background: hsl(var(--text) / 2%);
+  background: hsl(var(--bg-dim));
   flex-shrink: 0;
   font-size: 12px;
   position: sticky;
