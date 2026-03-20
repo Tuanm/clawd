@@ -11,15 +11,16 @@ export interface FileStatus {
 export function statusColor(status: string): string {
   switch (status) {
     case "A":
-      return "#4ec94e";
+    case "?":
+      return "#4ec94e"; // green — new/untracked files
     case "M":
-      return "#e5a550";
+      return "#e5a550"; // yellow — modified
     case "D":
-      return "#e55050";
+      return "#e55050"; // red — deleted
     case "R":
-      return "#a855f7";
+      return "#a855f7"; // purple — renamed
     case "U":
-      return "#eab308";
+      return "#eab308"; // amber — conflict
     default:
       return "#888";
   }
