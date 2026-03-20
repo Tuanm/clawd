@@ -1327,9 +1327,13 @@ export function StreamOutputDialog({
                   <span>Waiting for output...</span>
                 </div>
               )}
-              {agent.entries.map((entry, i) => (
-                <StreamEntryView key={i} entry={entry} />
-              ))}
+              {groupToolEntries(agent.entries).map((item, i) =>
+                item.kind === "tool_group" ? (
+                  <ToolCallCombinedView key={i} start={item.start} result={item.result} />
+                ) : (
+                  <StreamEntryView key={i} entry={item.entry} />
+                ),
+              )}
               {agent.completed &&
                 agent.entries.length > 0 &&
                 (() => {
@@ -1360,13 +1364,120 @@ export function StreamOutputDialog({
   );
 }
 
+// Groups tool_start entries with their matching tool_end/tool_error into combined items
+type GroupedItem =
+  | { kind: "entry"; entry: StreamEntry }
+  | { kind: "tool_group"; start: StreamEntry; result: StreamEntry | null };
+
+function groupToolEntries(entries: StreamEntry[]): GroupedItem[] {
+  const items: GroupedItem[] = [];
+  const consumed = new Set<number>();
+
+  for (let i = 0; i < entries.length; i++) {
+    if (consumed.has(i)) continue;
+    const entry = entries[i];
+
+    if (entry.type === "tool_start") {
+      // Look ahead for matching tool_end or tool_error with same toolName
+      let matchIdx = -1;
+      for (let j = i + 1; j < entries.length; j++) {
+        if (consumed.has(j)) continue;
+        const candidate = entries[j];
+        if (
+          (candidate.type === "tool_end" || candidate.type === "tool_error") &&
+          candidate.toolName === entry.toolName
+        ) {
+          matchIdx = j;
+          break;
+        }
+      }
+      if (matchIdx >= 0) {
+        consumed.add(matchIdx);
+        items.push({ kind: "tool_group", start: entry, result: entries[matchIdx] });
+      } else {
+        // No result yet -- pending
+        items.push({ kind: "tool_group", start: entry, result: null });
+      }
+    } else if (entry.type === "tool_end" || entry.type === "tool_error") {
+      // Orphan result (no matching start) -- render as standalone group
+      items.push({ kind: "tool_group", start: entry, result: null });
+    } else {
+      items.push({ kind: "entry", entry });
+    }
+  }
+  return items;
+}
+
+// Combined tool call: same visual style as original (blue/green/red header) but input+output in one accordion
+function ToolCallCombinedView({ start, result }: { start: StreamEntry; result: StreamEntry | null }) {
+  const isError = result?.type === "tool_error";
+
+  const hasInput = !!(start.toolArgs && Object.keys(start.toolArgs).length > 0);
+  const hasOutput = !!result?.text;
+  const hasContent = hasInput || hasOutput;
+
+  const [collapsed, setCollapsed] = useState(false);
+
+  // Calculate duration
+  let durationStr: string | null = null;
+  if (result && start.timestamp && result.timestamp) {
+    const ms = result.timestamp - start.timestamp;
+    if (ms >= 0) {
+      if (ms < 1000) {
+        durationStr = `${ms}ms`;
+      } else {
+        const sec = Math.round(ms / 1000);
+        if (sec < 60) {
+          durationStr = `${sec}s`;
+        } else {
+          const min = Math.floor(sec / 60);
+          const s = sec % 60;
+          durationStr = s > 0 ? `${min}m ${s}s` : `${min}m`;
+        }
+      }
+    }
+  }
+
+  const toolName = start.toolName || result?.toolName || "Unknown";
+  const statusClass = !result ? "stream-tool-start" : isError ? "stream-tool-error" : "stream-tool-end";
+
+  return (
+    <div
+      className={`stream-entry ${statusClass}${hasContent && collapsed ? " stream-tool-collapsed" : ""}${!hasContent ? " stream-tool-no-content" : ""}`}
+    >
+      <div
+        className={`stream-tool-header${hasContent ? " stream-tool-header-clickable" : ""}`}
+        onClick={hasContent ? () => setCollapsed(!collapsed) : undefined}
+      >
+        <span className="stream-tool-name">{toolName}</span>
+        {hasContent && <span className="stream-tool-arrow">{collapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}</span>}
+      </div>
+      {!collapsed && hasContent && (
+        <>
+          {hasInput && (
+            <div className="stream-tool-block">
+              <div className="stream-tool-block-label">Input</div>
+              <pre className="stream-tool-block-content">{JSON.stringify(start.toolArgs, null, 2)}</pre>
+            </div>
+          )}
+          {hasOutput && (
+            <div className="stream-tool-block">
+              <div className="stream-tool-block-label">{isError ? "Error" : "Output"}</div>
+              <pre className="stream-tool-block-content">{result!.text}</pre>
+            </div>
+          )}
+          {durationStr && (
+            <div className="stream-tool-duration">
+              <span>{durationStr}</span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function StreamEntryView({ entry }: { entry: StreamEntry }) {
-  // Determine if this entry has expandable content
-  const hasContent =
-    entry.type === "tool_start" ? !!(entry.toolArgs && Object.keys(entry.toolArgs).length > 0) : !!entry.text;
-
-  const [collapsed, setCollapsed] = useState(entry.type === "tool_end" || entry.type === "tool_error");
-
   if (entry.type === "thinking") {
     return (
       <div className="stream-entry stream-thinking">
@@ -1378,75 +1489,6 @@ function StreamEntryView({ entry }: { entry: StreamEntry }) {
     return (
       <div className="stream-entry stream-content">
         <pre>{entry.text}</pre>
-      </div>
-    );
-  }
-  if (entry.type === "tool_start") {
-    return (
-      <div
-        className={`stream-entry stream-tool-start${hasContent && collapsed ? " stream-tool-collapsed" : ""}${!hasContent ? " stream-tool-no-content" : ""}`}
-      >
-        <div
-          className={`stream-tool-header${hasContent ? " stream-tool-header-clickable" : ""}`}
-          onClick={hasContent ? () => setCollapsed(!collapsed) : undefined}
-        >
-          <span className="stream-tool-name">{entry.toolName}</span>
-          {hasContent && (
-            <span className="stream-tool-arrow">{collapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}</span>
-          )}
-        </div>
-        {!collapsed && hasContent && (
-          <div className="stream-tool-block">
-            <div className="stream-tool-block-label">Input</div>
-            <pre className="stream-tool-block-content">{JSON.stringify(entry.toolArgs, null, 2)}</pre>
-          </div>
-        )}
-      </div>
-    );
-  }
-  if (entry.type === "tool_end") {
-    return (
-      <div
-        className={`stream-entry stream-tool-end${hasContent && collapsed ? " stream-tool-collapsed" : ""}${!hasContent ? " stream-tool-no-content" : ""}`}
-      >
-        <div
-          className={`stream-tool-header${hasContent ? " stream-tool-header-clickable" : ""}`}
-          onClick={hasContent ? () => setCollapsed(!collapsed) : undefined}
-        >
-          <span className="stream-tool-name">{entry.toolName}</span>
-          {hasContent && (
-            <span className="stream-tool-arrow">{collapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}</span>
-          )}
-        </div>
-        {!collapsed && hasContent && (
-          <div className="stream-tool-block">
-            <div className="stream-tool-block-label">Output</div>
-            <pre className="stream-tool-block-content">{entry.text}</pre>
-          </div>
-        )}
-      </div>
-    );
-  }
-  if (entry.type === "tool_error") {
-    return (
-      <div
-        className={`stream-entry stream-tool-error${hasContent && collapsed ? " stream-tool-collapsed" : ""}${!hasContent ? " stream-tool-no-content" : ""}`}
-      >
-        <div
-          className={`stream-tool-header${hasContent ? " stream-tool-header-clickable" : ""}`}
-          onClick={hasContent ? () => setCollapsed(!collapsed) : undefined}
-        >
-          <span className="stream-tool-name">{entry.toolName}</span>
-          {hasContent && (
-            <span className="stream-tool-arrow">{collapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}</span>
-          )}
-        </div>
-        {!collapsed && hasContent && (
-          <div className="stream-tool-block">
-            <div className="stream-tool-block-label">Error</div>
-            <pre className="stream-tool-block-content">{entry.text}</pre>
-          </div>
-        )}
       </div>
     );
   }
