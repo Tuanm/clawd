@@ -176,6 +176,14 @@ export class WorkerManager {
     let worktreeBranch: string | undefined;
     const originalProjectRoot = effectiveProjectRoot;
 
+    // Ensure .gitignore files are set up for any git project (not just worktree)
+    if (!agent.workerToken && isGitRepo(effectiveProjectRoot)) {
+      try {
+        const { ensureClawdGitignore } = require("./agent/workspace/worktree");
+        ensureClawdGitignore(effectiveProjectRoot);
+      } catch {}
+    }
+
     // Create worktree if enabled for this channel (skip remote workers — they manage their own filesystem)
     if (isWorktreeEnabled(agent.channel) && !agent.workerToken) {
       if (!isGitInstalled()) {

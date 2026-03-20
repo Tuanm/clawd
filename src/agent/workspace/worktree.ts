@@ -96,7 +96,7 @@ function ensureGitignoreEntries(gitignorePath: string, entries: string[]): void 
  * 1. {projectRoot}/.gitignore — includes .clawd/ (created if missing)
  * 2. {projectRoot}/.clawd/.gitignore — includes files/ and worktrees/
  */
-function ensureClawdGitignore(projectRoot: string): void {
+export function ensureClawdGitignore(projectRoot: string): void {
   try {
     // Project root .gitignore — ensure .clawd/ is ignored
     ensureGitignoreEntries(join(projectRoot, ".gitignore"), [".clawd/"]);
