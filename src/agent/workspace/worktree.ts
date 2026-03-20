@@ -72,26 +72,39 @@ export interface WorktreeResult {
 }
 
 /**
- * Ensure {projectRoot}/.clawd/.gitignore includes files/ and worktrees/.
- * Prevents agent-generated files and worktree directories from being tracked.
+ * Ensure a .gitignore file contains required entries. Creates the file if missing.
  */
-function ensureClawdGitignore(projectRoot: string): void {
-  const clawdDir = join(projectRoot, ".clawd");
-  const gitignorePath = join(clawdDir, ".gitignore");
-  const requiredEntries = ["files/", "worktrees/"];
-
+function ensureGitignoreEntries(gitignorePath: string, entries: string[]): void {
   try {
-    mkdirSync(clawdDir, { recursive: true });
     let content = "";
     if (existsSync(gitignorePath)) {
       content = readFileSync(gitignorePath, "utf-8");
     }
     const lines = content.split("\n").map((l) => l.trim());
-    const missing = requiredEntries.filter((e) => !lines.includes(e));
+    const missing = entries.filter((e) => !lines.includes(e));
     if (missing.length > 0) {
       const append = (content.length > 0 && !content.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n";
       writeFileSync(gitignorePath, content + append, "utf-8");
     }
+  } catch {
+    // Best-effort
+  }
+}
+
+/**
+ * Ensure gitignore files are properly set up for the project:
+ * 1. {projectRoot}/.gitignore — includes .clawd/ (created if missing)
+ * 2. {projectRoot}/.clawd/.gitignore — includes files/ and worktrees/
+ */
+function ensureClawdGitignore(projectRoot: string): void {
+  try {
+    // Project root .gitignore — ensure .clawd/ is ignored
+    ensureGitignoreEntries(join(projectRoot, ".gitignore"), [".clawd/"]);
+
+    // .clawd/.gitignore — ensure files/ and worktrees/ are ignored
+    const clawdDir = join(projectRoot, ".clawd");
+    mkdirSync(clawdDir, { recursive: true });
+    ensureGitignoreEntries(join(clawdDir, ".gitignore"), ["files/", "worktrees/"]);
   } catch {
     // Best-effort — don't block worktree creation
   }
@@ -370,12 +383,17 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
   };
 
   try {
-    // --untracked-files=all ensures individual files inside untracked dirs are listed
-    const status = execFileSync("git", ["status", "--porcelain=v2", "--branch", "--untracked-files=all"], {
-      cwd: worktreePath,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
+    // --untracked-files=all: individual files inside untracked dirs
+    // --ignore-submodules=none: include submodule changes
+    const status = execFileSync(
+      "git",
+      ["status", "--porcelain=v2", "--branch", "--untracked-files=all", "--ignore-submodules=none"],
+      {
+        cwd: worktreePath,
+        encoding: "utf-8",
+        stdio: "pipe",
+      },
+    );
 
     let ahead = 0;
     let behind = 0;
@@ -473,7 +491,10 @@ export function getFileDiff(
   filePath: string,
   source: "unstaged" | "staged" = "unstaged",
 ): FileDiff | null {
-  const args = source === "staged" ? ["diff", "--cached", "-U3", "--", filePath] : ["diff", "-U3", "--", filePath];
+  const args =
+    source === "staged"
+      ? ["diff", "--cached", "-U3", "--ignore-submodules=none", "--submodule=diff", "--", filePath]
+      : ["diff", "-U3", "--ignore-submodules=none", "--submodule=diff", "--", filePath];
 
   try {
     const raw = execFileSync("git", args, { cwd: worktreePath, encoding: "utf-8", stdio: "pipe" });
@@ -489,7 +510,10 @@ export function getFileDiff(
  * Get diffs for all changed files in a worktree.
  */
 export function getAllDiffs(worktreePath: string, source: "unstaged" | "staged" = "unstaged"): FileDiff[] {
-  const args = source === "staged" ? ["diff", "--cached", "-U3"] : ["diff", "-U3"];
+  const args =
+    source === "staged"
+      ? ["diff", "--cached", "-U3", "--ignore-submodules=none", "--submodule=diff"]
+      : ["diff", "-U3", "--ignore-submodules=none", "--submodule=diff"];
 
   try {
     const raw = execFileSync("git", args, { cwd: worktreePath, encoding: "utf-8", stdio: "pipe" });
