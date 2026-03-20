@@ -250,7 +250,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   // Update project default when channel changes
   useEffect(() => {
     if (channel) {
-      setNewProject(`/tmp/clawd/spaces/${channel}`);
+      setNewProject("");
     }
   }, [channel]);
 
@@ -309,12 +309,12 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           return names.includes("copilot") ? "copilot" : (providers[0].name ?? "copilot");
         });
         setNewModel("default");
-        setNewProject(`/tmp/clawd/spaces/${channel}`);
+        setNewProject("");
         setNewWorkerToken("");
         setNewHeartbeat(0);
         setShowAddForm(false);
-        setSelectedAgentId(newName.trim());
         await loadAgents();
+        setSelectedAgentId(newName.trim());
       } else {
         setError(data.error || "Failed to add agent");
       }
@@ -561,7 +561,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
               <input
                 type="text"
                 className="agent-field-input"
-                placeholder="Project"
+                placeholder={`~/.clawd/projects/${channel}`}
                 value={editProject}
                 onChange={(e) => {
                   setEditProject(e.target.value);
@@ -677,7 +677,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 <input
                   type="text"
                   className="agent-field-input"
-                  placeholder="Project"
+                  placeholder={`~/.clawd/projects/${channel}`}
                   value={newProject}
                   onChange={(e) => setNewProject(e.target.value)}
                   onKeyDown={(e) => {

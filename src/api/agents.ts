@@ -28,7 +28,7 @@
 
 import type { Database } from "bun:sqlite";
 import { execSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isValidAgentName, listAgentFiles, loadAgentFile, parseAgentFile } from "../agent/agents/loader";
@@ -452,7 +452,15 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "model cannot be empty" }, 400);
         }
 
-        const agentProject = project || "";
+        const agentProject = project || join(homedir(), ".clawd", "projects", channel);
+        // Auto-create default project directory
+        if (!project && agentProject) {
+          try {
+            mkdirSync(agentProject, { recursive: true });
+          } catch {
+            // best-effort
+          }
+        }
         const agentWorkerToken = worker_token || null;
         const agentHeartbeatInterval =
           typeof heartbeat_interval === "number" ? Math.max(0, Math.round(heartbeat_interval)) : 0;

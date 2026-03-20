@@ -3,9 +3,9 @@
 // Error boundary wraps renderer so crashes show raw content fallback.
 
 import React, { useEffect, useRef, useState } from "react";
-import { AlertIcon, CheckIcon, CloseIcon, CopyIcon, DownloadIcon, PreBlock } from "./ui-primitives";
-import { type ArtifactType, TYPE_CONFIG, ARTIFACT_EXTENSION_MAP } from "./artifact-types";
 import FullArtifactRenderer from "./artifact-renderer";
+import { ARTIFACT_EXTENSION_MAP, type ArtifactType, TYPE_CONFIG } from "./artifact-types";
+import { AlertIcon, CheckIcon, CloseIcon, CopyIcon, DownloadIcon, PreBlock } from "./ui-primitives";
 
 // Renders artifact content at full size inside the modal body.
 // Phase 4 will replace this with sandboxed renderers per type.

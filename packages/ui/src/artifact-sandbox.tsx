@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { htmlArtifactTemplate, reactArtifactTemplate } from "./artifact-templates";
 
 const MAX_HEIGHT = 800;

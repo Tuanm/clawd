@@ -1,11 +1,11 @@
-import React from "react";
 import DOMPurify from "dompurify";
+import React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import SandboxedIframe from "./artifact-sandbox";
+import type { ArtifactType } from "./artifact-types";
 import CsvTable from "./csv-table";
 import { highlightCode } from "./prism-setup";
-import { type ArtifactType } from "./artifact-types";
 
 export type { ArtifactType };
 

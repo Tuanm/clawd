@@ -4,7 +4,7 @@
 //   "artifact"  — ArtifactRenderer for html/react/csv/markdown/code content
 //   "file"      — FilePreviewSidebar for PDF/CSV/text/code/image/audio/video files
 
-import { useEffect, useRef, Fragment } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import FullArtifactRenderer from "./artifact-renderer";
 import { type ArtifactType, TYPE_CONFIG } from "./artifact-types";

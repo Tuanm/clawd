@@ -1,23 +1,24 @@
-import React, { useMemo } from "react";
+import type React from "react";
+import { useMemo } from "react";
 import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  AreaChart,
   Area,
-  ScatterChart,
-  Scatter,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
   ComposedChart,
+  Legend,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
 } from "recharts";
 
 interface ChartSeries {

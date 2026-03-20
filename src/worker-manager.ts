@@ -6,6 +6,9 @@
  * add/remove agent requests from the API.
  */
 
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { getChannelMCPServers } from "./agent/api/provider-config";
 import { MCPManager } from "./agent/mcp/client";
 import type { AppConfig } from "./config";
@@ -74,6 +77,17 @@ export class WorkerManager {
       processingTimeoutMs: config.heartbeat?.processingTimeoutMs ?? 300_000,
       spaceIdleTimeoutMs: config.heartbeat?.spaceIdleTimeoutMs ?? 60_000,
     };
+  }
+
+  /** Default project root: ~/.clawd/projects/{channel}, auto-created */
+  private defaultProjectRoot(channel: string): string {
+    const dir = join(homedir(), ".clawd", "projects", channel);
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch {
+      // best-effort
+    }
+    return dir;
   }
 
   setSpaceInfra(spaceManager: SpaceManager, spaceWorkerManager: SpaceWorkerManager): void {
@@ -149,7 +163,7 @@ export class WorkerManager {
       agentId: agent.agentId,
       provider: agent.provider,
       model: agent.model,
-      projectRoot: agent.project || this.config.projectRoot,
+      projectRoot: agent.project || this.defaultProjectRoot(agent.channel),
       chatApiUrl: this.config.chatApiUrl,
       wsUrl: this.config.chatApiUrl.replace(/^http(s?):\/\//, "ws$1://"),
       debug: this.config.debug,
