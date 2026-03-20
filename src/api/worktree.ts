@@ -23,6 +23,7 @@ import {
   getCurrentBranch,
   getFileDiff,
   getWorktreeStatus,
+  resolveGitPath,
   revertHunk,
   stageHunk,
   unstageHunk,
@@ -267,7 +268,16 @@ async function handlePostEndpoint(req: Request, path: string, workerManager: Wor
           if (!validateWorktreePath(p, wt.path)) return json({ ok: false, error: `invalid path: ${p}` }, 400);
         }
         return withWorktreeLock(wt.path, async () => {
-          execFileSync("git", ["add", "--", ...paths], { cwd: wt.path, stdio: "pipe" });
+          // Group paths by their resolved git working directory (handles submodule files)
+          const byDir = new Map<string, string[]>();
+          for (const p of paths) {
+            const { cwd, relativePath } = resolveGitPath(wt.path, p);
+            if (!byDir.has(cwd)) byDir.set(cwd, []);
+            byDir.get(cwd)!.push(relativePath);
+          }
+          for (const [cwd, relPaths] of byDir) {
+            execFileSync("git", ["add", "--", ...relPaths], { cwd, stdio: "pipe" });
+          }
           return json({ ok: true });
         });
       }
@@ -279,7 +289,16 @@ async function handlePostEndpoint(req: Request, path: string, workerManager: Wor
           if (!validateWorktreePath(p, wt.path)) return json({ ok: false, error: `invalid path: ${p}` }, 400);
         }
         return withWorktreeLock(wt.path, async () => {
-          execFileSync("git", ["restore", "--staged", "--", ...paths], { cwd: wt.path, stdio: "pipe" });
+          // Group paths by their resolved git working directory (handles submodule files)
+          const byDir = new Map<string, string[]>();
+          for (const p of paths) {
+            const { cwd, relativePath } = resolveGitPath(wt.path, p);
+            if (!byDir.has(cwd)) byDir.set(cwd, []);
+            byDir.get(cwd)!.push(relativePath);
+          }
+          for (const [cwd, relPaths] of byDir) {
+            execFileSync("git", ["restore", "--staged", "--", ...relPaths], { cwd, stdio: "pipe" });
+          }
           return json({ ok: true });
         });
       }
@@ -292,7 +311,16 @@ async function handlePostEndpoint(req: Request, path: string, workerManager: Wor
           if (!validateWorktreePath(p, wt.path)) return json({ ok: false, error: `invalid path: ${p}` }, 400);
         }
         return withWorktreeLock(wt.path, async () => {
-          execFileSync("git", ["checkout", "--", ...paths], { cwd: wt.path, stdio: "pipe" });
+          // Group paths by their resolved git working directory (handles submodule files)
+          const byDir = new Map<string, string[]>();
+          for (const p of paths) {
+            const { cwd, relativePath } = resolveGitPath(wt.path, p);
+            if (!byDir.has(cwd)) byDir.set(cwd, []);
+            byDir.get(cwd)!.push(relativePath);
+          }
+          for (const [cwd, relPaths] of byDir) {
+            execFileSync("git", ["checkout", "--", ...relPaths], { cwd, stdio: "pipe" });
+          }
           return json({ ok: true });
         });
       }
