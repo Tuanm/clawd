@@ -200,8 +200,8 @@ export class WorkerManager {
           console.error(`[WorkerManager] Worktree creation failed for ${key}, using original project:`, err);
         }
       }
-    } else if (agent.worktreePath && agent.worktreeBranch) {
-      // Restore worktree info from DB (persisted from previous session)
+    } else if (isWorktreeEnabled(agent.channel) && agent.worktreePath && agent.worktreeBranch) {
+      // Restore worktree info from DB (persisted from previous session) — only if worktree still enabled
       const { existsSync } = require("node:fs");
       if (existsSync(agent.worktreePath)) {
         worktreePath = agent.worktreePath;
@@ -219,6 +219,10 @@ export class WorkerManager {
         // Worktree path from DB no longer exists — clear it
         this.persistWorktreeInfo(agent.channel, agent.agentId, null, null);
       }
+    } else if (!isWorktreeEnabled(agent.channel) && agent.worktreePath) {
+      // Worktree was disabled — clear stale DB entries
+      this.persistWorktreeInfo(agent.channel, agent.agentId, null, null);
+      console.log(`[WorkerManager] Worktree disabled for ${key}, cleared stale DB entry`);
     }
 
     const loopConfig: WorkerLoopConfig = {

@@ -2616,7 +2616,7 @@ registerTool(
       return {
         success: false,
         output: "",
-        error: "Cannot delete worktree branches. Use the Worktree dialog to manage branches.",
+        error: "Cannot delete clawd/* branches. These are managed by the system.",
       };
     }
     const args = ["branch"];
@@ -2647,7 +2647,7 @@ registerTool(
       if (create) {
         // Task switch: only allow creating clawd/* branches
         if (!target?.startsWith("clawd/")) {
-          return { success: false, output: "", error: "In worktree mode, new branches must use 'clawd/' prefix." };
+          return { success: false, output: "", error: "New branches must use the 'clawd/' prefix." };
         }
         // Server generates the random ID — override whatever agent passes
         if (!/^clawd\/[a-f0-9]{1,20}$/.test(target)) {
@@ -2666,7 +2666,7 @@ registerTool(
           return {
             success: false,
             output: "",
-            error: "Cannot switch branches in a worktree. Use 'git checkout -- <file>' to restore files.",
+            error: "Branch switching is not allowed. Use 'git checkout -- <file>' to restore files.",
           };
         } catch {
           // Not a branch — allow (file restore or commit ref)
@@ -2709,7 +2709,7 @@ registerTool(
     const isWorktree = !!ctx?.worktreePath;
 
     if (isWorktree && message) {
-      // Worktree mode: handle author/co-author
+      // Isolated branch mode: handle author/co-author
       const { getAuthorConfig } = await import("../../config-file");
       const { hasGitUserConfig } = await import("../workspace/worktree");
       const cwd = path || ctx.projectRoot;
@@ -2762,7 +2762,7 @@ registerTool(
   async ({ path, remote = "origin", branch, force, setUpstream }) => {
     const ctx = getAgentContext();
     if (ctx?.worktreePath) {
-      // Worktree mode: block pushing to protected branches
+      // Block pushing to protected branches
       // If branch not specified, resolve current branch to prevent bypass
       const protectedBranches = ["main", "master", "develop", "release"];
       const effectiveBranch = branch || ctx.worktreeBranch || "";
@@ -2770,7 +2770,8 @@ registerTool(
         return {
           success: false,
           output: "",
-          error: "Cannot push to protected branch from worktree. Use the Worktree dialog to apply changes.",
+          error:
+            "Cannot push to protected branches (main, master, develop, release). Push your clawd/* branch instead.",
         };
       }
     }
@@ -2799,7 +2800,7 @@ registerTool(
       return {
         success: false,
         output: "",
-        error: "Pull is disabled in worktrees. Use git_fetch + the Worktree dialog to merge changes.",
+        error: "git_pull is not available. Use git_fetch to download remote updates.",
       };
     }
     const args = ["pull", "--no-edit"];

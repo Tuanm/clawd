@@ -172,42 +172,18 @@ function sectionGit(): string {
 }
 
 // ============================================================================
-// Section: Worktree Mode (replaces sectionGit when worktree is active)
+// Section: Git (isolated branch mode — replaces sectionGit when worktree is active)
 // ============================================================================
 
-function sectionWorktree(ctx: PromptContext): string {
-  const branch = ctx.worktreeBranch || "clawd/???";
-  return `# Git Worktree Mode
-You are working in an isolated git worktree on branch \`${branch}\`.
-Your changes are isolated from other agents and the main branch.
-
-## Rules
-- Your branch is \`${branch}\` — all commits go here automatically
-- Do NOT switch branches (git_checkout to another branch is blocked)
-- Do NOT push to main/master/develop (blocked) — push only your clawd/* branch
-- Do NOT delete clawd/* branches
-- Do NOT use git_pull — use git_fetch if you need remote updates
-- Commits use the project's git author config. A Co-Authored-By trailer is added automatically.
-- Stage specific files, then commit. Never commit without user request.
-
-## Task Switching
-If the user asks you to work on a different task:
-1. Stage all changes: git_add files="."
-2. Commit with a WIP message: git_commit message="wip: brief description"
-   - If there's nothing to commit, skip to step 3
-   - If commit fails, use git_stash action="push" message="task switch"
-3. Create new branch: git_checkout create=true target="clawd/new"
-   (the server auto-generates the branch ID)
-4. Continue working on the new task
-
-## Applying Your Work
-You do NOT merge your branch into main yourself. The user reviews your changes
-in the Worktree dialog and decides when to merge. If asked about merging, tell
-the user to use the Worktree dialog or run \`git merge ${branch}\` from their terminal.
-
-## What Works Normally
-git_status, git_diff, git_log, git_add, git_commit, git_stash, git_show, git_fetch, git_reset
-— all work as expected within your worktree.`;
+function sectionWorktree(_ctx: PromptContext): string {
+  return `# Git Operations
+- Use git_* tools for all git operations — NOT bash for git commands
+- Git tools run in sandbox with dedicated SSH key and git config
+- Stage specific files by name, not -A or . (prevents leaking secrets/binaries)
+- NEVER commit without explicit user request
+- NEVER commit files with secrets (.env, credentials)
+- Commits automatically include author attribution — no extra setup needed
+- If a git operation is blocked, follow the error message guidance`;
 }
 
 // ============================================================================

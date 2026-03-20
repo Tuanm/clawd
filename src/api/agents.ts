@@ -33,6 +33,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isValidAgentName, listAgentFiles, loadAgentFile, parseAgentFile } from "../agent/agents/loader";
 import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../agent/api/provider-config";
+import { isWorktreeEnabled } from "../config-file";
 import { getSkillManager } from "../agent/skills/manager";
 import type { WorkerManager } from "../worker-manager";
 
@@ -324,7 +325,8 @@ function getAgentProjectRoot(db: Database, channel: string, agentId: string): st
     .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
     .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
   if (!agent || !agent.project) return null;
-  if (agent.worktree_path && existsSync(agent.worktree_path)) return agent.worktree_path;
+  // Only use worktree_path if worktree is currently enabled for the channel
+  if (agent.worktree_path && existsSync(agent.worktree_path) && isWorktreeEnabled(channel)) return agent.worktree_path;
   return agent.project;
 }
 
@@ -958,16 +960,11 @@ export function registerAgentRoutes(
         return json({ ok: false, error: "channel and agent_id required" }, 400);
       }
 
-      // Get agent's project root from database
-      const agent = db
-        .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
-        .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
-
-      if (!agent || !agent.project) {
+      // Get agent's effective project root (worktree if enabled, else original project)
+      const projectRoot = getAgentProjectRoot(db, channel, agentId);
+      if (!projectRoot) {
         return json({ ok: false, error: "agent not found or no project configured" }, 404);
       }
-
-      const projectRoot = agent.worktree_path && existsSync(agent.worktree_path) ? agent.worktree_path : agent.project;
 
       // Security: validate path using sandbox-style validation
       const validation = validateProjectPath(projectRoot, relativePath, { allowSensitive: false });
@@ -1050,16 +1047,11 @@ export function registerAgentRoutes(
         return json({ ok: false, error: "path required" }, 400);
       }
 
-      // Get agent's project root from database
-      const agent = db
-        .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
-        .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
-
-      if (!agent || !agent.project) {
+      // Get agent's effective project root (worktree if enabled, else original project)
+      const projectRoot = getAgentProjectRoot(db, channel, agentId);
+      if (!projectRoot) {
         return json({ ok: false, error: "agent not found or no project configured" }, 404);
       }
-
-      const projectRoot = agent.worktree_path && existsSync(agent.worktree_path) ? agent.worktree_path : agent.project;
 
       // Security: validate path using sandbox-style validation (block sensitive files)
       const validation = validateProjectPath(projectRoot, relativePath, { allowSensitive: false });
