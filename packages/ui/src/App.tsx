@@ -10,6 +10,7 @@ import SearchModal from "./SearchModal";
 import SidebarPanel from "./SidebarPanel";
 import SkillsDialog from "./SkillsDialog";
 import { UnreadBadge } from "./UnreadBadge";
+import WorktreeDialog from "./WorktreeDialog";
 
 interface SeenByAgent {
   agent_id: string;
@@ -498,6 +499,9 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const [showPlanModal, setShowPlanModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showProjectsDialog, setShowProjectsDialog] = useState(false);
+  const [projectsInitialAgent, setProjectsInitialAgent] = useState<string | null>(null);
+  const [projectsInitialFile, setProjectsInitialFile] = useState<string | null>(null);
+  const [projectsInitialLine, setProjectsInitialLine] = useState<number | null>(null);
   const [spaceInfo, setSpaceInfo] = useState<{
     title: string;
     status: "active" | "completed" | "failed" | "timed_out";
@@ -510,6 +514,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const isSpaceLocked = spaceInfo != null && spaceInfo.status !== "active";
   const [showAgentDialog, setShowAgentDialog] = useState(false);
   const [showMcpDialog, setShowMcpDialog] = useState(false);
+  const [showWorktreeDialog, setShowWorktreeDialog] = useState(false);
+  const [worktreeEnabled, setWorktreeEnabled] = useState(false);
   const [showSkillsDialog, setShowSkillsDialog] = useState(false);
   const [jumpToMessageTs, setJumpToMessageTs] = useState<string | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
@@ -735,6 +741,18 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       })
       .catch(() => setSpaceError(true));
   }, [isSpaceChannel, spaceId]);
+
+  // Fetch worktree enabled state per channel
+  useEffect(() => {
+    if (isSpaceChannel) {
+      setWorktreeEnabled(false);
+      return;
+    }
+    authFetch(`/api/app.worktree.enabled?channel=${encodeURIComponent(activeChannel)}`)
+      .then((res) => res.json())
+      .then((data) => setWorktreeEnabled(data.ok && data.enabled === true))
+      .catch(() => setWorktreeEnabled(false));
+  }, [activeChannel, isSpaceChannel]);
 
   // Validate stored channels and remove inaccessible ones
   useEffect(() => {
@@ -2158,6 +2176,18 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               </button>
             ) : undefined
           }
+          worktreeButton={
+            !isSpaceChannel && worktreeEnabled ? (
+              <button className="worktree-btn" onClick={() => setShowWorktreeDialog(true)} title="Git">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="6" y1="3" x2="6" y2="15" />
+                  <circle cx="18" cy="6" r="3" />
+                  <circle cx="6" cy="18" r="3" />
+                  <path d="M18 9a9 9 0 0 1-9 9" />
+                </svg>
+              </button>
+            ) : undefined
+          }
         />
       )}
       <StreamOutputDialog
@@ -2194,7 +2224,27 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       <ProjectsDialog
         channel={activeChannel}
         isOpen={showProjectsDialog}
-        onClose={() => setShowProjectsDialog(false)}
+        onClose={() => {
+          setShowProjectsDialog(false);
+          setProjectsInitialAgent(null);
+          setProjectsInitialFile(null);
+          setProjectsInitialLine(null);
+        }}
+        initialAgentId={projectsInitialAgent}
+        initialFile={projectsInitialFile}
+        initialLine={projectsInitialLine}
+      />
+      <WorktreeDialog
+        channel={activeChannel}
+        isOpen={showWorktreeDialog}
+        onClose={() => setShowWorktreeDialog(false)}
+        onOpenInProjects={(agentId, filePath, line) => {
+          setShowWorktreeDialog(false);
+          setProjectsInitialAgent(agentId || null);
+          setProjectsInitialFile(filePath || null);
+          setProjectsInitialLine(line ?? null);
+          setShowProjectsDialog(true);
+        }}
       />
     </div>
   );

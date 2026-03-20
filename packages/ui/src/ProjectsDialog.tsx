@@ -1,5 +1,5 @@
 import Prism from "prismjs";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
 import { ClawdAvatar } from "./MessageList";
@@ -35,6 +35,41 @@ interface Agent {
   active: boolean;
   running: boolean;
   avatar_color: string | null;
+  worktree_branch?: string | null;
+}
+
+function ResizeDivider({
+  onResize,
+  direction,
+}: {
+  onResize: (delta: number) => void;
+  direction: "horizontal" | "vertical";
+}) {
+  const handlePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    let lastPos = direction === "horizontal" ? e.clientX : e.clientY;
+
+    const handleMove = (me: PointerEvent) => {
+      const pos = direction === "horizontal" ? me.clientX : me.clientY;
+      const delta = pos - lastPos;
+      lastPos = pos;
+      if (delta !== 0) onResize(delta);
+    };
+
+    const handleUp = () => {
+      document.removeEventListener("pointermove", handleMove);
+      document.removeEventListener("pointerup", handleUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.body.style.cursor = direction === "horizontal" ? "col-resize" : "row-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("pointermove", handleMove);
+    document.addEventListener("pointerup", handleUp);
+  };
+
+  return <div className={`resize-divider resize-divider--${direction}`} onPointerDown={handlePointerDown} />;
 }
 
 interface TreeNode {
@@ -57,6 +92,12 @@ interface Props {
   channel: string;
   isOpen: boolean;
   onClose: () => void;
+  /** Pre-select this agent when dialog opens */
+  initialAgentId?: string | null;
+  /** Auto-open this file path when dialog opens */
+  initialFile?: string | null;
+  /** Scroll to this line number when auto-opening a file */
+  initialLine?: number | null;
 }
 
 // Icons
@@ -206,7 +247,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
+export default function ProjectsDialog({ channel, isOpen, onClose, initialAgentId, initialFile, initialLine }: Props) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
@@ -218,6 +259,8 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [projectRoot, setProjectRoot] = useState<string>("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarSize, setSidebarSize] = useState(280);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   // Load agents when dialog opens
   useEffect(() => {
@@ -245,6 +288,37 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
     }
   }, [selectedAgentId]);
 
+  // Auto-open initial file when tree is loaded
+  const initialFileRef = useRef(initialFile);
+  const initialLineRef = useRef(initialLine);
+  initialFileRef.current = initialFile;
+  initialLineRef.current = initialLine;
+  useEffect(() => {
+    if (tree.length > 0 && initialFileRef.current && !selectedFile) {
+      loadFileContent(initialFileRef.current);
+      initialFileRef.current = null;
+    }
+  }, [tree]);
+
+  // Scroll to initial line after file content loads
+  useEffect(() => {
+    if (selectedFile && initialLineRef.current && contentRef.current) {
+      const line = initialLineRef.current;
+      initialLineRef.current = null;
+      // Wait for DOM render
+      requestAnimationFrame(() => {
+        const row = contentRef.current?.querySelector(`tr[data-line="${line}"]`);
+        if (row) {
+          row.scrollIntoView({ block: "center", behavior: "smooth" });
+          (row as HTMLElement).style.background = "hsl(var(--accent) / 0.2)";
+          setTimeout(() => {
+            (row as HTMLElement).style.background = "";
+          }, 2000);
+        }
+      });
+    }
+  }, [selectedFile]);
+
   const loadAgents = useCallback(async () => {
     try {
       const res = await authFetch(`${API_URL}/api/app.agents.list?channel=${encodeURIComponent(channel)}`);
@@ -253,9 +327,13 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
         // Only show agents with a project configured
         const agentsWithProjects = data.agents.filter((a: Agent) => a.project);
         setAgents(agentsWithProjects);
-        // Auto-select first agent with project
+        // Auto-select agent: prefer initialAgentId, then first agent
         if (agentsWithProjects.length > 0 && !selectedAgentId) {
-          setSelectedAgentId(agentsWithProjects[0].agent_id);
+          if (initialAgentId && agentsWithProjects.find((a: Agent) => a.agent_id === initialAgentId)) {
+            setSelectedAgentId(initialAgentId);
+          } else {
+            setSelectedAgentId(agentsWithProjects[0].agent_id);
+          }
         }
       }
     } catch {
@@ -426,6 +504,20 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
         <div className="stream-dialog-header">
           <div className="stream-dialog-title-row">
             <h3>Projects</h3>
+            <button
+              className="worktree-refresh-btn"
+              onClick={() => {
+                if (selectedAgentId) loadProjectTree(selectedAgentId);
+              }}
+              title="Refresh"
+              disabled={loading}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="23 4 23 10 17 10" />
+                <polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+              </svg>
+            </button>
           </div>
           <button className="stream-dialog-close" onClick={onClose}>
             ×
@@ -468,55 +560,92 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
 
           {/* Main content area */}
           {agents.length > 0 && (
-            <div className="projects-main" style={{ position: "relative" }}>
-              {/* Expand button when sidebar is collapsed */}
-              {sidebarCollapsed && (
-                <button className="projects-expand-btn" onClick={() => setSidebarCollapsed(false)} title="Show sidebar">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <polyline points="9 18 15 12 9 6" />
-                  </svg>
-                </button>
+            <div className="projects-main">
+              {/* Left sidebar - file tree */}
+              {(() => {
+                const rootLabel = projectRoot;
+                const isMobile = window.innerWidth <= 600;
+                return (
+                  <div
+                    className={`projects-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}
+                    style={
+                      sidebarCollapsed
+                        ? undefined
+                        : { width: isMobile ? undefined : sidebarSize, height: isMobile ? sidebarSize : undefined }
+                    }
+                  >
+                    {projectRoot && (
+                      <div
+                        className="projects-root-path"
+                        title={projectRoot}
+                        onClick={sidebarCollapsed ? () => setSidebarCollapsed(false) : undefined}
+                      >
+                        <span className="projects-root-name">{rootLabel}</span>
+                        <button
+                          className="projects-sidebar-toggle"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSidebarCollapsed((v) => !v);
+                          }}
+                          title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+                        >
+                          <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                          >
+                            <polyline points="15 18 9 12 15 6" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                    {loading && <div className="projects-loading">Loading...</div>}
+                    {error && <div className="projects-error">{error}</div>}
+                    {!loading && !error && tree.length === 0 && selectedAgentId && (
+                      <div className="projects-empty">No files found</div>
+                    )}
+                    <div className="projects-tree">
+                      {tree.map((node) => (
+                        <TreeNodeItem
+                          key={node.path}
+                          node={node}
+                          depth={0}
+                          expanded={expanded}
+                          loadingDirs={loadingDirs}
+                          onToggle={handleToggle}
+                          onSelect={handleSelect}
+                          selectedPath={selectedFile?.path || null}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Resize divider */}
+              {!sidebarCollapsed && (
+                <ResizeDivider
+                  direction={window.innerWidth <= 600 ? "vertical" : "horizontal"}
+                  onResize={(delta) => {
+                    const isMobile = window.innerWidth <= 600;
+                    setSidebarSize((prev) => {
+                      const next = prev + delta;
+                      const collapseThreshold = isMobile ? 60 : 80;
+                      if (next < collapseThreshold) {
+                        setSidebarCollapsed(true);
+                        return prev;
+                      }
+                      return Math.max(120, Math.min(600, next));
+                    });
+                  }}
+                />
               )}
 
-              {/* Left sidebar - file tree */}
-              <div className={`projects-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
-                {projectRoot && (
-                  <div className="projects-root-path" title={projectRoot}>
-                    <span className="projects-root-name">{projectRoot.split("/").pop() || projectRoot}</span>
-                    <button
-                      className="projects-sidebar-toggle"
-                      onClick={() => setSidebarCollapsed(true)}
-                      title="Hide sidebar"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polyline points="15 18 9 12 15 6" />
-                      </svg>
-                    </button>
-                  </div>
-                )}
-                {loading && <div className="projects-loading">Loading...</div>}
-                {error && <div className="projects-error">{error}</div>}
-                {!loading && !error && tree.length === 0 && selectedAgentId && (
-                  <div className="projects-empty">No files found</div>
-                )}
-                <div className="projects-tree">
-                  {tree.map((node) => (
-                    <TreeNodeItem
-                      key={node.path}
-                      node={node}
-                      depth={0}
-                      expanded={expanded}
-                      loadingDirs={loadingDirs}
-                      onToggle={handleToggle}
-                      onSelect={handleSelect}
-                      selectedPath={selectedFile?.path || null}
-                    />
-                  ))}
-                </div>
-              </div>
-
               {/* Right panel - file content */}
-              <div className="projects-content" style={{ marginLeft: sidebarCollapsed ? "32px" : "0" }}>
+              <div className="projects-content">
                 {fileLoading && <div className="projects-content-loading">Loading file...</div>}
                 {!fileLoading && !selectedFile && (
                   <div className="projects-content-empty">Select a file to view its content</div>
@@ -530,11 +659,11 @@ export default function ProjectsDialog({ channel, isOpen, onClose }: Props) {
                         {selectedFile.truncated && " (truncated)"}
                       </span>
                     </div>
-                    <div className="projects-file-content">
+                    <div className="projects-file-content" ref={contentRef}>
                       <table className="code-lines">
                         <tbody>
                           {selectedFile.content.split("\n").map((line, i) => (
-                            <tr key={i} className="code-line">
+                            <tr key={i} className="code-line" data-line={i + 1}>
                               <td className="line-number">{i + 1}</td>
                               <td
                                 className="line-content"

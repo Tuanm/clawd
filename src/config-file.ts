@@ -134,6 +134,24 @@ export interface ConfigFile {
    * ```
    */
   model_token_limits?: Record<string, Record<string, number>>;
+  /**
+   * Enable git worktree isolation for multi-agent channels.
+   * Each agent gets its own worktree branch to prevent file conflicts.
+   *
+   * - `true`  — enabled for ALL channels
+   * - `false` or omitted — disabled (default)
+   * - `string[]` — enabled only for listed channel names
+   */
+  worktree?: boolean | string[];
+  /**
+   * Author identity for worktree commits.
+   * If git local config has user.name/email: those are main author, this becomes Co-Authored-By trailer.
+   * If git local config is missing: this becomes the main author via -c flags.
+   */
+  author?: {
+    name: string;
+    email: string;
+  };
 }
 
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");
@@ -296,4 +314,34 @@ export function getChannelsForToken(token: string): string[] {
     }
   }
   return channels;
+}
+
+/**
+ * Check if worktree isolation is enabled.
+ * - No channel arg: returns true if worktree is enabled at all.
+ * - With channel arg: returns true if worktree is enabled for that specific channel.
+ */
+export function isWorktreeEnabled(channel?: string): boolean {
+  const config = loadConfigFile();
+  const wt = config.worktree;
+  if (wt === undefined || wt === false) return false;
+  if (wt === true) return true;
+  if (Array.isArray(wt)) {
+    if (!channel) return wt.length > 0;
+    return wt.includes(channel);
+  }
+  return false;
+}
+
+/**
+ * Get the configured author identity for worktree commits.
+ * Returns null if not configured.
+ */
+export function getAuthorConfig(): { name: string; email: string } | null {
+  const config = loadConfigFile();
+  const a = config.author;
+  if (!a || typeof a !== "object" || Array.isArray(a)) return null;
+  if (typeof a.name !== "string" || typeof a.email !== "string") return null;
+  if (!a.name.trim() || !a.email.trim()) return null;
+  return { name: a.name.trim(), email: a.email.trim() };
 }

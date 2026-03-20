@@ -144,6 +144,12 @@ export interface WorkerLoopConfig {
   authToken?: string;
   /** Agent file config for sub-agents spawned with agent= parameter */
   agentFileConfig?: import("./agent/agents/loader").AgentFileConfig;
+  /** Git worktree path (undefined = not using worktree isolation) */
+  worktreePath?: string;
+  /** Git worktree branch name, e.g., "clawd/a3f7b2" */
+  worktreeBranch?: string;
+  /** Original project root before worktree override */
+  originalProjectRoot?: string;
 }
 
 export class WorkerLoop {
@@ -238,6 +244,10 @@ export class WorkerLoop {
   }
 
   /** Expose health snapshot for the centralized heartbeat monitor (pure read, no side effects) */
+  getProjectRoot(): string {
+    return this.config.projectRoot;
+  }
+
   getHealthSnapshot(): AgentHealthSnapshot {
     const now = Date.now();
     return {
@@ -1023,6 +1033,9 @@ Please:
         agentId,
         channel,
         provider: this.config.provider || "copilot",
+        worktreePath: this.config.worktreePath,
+        worktreeBranch: this.config.worktreeBranch,
+        originalProjectRoot: this.config.originalProjectRoot,
       },
       async () => {
         try {
@@ -1053,6 +1066,8 @@ Please:
             browserEnabled: false, // updated below if browser plugin registers
             contextMode: this.config.contextMode,
             agentFileConfig: this.config.agentFileConfig,
+            worktreeEnabled: !!this.config.worktreePath,
+            worktreeBranch: this.config.worktreeBranch,
           };
 
           const agentConfig: AgentConfig = {

@@ -318,6 +318,16 @@ const AVAILABLE_MODELS = [
   },
 ];
 
+/** Get the effective project root for an agent — prefers worktree_path if it exists on disk */
+function getAgentProjectRoot(db: Database, channel: string, agentId: string): string | null {
+  const agent = db
+    .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
+    .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
+  if (!agent || !agent.project) return null;
+  if (agent.worktree_path && existsSync(agent.worktree_path)) return agent.worktree_path;
+  return agent.project;
+}
+
 /** Initialize the channel_agents table in the database */
 export function initAgentsTable(db: Database): void {
   db.exec(`
@@ -367,6 +377,18 @@ export function initAgentsTable(db: Database): void {
   // Add heartbeat_interval column if table already exists without it
   try {
     db.exec(`ALTER TABLE channel_agents ADD COLUMN heartbeat_interval INTEGER NOT NULL DEFAULT 0`);
+  } catch {
+    // Column already exists
+  }
+
+  // Add worktree columns for persistence across restarts
+  try {
+    db.exec(`ALTER TABLE channel_agents ADD COLUMN worktree_path TEXT DEFAULT NULL`);
+  } catch {
+    // Column already exists
+  }
+  try {
+    db.exec(`ALTER TABLE channel_agents ADD COLUMN worktree_branch TEXT DEFAULT NULL`);
   } catch {
     // Column already exists
   }
@@ -536,8 +558,19 @@ export function registerAgentRoutes(
     if (path === "/api/app.agents.update" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
-        const { channel, agent_id, model, active, project, sleeping, provider, worker_token, heartbeat_interval } =
-          body;
+        const {
+          channel,
+          agent_id,
+          model,
+          active,
+          project,
+          sleeping,
+          provider,
+          worker_token,
+          heartbeat_interval,
+          worktree_path,
+          worktree_branch,
+        } = body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
@@ -586,6 +619,14 @@ export function registerAgentRoutes(
         if (heartbeat_interval !== undefined) {
           updates.push("heartbeat_interval = ?");
           params.push(typeof heartbeat_interval === "number" ? Math.max(0, Math.round(heartbeat_interval)) : 0);
+        }
+        if (worktree_path !== undefined) {
+          updates.push("worktree_path = ?");
+          params.push(worktree_path || null);
+        }
+        if (worktree_branch !== undefined) {
+          updates.push("worktree_branch = ?");
+          params.push(worktree_branch || null);
         }
 
         if (updates.length === 0) {
@@ -655,7 +696,7 @@ export function registerAgentRoutes(
       if (!channel || !agent_id) return json({ ok: false, error: "channel and agent_id required" }, 400);
 
       const agent = db
-        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
         .get(channel, agent_id) as any;
       if (!agent?.project) return json({ ok: true, identity: "" });
 
@@ -676,7 +717,7 @@ export function registerAgentRoutes(
         if (typeof identity !== "string") return json({ ok: false, error: "identity must be a string" }, 400);
 
         const agent = db
-          .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+          .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
           .get(channel, agent_id) as any;
         if (!agent?.project) return json({ ok: false, error: "Agent has no project root" }, 400);
 
@@ -730,7 +771,7 @@ export function registerAgentRoutes(
       if (!channel || !agent_id) return json({ ok: false, error: "channel and agent_id required" }, 400);
 
       const agent = db
-        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
         .get(channel, agent_id) as any;
       if (!agent?.project) return json({ ok: true, agents: [] });
 
@@ -795,16 +836,11 @@ export function registerAgentRoutes(
         return json({ ok: false, error: "channel and agent_id required" }, 400);
       }
 
-      // Get agent's project root from database
-      const agent = db
-        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
-        .get(channel, agentId) as { project: string } | null;
-
-      if (!agent || !agent.project) {
+      // Get agent's effective project root (worktree if available, else original project)
+      const projectRoot = getAgentProjectRoot(db, channel, agentId);
+      if (!projectRoot) {
         return json({ ok: false, error: "agent not found or no project configured" }, 404);
       }
-
-      const projectRoot = agent.project;
 
       try {
         interface TreeNode {
@@ -924,14 +960,14 @@ export function registerAgentRoutes(
 
       // Get agent's project root from database
       const agent = db
-        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
-        .get(channel, agentId) as { project: string } | null;
+        .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
 
       if (!agent || !agent.project) {
         return json({ ok: false, error: "agent not found or no project configured" }, 404);
       }
 
-      const projectRoot = agent.project;
+      const projectRoot = agent.worktree_path && existsSync(agent.worktree_path) ? agent.worktree_path : agent.project;
 
       // Security: validate path using sandbox-style validation
       const validation = validateProjectPath(projectRoot, relativePath, { allowSensitive: false });
@@ -1016,14 +1052,14 @@ export function registerAgentRoutes(
 
       // Get agent's project root from database
       const agent = db
-        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
-        .get(channel, agentId) as { project: string } | null;
+        .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
 
       if (!agent || !agent.project) {
         return json({ ok: false, error: "agent not found or no project configured" }, 404);
       }
 
-      const projectRoot = agent.project;
+      const projectRoot = agent.worktree_path && existsSync(agent.worktree_path) ? agent.worktree_path : agent.project;
 
       // Security: validate path using sandbox-style validation (block sensitive files)
       const validation = validateProjectPath(projectRoot, relativePath, { allowSensitive: false });
@@ -1112,8 +1148,8 @@ export function registerAgentRoutes(
       }
 
       const agent = db
-        .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
-        .get(channel, agentId) as { project: string } | null;
+        .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
+        .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
 
       const projectRoot = agent?.project || undefined;
       const manager = getSkillManager(projectRoot);
@@ -1136,8 +1172,8 @@ export function registerAgentRoutes(
       let projectRoot: string | undefined;
       if (channel && agentId) {
         const agent = db
-          .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
-          .get(channel, agentId) as { project: string } | null;
+          .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
+          .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
         projectRoot = agent?.project || undefined;
       }
 
@@ -1165,8 +1201,8 @@ export function registerAgentRoutes(
         let projectRoot: string | undefined;
         if (channel && agent_id) {
           const agent = db
-            .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
-            .get(channel, agent_id) as { project: string } | null;
+            .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
+            .get(channel, agent_id) as { project: string; worktree_path: string | null } | null;
           projectRoot = agent?.project || undefined;
         }
 
@@ -1212,8 +1248,8 @@ export function registerAgentRoutes(
       let projectRoot: string | undefined;
       if (channel && agentId) {
         const agent = db
-          .query("SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?")
-          .get(channel, agentId) as { project: string } | null;
+          .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
+          .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
         projectRoot = agent?.project || undefined;
       }
 
