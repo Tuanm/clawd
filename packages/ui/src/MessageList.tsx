@@ -1408,6 +1408,59 @@ function groupToolEntries(entries: StreamEntry[]): GroupedItem[] {
   return items;
 }
 
+// Extract file_id from a JSON tool result string
+function extractFileId(text: string): string | null {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed?.file_id || null;
+  } catch {
+    // Try regex fallback for truncated JSON
+    const match = text.match(/"file_id"\s*:\s*"([^"]+)"/);
+    return match?.[1] || null;
+  }
+}
+
+// Render diff from tool args (client-side only, no backend changes)
+function ArgsDiffView({ toolName, args }: { toolName: string; args: any }) {
+  const isEdit = ["edit", "Edit", "edit_file"].includes(toolName);
+  const isCreate = ["create", "Create", "create_file", "write", "Write"].includes(toolName);
+
+  if (isEdit && args.old_str && args.new_str) {
+    const oldLines = String(args.old_str).split("\n");
+    const newLines = String(args.new_str).split("\n");
+    return (
+      <pre className="stream-tool-block-content stream-tool-diff">
+        {oldLines.map((line: string, i: number) => (
+          <span key={`d${i}`} className="stream-diff-del">{`- ${line}\n`}</span>
+        ))}
+        {newLines.map((line: string, i: number) => (
+          <span key={`a${i}`} className="stream-diff-add">{`+ ${line}\n`}</span>
+        ))}
+      </pre>
+    );
+  }
+
+  if (isCreate && args.content) {
+    const lines = String(args.content).split("\n");
+    return (
+      <pre className="stream-tool-block-content stream-tool-diff">
+        {lines.map((line: string, i: number) => (
+          <span key={i} className="stream-diff-add">{`+ ${line}\n`}</span>
+        ))}
+      </pre>
+    );
+  }
+
+  return null;
+}
+
+// Tools that produce image output (file_id in result)
+const IMAGE_OUTPUT_TOOLS = new Set(["browser_screenshot", "create_image", "edit_image"]);
+// Tools that take image input (file_id in args)
+const IMAGE_INPUT_TOOLS = new Set(["read_image", "edit_image"]);
+// Tools that should render a diff view from their args
+const DIFF_TOOLS = new Set(["edit", "Edit", "edit_file", "create", "Create", "create_file", "write", "Write"]);
+
 // Combined tool call: same visual style as original (blue/green/red header) but input+output in one accordion
 function ToolCallCombinedView({ start, result }: { start: StreamEntry; result: StreamEntry | null }) {
   const isError = result?.type === "tool_error";
@@ -1441,6 +1494,13 @@ function ToolCallCombinedView({ start, result }: { start: StreamEntry; result: S
   const toolName = start.toolName || result?.toolName || "Unknown";
   const statusClass = !result ? "stream-tool-start" : isError ? "stream-tool-error" : "stream-tool-end";
 
+  // Image preview in input (read_image, edit_image)
+  const inputImageId = IMAGE_INPUT_TOOLS.has(toolName) && start.toolArgs?.file_id ? start.toolArgs.file_id : null;
+  // Image preview in output (browser_screenshot, create_image, edit_image)
+  const outputImageId = IMAGE_OUTPUT_TOOLS.has(toolName) && result?.text ? extractFileId(result.text) : null;
+  // Diff view from args (edit, create, write tools)
+  const showDiff = !isError && DIFF_TOOLS.has(toolName) && start.toolArgs;
+
   return (
     <div
       className={`stream-entry ${statusClass}${hasContent && collapsed ? " stream-tool-collapsed" : ""}${!hasContent ? " stream-tool-no-content" : ""}`}
@@ -1454,16 +1514,40 @@ function ToolCallCombinedView({ start, result }: { start: StreamEntry; result: S
       </div>
       {!collapsed && hasContent && (
         <>
-          {hasInput && (
+          {hasInput && !showDiff && (
             <div className="stream-tool-block">
               <div className="stream-tool-block-label">Input</div>
               <pre className="stream-tool-block-content">{JSON.stringify(start.toolArgs, null, 2)}</pre>
+              {inputImageId && (
+                <div className="stream-tool-image-preview">
+                  <img
+                    src={`/api/files/${inputImageId}/optimized?maxWidth=400&maxHeight=300&quality=70`}
+                    alt="Input image"
+                    loading="lazy"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          {showDiff && (
+            <div className="stream-tool-block">
+              <div className="stream-tool-block-label">Changes</div>
+              <ArgsDiffView toolName={toolName} args={start.toolArgs} />
             </div>
           )}
           {hasOutput && (
             <div className="stream-tool-block">
               <div className="stream-tool-block-label">{isError ? "Error" : "Output"}</div>
               <pre className="stream-tool-block-content">{result!.text}</pre>
+              {outputImageId && (
+                <div className="stream-tool-image-preview">
+                  <img
+                    src={`/api/files/${outputImageId}/optimized?maxWidth=400&maxHeight=300&quality=70`}
+                    alt="Output image"
+                    loading="lazy"
+                  />
+                </div>
+              )}
             </div>
           )}
           {durationStr && (
