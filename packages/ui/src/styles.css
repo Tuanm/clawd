@@ -6399,14 +6399,15 @@ textarea {
 
 /* ── Chart artifacts ───────────────────────────────────────────── */
 .artifact-chart {
-  padding: 12px 0;
+  padding: 4px 0;
 }
 
 .artifact-chart-title {
   font-weight: 600;
-  font-size: 14px;
-  text-align: center;
-  margin-bottom: 8px;
+  font-size: 13px;
+  color: hsl(var(--text) / 70%);
+  margin-bottom: 4px;
+  font-family: Lato, sans-serif;
 }
 
 .artifact-chart-error {
@@ -6421,19 +6422,43 @@ textarea {
   overflow: auto;
 }
 
-/* Recharts dark mode overrides */
-@media (prefers-color-scheme: dark) {
-  .recharts-default-tooltip {
-    background-color: #1c2128 !important;
-    border-color: #30363d !important;
+/* Inline chart wrapper — no border/background, native to message flow */
+.message-inline-chart {
+  margin: 4px 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+/* Chart streaming skeleton */
+.message-inline-chart--streaming .message-inline-chart-skeleton {
+  height: 200px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, hsl(var(--text) / 4%) 25%, hsl(var(--text) / 8%) 50%, hsl(var(--text) / 4%) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Mobile: shorter chart height */
+@media (max-width: 600px) {
+  .artifact-chart .recharts-responsive-container {
+    height: 220px !important;
   }
 
-  .recharts-cartesian-grid line {
-    stroke: #30363d;
+  .message-inline-chart--streaming .message-inline-chart-skeleton {
+    height: 160px;
   }
 
-  .recharts-text {
-    fill: #8b949e;
+  .artifact-chart-title {
+    font-size: 12px;
   }
 }
 

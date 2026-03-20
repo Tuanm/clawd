@@ -2480,22 +2480,14 @@ export default function MessageList({
                                 if (block.artifactType === "chart") {
                                   return (
                                     <div key={`block-${i}`} className="message-block">
-                                      <div className="message-inline-artifact">
-                                        <div className="message-inline-artifact-header">
-                                          <span className="message-inline-artifact-title">{block.title}</span>
-                                          <div className="message-inline-artifact-actions">
-                                            <InlineArtifactCopyBtn content={block.content} />
-                                          </div>
-                                        </div>
-                                        <div className="message-inline-artifact-body">
-                                          <React.Suspense
-                                            fallback={
-                                              <div className="message-inline-artifact-loading">Loading chart...</div>
-                                            }
-                                          >
-                                            <LazyChartRenderer content={block.content} />
-                                          </React.Suspense>
-                                        </div>
+                                      <div className="message-inline-chart">
+                                        <React.Suspense
+                                          fallback={
+                                            <div className="message-inline-artifact-loading">Loading chart...</div>
+                                          }
+                                        >
+                                          <LazyChartRenderer content={block.content} />
+                                        </React.Suspense>
                                       </div>
                                     </div>
                                   );
@@ -2569,8 +2561,18 @@ export default function MessageList({
                                   </div>
                                 );
                               case "streaming-artifact":
-                                // chart and svg streaming: show skeleton header + animated body
-                                if (block.artifactType === "chart" || block.artifactType === "svg") {
+                                // chart streaming: minimal skeleton matching borderless design
+                                if (block.artifactType === "chart") {
+                                  return (
+                                    <div key={`block-${i}`} className="message-block">
+                                      <div className="message-inline-chart message-inline-chart--streaming">
+                                        <div className="message-inline-chart-skeleton" />
+                                      </div>
+                                    </div>
+                                  );
+                                }
+                                // svg streaming: header + animated body
+                                if (block.artifactType === "svg") {
                                   return (
                                     <div key={`block-${i}`} className="message-block">
                                       <div className="message-inline-artifact message-inline-artifact--streaming">

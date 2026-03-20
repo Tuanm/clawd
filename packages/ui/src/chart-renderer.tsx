@@ -66,18 +66,24 @@ function normalizeSpec(raw: ChartSpec): ChartSpec {
   return raw;
 }
 
+// Warm palette that blends with the chat accent (hsl 15 63% 60%)
 const DEFAULT_COLORS = [
-  "#8884d8",
-  "#82ca9d",
-  "#ffc658",
-  "#ff7c7c",
-  "#8dd1e1",
-  "#a4de6c",
-  "#d0ed57",
-  "#ffa07a",
-  "#dda0dd",
-  "#87ceeb",
+  "#d97853", // warm orange (accent)
+  "#6ba5a5", // muted teal
+  "#c4886d", // dusty salmon
+  "#7c9eb2", // slate blue
+  "#b5a36a", // warm gold
+  "#8fab7e", // sage green
+  "#a88abf", // soft purple
+  "#cc8e8e", // rose
+  "#6b9a8a", // deep sage
+  "#b0896b", // caramel
 ];
+
+// Detect dark mode from document
+function isDark(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+}
 
 function parseChartSpec(content: string): ChartSpec {
   // Strip optional ```json ... ``` wrapper that LLMs commonly produce around JSON
@@ -92,24 +98,76 @@ function parseChartSpec(content: string): ChartSpec {
   return normalizeSpec(spec as unknown as ChartSpec);
 }
 
-function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: string): React.ReactElement {
-  const grid = <CartesianGrid strokeDasharray="3 3" />;
+// Shared axis/grid/tooltip props for consistent chat styling
+function useChartParts(spec: ChartSpec, xDataKey: string) {
+  const dark = isDark();
+  const textColor = dark ? "#9ca3af" : "#71717a";
+  const gridColor = dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)";
+  const tooltipBg = dark ? "#1c2128" : "#ffffff";
+  const tooltipBorder = dark ? "#30363d" : "rgba(0,0,0,0.08)";
+
+  const tickStyle = { fontSize: 11, fill: textColor, fontFamily: "Lato, sans-serif" };
+
+  const grid = <CartesianGrid stroke={gridColor} strokeDasharray="3 3" vertical={false} />;
   const xAxis = (
     <XAxis
       dataKey={xDataKey}
-      label={spec.xAxis?.label ? { value: spec.xAxis.label, position: "insideBottom", offset: -5 } : undefined}
+      tick={tickStyle}
+      tickLine={false}
+      axisLine={{ stroke: gridColor }}
+      label={
+        spec.xAxis?.label
+          ? { value: spec.xAxis.label, position: "insideBottom", offset: -5, style: { ...tickStyle, fontSize: 12 } }
+          : undefined
+      }
     />
   );
   const yAxis = (
-    <YAxis label={spec.yAxis?.label ? { value: spec.yAxis.label, angle: -90, position: "insideLeft" } : undefined} />
+    <YAxis
+      tick={tickStyle}
+      tickLine={false}
+      axisLine={false}
+      width={40}
+      label={
+        spec.yAxis?.label
+          ? { value: spec.yAxis.label, angle: -90, position: "insideLeft", style: { ...tickStyle, fontSize: 12 } }
+          : undefined
+      }
+    />
   );
-  const tooltip = <Tooltip />;
-  const legend = <Legend />;
+  const tooltip = (
+    <Tooltip
+      contentStyle={{
+        background: tooltipBg,
+        border: `1px solid ${tooltipBorder}`,
+        borderRadius: 6,
+        boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+        fontSize: 12,
+        fontFamily: "Lato, sans-serif",
+        padding: "6px 10px",
+      }}
+      cursor={{ fill: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)" }}
+    />
+  );
+  const legend = (
+    <Legend
+      wrapperStyle={{ fontSize: 11, fontFamily: "Lato, sans-serif", paddingTop: 4 }}
+      iconType="circle"
+      iconSize={8}
+    />
+  );
+
+  return { grid, xAxis, yAxis, tooltip, legend };
+}
+
+function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: string): React.ReactElement {
+  const { grid, xAxis, yAxis, tooltip, legend } = useChartParts(spec, xDataKey);
+  const margin = { top: 8, right: 12, bottom: 4, left: 0 };
 
   switch (spec.type) {
     case "line":
       return (
-        <LineChart data={spec.data}>
+        <LineChart data={spec.data} margin={margin}>
           {grid}
           {xAxis}
           {yAxis}
@@ -121,6 +179,9 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
               type="monotone"
               dataKey={s.dataKey}
               stroke={s.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length]}
+              strokeWidth={2}
+              dot={{ r: 3, strokeWidth: 0 }}
+              activeDot={{ r: 5, strokeWidth: 0 }}
               name={s.name ?? s.dataKey}
             />
           ))}
@@ -129,7 +190,7 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
 
     case "bar":
       return (
-        <BarChart data={spec.data}>
+        <BarChart data={spec.data} margin={margin} barCategoryGap="20%">
           {grid}
           {xAxis}
           {yAxis}
@@ -140,6 +201,7 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
               key={s.dataKey}
               dataKey={s.dataKey}
               fill={s.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length]}
+              radius={[3, 3, 0, 0]}
               name={s.name ?? s.dataKey}
             />
           ))}
@@ -148,7 +210,7 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
 
     case "area":
       return (
-        <AreaChart data={spec.data}>
+        <AreaChart data={spec.data} margin={margin}>
           {grid}
           {xAxis}
           {yAxis}
@@ -162,8 +224,9 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
                 type="monotone"
                 dataKey={s.dataKey}
                 stroke={color}
+                strokeWidth={2}
                 fill={color}
-                fillOpacity={0.3}
+                fillOpacity={0.15}
                 name={s.name ?? s.dataKey}
               />
             );
@@ -173,7 +236,7 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
 
     case "scatter":
       return (
-        <ScatterChart>
+        <ScatterChart margin={margin}>
           {grid}
           {xAxis}
           {yAxis}
@@ -191,7 +254,9 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
         </ScatterChart>
       );
 
-    case "pie":
+    case "pie": {
+      const dark = isDark();
+      const textColor = dark ? "#9ca3af" : "#71717a";
       return (
         <PieChart>
           <Pie
@@ -200,21 +265,40 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
             nameKey={spec.nameKey ?? "name"}
             cx="50%"
             cy="50%"
-            outerRadius={120}
+            outerRadius="75%"
+            innerRadius="40%"
+            paddingAngle={2}
+            stroke="none"
             label
+            labelLine={{ stroke: textColor, strokeWidth: 1 }}
           >
             {spec.data.map((_entry, i) => (
               <Cell key={`cell-${i}`} fill={DEFAULT_COLORS[i % DEFAULT_COLORS.length]} />
             ))}
           </Pie>
-          {tooltip}
-          {legend}
+          <Tooltip
+            contentStyle={{
+              background: dark ? "#1c2128" : "#ffffff",
+              border: `1px solid ${dark ? "#30363d" : "rgba(0,0,0,0.08)"}`,
+              borderRadius: 6,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+              fontSize: 12,
+              fontFamily: "Lato, sans-serif",
+              padding: "6px 10px",
+            }}
+          />
+          <Legend
+            wrapperStyle={{ fontSize: 11, fontFamily: "Lato, sans-serif", paddingTop: 4 }}
+            iconType="circle"
+            iconSize={8}
+          />
         </PieChart>
       );
+    }
 
     case "composed":
       return (
-        <ComposedChart data={spec.data}>
+        <ComposedChart data={spec.data} margin={margin}>
           {grid}
           {xAxis}
           {yAxis}
@@ -225,7 +309,7 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
             const name = s.name ?? s.dataKey;
             switch (s.type) {
               case "bar":
-                return <Bar key={s.dataKey} dataKey={s.dataKey} fill={color} name={name} />;
+                return <Bar key={s.dataKey} dataKey={s.dataKey} fill={color} radius={[3, 3, 0, 0]} name={name} />;
               case "area":
                 return (
                   <Area
@@ -233,13 +317,24 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
                     type="monotone"
                     dataKey={s.dataKey}
                     stroke={color}
+                    strokeWidth={2}
                     fill={color}
-                    fillOpacity={0.3}
+                    fillOpacity={0.15}
                     name={name}
                   />
                 );
               default:
-                return <Line key={s.dataKey} type="monotone" dataKey={s.dataKey} stroke={color} name={name} />;
+                return (
+                  <Line
+                    key={s.dataKey}
+                    type="monotone"
+                    dataKey={s.dataKey}
+                    stroke={color}
+                    strokeWidth={2}
+                    dot={{ r: 3, strokeWidth: 0 }}
+                    name={name}
+                  />
+                );
             }
           })}
         </ComposedChart>
@@ -278,7 +373,7 @@ export default function ChartRenderer({ content }: { content: string }) {
   return (
     <div className="artifact-chart">
       {spec.title && <div className="artifact-chart-title">{spec.title}</div>}
-      <ResponsiveContainer width="100%" height={350}>
+      <ResponsiveContainer width="100%" height={300}>
         {renderChartContent(spec, series, xDataKey)}
       </ResponsiveContainer>
     </div>
