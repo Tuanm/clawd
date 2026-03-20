@@ -572,6 +572,7 @@ function resolveSubmodulePath(worktreePath: string, filePath: string): { cwd: st
 /**
  * Get the unified diff for a specific file in a worktree.
  * Automatically detects submodule files and runs diff inside the submodule.
+ * For untracked/new files, reads the file content and creates a synthetic all-additions diff.
  * @param source - "unstaged" (working tree vs index) or "staged" (index vs HEAD)
  */
 export function getFileDiff(
@@ -588,13 +589,65 @@ export function getFileDiff(
 
   try {
     const raw = execFileSync("git", args, { cwd, encoding: "utf-8", stdio: "pipe" });
-    if (!raw.trim()) return null;
-    const diffs = parseDiffOutput(raw);
-    if (diffs[0]) {
-      // Restore the full path (including submodule prefix) for UI display
-      diffs[0].path = filePath;
+    if (raw.trim()) {
+      const diffs = parseDiffOutput(raw);
+      if (diffs[0]) {
+        diffs[0].path = filePath;
+        return diffs[0];
+      }
     }
-    return diffs[0] || null;
+  } catch {
+    // Fall through to untracked/new file handling
+  }
+
+  // No diff output — file may be untracked/new. Read file content and create synthetic diff.
+  return buildNewFileDiff(worktreePath, filePath);
+}
+
+/**
+ * Build a synthetic diff for an untracked/new file (shows all content as additions).
+ */
+function buildNewFileDiff(worktreePath: string, filePath: string): FileDiff | null {
+  const fullPath = join(worktreePath, filePath);
+  if (!existsSync(fullPath)) return null;
+
+  try {
+    const content = readFileSync(fullPath, "utf-8");
+    // Check for binary content
+    if (content.includes("\0")) {
+      return { path: filePath, status: "A", binary: true, additions: 0, deletions: 0, hunks: [] };
+    }
+
+    const fileLines = content.split("\n");
+    // Limit to 2000 lines for very large files
+    const lines = fileLines.slice(0, 2000);
+    const hunkLines = lines.map((line, i) => ({
+      type: "addition" as const,
+      content: line,
+      newNo: i + 1,
+    }));
+
+    const hunkText = `@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}`;
+    const hash = createHash("sha1").update(hunkText).digest("hex");
+
+    return {
+      path: filePath,
+      status: "A",
+      binary: false,
+      additions: lines.length,
+      deletions: 0,
+      hunks: [
+        {
+          header: `@@ -0,0 +1,${lines.length} @@ (new file)`,
+          oldStart: 0,
+          oldLines: 0,
+          newStart: 1,
+          newLines: lines.length,
+          lines: hunkLines,
+          hash,
+        },
+      ],
+    };
   } catch {
     return null;
   }
