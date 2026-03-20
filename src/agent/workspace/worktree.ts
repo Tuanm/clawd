@@ -407,15 +407,24 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
         }
       } else if (line.startsWith("1 ") || line.startsWith("2 ")) {
         // Porcelain v2 changed entry:
-        // Type 1: "1 XY sub mH mI mW hH hI path"
+        // Type 1: "1 XY sub mH mI mW hH hI path" (9 fields, path may contain spaces)
         // Type 2: "2 XY sub mH mI mW hH hI X-score path\torigPath"
-        const parts = line.split("\t")[0].split(" ");
+        const firstPart = line.split("\t")[0];
+        const parts = firstPart.split(" ");
         const xy = parts[1]; // XY status
         const sub = parts[2]; // submodule indicator (N... or S...)
         const isSubmodule = sub.startsWith("S");
 
-        // Path is always the last field (after tab split for renames)
-        const rawPath = line.startsWith("2 ") ? line.split("\t")[0].split(" ").pop()! : line.split(" ").pop()!;
+        // Extract path: skip first 8 space-separated fields (for type 1) or 9 (for type 2)
+        // The remaining is the path (which may contain spaces)
+        const fieldCount = line.startsWith("2 ") ? 9 : 8;
+        let consumed = 0;
+        for (let fi = 0; fi < fieldCount; fi++) {
+          const spaceIdx = firstPart.indexOf(" ", consumed);
+          if (spaceIdx === -1) break;
+          consumed = spaceIdx + 1;
+        }
+        const rawPath = firstPart.slice(consumed);
         const path = unquoteGitPath(rawPath);
 
         if (isSubmodule) {
@@ -427,8 +436,8 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
                 cwd: subPath,
                 encoding: "utf-8",
                 stdio: "pipe",
-              }).trim();
-              if (subStatus) {
+              }).trimEnd();
+              if (subStatus.trim()) {
                 for (const subLine of subStatus.split("\n")) {
                   if (!subLine.trim()) continue;
                   const subXY = subLine.slice(0, 2);
@@ -476,11 +485,17 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
             if (nestedStatus) {
               for (const nestedLine of nestedStatus.split("\n")) {
                 if (!nestedLine.trim()) continue;
+                const nXY = nestedLine.slice(0, 2);
                 const nestedFile = unquoteGitPath(nestedLine.slice(3));
-                if (nestedFile) files.untracked.push(`${untrackedPath}/${nestedFile}`);
+                if (!nestedFile) continue;
+                const fullPath = `${untrackedPath}/${nestedFile}`;
+                // Categorize properly based on actual status
+                if (nXY[0] !== " " && nXY[0] !== "?") files.staged.push(fullPath);
+                if (nXY[1] === "M" || nXY[1] === "A") files.modified.push(fullPath);
+                else if (nXY[1] === "D") files.deleted.push(fullPath);
+                else if (nXY === "??") files.untracked.push(fullPath);
+                else if (nXY[0] !== " " && nXY[1] === " ") files.staged.push(fullPath);
               }
-            } else {
-              // Nested repo with no changes — skip it
             }
           } catch {
             files.untracked.push(untrackedPath);
@@ -618,7 +633,7 @@ function buildNewFileDiff(worktreePath: string, filePath: string): FileDiff | nu
       return { path: filePath, status: "A", binary: true, additions: 0, deletions: 0, hunks: [] };
     }
 
-    const fileLines = content.split("\n");
+    const fileLines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
     // Limit to 2000 lines for very large files
     const lines = fileLines.slice(0, 2000);
     const hunkLines = lines.map((line, i) => ({
