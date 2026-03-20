@@ -125,6 +125,12 @@ function buildTree(files: FileStatus[]): TreeNode[] {
 // Tree Node Renderer
 // ============================================================================
 
+/** Collect all file paths under a tree node (recursive) */
+function collectFilePaths(node: TreeNode): string[] {
+  if (node.type === "file" && node.file) return [node.file.path];
+  return node.children.flatMap(collectFilePaths);
+}
+
 function TreeItem({
   node,
   depth,
@@ -143,9 +149,9 @@ function TreeItem({
   onToggle: (path: string) => void;
   selectedFile: FileStatus | null;
   onSelectFile: (f: FileStatus) => void;
-  onStage?: (path: string) => void;
-  onUnstage?: (path: string) => void;
-  onDiscard?: (path: string) => void;
+  onStage?: (paths: string | string[]) => void;
+  onUnstage?: (paths: string | string[]) => void;
+  onDiscard?: (paths: string | string[]) => void;
   actionLoading: boolean;
 }) {
   const isDir = node.type === "dir";
@@ -180,18 +186,18 @@ function TreeItem({
         >
           {node.name}
         </span>
-        {/* File action buttons (hover) */}
-        {!isDir && node.file && (
+        {/* Action buttons (hover) — works on files AND folders */}
+        {((!isDir && node.file) || (isDir && node.children.length > 0)) && (
           <span className="worktree-file-actions">
             {onStage && (
               <button
                 className="worktree-file-btn"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onStage(node.file!.path);
+                  onStage(isDir ? collectFilePaths(node) : node.file!.path);
                 }}
                 disabled={actionLoading}
-                title="Stage"
+                title={isDir ? "Stage all in folder" : "Stage"}
               >
                 +
               </button>
@@ -201,10 +207,10 @@ function TreeItem({
                 className="worktree-file-btn"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onUnstage(node.file!.path);
+                  onUnstage(isDir ? collectFilePaths(node) : node.file!.path);
                 }}
                 disabled={actionLoading}
-                title="Unstage"
+                title={isDir ? "Unstage all in folder" : "Unstage"}
               >
                 −
               </button>
@@ -214,10 +220,10 @@ function TreeItem({
                 className="worktree-file-btn worktree-file-btn--danger"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onDiscard(node.file!.path);
+                  onDiscard(isDir ? collectFilePaths(node) : node.file!.path);
                 }}
                 disabled={actionLoading}
-                title="Discard"
+                title={isDir ? "Discard all in folder" : "Discard"}
               >
                 ↩
               </button>
@@ -264,9 +270,9 @@ function FileTreeSection({
   files: FileStatus[];
   selectedFile: FileStatus | null;
   onSelectFile: (f: FileStatus) => void;
-  onStage?: (path: string) => void;
-  onUnstage?: (path: string) => void;
-  onDiscard?: (path: string) => void;
+  onStage?: (paths: string | string[]) => void;
+  onUnstage?: (paths: string | string[]) => void;
+  onDiscard?: (paths: string | string[]) => void;
   actionLoading: boolean;
 }) {
   // All dirs expanded by default
@@ -321,9 +327,9 @@ interface FileSidebarProps {
   files: FileStatus[];
   selectedFile: FileStatus | null;
   onSelectFile: (f: FileStatus) => void;
-  onStage: (path: string) => void;
-  onUnstage: (path: string) => void;
-  onDiscard: (path: string) => void;
+  onStage: (paths: string | string[]) => void;
+  onUnstage: (paths: string | string[]) => void;
+  onDiscard: (paths: string | string[]) => void;
   onStageAll: () => void;
   onResolve: (path: string, resolution: "ours" | "theirs" | "both") => void;
   actionLoading: boolean;
