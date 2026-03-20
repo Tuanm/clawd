@@ -221,7 +221,12 @@ export async function safeDeleteWorktree(
   projectRoot: string,
 ): Promise<{ deleted: boolean; reason?: string }> {
   const expectedBase = getWorktreeBase(projectRoot);
-  if (!worktreePath.startsWith(expectedBase + "/") && worktreePath !== expectedBase) {
+  const sep = require("node:path").sep;
+  if (
+    !worktreePath.startsWith(expectedBase + sep) &&
+    !worktreePath.startsWith(expectedBase + "/") &&
+    worktreePath !== expectedBase
+  ) {
     throw new Error(`Safety check: worktreePath must be under ${expectedBase}`);
   }
 
@@ -251,7 +256,7 @@ export async function safeDeleteWorktree(
       encoding: "utf-8",
       stdio: "pipe",
     }).trim();
-    const repoRoot = gitDir.replace("/.git", "").replace(/\/\.git\/worktrees.*/, "");
+    const repoRoot = gitDir.replace(/[/\\]\.git$/, "").replace(/[/\\]\.git[/\\]worktrees.*/, "");
 
     if (repoRoot && existsSync(repoRoot)) {
       execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "pipe" });
@@ -436,6 +441,7 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
                 cwd: subPath,
                 encoding: "utf-8",
                 stdio: "pipe",
+                timeout: 10_000,
               }).trimEnd();
               if (subStatus.trim()) {
                 for (const subLine of subStatus.split("\n")) {
@@ -443,7 +449,10 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
                   const subXY = subLine.slice(0, 2);
                   const subFile = unquoteGitPath(subLine.slice(3));
                   const fullPath = `${path}/${subFile}`;
-                  if (subXY[0] !== " " && subXY[0] !== "?") files.staged.push(fullPath);
+                  if (subXY[0] !== " " && subXY[0] !== "?") {
+                    files.staged.push(fullPath);
+                    if (subXY[0] === "D") files.deleted.push(fullPath);
+                  }
                   if (subXY[1] === "M" || subXY[1] === "A") files.modified.push(fullPath);
                   else if (subXY[1] === "D") files.deleted.push(fullPath);
                   else if (subXY === "??") files.untracked.push(fullPath);
@@ -460,7 +469,10 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
             files.modified.push(path);
           }
         } else {
-          if (xy[0] !== ".") files.staged.push(path);
+          if (xy[0] !== ".") {
+            files.staged.push(path);
+            if (xy[0] === "D") files.deleted.push(path);
+          }
           if (xy[1] === "M") files.modified.push(path);
           else if (xy[1] === "D") files.deleted.push(path);
         }
@@ -481,8 +493,9 @@ export function getWorktreeStatus(worktreePath: string): WorktreeStatus {
               cwd: fullUntrackedPath,
               encoding: "utf-8",
               stdio: "pipe",
-            }).trim();
-            if (nestedStatus) {
+              timeout: 10_000,
+            }).trimEnd();
+            if (nestedStatus.trim()) {
               for (const nestedLine of nestedStatus.split("\n")) {
                 if (!nestedLine.trim()) continue;
                 const nXY = nestedLine.slice(0, 2);
@@ -571,8 +584,9 @@ export interface FileDiff {
  * or null if not a submodule path.
  */
 function resolveSubmodulePath(worktreePath: string, filePath: string): { cwd: string; relativePath: string } | null {
-  // Check if any prefix of the path is a submodule (has .git file/dir inside worktreePath)
-  const parts = filePath.split("/");
+  // Normalize backslashes (Windows) to forward slashes (git output uses /)
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  const parts = normalizedPath.split("/");
   for (let i = 1; i < parts.length; i++) {
     const prefix = parts.slice(0, i).join("/");
     const subPath = join(worktreePath, prefix);
