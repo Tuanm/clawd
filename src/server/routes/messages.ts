@@ -44,6 +44,7 @@ export interface PostMessageRequest {
   subspace_json?: string;
   workspace_json?: string;
   tool_result_json?: string;
+  interactive_json?: string;
 }
 
 export interface UpdateMessageRequest {
@@ -108,6 +109,15 @@ export function postMessage(req: PostMessageRequest) {
 
   const codePreviewJson = req.code_preview ? JSON.stringify(req.code_preview) : null;
 
+  // Validate interactive_json if provided
+  if (req.interactive_json) {
+    const { validateInteractiveJson } = require("./artifact-actions");
+    const validation = validateInteractiveJson(req.interactive_json);
+    if (!validation.valid) {
+      return { ok: false, error: "invalid_interactive_json", message: validation.error };
+    }
+  }
+
   // Parse mentions from text
   const mentions = parseMentions(text);
   const mentionsJson = JSON.stringify(mentions);
@@ -143,6 +153,7 @@ export function postMessage(req: PostMessageRequest) {
     req.subspace_json || null,
     req.workspace_json || null,
     req.tool_result_json || null,
+    req.interactive_json || null,
   );
 
   const msg = preparedStatements.getMessageByTs.get(ts);
@@ -190,6 +201,9 @@ export function updateMessage(req: UpdateMessageRequest) {
       req.channel,
     ]);
   }
+
+  // Clear interactive_json on edit (prevent stale interactive artifacts)
+  db.run(`UPDATE messages SET interactive_json = NULL WHERE ts = ? AND channel = ?`, [req.ts, req.channel]);
 
   const msg = preparedStatements.getMessageByTs.get(req.ts);
 
@@ -573,6 +587,8 @@ export function clearChannelHistory(channel: string): {
   if (!CLEARABLE_CHANNELS.has(channel)) {
     return { ok: false, error: "channel_not_clearable" };
   }
+  // Delete artifact actions for this channel
+  db.run(`DELETE FROM artifact_actions WHERE channel = ?`, [channel]);
   // Delete all messages (including threads) for this channel
   db.run(`DELETE FROM messages WHERE channel = ?`, [channel]);
   // Delete conversation summaries so agents start fresh (no compressed history)
@@ -601,6 +617,9 @@ export function deleteMessage(channel: string, ts: string) {
   if (!msg) {
     return { ok: false, error: "message_not_found" };
   }
+
+  // Cascade delete artifact actions
+  db.run(`DELETE FROM artifact_actions WHERE message_ts = ? AND channel = ?`, [ts, channel]);
 
   db.run(`DELETE FROM messages WHERE ts = ? AND channel = ?`, [ts, channel]);
 

@@ -43,8 +43,8 @@ initDatabase();
 export const preparedStatements = {
   // Insert message
   insertMessage: db.prepare(
-    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json, subspace_json, workspace_json, tool_result_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json, subspace_json, workspace_json, tool_result_json, interactive_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ),
 
   // Get message by ts
@@ -87,6 +87,16 @@ export const preparedStatements = {
   // Get agent seen
   getAgentSeen: db.prepare<{ last_seen_ts: string; last_poll_ts: number | null }, [string, string]>(
     `SELECT last_seen_ts, last_poll_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
+  ),
+
+  // Get the first action taken on an interactive artifact (for reconnect state)
+  getArtifactAction: db.prepare<{ action_id: string; value: string; user: string }, [string]>(
+    `SELECT action_id, value, user FROM artifact_actions WHERE message_ts = ? ORDER BY created_at ASC LIMIT 1`,
+  ),
+
+  // Get all actions for an artifact (for polls, tallies)
+  getArtifactActions: db.prepare<{ action_id: string; value: string; user: string; created_at: number }, [string]>(
+    `SELECT action_id, value, user, created_at FROM artifact_actions WHERE message_ts = ? ORDER BY created_at ASC`,
   ),
 };
 
@@ -343,6 +353,41 @@ export function initDatabase() {
     /* Column already exists */
   }
 
+  // Migration: Add interactive_json column to messages
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN interactive_json TEXT`);
+  } catch {
+    /* Column already exists */
+  }
+
+  // Interactive artifact actions table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS artifact_actions (
+      id TEXT PRIMARY KEY,
+      message_ts TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      action_id TEXT NOT NULL,
+      value TEXT,
+      value_hash TEXT,
+      user TEXT NOT NULL,
+      handler TEXT NOT NULL,
+      handler_config TEXT,
+      status TEXT DEFAULT 'completed',
+      result TEXT,
+      depth INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_artifact_actions_message ON artifact_actions(message_ts);
+    CREATE INDEX IF NOT EXISTS idx_artifact_actions_channel ON artifact_actions(channel, created_at);
+  `);
+  try {
+    db.exec(
+      `CREATE UNIQUE INDEX idx_artifact_actions_idempotent ON artifact_actions(message_ts, action_id, user, value_hash)`,
+    );
+  } catch {
+    /* Index already exists */
+  }
+
   // Create spaces table for sub-agent chat sessions
   db.exec(`
     CREATE TABLE IF NOT EXISTS spaces (
@@ -496,6 +541,7 @@ export function migrateChannelIds() {
       { table: "summaries", column: "channel" },
       { table: "articles", column: "channel" },
       { table: "spaces", column: "channel" },
+      { table: "artifact_actions", column: "channel" },
     ];
 
     // Also migrate channel_agents if it exists
@@ -580,6 +626,7 @@ export interface Message {
   subspace_json: string | null;
   workspace_json: string | null;
   tool_result_json: string | null;
+  interactive_json: string | null;
   created_at: number;
 }
 
@@ -619,6 +666,9 @@ export interface SlackMessage {
   subspace?: SubspacePreview;
   workspace?: WorkspacePreview;
   tool_result?: ToolResultPreview;
+  interactive?: string; // Raw JSON string — frontend parses via lenient parser
+  interactive_acted?: boolean;
+  interactive_action?: { action_id: string; value: string; user: string } | null;
 }
 
 export interface WorkspacePreview {
@@ -772,6 +822,25 @@ export function toSlackMessage(msg: Message): SlackMessage {
     } catch {
       /* Invalid JSON */
     }
+  }
+
+  // Parse interactive artifact spec (Path B: MCP-sent via column)
+  if (msg.interactive_json) {
+    try {
+      const interactive = JSON.parse(msg.interactive_json);
+      if (interactive && Array.isArray(interactive.components)) {
+        result.interactive = msg.interactive_json;
+      }
+    } catch {
+      /* Invalid JSON */
+    }
+  }
+
+  // Load action state for ANY message (covers both Path A tag-based and Path B column-based)
+  const action = preparedStatements.getArtifactAction.get(msg.ts);
+  if (action) {
+    result.interactive_acted = true;
+    result.interactive_action = action;
   }
 
   return result;

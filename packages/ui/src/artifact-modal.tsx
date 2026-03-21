@@ -4,13 +4,28 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import FullArtifactRenderer from "./artifact-renderer";
+import SandboxedIframe from "./artifact-sandbox";
 import { ARTIFACT_EXTENSION_MAP, type ArtifactType, TYPE_CONFIG } from "./artifact-types";
 import { AlertIcon, CheckIcon, CloseIcon, CopyIcon, DownloadIcon, PreBlock } from "./ui-primitives";
 
 // Renders artifact content at full size inside the modal body.
-// Phase 4 will replace this with sandboxed renderers per type.
-function ArtifactRenderer({ type, content, language }: { type: ArtifactType; content: string; language?: string }) {
-  // Delegate to the full ArtifactRenderer which has sandboxed iframe, charts, CSV, etc.
+// html/react types use SandboxedIframe directly to thread messagTs/channel for the bridge.
+function ArtifactRenderer({
+  type,
+  content,
+  language,
+  messagTs,
+  channel,
+}: {
+  type: ArtifactType;
+  content: string;
+  language?: string;
+  messagTs?: string;
+  channel?: string;
+}) {
+  if (type === "html" || type === "react") {
+    return <SandboxedIframe type={type} content={content} messagTs={messagTs} channel={channel} />;
+  }
   return <FullArtifactRenderer artifactType={type} content={content} language={language} />;
 }
 
@@ -62,10 +77,17 @@ export interface ArtifactModalProps {
   title: string;
   content: string;
   language?: string;
+  /** Slack message timestamp — forwarded to SandboxedIframe for bridge actions */
+  messagTs?: string;
+  /** Slack channel ID — forwarded to SandboxedIframe for bridge actions */
+  channel?: string;
   onClose: () => void;
 }
 
-export function ArtifactModal({ type, title, content, language, onClose }: ArtifactModalProps) {
+export function ArtifactModal({ type, title, content, language, messagTs, channel, onClose }: ArtifactModalProps) {
+  // Interactive artifacts render inline in the message — no modal needed
+  if (type === "interactive") return null;
+
   const [copied, setCopied] = useState(false);
   const modalRef = useRef<HTMLDivElement>(null);
   const config = TYPE_CONFIG[type] ?? TYPE_CONFIG.code;
@@ -177,7 +199,7 @@ export function ArtifactModal({ type, title, content, language, onClose }: Artif
         <div className="artifact-modal-body">
           {/* key=content resets error boundary if content changes */}
           <ArtifactErrorBoundary key={content} content={content}>
-            <ArtifactRenderer type={type} content={content} language={language} />
+            <ArtifactRenderer type={type} content={content} language={language} messagTs={messagTs} channel={channel} />
           </ArtifactErrorBoundary>
         </div>
       </div>

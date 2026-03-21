@@ -193,6 +193,17 @@ Use this to respond to user messages or send notifications.`,
           },
           required: ["filename", "language", "content"],
         },
+        interactive_json: {
+          type: "object",
+          description:
+            "Interactive component spec for user interactions (approvals, forms, polls). Contains: version, components[], on_action, one_shot",
+          properties: {
+            version: { type: "string", description: "Schema version (default '1')" },
+            components: { type: "array", description: "Array of component objects" },
+            on_action: { type: "object", description: "Action handler config" },
+            one_shot: { type: "boolean", description: "Disable after first action (default true)" },
+          },
+        },
       },
       required: ["text"],
     },
@@ -686,6 +697,32 @@ Note: Updates broadcast to all connected WebSocket clients in real-time.`,
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
+    },
+  },
+  {
+    name: "chat_get_artifact_actions",
+    description: `Get user responses/actions taken on an interactive artifact.
+
+Use this to read back poll results, form submissions, or approval decisions.
+
+Args:
+  - channel (string): Channel ID
+  - message_ts (string): Timestamp of the message containing the interactive artifact
+
+Returns JSON:
+{
+  "ok": true,
+  "actions": [
+    { "action_id": "0:color", "value": {"color": "blue"}, "user": "UHUMAN", "created_at": 1234567890 }
+  ],
+  "count": 1
+}`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        message_ts: { type: "string", description: "Message timestamp containing the interactive artifact" },
+      },
+      required: ["message_ts"],
     },
   },
   {
@@ -1792,6 +1829,7 @@ async function executeToolCall(
               highlight_lines?: number[];
             }
           | undefined;
+        const interactiveJson = args.interactive_json as Record<string, any> | undefined;
 
         const result = postMessage({
           channel,
@@ -1801,6 +1839,7 @@ async function executeToolCall(
           html_preview: htmlPreview,
           code_preview: codePreview,
           workspace_json: workspaceJson,
+          interactive_json: interactiveJson ? JSON.stringify(interactiveJson) : undefined,
         });
 
         resultText = JSON.stringify(result);
@@ -2318,6 +2357,14 @@ async function executeToolCall(
           }
         }
 
+        resultText = JSON.stringify(result);
+        break;
+      }
+
+      case "chat_get_artifact_actions": {
+        const messageTs = args.message_ts as string;
+        const { getArtifactActions: getActions } = await import("./routes/artifact-actions");
+        const result = getActions(messageTs, channelId);
         resultText = JSON.stringify(result);
         break;
       }

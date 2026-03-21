@@ -32,6 +32,9 @@ interface Message {
   is_streaming?: boolean;
   thinking_text?: string; // Streamed thinking tokens (separate from content)
   seen_by?: SeenByAgent[];
+  // Interactive artifact state
+  interactive?: string;
+  interactive_acted?: boolean;
 }
 
 // Pending message for optimistic UI
@@ -1323,6 +1326,22 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             });
             return newMap;
           });
+        } else if (data.type === "artifact_action") {
+          // Mark interactive artifact as submitted (one-shot cross-user disable)
+          if (data.one_shot) {
+            setChannelStates((prev) => {
+              const current = prev.get(msgChannel);
+              if (!current) return prev;
+              const newMap = new Map(prev);
+              newMap.set(msgChannel, {
+                ...current,
+                messages: current.messages.map((m) =>
+                  m.ts === data.message_ts ? { ...m, interactive_acted: true } : m,
+                ),
+              });
+              return newMap;
+            });
+          }
         } else if (data.type === "message_seen") {
           setChannelStates((prev) => {
             const current = prev.get(msgChannel);

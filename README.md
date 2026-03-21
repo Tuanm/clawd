@@ -208,8 +208,8 @@ These are injected into the agent sandbox environment. The file is never exposed
 │   ├── chat.db                  # Chat messages, agents, channels
 │   ├── kanban.db                # Tasks, plans, phases
 │   ├── scheduler.db             # Scheduled jobs and run history
+│   ├── memory.db                # Agent session memory, knowledge base, long-term memories
 │   └── attachments/             # Uploaded files and images
-├── memory.db                    # Agent session memory, knowledge base, long-term memories
 └── mcp-oauth-tokens.json        # OAuth tokens for external MCP servers
 
 {projectRoot}/.clawd/            # Project-specific config (not directly accessible by agents)
@@ -244,6 +244,7 @@ Main application database (SQLite, WAL mode). Contains:
 | `copilot_calls` | API call analytics |
 | `users` | User records |
 | `message_seen` | User read tracking |
+| `artifact_actions` | Interactive artifact user actions (message_ts, action_id, value, handler, status) |
 
 ### kanban.db
 
@@ -295,7 +296,9 @@ clawd/
 │   │   ├── database.ts           # chat.db schema & migrations
 │   │   ├── websocket.ts          # WebSocket broadcasting
 │   │   ├── browser-bridge.ts     # Browser extension WS bridge
-│   │   └── remote-worker.ts      # Remote worker WebSocket bridge
+│   │   ├── remote-worker.ts      # Remote worker WebSocket bridge
+│   │   └── routes/
+│   │       └── artifact-actions.ts # Interactive artifact action handler and validation
 │   ├── agent/
 │   │   ├── agent.ts              # Agent class, reasoning loop, compaction
 │   │   ├── agents/               # Agent file loader (4-directory priority, Claude Code compat)
@@ -320,9 +323,13 @@ clawd/
 │   │   └── src/
 │   │       ├── App.tsx           # Main app, WebSocket, state management
 │   │       ├── MessageList.tsx   # Messages, mermaid rendering
-│   │       ├── artifact-types.ts # 7 artifact types (html, react, svg, chart, csv, markdown, code)
+│   │       ├── artifact-types.ts # 8 artifact types (html, react, svg, chart, csv, markdown, code, interactive)
 │   │       ├── artifact-renderer.tsx # Artifact rendering logic
 │   │       ├── artifact-sandbox.tsx # Sandboxed iframe for html/react (DOMPurify + rehype-sanitize)
+│   │       ├── interactive-renderer.tsx # Renders declarative interactive artifact JSON inline
+│   │       ├── interactive-components.tsx # Interactive component primitives (buttons, forms, etc.)
+│   │       ├── interactive-components-extended.tsx # Extended components (toggle, tabs, tables, charts)
+│   │       ├── interactive-types.ts # Type definitions and state management for interactive artifacts
 │   │       ├── chart-renderer.tsx # Recharts component with 6 chart types
 │   │       ├── file-preview.tsx  # File preview cards (PDF, CSV, text, code, images)
 │   │       ├── SidebarPanel.tsx  # Sidebar for artifact/file rendering
@@ -702,6 +709,7 @@ All API endpoints are available at `/api/*`. Key groups:
 | **Files** | `files.upload`, `files/{id}` |
 | **Streaming** | `agent.setStreaming`, `agent.streamToken`, `agent.streamToolCall`, `agent.getThoughts` |
 | **Tasks** | `tasks.list`, `tasks.get`, `tasks.create`, `tasks.update`, `tasks.delete`, `tasks.addComment` |
+| **Artifacts** | `artifact.action`, `artifact.actions` |
 | **MCP** | `/mcp` (SSE endpoint), `app.mcp.list`, `app.mcp.add`, `app.mcp.remove` |
 | **Browser** | `/browser/ws` (WebSocket), `/browser/extension`, `/browser/files/*` |
 | **Spaces** | `spaces.list`, `spaces.get` |
@@ -733,6 +741,7 @@ The UI connects via WebSocket for real-time updates:
 | `agent_tool_call` | Tool execution (started/completed/error) |
 | `reaction_added/removed` | Emoji reactions |
 | `message_seen` | Read receipts |
+| `artifact_action` | Interactive artifact user action completed (message_ts, action_id, values, handler, status) |
 | `agent_heartbeat` | Heartbeat monitor events (sub-types: `heartbeat_sent`, `processing_timeout`, `space_auto_failed`) — automatic stuck-agent recovery |
 
 ---
@@ -741,7 +750,7 @@ The UI connects via WebSocket for real-time updates:
 
 Agents output structured content using `<artifact>` tags. The UI automatically detects and renders these as interactive visual components:
 
-### 7 Artifact Types
+### 8 Artifact Types
 
 | Type | Content | Rendering |
 |---|---|---|
@@ -752,6 +761,7 @@ Agents output structured content using `<artifact>` tags. The UI automatically d
 | `csv` | CSV with header row | Sortable data table |
 | `markdown` | Markdown text | Full markdown pipeline with syntax highlighting |
 | `code` | Source code | Prism syntax highlighting (32+ languages) |
+| `interactive` | Declarative JSON (buttons, forms, tables, charts) | Native interactive components with action handlers |
 
 ### Chart JSON Format
 

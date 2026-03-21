@@ -13,7 +13,7 @@ Claw'd is a sophisticated open-source agentic collaborative chat platform built 
 - 260 total files, 1.1M+ tokens
 - Multi-provider LLM support (Copilot, OpenAI, Anthropic, Ollama, Minimax)
 - 26 browser automation tools (CDP + stealth modes)
-- 7 artifact types for rich visualization
+- 8 artifact types for rich visualization (html, react, svg, chart, csv, markdown, code, interactive)
 - 3-tier agent memory system (session, knowledge base, long-term)
 - Sub-agent spaces for parallel execution
 - Scheduled task system (cron/interval/once)
@@ -98,6 +98,10 @@ clawd/
 │   │   │   ├── App.tsx               # Main app, routing, WS setup
 │   │   │   ├── MessageList.tsx       # Message display, mermaid rendering
 │   │   │   ├── artifact-*.tsx        # Artifact rendering system
+│   │   │   ├── interactive-renderer.tsx # Declarative interactive artifact renderer
+│   │   │   ├── interactive-components.tsx # Interactive primitives (buttons, forms, etc.)
+│   │   │   ├── interactive-components-extended.tsx # Extended components (tabs, tables, charts)
+│   │   │   ├── interactive-types.ts # Type definitions and state management
 │   │   │   ├── chart-renderer.tsx    # Recharts integration
 │   │   │   ├── file-preview.tsx      # File preview cards
 │   │   │   ├── SidebarPanel.tsx      # Sidebar for artifacts/files
@@ -610,7 +614,7 @@ Tools in agent sandbox have guards preventing destructive operations:
 
 ## Artifact Rendering
 
-### 7 Artifact Types
+### 8 Artifact Types
 
 Agents output `<artifact type="TYPE">CONTENT</artifact>` for rich visualization:
 
@@ -623,6 +627,7 @@ Agents output `<artifact type="TYPE">CONTENT</artifact>` for rich visualization:
 | `csv` | Sortable table | Escaped content |
 | `markdown` | Full pipeline | rehype-sanitize filtering |
 | `code` | Prism highlighting (32+ languages) | Read-only |
+| `interactive` | Declarative JSON (buttons, forms, tables) | Native components, action handlers, rate limited |
 
 ### Chart Types
 
@@ -646,8 +651,49 @@ Config format:
 
 ### Rendering Locations
 
-- **Inline in message**: chart (Recharts), svg (DOMPurify), code (Prism)
+- **Inline in message**: chart (Recharts), svg (DOMPurify), code (Prism), interactive (native components)
 - **Sidebar panel** (click preview card): html, react, csv, markdown
+
+### Interactive Artifacts
+
+**Model B** (Declarative JSON) renders safe, agent-friendly UI components without arbitrary code:
+
+```json
+{
+  "components": [
+    { "type": "text", "content": "Select an option" },
+    { "type": "button_group", "id": "choice", "buttons": [
+      { "id": "a", "label": "Option A", "value": "a" },
+      { "id": "b", "label": "Option B", "value": "b" }
+    ]},
+    { "type": "submit", "label": "Continue" }
+  ],
+  "one_shot": true,
+  "on_action": { "type": "store|message|agent", "template": "..." }
+}
+```
+
+**Component Types:**
+- Display: text, image, table, chart, divider
+- Input: text_input, select, checkbox, radio_group, toggle, slider, number_input, date_picker
+- Control: button, button_group, tabs, submit
+
+**Action Handlers:**
+- `store` — save values to database (artifact_actions table)
+- `message` — post templated message to channel
+- `agent` — inject action as system message for agent re-invocation
+
+**Features:**
+- Rate limiting: 10 per artifact/min, 30 global per user/min
+- One-shot default: disabled after first user action (cross-user enforcement)
+- Value persistence: all form field values collected and sent
+- State management: InteractiveRenderer handles local form state + submission
+
+**Security:**
+- No eval, no arbitrary React code
+- Schema validation on artifact creation
+- Max 20 components per artifact, 50KB total size
+- Rate-limited action processing
 
 ---
 

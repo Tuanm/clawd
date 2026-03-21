@@ -4,8 +4,10 @@
  */
 
 import Database from "bun:sqlite";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getDataDir } from "../../config-file";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -43,9 +45,13 @@ export class KnowledgeBase {
   private sessionSizes = new Map<string, number>();
 
   constructor(dbPath?: string) {
-    const defaultPath = join(homedir(), ".clawd", "memory.db");
-    this.db = new Database(dbPath || defaultPath);
-    // Use existing PRAGMAs — memory.db already has WAL, cache, etc.
+    const newDefault = join(getDataDir(), "memory.db");
+    const oldDefault = join(homedir(), ".clawd", "memory.db");
+    let resolvedPath = dbPath || newDefault;
+    if (!dbPath && !existsSync(newDefault) && existsSync(oldDefault)) {
+      resolvedPath = oldDefault;
+    }
+    this.db = new Database(resolvedPath);
   }
 
   /** Lazy init — only create tables on first use */

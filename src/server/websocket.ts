@@ -317,6 +317,32 @@ export function broadcastAgentToolCall(
   }
 }
 
+// Broadcast interactive artifact action event
+export function broadcastArtifactAction(
+  channel: string,
+  data: {
+    message_ts: string;
+    action_id: string;
+    values: Record<string, any>;
+    user: string;
+    handler: string;
+    status: string;
+    one_shot: boolean;
+  },
+) {
+  const payload = JSON.stringify({
+    type: "artifact_action",
+    channel,
+    ...data,
+  });
+
+  for (const client of clients) {
+    if (isSubscribed(client, channel)) {
+      client.send(payload);
+    }
+  }
+}
+
 // Helper to add seen_by to a message (for broadcast)
 export function addSeenByToMessage(channel: string, message: Message) {
   const slackMsg = toSlackMessage(message);
