@@ -323,6 +323,54 @@ export function getBuiltinAgent(name: string): AgentFileConfig | null {
 const agentFilesCache = new Map<string, { result: AgentFileConfig[]; ts: number }>();
 const AGENT_FILES_CACHE_TTL = 60_000;
 
+/** Clear the agent files cache (call after save/delete operations) */
+export function clearAgentFilesCache(): void {
+  agentFilesCache.clear();
+}
+
+/**
+ * List global agent files only (no project root needed).
+ * Scans ~/.claude/agents/ + ~/.clawd/agents/ + built-ins.
+ * Used by the agent-files management API.
+ */
+export function listGlobalAgentFiles(): AgentFileConfig[] {
+  const cacheKey = "__global__";
+  const cached = agentFilesCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < AGENT_FILES_CACHE_TTL) {
+    return cached.result;
+  }
+
+  const globalDirs: AgentDir[] = [
+    { dir: join(homedir(), ".claude", "agents"), source: "claude-global" },
+    { dir: join(homedir(), ".clawd", "agents"), source: "clawd-global" },
+  ];
+  const agentMap = new Map<string, AgentFileConfig>();
+
+  // Seed with built-in agents (lowest priority)
+  for (const agent of BUILTIN_AGENTS) {
+    agentMap.set(agent.name, agent);
+  }
+
+  // Scan global dirs (lower priority first, higher overrides)
+  for (const { dir, source } of globalDirs) {
+    if (!existsSync(dir)) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir).filter((f) => f.endsWith(".md"));
+    } catch {
+      continue;
+    }
+    for (const filename of entries) {
+      const agent = parseAgentFile(join(dir, filename), source);
+      if (agent) agentMap.set(agent.name, agent);
+    }
+  }
+
+  const result = Array.from(agentMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  agentFilesCache.set(cacheKey, { result, ts: Date.now() });
+  return result;
+}
+
 export function listAgentFiles(projectRoot: string): AgentFileConfig[] {
   const cached = agentFilesCache.get(projectRoot);
   if (cached && Date.now() - cached.ts < AGENT_FILES_CACHE_TTL) {

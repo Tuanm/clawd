@@ -22,10 +22,17 @@ export function listChannels() {
   };
 }
 
+// Reserved channel names — blocked from creation to avoid route collision
+const RESERVED_CHANNELS = ["agents", "skills", "articles", "favicon.ico", "assets", "api", "ws", "mcp", "health"];
+
 // POST /api/conversations.create
 export function createChannel(name: string, userId = "UHUMAN") {
   if (name.includes(":")) {
     return { ok: false, error: "Channel names cannot contain ':' (reserved for sub-spaces)" };
+  }
+
+  if (RESERVED_CHANNELS.includes(name.toLowerCase())) {
+    return { ok: false, error: `"${name}" is a reserved channel name` };
   }
 
   // Use name as ID — the entire system (worker loops, messages, agent_seen, spaces)

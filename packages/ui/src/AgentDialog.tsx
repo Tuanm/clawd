@@ -16,6 +16,7 @@ interface Agent {
   running: boolean;
   avatar_color: string | null;
   heartbeat_interval: number;
+  agent_type: string | null;
 }
 
 interface ProviderOption {
@@ -28,6 +29,69 @@ interface Props {
   channel: string;
   isOpen: boolean;
   onClose: () => void;
+}
+
+/** Custom dropdown — same style as homepage channel dropdown */
+function CustomSelect({
+  value,
+  options,
+  onChange,
+  placeholder = "Select...",
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const selectedLabel = options.find((o) => o.value === value)?.label || placeholder;
+
+  return (
+    <div className="custom-select" ref={ref}>
+      <button type="button" className="agent-field-input custom-select-trigger" onClick={() => setOpen(!open)}>
+        <span className={`custom-select-value ${!value ? "custom-select-placeholder" : ""}`}>{selectedLabel}</span>
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          className={`custom-select-arrow ${open ? "open" : ""}`}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {open && (
+        <div className="custom-select-dropdown">
+          {options.map((o) => (
+            <div
+              key={o.value}
+              className={`custom-select-option ${o.value === value ? "selected" : ""}`}
+              onClick={() => {
+                onChange(o.value);
+                setOpen(false);
+              }}
+            >
+              {o.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function PlusIcon() {
@@ -102,6 +166,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const [newProject, setNewProject] = useState("");
   const [newWorkerToken, setNewWorkerToken] = useState("");
   const [newHeartbeat, setNewHeartbeat] = useState(0);
+  const [newAgentType, setNewAgentType] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Edit state for existing agent fields
@@ -113,6 +178,8 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const [savedEditModel, setSavedEditModel] = useState("");
   const [savedEditProject, setSavedEditProject] = useState("");
   const [savedEditHeartbeat, setSavedEditHeartbeat] = useState(0);
+  const [editAgentType, setEditAgentType] = useState("");
+  const [savedEditAgentType, setSavedEditAgentType] = useState("");
   const [fieldsDirty, setFieldsDirty] = useState(false);
   const [fieldsSaving, setFieldsSaving] = useState(false);
 
@@ -124,6 +191,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
 
   // Providers list state
   const [providers, setProviders] = useState<ProviderOption[]>([]);
+
+  // Agent files list (for Type dropdown)
+  const [agentFiles, setAgentFiles] = useState<{ name: string; description: string }[]>([]);
 
   // Folder browser state
   const [showFolderBrowser, setShowFolderBrowser] = useState(false);
@@ -170,6 +240,23 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     return () => controller.abort();
   }, [isOpen]);
 
+  // Load agent files list for Type dropdown
+  useEffect(() => {
+    if (!isOpen) return;
+    const controller = new AbortController();
+    authFetch(`${API_URL}/api/app.agent-files.list`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok && Array.isArray(data.agents)) {
+          setAgentFiles(data.agents.map((a: any) => ({ name: a.name, description: a.description })));
+        }
+      })
+      .catch((err) => {
+        if (err.name !== "AbortError") console.error(err);
+      });
+    return () => controller.abort();
+  }, [isOpen]);
+
   // Reset state when dialog closes
   useEffect(() => {
     if (!isOpen) {
@@ -177,6 +264,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setShowAddForm(false);
       setError(null);
       setNewName("");
+      setNewAgentType("");
       setNewProvider(() => {
         // Reset to "copilot" if available, else first in list
         if (providers.length === 0) return "copilot";
@@ -244,6 +332,8 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     setSavedEditModel(agent.model || "");
     setSavedEditProject(agent.project || "");
     setSavedEditHeartbeat(agent.heartbeat_interval ?? 0);
+    setEditAgentType(agent.agent_type || "");
+    setSavedEditAgentType(agent.agent_type || "");
     setFieldsDirty(false);
   }, [selectedAgentId, showAddForm]);
 
@@ -261,12 +351,19 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     }
   }, [showAddForm]);
 
-  const checkFieldsDirty = (provider: string, model: string, project: string, heartbeat: number) => {
+  const checkFieldsDirty = (
+    provider: string,
+    model: string,
+    project: string,
+    heartbeat: number,
+    agentType?: string,
+  ) => {
     return (
       provider !== savedEditProvider ||
       model !== savedEditModel ||
       project !== savedEditProject ||
-      heartbeat !== savedEditHeartbeat
+      heartbeat !== savedEditHeartbeat ||
+      (agentType !== undefined && agentType !== savedEditAgentType)
     );
   };
 
@@ -298,11 +395,13 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           project: newProject.trim(),
           worker_token: newWorkerToken.trim() || undefined,
           heartbeat_interval: newHeartbeat,
+          agent_type: newAgentType || undefined,
         }),
       });
       const data = await res.json();
       if (data.ok) {
         setNewName("");
+        setNewAgentType("");
         setNewProvider(() => {
           if (providers.length === 0) return "copilot";
           const names = providers.map((p) => p.name);
@@ -323,7 +422,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [channel, newName, newProvider, newModel, newProject, newWorkerToken, newHeartbeat, loadAgents]);
+  }, [channel, newName, newProvider, newModel, newProject, newWorkerToken, newHeartbeat, newAgentType, loadAgents]);
 
   const handleSaveAgent = useCallback(
     async (agentId: string) => {
@@ -340,11 +439,13 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
             model: editModel.trim() || "default",
             project: editProject.trim(),
             heartbeat_interval: editHeartbeat,
+            agent_type: editAgentType || null,
           }),
         });
         const data = await res.json();
         if (data.ok) {
           setSavedEditProvider(editProvider);
+          setSavedEditAgentType(editAgentType);
           setSavedEditModel(editModel);
           setSavedEditProject(editProject);
           setSavedEditHeartbeat(editHeartbeat);
@@ -359,7 +460,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
         setFieldsSaving(false);
       }
     },
-    [channel, editProvider, editModel, editProject, editHeartbeat, loadAgents],
+    [channel, editProvider, editModel, editProject, editHeartbeat, editAgentType, loadAgents],
   );
 
   const handleRemoveAgent = useCallback(
@@ -535,16 +636,28 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 value={selectedAgent.agent_id}
                 readOnly
               />
-              <label className="skills-field-label">Provider</label>
-              <input
-                type="text"
-                className="agent-field-input"
-                placeholder="Provider"
-                value={editProvider}
-                onChange={(e) => {
-                  setEditProvider(e.target.value);
-                  setFieldsDirty(checkFieldsDirty(e.target.value, editModel, editProject, editHeartbeat));
+              <label className="skills-field-label">Type</label>
+              <CustomSelect
+                value={editAgentType}
+                options={[
+                  { value: "", label: "(none)" },
+                  ...agentFiles.map((af) => ({ value: af.name, label: af.name })),
+                ]}
+                onChange={(v) => {
+                  setEditAgentType(v);
+                  setFieldsDirty(checkFieldsDirty(editProvider, editModel, editProject, editHeartbeat, v));
                 }}
+                placeholder="(none)"
+              />
+              <label className="skills-field-label">Provider</label>
+              <CustomSelect
+                value={editProvider}
+                options={providers.map((p) => ({ value: p.name, label: p.name }))}
+                onChange={(v) => {
+                  setEditProvider(v);
+                  setFieldsDirty(checkFieldsDirty(v, editModel, editProject, editHeartbeat, editAgentType));
+                }}
+                placeholder="Select provider"
               />
               <label className="skills-field-label">Model</label>
               <input
@@ -554,7 +667,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 value={editModel}
                 onChange={(e) => {
                   setEditModel(e.target.value);
-                  setFieldsDirty(checkFieldsDirty(editProvider, e.target.value, editProject, editHeartbeat));
+                  setFieldsDirty(
+                    checkFieldsDirty(editProvider, e.target.value, editProject, editHeartbeat, editAgentType),
+                  );
                 }}
               />
               <label className="skills-field-label">Project</label>
@@ -565,7 +680,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 value={editProject}
                 onChange={(e) => {
                   setEditProject(e.target.value);
-                  setFieldsDirty(checkFieldsDirty(editProvider, editModel, e.target.value, editHeartbeat));
+                  setFieldsDirty(
+                    checkFieldsDirty(editProvider, editModel, e.target.value, editHeartbeat, editAgentType),
+                  );
                 }}
               />
               <label className="skills-field-label">Heartbeat Interval</label>
@@ -579,7 +696,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 onChange={(e) => {
                   const val = Math.max(0, parseInt(e.target.value) || 0);
                   setEditHeartbeat(val);
-                  setFieldsDirty(checkFieldsDirty(editProvider, editModel, editProject, val));
+                  setFieldsDirty(checkFieldsDirty(editProvider, editModel, editProject, val, editAgentType));
                 }}
               />
               <label className="skills-field-label">Identity</label>
@@ -646,20 +763,22 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   }
                 }}
               />
+              <label className="skills-field-label">Type</label>
+              <CustomSelect
+                value={newAgentType}
+                options={[
+                  { value: "", label: "(none)" },
+                  ...agentFiles.map((af) => ({ value: af.name, label: af.name })),
+                ]}
+                onChange={(v) => setNewAgentType(v)}
+                placeholder="(none)"
+              />
               <label className="skills-field-label">Provider</label>
-              <input
-                type="text"
-                className="agent-field-input"
-                placeholder="Provider"
+              <CustomSelect
                 value={newProvider}
-                onChange={(e) => setNewProvider(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAddAgent();
-                  if (e.key === "Escape") {
-                    setShowAddForm(false);
-                    setError(null);
-                  }
-                }}
+                options={providers.map((p) => ({ value: p.name, label: p.name }))}
+                onChange={(v) => setNewProvider(v)}
+                placeholder="Select provider"
               />
               <label className="skills-field-label">Model</label>
               <input

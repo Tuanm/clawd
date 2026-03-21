@@ -28,10 +28,17 @@
 
 import type { Database } from "bun:sqlite";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { isValidAgentName, listAgentFiles, loadAgentFile, parseAgentFile } from "../agent/agents/loader";
+import {
+  clearAgentFilesCache,
+  isValidAgentName,
+  listAgentFiles,
+  listGlobalAgentFiles,
+  loadAgentFile,
+} from "../agent/agents/loader";
+import type { AgentFileConfig } from "../agent/agents/loader";
 import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../agent/api/provider-config";
 import { isWorktreeEnabled } from "../config-file";
 import { getSkillManager } from "../agent/skills/manager";
@@ -358,6 +365,13 @@ export function initAgentsTable(db: Database): void {
   } catch {
     // Column already exists
   }
+
+  // Add agent_type column for agent file type reference
+  try {
+    db.exec(`ALTER TABLE channel_agents ADD COLUMN agent_type TEXT DEFAULT NULL`);
+  } catch {
+    // Column already exists
+  }
 }
 
 /** Register agent management API routes */
@@ -414,7 +428,7 @@ export function registerAgentRoutes(
     if (path === "/api/app.agents.add" && req.method === "POST") {
       return handleAsync(async () => {
         const body = await parseBody(req);
-        const { channel, agent_id, provider, model, project, worker_token, heartbeat_interval } = body;
+        const { channel, agent_id, provider, model, project, worker_token, heartbeat_interval, agent_type } = body;
 
         if (!channel || !agent_id) {
           return json({ ok: false, error: "channel and agent_id required" }, 400);
@@ -453,19 +467,35 @@ export function registerAgentRoutes(
         const agentHeartbeatInterval =
           typeof heartbeat_interval === "number" ? Math.max(0, Math.round(heartbeat_interval)) : 0;
 
+        // Validate agent_type if provided
+        const agentType = agent_type ? String(agent_type).trim() : null;
+        if (agentType && !isValidAgentName(agentType)) {
+          return json({ ok: false, error: "invalid agent_type name" }, 400);
+        }
+
         try {
           db.run(
-            `INSERT INTO channel_agents (channel, agent_id, provider, model, project, active, worker_token, heartbeat_interval)
-             VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            `INSERT INTO channel_agents (channel, agent_id, provider, model, project, active, worker_token, heartbeat_interval, agent_type)
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
              ON CONFLICT(channel, agent_id) DO UPDATE SET
                provider = excluded.provider,
                model = excluded.model,
                project = excluded.project,
                worker_token = excluded.worker_token,
                heartbeat_interval = excluded.heartbeat_interval,
+               agent_type = excluded.agent_type,
                active = 1,
                updated_at = strftime('%s', 'now')`,
-            [channel, agent_id, agentProvider, agentModel, agentProject, agentWorkerToken, agentHeartbeatInterval],
+            [
+              channel,
+              agent_id,
+              agentProvider,
+              agentModel,
+              agentProject,
+              agentWorkerToken,
+              agentHeartbeatInterval,
+              agentType,
+            ],
           );
         } catch (error) {
           console.error("[agents] register error:", error);
@@ -482,6 +512,7 @@ export function registerAgentRoutes(
           project: agentProject,
           workerToken: agentWorkerToken || undefined,
           heartbeatInterval: agentHeartbeatInterval,
+          agentType: agentType || undefined,
         });
 
         return json({
@@ -536,6 +567,7 @@ export function registerAgentRoutes(
           heartbeat_interval,
           worktree_path,
           worktree_branch,
+          agent_type,
         } = body;
 
         if (!channel || !agent_id) {
@@ -594,6 +626,13 @@ export function registerAgentRoutes(
           updates.push("worktree_branch = ?");
           params.push(worktree_branch || null);
         }
+        if (agent_type !== undefined) {
+          if (agent_type && !isValidAgentName(agent_type)) {
+            return json({ ok: false, error: "invalid agent_type name" }, 400);
+          }
+          updates.push("agent_type = ?");
+          params.push(agent_type || null);
+        }
 
         if (updates.length === 0) {
           return json({ ok: false, error: "nothing to update" }, 400);
@@ -613,14 +652,15 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "agent_not_found" }, 404);
         }
 
-        // Restart worker if model, provider, project, worker_token, or heartbeat_interval changed, or active state changed
+        // Restart worker if model, provider, project, worker_token, heartbeat_interval, or agent_type changed, or active state changed
         if (
           model !== undefined ||
           provider !== undefined ||
           active !== undefined ||
           project !== undefined ||
           worker_token !== undefined ||
-          heartbeat_interval !== undefined
+          heartbeat_interval !== undefined ||
+          agent_type !== undefined
         ) {
           if (agent.active === 1) {
             await workerManager.restartAgent({
@@ -632,6 +672,7 @@ export function registerAgentRoutes(
               project: agent.project || "",
               workerToken: agent.worker_token || undefined,
               heartbeatInterval: agent.heartbeat_interval || 0,
+              agentType: agent.agent_type || undefined,
             });
           } else {
             await workerManager.stopAgent(channel, agent_id);
@@ -1094,21 +1135,22 @@ export function registerAgentRoutes(
     // Skills API
     // ========================================================================
 
-    // List skills for an agent
+    // List skills for an agent (or global skills when no channel/agent_id)
     if (path === "/api/app.skills.list") {
       const channel = url.searchParams.get("channel");
       const agentId = url.searchParams.get("agent_id");
 
-      if (!channel || !agentId) {
-        return json({ ok: false, error: "channel and agent_id required" }, 400);
+      let manager;
+      if (channel && agentId) {
+        const agent = db
+          .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
+          .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
+        manager = getSkillManager(agent?.project || undefined);
+      } else {
+        // No channel context — scan global dirs only (skip getContextConfigRoot CWD fallback)
+        manager = getSkillManager(undefined, true);
       }
 
-      const agent = db
-        .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
-        .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
-
-      const projectRoot = agent?.project || undefined;
-      const manager = getSkillManager(projectRoot);
       manager.indexSkillsIfStale();
       const skills = manager.listSkills();
 
@@ -1125,15 +1167,16 @@ export function registerAgentRoutes(
         return json({ ok: false, error: "name required" }, 400);
       }
 
-      let projectRoot: string | undefined;
+      let manager;
       if (channel && agentId) {
         const agent = db
           .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
           .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
-        projectRoot = agent?.project || undefined;
+        manager = getSkillManager(agent?.project || undefined);
+      } else {
+        manager = getSkillManager(undefined, true);
       }
 
-      const manager = getSkillManager(projectRoot);
       manager.indexSkillsIfStale();
       const skill = manager.getSkill(name);
 
@@ -1141,7 +1184,11 @@ export function registerAgentRoutes(
         return json({ ok: false, error: "skill_not_found" }, 404);
       }
 
-      return json({ ok: true, skill });
+      // Add editable flag — ~/.claude/ skills are read-only
+      const claudeDir = join(homedir(), ".claude");
+      const editable = !skill.path?.startsWith(claudeDir);
+
+      return json({ ok: true, skill: { ...skill, editable } });
     }
 
     // Save (create/update) a skill
@@ -1154,15 +1201,21 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "name required" }, 400);
         }
 
-        let projectRoot: string | undefined;
+        let manager;
         if (channel && agent_id) {
           const agent = db
             .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
             .get(channel, agent_id) as { project: string; worktree_path: string | null } | null;
-          projectRoot = agent?.project || undefined;
+          manager = getSkillManager(agent?.project || undefined);
+        } else {
+          manager = getSkillManager(undefined, true);
         }
 
-        const manager = getSkillManager(projectRoot);
+        // Force scope to "global" when no channel context (standalone mode)
+        const effectiveScope =
+          channel && agent_id
+            ? ((scope === "global" ? "global" : "project") as "project" | "global")
+            : ("global" as const);
 
         const triggersArray: string[] = Array.isArray(triggers)
           ? triggers
@@ -1180,7 +1233,7 @@ export function registerAgentRoutes(
             triggers: triggersArray,
             content: String(content || "").trim(),
           },
-          (scope === "global" ? "global" : "project") as "project" | "global",
+          effectiveScope,
         );
 
         if (!result.success) {
@@ -1201,15 +1254,16 @@ export function registerAgentRoutes(
         return json({ ok: false, error: "name required" }, 400);
       }
 
-      let projectRoot: string | undefined;
+      let manager;
       if (channel && agentId) {
         const agent = db
           .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
           .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
-        projectRoot = agent?.project || undefined;
+        manager = getSkillManager(agent?.project || undefined);
+      } else {
+        manager = getSkillManager(undefined, true);
       }
 
-      const manager = getSkillManager(projectRoot);
       const deleted = manager.deleteSkill(name);
 
       if (!deleted) {
@@ -1219,9 +1273,197 @@ export function registerAgentRoutes(
       return json({ ok: true });
     }
 
+    // ========================================================================
+    // Agent Files CRUD API (global agent file management)
+    // ========================================================================
+
+    // List all global agent files
+    if (path === "/api/app.agent-files.list") {
+      const agents = listGlobalAgentFiles();
+      return json({
+        ok: true,
+        agents: agents.map((a) => ({
+          name: a.name,
+          description: a.description,
+          source: a.source,
+          editable: a.source === "clawd-global",
+          model: a.model,
+          provider: a.provider,
+        })),
+      });
+    }
+
+    // Get single agent file content
+    if (path === "/api/app.agent-files.get") {
+      const name = url.searchParams.get("name");
+      if (!name) return json({ ok: false, error: "name required" }, 400);
+      if (!isValidAgentName(name)) return json({ ok: false, error: "invalid agent name" }, 400);
+
+      // Try reading raw file from ~/.clawd/agents/ first (editable)
+      const clawdPath = join(homedir(), ".clawd", "agents", `${name}.md`);
+      if (existsSync(clawdPath)) {
+        try {
+          const content = readFileSync(clawdPath, "utf-8");
+          return json({
+            ok: true,
+            agent: { name, source: "clawd-global", editable: true, content },
+          });
+        } catch {
+          return json({ ok: false, error: "failed to read file" }, 500);
+        }
+      }
+
+      // Try ~/.claude/agents/ (read-only)
+      const claudePath = join(homedir(), ".claude", "agents", `${name}.md`);
+      if (existsSync(claudePath)) {
+        try {
+          const content = readFileSync(claudePath, "utf-8");
+          return json({
+            ok: true,
+            agent: { name, source: "claude-global", editable: false, content },
+          });
+        } catch {
+          return json({ ok: false, error: "failed to read file" }, 500);
+        }
+      }
+
+      // Try built-in agents (reconstruct content)
+      const agents = listGlobalAgentFiles();
+      const agent = agents.find((a) => a.name === name);
+      if (agent && agent.source === "built-in") {
+        const content = reconstructAgentFileContent(agent);
+        return json({
+          ok: true,
+          agent: { name, source: "built-in", editable: false, content },
+        });
+      }
+
+      return json({ ok: false, error: "agent file not found" }, 404);
+    }
+
+    // Save (create/update) agent file
+    if (path === "/api/app.agent-files.save" && req.method === "POST") {
+      return handleAsync(async () => {
+        const body = await parseBody(req);
+        const { name, content } = body;
+
+        if (!name || typeof name !== "string") {
+          return json({ ok: false, error: "name required" }, 400);
+        }
+        if (!isValidAgentName(name.trim())) {
+          return json({ ok: false, error: "invalid agent name (use alphanumeric, hyphens, underscores)" }, 400);
+        }
+        if (!content || typeof content !== "string") {
+          return json({ ok: false, error: "content required" }, 400);
+        }
+
+        // File size limit: 256KB (measure bytes, not characters)
+        const MAX_AGENT_FILE_SIZE = 256 * 1024;
+        const byteSize = new TextEncoder().encode(content).byteLength;
+        if (byteSize > MAX_AGENT_FILE_SIZE) {
+          return json({ ok: false, error: "content too large (max 256KB)" }, 400);
+        }
+
+        // Validate YAML frontmatter parses correctly
+        const hasValidFrontmatter = content.match(/^---\r?\n[\s\S]*?\r?\n---/);
+        if (!hasValidFrontmatter) {
+          return json({ ok: false, error: "invalid format: must start with YAML frontmatter (---)" }, 400);
+        }
+
+        const agentsDir = join(homedir(), ".clawd", "agents");
+        mkdirSync(agentsDir, { recursive: true });
+
+        const filePath = join(agentsDir, `${name.trim()}.md`);
+
+        // Reject symlinks to prevent write escape
+        if (existsSync(filePath)) {
+          try {
+            const stat = lstatSync(filePath);
+            if (stat.isSymbolicLink()) {
+              return json({ ok: false, error: "cannot overwrite symlink" }, 400);
+            }
+          } catch {
+            /* file may have been deleted between checks — proceed */
+          }
+        }
+
+        await Bun.write(filePath, content);
+        clearAgentFilesCache();
+
+        return json({ ok: true });
+      });
+    }
+
+    // Delete agent file
+    if (path === "/api/app.agent-files.delete" && req.method === "DELETE") {
+      const name = url.searchParams.get("name");
+      if (!name) return json({ ok: false, error: "name required" }, 400);
+      if (!isValidAgentName(name)) return json({ ok: false, error: "invalid agent name" }, 400);
+
+      const filePath = join(homedir(), ".clawd", "agents", `${name}.md`);
+      if (!existsSync(filePath)) {
+        return json({ ok: false, error: "agent file not found in ~/.clawd/agents/" }, 404);
+      }
+
+      // Check if agent_type is in use (try/catch for pre-Phase-2 compat)
+      try {
+        const inUse = db.query("SELECT channel, agent_id FROM channel_agents WHERE agent_type = ?").all(name) as {
+          channel: string;
+          agent_id: string;
+        }[];
+        if (inUse.length > 0) {
+          return json(
+            {
+              ok: false,
+              error: `Cannot delete: agent type "${name}" is in use by ${inUse.length} agent(s)`,
+              agents: inUse,
+            },
+            409,
+          );
+        }
+      } catch {
+        // agent_type column not yet added — skip check
+      }
+
+      try {
+        unlinkSync(filePath);
+        clearAgentFilesCache();
+        return json({ ok: true });
+      } catch {
+        return json({ ok: false, error: "failed to delete agent file" }, 500);
+      }
+    }
+
     // Not handled
     return null;
   };
+}
+
+// ============================================================================
+// Agent File Helpers
+// ============================================================================
+
+/** Reconstruct agent file content from AgentFileConfig (for built-in agents) */
+function reconstructAgentFileContent(agent: AgentFileConfig): string {
+  const q = (s: string) => (s.includes(":") || s.includes('"') || s.includes("#") ? `"${s.replace(/"/g, '\\"')}"` : s);
+  const lines: string[] = ["---"];
+  lines.push(`name: ${agent.name}`);
+  if (agent.description) lines.push(`description: ${q(agent.description)}`);
+  if (agent.provider) lines.push(`provider: ${agent.provider}`);
+  if (agent.model) lines.push(`model: ${agent.model}`);
+  if (agent.tools) lines.push(`tools: [${agent.tools.join(", ")}]`);
+  if (agent.disallowedTools) lines.push(`disallowedTools: [${agent.disallowedTools.join(", ")}]`);
+  if (agent.skills) lines.push(`skills: [${agent.skills.join(", ")}]`);
+  if (agent.memory) lines.push(`memory: ${agent.memory}`);
+  if (agent.language) lines.push(`language: ${agent.language}`);
+  if (agent.directives) {
+    lines.push("directives:");
+    for (const d of agent.directives) lines.push(`  - ${d}`);
+  }
+  if (agent.maxTurns) lines.push(`maxTurns: ${agent.maxTurns}`);
+  lines.push("---");
+  if (agent.systemPrompt) lines.push("", agent.systemPrompt);
+  return lines.join("\n");
 }
 
 // ============================================================================

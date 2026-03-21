@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import AgentDialog from "./AgentDialog";
+import AgentFilesChannel from "./AgentFilesChannel";
 import { authFetch, getStoredAuthToken, setStoredAuthToken } from "./auth-fetch";
 import McpDialog, { McpIcon } from "./McpDialog";
 import MessageComposer from "./MessageComposer";
@@ -8,6 +9,7 @@ import PlanModal from "./PlanModal";
 import ProjectsDialog from "./ProjectsDialog";
 import SearchModal from "./SearchModal";
 import SidebarPanel from "./SidebarPanel";
+import SkillFilesChannel from "./SkillFilesChannel";
 import SkillsDialog from "./SkillsDialog";
 import { UnreadBadge } from "./UnreadBadge";
 import WorktreeDialog from "./WorktreeDialog";
@@ -461,6 +463,9 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const isSpaceChannel = activeChannel.includes(":");
   const parentChannel = isSpaceChannel ? activeChannel.split(":")[0] : null;
   const spaceId = isSpaceChannel ? activeChannel.split(":")[1] : null;
+
+  // Management channel detection (no real agents, just management UI)
+  const isManagementChannel = activeChannel === "agents" || activeChannel === "skills";
 
   // Per-channel state stored in a Map
   const [channelStates, setChannelStates] = useState<Map<string, ChannelState>>(() => {
@@ -2026,7 +2031,13 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             </>
           ) : (
             <>
-              <button className="clawd-logo-button" onClick={() => setShowChannelDialog(true)} title="Switch channels">
+              <button
+                className="clawd-logo-button"
+                onClick={() => {
+                  window.location.pathname = "/";
+                }}
+                title="Home"
+              >
                 <ClawdLogo sleeping={isOffline && streamingAgents.length === 0} hasUnread={hasAnyUnread} />
               </button>
               <span className="header-channel-name">{displayName}</span>
@@ -2077,7 +2088,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                   </div>
                 ))}
             </div>
-            {!isSpaceChannel && (
+            {!isSpaceChannel && !isManagementChannel && (
               <div
                 className={`connection-indicator ${!connected ? "reconnecting" : ""} clickable`}
                 title="Agent"
@@ -2151,67 +2162,75 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           </button>
         </div>
       )}
-      <div className="messages-wrapper">
-        <MessageList
-          messages={messages}
-          pendingMessages={pendingMessages}
-          agentLastSeenTs={agentLastSeenTs}
-          userLastSeenTs={userLastSeenTs}
-          channel={activeChannel}
-          agentSleeping={isOffline && streamingAgents.length === 0}
-          streamingAgentIds={streamingAgents.map((a) => a.agentId)}
-          hasMoreOlder={hasMoreOlder}
-          hasMoreNewer={hasMoreNewer}
-          loadingOlder={loadingOlder}
-          loadingNewer={loadingNewer}
-          isAtLatest={isAtLatest}
-          onLoadOlder={loadOlderMessages}
-          onLoadNewer={loadNewerMessages}
-          onJumpToMessage={jumpToMessage}
-          onJumpToLatest={jumpToLatest}
-          onMarkSeen={(ts) => {
-            // Only update if ts is newer than current userLastSeenTs
-            const current = channelStates.get(activeChannel)?.userLastSeenTs;
-            if (!current || ts > current) {
-              // Optimistically update state immediately
-              updateChannelState(activeChannel, { userLastSeenTs: ts });
-              // Then sync to server
-              authFetch(`${API_URL}/api/user.markSeen`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ channel: activeChannel, ts }),
-              })
-                .then(() => fetchUnreadCounts())
-                .catch((err) => console.error("Failed to mark seen:", err));
-            }
-          }}
-          channelKey={activeChannel}
-          jumpToMessageTs={jumpToMessageTs}
-          onJumpComplete={() => setJumpToMessageTs(null)}
-          onRetryMessage={(msg) => {
-            const { text, files } = retryMessage(msg);
-            // Dispatch event to populate composer with failed message content
-            window.dispatchEvent(new CustomEvent("restore-draft", { detail: { text, files } }));
-          }}
-          onScrollAtBottomChange={setIsActiveChannelAtBottom}
-          hasActiveChannelUnread={hasActiveChannelUnread}
-          onOpenSidebar={openSidebar}
-        />
-      </div>
-      {sidebarContent && (
-        <SidebarPanel
-          isOpen={sidebarOpen}
-          onClose={closeSidebar}
-          title={sidebarContent.title}
-          type={sidebarContent.type}
-          url={sidebarContent.url}
-          content={sidebarContent.content}
-          artifactType={sidebarContent.artifactType}
-          language={sidebarContent.language}
-          fileType={sidebarContent.fileType}
-        />
+      {isManagementChannel ? (
+        <div className="messages-wrapper">
+          <div className="messages">{activeChannel === "agents" ? <AgentFilesChannel /> : <SkillFilesChannel />}</div>
+        </div>
+      ) : (
+        <>
+          <div className="messages-wrapper">
+            <MessageList
+              messages={messages}
+              pendingMessages={pendingMessages}
+              agentLastSeenTs={agentLastSeenTs}
+              userLastSeenTs={userLastSeenTs}
+              channel={activeChannel}
+              agentSleeping={isOffline && streamingAgents.length === 0}
+              streamingAgentIds={streamingAgents.map((a) => a.agentId)}
+              hasMoreOlder={hasMoreOlder}
+              hasMoreNewer={hasMoreNewer}
+              loadingOlder={loadingOlder}
+              loadingNewer={loadingNewer}
+              isAtLatest={isAtLatest}
+              onLoadOlder={loadOlderMessages}
+              onLoadNewer={loadNewerMessages}
+              onJumpToMessage={jumpToMessage}
+              onJumpToLatest={jumpToLatest}
+              onMarkSeen={(ts) => {
+                // Only update if ts is newer than current userLastSeenTs
+                const current = channelStates.get(activeChannel)?.userLastSeenTs;
+                if (!current || ts > current) {
+                  // Optimistically update state immediately
+                  updateChannelState(activeChannel, { userLastSeenTs: ts });
+                  // Then sync to server
+                  authFetch(`${API_URL}/api/user.markSeen`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ channel: activeChannel, ts }),
+                  })
+                    .then(() => fetchUnreadCounts())
+                    .catch((err) => console.error("Failed to mark seen:", err));
+                }
+              }}
+              channelKey={activeChannel}
+              jumpToMessageTs={jumpToMessageTs}
+              onJumpComplete={() => setJumpToMessageTs(null)}
+              onRetryMessage={(msg) => {
+                const { text, files } = retryMessage(msg);
+                // Dispatch event to populate composer with failed message content
+                window.dispatchEvent(new CustomEvent("restore-draft", { detail: { text, files } }));
+              }}
+              onScrollAtBottomChange={setIsActiveChannelAtBottom}
+              hasActiveChannelUnread={hasActiveChannelUnread}
+              onOpenSidebar={openSidebar}
+            />
+          </div>
+          {sidebarContent && (
+            <SidebarPanel
+              isOpen={sidebarOpen}
+              onClose={closeSidebar}
+              title={sidebarContent.title}
+              type={sidebarContent.type}
+              url={sidebarContent.url}
+              content={sidebarContent.content}
+              artifactType={sidebarContent.artifactType}
+              language={sidebarContent.language}
+              fileType={sidebarContent.fileType}
+            />
+          )}
+        </>
       )}
-      {!isArticleMode && (
+      {!isArticleMode && !isManagementChannel && (
         <MessageComposer
           onSend={sendMessage}
           channel={activeChannel}

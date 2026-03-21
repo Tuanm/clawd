@@ -1,5 +1,5 @@
-// Home page — shows Spaces list if user has channels, otherwise branding + input
-import { useEffect, useRef, useState } from "react";
+// Home page — branding + input with channel dropdown
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const CHANNELS_STORAGE_KEY = "clawd-open-channels";
 
@@ -12,7 +12,12 @@ function getStoredChannels(): string[] {
   }
 }
 
-// Send icon for input (filled, same as composer)
+function removeStoredChannel(channel: string): string[] {
+  const channels = getStoredChannels().filter((c) => c !== channel);
+  localStorage.setItem(CHANNELS_STORAGE_KEY, JSON.stringify(channels));
+  return channels;
+}
+
 function SendIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -21,7 +26,6 @@ function SendIcon() {
   );
 }
 
-// GitHub Copilot logo SVG (orange, same size as Claw'd: 66x52)
 function CopilotLogo() {
   return (
     <svg
@@ -44,7 +48,6 @@ function CopilotLogo() {
   );
 }
 
-// Plus icon SVG (orange)
 function PlusIcon() {
   return (
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="plus-icon">
@@ -53,7 +56,6 @@ function PlusIcon() {
   );
 }
 
-// Clawd SVG component (66x52)
 function ClawdSvg() {
   return (
     <svg width="66" height="52" viewBox="0 0 66 52" fill="none" className="clawd-svg">
@@ -70,97 +72,75 @@ function ClawdSvg() {
   );
 }
 
-// Small Clawd avatar for channel list
-function ClawdAvatarSmall() {
+function CloseIcon() {
   return (
-    <svg width="20" height="16" viewBox="0 0 66 52" fill="none">
-      <rect x="6" width="54" height="39" fill="hsl(15 63.1% 59.6%)" />
-      <rect x="0" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-      <rect x="60" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-      <rect x="6" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-      <rect x="18" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-      <rect x="42" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-      <rect x="54" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-      <rect x="12" y="13" width="6" height="6.5" fill="#000" />
-      <rect x="48" y="13" width="6" height="6.5" fill="#000" />
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+    >
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
 }
 
 export default function HomePage() {
   const [spaceId, setSpaceId] = useState("");
-  const [channels] = useState(() => getStoredChannels());
+  const [channels, setChannels] = useState(() => getStoredChannels());
+  const [showDropdown, setShowDropdown] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
   // Focus input on mount
   useEffect(() => {
     setTimeout(() => inputRef.current?.focus(), 100);
   }, []);
 
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const navigateToSpace = useCallback(() => {
+    const id = spaceId.trim();
+    if (id) {
+      if (!/^[\w.-]+$/.test(id)) return;
+      window.location.pathname = `/${id}`;
+    }
+  }, [spaceId]);
+
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && spaceId.trim()) {
       navigateToSpace();
     }
-  };
-
-  const navigateToSpace = () => {
-    const id = spaceId.trim();
-    if (id) {
-      // Validate: allow only alphanumeric, hyphens, underscores, dots to prevent XSS
-      if (!/^[\w.-]+$/.test(id)) return;
-      // Use pathname assignment (relative path only) to prevent javascript: injection
-      window.location.pathname = `/${id}`;
+    if (e.key === "Escape") {
+      setShowDropdown(false);
     }
   };
 
-  const hasChannels = channels.length > 0;
+  const handleRemoveChannel = useCallback((ch: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = removeStoredChannel(ch);
+    setChannels(updated);
+  }, []);
 
-  // If user has previously opened channels, show Spaces view
-  if (hasChannels) {
-    return (
-      <div className="home-page">
-        <div className="home-spaces">
-          <div className="home-spaces-header">
-            <ClawdAvatarSmall />
-            <span className="home-spaces-title">Spaces</span>
-          </div>
-          <div className="home-spaces-list">
-            {channels.map((ch) => (
-              <button
-                key={ch}
-                className="home-spaces-item"
-                onClick={() => {
-                  window.location.pathname = `/${ch}`;
-                }}
-              >
-                <span className="home-spaces-item-name">{ch}</span>
-              </button>
-            ))}
-          </div>
-          <div className="home-spaces-new">
-            <input
-              ref={inputRef}
-              type="text"
-              className="home-spaces-input"
-              placeholder="Join new space..."
-              value={spaceId}
-              onChange={(e) => setSpaceId(e.target.value)}
-              onKeyDown={handleInputKeyDown}
-            />
-            <button
-              className={`home-space-send ${spaceId.trim() ? "has-content" : ""}`}
-              onClick={navigateToSpace}
-              disabled={!spaceId.trim()}
-            >
-              <SendIcon />
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // Filter channels by input text
+  const query = spaceId.trim().toLowerCase();
+  const filteredChannels = query ? channels.filter((ch) => ch.toLowerCase().includes(query)) : channels;
 
-  // No channels — show original branding page
+  const shouldShowDropdown = showDropdown && filteredChannels.length > 0;
+
   return (
     <div className="home-page">
       <div className="branding-container">
@@ -175,23 +155,51 @@ export default function HomePage() {
             <ClawdSvg />
           </div>
         </div>
-        <div className="home-space-input branding-input">
-          <input
-            ref={inputRef}
-            type="text"
-            className="home-space-field"
-            placeholder="Explore..."
-            value={spaceId}
-            onChange={(e) => setSpaceId(e.target.value)}
-            onKeyDown={handleInputKeyDown}
-          />
-          <button
-            className={`home-space-send ${spaceId.trim() ? "has-content" : ""}`}
-            onClick={navigateToSpace}
-            disabled={!spaceId.trim()}
-          >
-            <SendIcon />
-          </button>
+        <div className="home-input-wrapper" ref={wrapperRef}>
+          <div className="home-space-input branding-input">
+            <input
+              ref={inputRef}
+              type="text"
+              className="home-space-field"
+              placeholder="Explore..."
+              value={spaceId}
+              onChange={(e) => {
+                setSpaceId(e.target.value);
+                setShowDropdown(true);
+              }}
+              onFocus={() => setShowDropdown(true)}
+              onKeyDown={handleInputKeyDown}
+            />
+            <button
+              className={`home-space-send ${spaceId.trim() ? "has-content" : ""}`}
+              onClick={navigateToSpace}
+              disabled={!spaceId.trim()}
+            >
+              <SendIcon />
+            </button>
+          </div>
+          {shouldShowDropdown && (
+            <div className="home-dropdown">
+              {filteredChannels.map((ch) => (
+                <div
+                  key={ch}
+                  className="home-dropdown-item"
+                  onClick={() => {
+                    window.location.pathname = `/${ch}`;
+                  }}
+                >
+                  <span className="home-dropdown-item-name">{ch}</span>
+                  <button
+                    className="home-dropdown-item-remove"
+                    onClick={(e) => handleRemoveChannel(ch, e)}
+                    title="Remove from list"
+                  >
+                    <CloseIcon />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

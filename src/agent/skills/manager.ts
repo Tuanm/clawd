@@ -260,21 +260,24 @@ export class SkillManager {
   // List Skills
   // ============================================================================
 
-  listSkills(): SkillMetadata[] {
+  listSkills(): (SkillMetadata & { editable?: boolean })[] {
     const rows = this.db
       .query(
-        `SELECT s.name, s.description, s.source, GROUP_CONCAT(t.trigger) as triggers
+        `SELECT s.name, s.description, s.source, s.path, GROUP_CONCAT(t.trigger) as triggers
          FROM skills s
          LEFT JOIN triggers t ON s.name = t.skill_name
          GROUP BY s.name`,
       )
       .all() as any[];
 
+    const claudeDir = join(homedir(), ".claude");
     return rows.map((row) => ({
       name: row.name,
       description: row.description,
       triggers: row.triggers ? row.triggers.split(",") : [],
       source: row.source as "project" | "global",
+      // Skills from ~/.claude/ directories are read-only
+      editable: !row.path?.startsWith(claudeDir),
     }));
   }
 
@@ -494,7 +497,16 @@ export class SkillManager {
 
 const _managers = new Map<string, SkillManager>();
 
-export function getSkillManager(projectRoot?: string): SkillManager {
+export function getSkillManager(projectRoot?: string, globalOnly?: boolean): SkillManager {
+  // globalOnly mode: skip getContextConfigRoot() fallback, scan only global dirs
+  if (globalOnly) {
+    const key = "__global_only__";
+    if (!_managers.has(key)) {
+      _managers.set(key, new SkillManager(undefined));
+    }
+    return _managers.get(key)!;
+  }
+
   // Use original project root for skills (not worktree path)
   const { getContextConfigRoot } = require("../utils/agent-context");
   const root = projectRoot || getContextConfigRoot();
