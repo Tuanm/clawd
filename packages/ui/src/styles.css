@@ -6422,6 +6422,13 @@ textarea {
   overflow: auto;
 }
 
+/* Suppress mobile tap highlight and focus outlines on Recharts SVG elements */
+.artifact-chart svg,
+.artifact-chart svg * {
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+
 /* Inline chart wrapper — no border/background, native to message flow */
 .message-inline-chart {
   margin: 4px 0;
