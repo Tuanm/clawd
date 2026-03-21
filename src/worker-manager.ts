@@ -18,6 +18,7 @@ import {
   pruneWorktrees,
   safeDeleteWorktree,
 } from "./agent/workspace/worktree";
+import { loadAgentFile } from "./agent/agents/loader";
 import type { AppConfig } from "./config";
 import { getAuthToken, isWorktreeEnabled } from "./config-file";
 import { loadOAuthToken } from "./mcp-oauth";
@@ -61,6 +62,8 @@ export interface AgentConfig {
   worktreePath?: string;
   /** Persisted worktree branch (loaded from DB on restart) */
   worktreeBranch?: string;
+  /** Agent file type reference (e.g., "code-reviewer") */
+  agentType?: string;
 }
 
 export class WorkerManager {
@@ -262,6 +265,19 @@ export class WorkerManager {
       worktreeBranch,
       originalProjectRoot: worktreePath ? originalProjectRoot : undefined,
     };
+
+    // Load agent file config if agent_type is set (prompt + tool restrictions)
+    // Model/provider from channel config take precedence — agent_type provides prompt only
+    if (agent.agentType) {
+      const agentFile = loadAgentFile(agent.agentType, effectiveProjectRoot);
+      if (agentFile) {
+        loopConfig.agentFileConfig = agentFile;
+      } else {
+        console.warn(
+          `[WorkerManager] Agent file not found for type "${agent.agentType}" (agent: ${key}) — starting without type config`,
+        );
+      }
+    }
 
     const loop = new WorkerLoop(loopConfig);
     this.loops.set(key, loop);
@@ -734,6 +750,7 @@ export class WorkerManager {
           heartbeatInterval: a.heartbeat_interval || 0,
           worktreePath: a.worktree_path || undefined,
           worktreeBranch: a.worktree_branch || undefined,
+          agentType: a.agent_type || undefined,
         }));
       }
     } catch (error) {

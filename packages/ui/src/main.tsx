@@ -49,7 +49,7 @@ function Router() {
     return <App channel={spaceChannel} />;
   }
 
-  // Match channel paths: /{channel}
+  // Match channel paths: /{channel} (includes special management channels /agents, /skills)
   const spaceMatch = path.match(/^\/([^/]+)\/?$/);
 
   if (spaceMatch) {

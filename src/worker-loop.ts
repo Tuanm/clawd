@@ -1175,6 +1175,8 @@ Please:
             sharedMcpManager: this.config.channelMcpManager,
             toolAllowlist: this.config.agentFileConfig?.tools,
             toolDenylist: this.config.agentFileConfig?.disallowedTools,
+            // Note: agentFileConfig.skills is parsed but NOT consumed here (no-op).
+            // Agent file edits on disk require agent restart to take effect (clawdInstructionsCache).
             promptContext,
             onToken: (token) => {
               process.stdout.write(token);
@@ -1374,25 +1376,31 @@ Please:
       } catch {}
     }
 
-    // 3. Agent identity — from agentFileConfig (sub-agent spawn) or disk lookup
-    // Cache listAgentFiles result to avoid redundant dir scans
-    const agentFiles = listAgentFiles(projectRoot);
+    // 3. Agent type instructions (from agentFileConfig — set for sub-agents or channel agents with agent_type)
     if (this.config.agentFileConfig) {
-      const identity = buildAgentSystemPrompt(this.config.agentFileConfig, agentFiles);
-      if (identity) {
-        contexts.push(`# Agent Identity & Configuration\n\n${identity}`);
+      // Pass empty array for allAgents to skip "other agents awareness" section in type prompt
+      // (saves ~500-1500 chars; disk identity via loadAgentIdentity includes awareness if needed)
+      const typeIdentity = buildAgentSystemPrompt(this.config.agentFileConfig, []);
+      if (typeIdentity) {
+        contexts.push(`# Agent Type Configuration\n\n${typeIdentity}`);
       }
-    } else {
-      const identity = this.loadAgentIdentity();
-      if (identity) {
-        contexts.push(`# Agent Identity & Configuration\n\n${identity}`);
+    }
+
+    // 4. Per-agent identity (from disk lookup — agents/{agentId}.md or identity textarea)
+    // For sub-agents (isSpaceAgent), skip disk identity since agentFileConfig is their full identity
+    if (!this.config.isSpaceAgent) {
+      const diskIdentity = this.loadAgentIdentity();
+      if (diskIdentity) {
+        contexts.push(`# Agent Identity & Configuration\n\n${diskIdentity}`);
       }
     }
 
     let result = contexts.join("\n\n---\n\n");
-    if (result.length > MAX_SYSTEM_INSTRUCTIONS_LENGTH) {
+    // Increase budget when agentFileConfig is present (type prompt + identity may be longer)
+    const maxInstructionsLen = this.config.agentFileConfig ? 8000 : MAX_SYSTEM_INSTRUCTIONS_LENGTH;
+    if (result.length > maxInstructionsLen) {
       const suffix = "\n\n[TRUNCATED — CLAWD instructions truncated for context budget]";
-      let cutPoint = MAX_SYSTEM_INSTRUCTIONS_LENGTH - suffix.length;
+      let cutPoint = maxInstructionsLen - suffix.length;
       if (cutPoint > 0 && cutPoint < result.length) {
         const code = result.charCodeAt(cutPoint - 1);
         if (code >= 0xd800 && code <= 0xdbff) cutPoint--;

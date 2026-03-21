@@ -287,6 +287,15 @@ if (migrated.length > 0) {
   console.log(`[Migration] Normalized ${migrated.length} channel ID(s):`, migrated);
 }
 
+// Rename reserved channel names that conflict with management routes
+for (const reserved of ["agents", "skills"]) {
+  const exists = db.query("SELECT id FROM channels WHERE id = ?").get(reserved) as { id: string } | null;
+  if (exists) {
+    renameChannel(reserved, `${reserved}-space`);
+    console.warn(`[Migration] Renamed reserved channel "${reserved}" to "${reserved}-space"`);
+  }
+}
+
 // Initialize scheduler
 const scheduler = new SchedulerManager(config, broadcastUpdate);
 setMcpScheduler(scheduler);
