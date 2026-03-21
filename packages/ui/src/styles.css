@@ -8320,7 +8320,7 @@ textarea {
   cursor: not-allowed;
 }
 
-/* Skeleton for streaming interactive */
+/* Skeleton for streaming/loading interactive */
 .interactive-artifact-skeleton {
   height: 120px;
   border-radius: 8px;
@@ -8328,6 +8328,31 @@ textarea {
   background: linear-gradient(90deg, hsl(var(--text) / 4%) 25%, hsl(var(--text) / 8%) 50%, hsl(var(--text) / 4%) 75%);
   background-size: 200% 100%;
   animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+/* Overlay skeleton (shown on top of cached data during re-fetch) */
+.interactive-artifact-skeleton--overlay {
+  position: absolute;
+  inset: 0;
+  height: auto;
+  opacity: 0.5;
+  z-index: 1;
+  border-radius: 6px;
+}
+
+/* Datasource states */
+.interactive-truncation-banner {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 0;
+  text-align: center;
+}
+
+.interactive-empty-state {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 12px 0;
+  text-align: center;
 }
 
 .sr-only {
@@ -8619,8 +8644,6 @@ textarea {
 /* Table */
 .interactive-table-wrap {
   overflow-x: auto;
-  border-radius: 6px;
-  border: 1px solid hsl(var(--text) / 12%);
 }
 
 .interactive-table {
@@ -8645,7 +8668,7 @@ textarea {
 }
 
 .interactive-table tr:last-child td {
-  border-bottom: none;
+  border-bottom: 1px solid hsl(var(--text) / 6%);
 }
 
 .interactive-table tr:hover td {
@@ -8712,10 +8735,6 @@ textarea {
 
   .interactive-number-field {
     border-color: hsl(var(--text) / 20%);
-  }
-
-  .interactive-table-wrap {
-    border-color: hsl(var(--text) / 18%);
   }
 
   .interactive-table th {

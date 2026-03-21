@@ -1247,7 +1247,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const body = await parseBody(req);
       // Resolve user from auth context or fallback to body
       const user = body.user || "UHUMAN";
-      const result = handleArtifactAction(
+      const result = await handleArtifactAction(
         {
           message_ts: body.message_ts,
           channel: body.channel,
@@ -1264,6 +1264,14 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       // Remove internal _broadcast from response
       const { _broadcast, ...response } = result as any;
       return json(response);
+    }
+
+    // Resolve datasource for interactive artifacts (file → parsed data with filters)
+    if (path === "/api/artifact.datasource" && req.method === "POST") {
+      const body = await parseBody(req);
+      const { handleDatasource } = await import("./server/routes/artifact-datasource");
+      const result = handleDatasource(body);
+      return json(result, result.ok ? 200 : 400);
     }
 
     // Get artifact actions (for agents to read user responses)
