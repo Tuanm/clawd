@@ -106,7 +106,11 @@ function useChartParts(spec: ChartSpec, xDataKey: string) {
   const tooltipBg = dark ? "#1c2128" : "#ffffff";
   const tooltipBorder = dark ? "#30363d" : "rgba(0,0,0,0.08)";
 
-  const tickStyle = { fontSize: 11, fill: textColor, fontFamily: "Lato, sans-serif" };
+  const tickStyle = {
+    fontSize: 11,
+    fill: textColor,
+    fontFamily: "Lato, sans-serif",
+  };
 
   const grid = <CartesianGrid stroke={gridColor} strokeDasharray="3 3" vertical={false} />;
   const xAxis = (
@@ -117,7 +121,12 @@ function useChartParts(spec: ChartSpec, xDataKey: string) {
       axisLine={{ stroke: gridColor }}
       label={
         spec.xAxis?.label
-          ? { value: spec.xAxis.label, position: "insideBottom", offset: -5, style: { ...tickStyle, fontSize: 12 } }
+          ? {
+              value: spec.xAxis.label,
+              position: "insideBottom",
+              offset: -5,
+              style: { ...tickStyle, fontSize: 12 },
+            }
           : undefined
       }
     />
@@ -130,7 +139,12 @@ function useChartParts(spec: ChartSpec, xDataKey: string) {
       width={40}
       label={
         spec.yAxis?.label
-          ? { value: spec.yAxis.label, angle: -90, position: "insideLeft", style: { ...tickStyle, fontSize: 12 } }
+          ? {
+              value: spec.yAxis.label,
+              angle: -90,
+              position: "insideLeft",
+              style: { ...tickStyle, fontSize: 12 },
+            }
           : undefined
       }
     />
@@ -151,7 +165,11 @@ function useChartParts(spec: ChartSpec, xDataKey: string) {
   );
   const legend = (
     <Legend
-      wrapperStyle={{ fontSize: 11, fontFamily: "Lato, sans-serif", paddingTop: 4 }}
+      wrapperStyle={{
+        fontSize: 11,
+        fontFamily: "Lato, sans-serif",
+        paddingTop: 4,
+      }}
       iconType="circle"
       iconSize={8}
     />
@@ -160,8 +178,10 @@ function useChartParts(spec: ChartSpec, xDataKey: string) {
   return { grid, xAxis, yAxis, tooltip, legend };
 }
 
-function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: string): React.ReactElement {
-  const { grid, xAxis, yAxis, tooltip, legend } = useChartParts(spec, xDataKey);
+type ChartParts = ReturnType<typeof useChartParts>;
+
+function renderChartContent(spec: ChartSpec, series: ChartSeries[], parts: ChartParts): React.ReactElement {
+  const { grid, xAxis, yAxis, tooltip, legend } = parts;
   const margin = { top: 8, right: 12, bottom: 4, left: 0 };
 
   switch (spec.type) {
@@ -173,18 +193,21 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
           {yAxis}
           {tooltip}
           {legend}
-          {series.map((s, i) => (
-            <Line
-              key={s.dataKey}
-              type="monotone"
-              dataKey={s.dataKey}
-              stroke={s.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length]}
-              strokeWidth={2}
-              dot={{ r: 3, strokeWidth: 0 }}
-              activeDot={{ r: 5, strokeWidth: 0 }}
-              name={s.name ?? s.dataKey}
-            />
-          ))}
+          {series.map((s, i) => {
+            const color = s.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length];
+            return (
+              <Line
+                key={s.dataKey}
+                type="monotone"
+                dataKey={s.dataKey}
+                stroke={color}
+                strokeWidth={2}
+                dot={{ r: 3, strokeWidth: 0, fill: color }}
+                activeDot={{ r: 5, strokeWidth: 0, fill: color }}
+                name={s.name ?? s.dataKey}
+              />
+            );
+          })}
         </LineChart>
       );
 
@@ -288,7 +311,11 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
             }}
           />
           <Legend
-            wrapperStyle={{ fontSize: 11, fontFamily: "Lato, sans-serif", paddingTop: 4 }}
+            wrapperStyle={{
+              fontSize: 11,
+              fontFamily: "Lato, sans-serif",
+              paddingTop: 4,
+            }}
             iconType="circle"
             iconSize={8}
           />
@@ -331,7 +358,7 @@ function renderChartContent(spec: ChartSpec, series: ChartSeries[], xDataKey: st
                     dataKey={s.dataKey}
                     stroke={color}
                     strokeWidth={2}
-                    dot={{ r: 3, strokeWidth: 0 }}
+                    dot={{ r: 3, strokeWidth: 0, fill: color }}
                     name={name}
                   />
                 );
@@ -369,12 +396,13 @@ export default function ChartRenderer({ content }: { content: string }) {
   const { spec } = result;
   const series = spec.series ?? [];
   const xDataKey = spec.xAxis?.dataKey ?? "name";
+  const parts = useChartParts(spec, xDataKey);
 
   return (
     <div className="artifact-chart">
       {spec.title && <div className="artifact-chart-title">{spec.title}</div>}
       <ResponsiveContainer width="100%" height={300}>
-        {renderChartContent(spec, series, xDataKey)}
+        {renderChartContent(spec, series, parts)}
       </ResponsiveContainer>
     </div>
   );

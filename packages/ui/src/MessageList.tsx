@@ -43,7 +43,12 @@ interface Message {
     start_line?: number;
     highlight_lines?: number[];
   };
-  files?: { id: string; name: string; url_private: string; mimetype?: string }[];
+  files?: {
+    id: string;
+    name: string;
+    url_private: string;
+    mimetype?: string;
+  }[];
   reactions?: { name: string; count: number }[];
   // Multi-agent support fields
   agent_id?: string;
@@ -317,9 +322,26 @@ type MessageBlock =
   | { type: "code"; lang: string; content: string }
   | { type: "mermaid"; content: string }
   | { type: "image"; src: string; alt: string }
-  | { type: "iframe"; src: string; rawHtml: string; height?: string; width?: string }
-  | { type: "artifact"; artifactType: ArtifactType; title: string; content: string; language?: string }
-  | { type: "streaming-artifact"; artifactType: ArtifactType; title: string; partialContent: string }
+  | {
+      type: "iframe";
+      src: string;
+      rawHtml: string;
+      height?: string;
+      width?: string;
+    }
+  | {
+      type: "artifact";
+      artifactType: ArtifactType;
+      title: string;
+      content: string;
+      language?: string;
+    }
+  | {
+      type: "streaming-artifact";
+      artifactType: ArtifactType;
+      title: string;
+      partialContent: string;
+    }
   | { type: "embed"; title: string; url: string };
 
 // YouTube embed hostnames allowed in iframes
@@ -419,7 +441,12 @@ function IframePreviewCard({
         src={src}
         id={iframeId || undefined}
         title="Embedded content"
-        style={{ width: "100%", height: "100%", border: "none", display: "block" }}
+        style={{
+          width: "100%",
+          height: "100%",
+          border: "none",
+          display: "block",
+        }}
         sandbox={sandboxAttr}
       />
     </div>
@@ -475,7 +502,11 @@ function parseMessageBlocks(text: string, isStreaming?: boolean, isAgent?: boole
 
   while (pos < text.length) {
     const slice = text.slice(pos);
-    const candidates: Array<{ index: number; end: number; block: MessageBlock }> = [];
+    const candidates: Array<{
+      index: number;
+      end: number;
+      block: MessageBlock;
+    }> = [];
 
     // ── Fenced code block (mermaid or regular) ────────────────────────────────
     // Closing ``` must be on its own line (CommonMark: closing fence at line start)
@@ -500,7 +531,13 @@ function parseMessageBlocks(text: string, isStreaming?: boolean, isAgent?: boole
         candidates.push({
           index: im.index,
           end: im.index + im[0].length,
-          block: { type: "iframe", src: srcM[1], rawHtml: im[0], height: hM?.[1], width: wM?.[1] },
+          block: {
+            type: "iframe",
+            src: srcM[1],
+            rawHtml: im[0],
+            height: hM?.[1],
+            width: wM?.[1],
+          },
         });
       }
     }
@@ -841,7 +878,10 @@ function HtmlPreview({ html }: { html: string }) {
       <iframe
         ref={iframeRef}
         className="html-preview-frame"
-        srcDoc={DOMPurify.sanitize(html, { ADD_TAGS: ["style"], WHOLE_DOCUMENT: true })}
+        srcDoc={DOMPurify.sanitize(html, {
+          ADD_TAGS: ["style"],
+          WHOLE_DOCUMENT: true,
+        })}
         sandbox="allow-scripts"
         title="HTML Preview"
       />
@@ -1393,7 +1433,11 @@ function groupToolEntries(entries: StreamEntry[]): GroupedItem[] {
       }
       if (matchIdx >= 0) {
         consumed.add(matchIdx);
-        items.push({ kind: "tool_group", start: entry, result: entries[matchIdx] });
+        items.push({
+          kind: "tool_group",
+          start: entry,
+          result: entries[matchIdx],
+        });
       } else {
         // No result yet -- pending
         items.push({ kind: "tool_group", start: entry, result: null });
@@ -1654,7 +1698,10 @@ export default function MessageList({
   const containerRef = useRef<HTMLDivElement>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
-  const scrollHeightBeforeLoadRef = useRef<{ height: number; direction: "older" | "newer" } | null>(null);
+  const scrollHeightBeforeLoadRef = useRef<{
+    height: number;
+    direction: "older" | "newer";
+  } | null>(null);
   const initialScrollDone = useRef(false);
   const pendingScrollToTs = useRef<string | null>(null);
   // Cache for parsed message blocks — throttles re-parsing during streaming.
@@ -1670,7 +1717,10 @@ export default function MessageList({
   onScrollAtBottomChangeRef.current = onScrollAtBottomChange;
 
   // Lightbox state for image preview
-  const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<{
+    src: string;
+    alt: string;
+  } | null>(null);
 
   // Mermaid zoom modal state
   const [mermaidZoom, setMermaidZoom] = useState<string | null>(null); // stores rendered SVG content
@@ -1908,14 +1958,20 @@ export default function MessageList({
 
       // Load older when scrolled near top
       if (container.scrollTop < 100 && hasMoreOlder && !loadingOlder && onLoadOlder) {
-        scrollHeightBeforeLoadRef.current = { height: container.scrollHeight, direction: "older" };
+        scrollHeightBeforeLoadRef.current = {
+          height: container.scrollHeight,
+          direction: "older",
+        };
         onLoadOlder();
       }
 
       // Load newer when scrolled near bottom (only when not at latest)
       const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
       if (scrollBottom < 100 && hasMoreNewer && !loadingNewer && onLoadNewer && !isAtLatest) {
-        scrollHeightBeforeLoadRef.current = { height: container.scrollHeight, direction: "newer" };
+        scrollHeightBeforeLoadRef.current = {
+          height: container.scrollHeight,
+          direction: "newer",
+        };
         onLoadNewer();
       }
     };
@@ -2047,7 +2103,10 @@ export default function MessageList({
     yesterday.setDate(yesterday.getDate() - 1);
     const isYesterday = date.toDateString() === yesterday.toDateString();
 
-    const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const time = date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 
     if (isToday) {
       return time;
@@ -2280,8 +2339,7 @@ export default function MessageList({
                 }
                 onClick={!continuation && isAgentMessage(msg) ? (e) => copyMention(msg.agent_id, e) : undefined}
               >
-                {continuation ? null : // Render avatar based on agent type - support both legacy and new patterns
-                isAgentMessage(msg) ? (
+                {continuation ? null : isAgentMessage(msg) ? ( // Render avatar based on agent type - support both legacy and new patterns
                   msg.user.startsWith("UWORKER-") && !msg.avatar_color ? (
                     <WorkerClawdAvatar />
                   ) : (
@@ -2337,7 +2395,10 @@ export default function MessageList({
                       ? cachedEntry.blocks
                       : (() => {
                           const parsed = parseMessageBlocks(decodedText, isStreaming, isAgentMessage(msg));
-                          blockParseCacheRef.current.set(msg.ts, { key: blockCacheKey, blocks: parsed });
+                          blockParseCacheRef.current.set(msg.ts, {
+                            key: blockCacheKey,
+                            blocks: parsed,
+                          });
                           if (blockParseCacheRef.current.size > 500) {
                             const firstKey = blockParseCacheRef.current.keys().next().value;
                             if (firstKey) blockParseCacheRef.current.delete(firstKey);
@@ -2355,7 +2416,12 @@ export default function MessageList({
                     blocks[0].content.length > MESSAGE_COLLAPSE_THRESHOLD;
                   const visibleBlocks: MessageBlock[] =
                     isLong && !isExpanded && blocks[0].type === "text"
-                      ? [{ type: "text", content: `${blocks[0].content.slice(0, MESSAGE_COLLAPSE_THRESHOLD)}...` }]
+                      ? [
+                          {
+                            type: "text",
+                            content: `${blocks[0].content.slice(0, MESSAGE_COLLAPSE_THRESHOLD)}...`,
+                          },
+                        ]
                       : blocks;
 
                   return (
@@ -2384,7 +2450,9 @@ export default function MessageList({
                                       {hl ? (
                                         <code
                                           className={`language-${block.lang}`}
-                                          dangerouslySetInnerHTML={{ __html: hl }}
+                                          dangerouslySetInnerHTML={{
+                                            __html: hl,
+                                          }}
                                         />
                                       ) : (
                                         <code className={block.lang ? `language-${block.lang}` : "language-text"}>
@@ -2411,9 +2479,18 @@ export default function MessageList({
                                   <div
                                     key={`block-${i}`}
                                     className="message-block message-image-card"
-                                    onClick={() => setLightboxImage({ src: block.src, alt: block.alt || "" })}
+                                    onClick={() =>
+                                      setLightboxImage({
+                                        src: block.src,
+                                        alt: block.alt || "",
+                                      })
+                                    }
                                     onKeyDown={(e) =>
-                                      e.key === "Enter" && setLightboxImage({ src: block.src, alt: block.alt || "" })
+                                      e.key === "Enter" &&
+                                      setLightboxImage({
+                                        src: block.src,
+                                        alt: block.alt || "",
+                                      })
                                     }
                                     role="button"
                                     tabIndex={0}
@@ -2462,7 +2539,9 @@ export default function MessageList({
                                     >
                                       <div
                                         className="artifact-preview-badge"
-                                        style={{ background: "hsl(220 70% 55%)" }}
+                                        style={{
+                                          background: "hsl(220 70% 55%)",
+                                        }}
                                       >
                                         {"<>"}
                                       </div>
@@ -2494,7 +2573,10 @@ export default function MessageList({
                                 }
                                 if (block.artifactType === "svg") {
                                   const sanitizedSvg = DOMPurify.sanitize(block.content, {
-                                    USE_PROFILES: { svg: true, svgFilters: true },
+                                    USE_PROFILES: {
+                                      svg: true,
+                                      svgFilters: true,
+                                    },
                                     ADD_TAGS: ["use"],
                                   });
                                   return (
@@ -2508,7 +2590,9 @@ export default function MessageList({
                                         </div>
                                         <div
                                           className="message-inline-artifact-body artifact-renderer-svg"
-                                          dangerouslySetInnerHTML={{ __html: sanitizedSvg }}
+                                          dangerouslySetInnerHTML={{
+                                            __html: sanitizedSvg,
+                                          }}
                                         />
                                       </div>
                                     </div>
@@ -2523,7 +2607,9 @@ export default function MessageList({
                                         {codeHl ? (
                                           <code
                                             className={`language-${block.language}`}
-                                            dangerouslySetInnerHTML={{ __html: codeHl }}
+                                            dangerouslySetInnerHTML={{
+                                              __html: codeHl,
+                                            }}
                                           />
                                         ) : (
                                           <code
@@ -2699,11 +2785,20 @@ export default function MessageList({
                           <div
                             key={file.id}
                             className="message-image-link"
-                            onClick={() => setLightboxImage({ src: file.url_private, alt: file.name })}
+                            onClick={() =>
+                              setLightboxImage({
+                                src: file.url_private,
+                                alt: file.name,
+                              })
+                            }
                             role="button"
                             tabIndex={0}
                             onKeyDown={(e) =>
-                              e.key === "Enter" && setLightboxImage({ src: file.url_private, alt: file.name })
+                              e.key === "Enter" &&
+                              setLightboxImage({
+                                src: file.url_private,
+                                alt: file.name,
+                              })
                             }
                           >
                             <img src={file.url_private} alt={file.name} className="message-image" />
@@ -2939,7 +3034,12 @@ export default function MessageList({
             onMouseDown={(e) => {
               if (lightboxZoom > 1 && e.button === 0) {
                 setIsDragging(true);
-                dragStart.current = { x: e.clientX, y: e.clientY, ox: dragOffset.x, oy: dragOffset.y };
+                dragStart.current = {
+                  x: e.clientX,
+                  y: e.clientY,
+                  ox: dragOffset.x,
+                  oy: dragOffset.y,
+                };
                 e.preventDefault();
               }
             }}
@@ -2957,7 +3057,9 @@ export default function MessageList({
             aria-modal="true"
             aria-label="Diagram zoom"
             tabIndex={-1}
-            style={{ cursor: lightboxZoom > 1 ? (isDragging ? "grabbing" : "grab") : "default" }}
+            style={{
+              cursor: lightboxZoom > 1 ? (isDragging ? "grabbing" : "grab") : "default",
+            }}
           >
             <button
               className="lightbox-close"

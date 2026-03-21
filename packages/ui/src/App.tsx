@@ -260,7 +260,11 @@ const defaultChannelState: ChannelState = {
   pendingMessages: [],
   agentLastSeenTs: null,
   userLastSeenTs: null,
-  agentStatus: { status: "ready", hibernate_until: null, auto_hibernate: false },
+  agentStatus: {
+    status: "ready",
+    hibernate_until: null,
+    auto_hibernate: false,
+  },
   hasMoreOlder: false,
   hasMoreNewer: false,
   loadingOlder: false,
@@ -905,7 +909,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           // Get currently streaming agents from server
           const serverStreaming = data.agents
             .filter((a: any) => a.is_streaming)
-            .map((a: any) => ({ agentId: a.id, avatarColor: a.avatar_color || "#D97853" }));
+            .map((a: any) => ({
+              agentId: a.id,
+              avatarColor: a.avatar_color || "#D97853",
+            }));
 
           // Sync streamingAgents list with server state
           const currentIds = current.streamingAgents
@@ -929,7 +936,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           }
 
           const newMap = new Map(prev);
-          newMap.set(channelId, { ...current, streamingAgents: serverStreaming });
+          newMap.set(channelId, {
+            ...current,
+            streamingAgents: serverStreaming,
+          });
           return newMap;
         });
       }
@@ -1109,7 +1119,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           return newMap;
         });
       } else {
-        updateChannelState(activeChannel, { hasMoreOlder: false, loadingOlder: false });
+        updateChannelState(activeChannel, {
+          hasMoreOlder: false,
+          loadingOlder: false,
+        });
       }
     } catch (err) {
       console.error("Failed to load older messages:", err);
@@ -1143,7 +1156,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           return newMap;
         });
       } else {
-        updateChannelState(activeChannel, { hasMoreNewer: false, loadingNewer: false, isAtLatest: true });
+        updateChannelState(activeChannel, {
+          hasMoreNewer: false,
+          loadingNewer: false,
+          isAtLatest: true,
+        });
       }
     } catch (err) {
       console.error("Failed to load newer messages:", err);
@@ -1296,7 +1313,12 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             newMap.set(msgChannel, {
               ...current,
               messages: current.messages.map((m) =>
-                m.ts === data.message.ts ? { ...data.message, seen_by: m.seen_by || data.message.seen_by } : m,
+                m.ts === data.message.ts
+                  ? {
+                      ...data.message,
+                      seen_by: m.seen_by || data.message.seen_by,
+                    }
+                  : m,
               ),
             });
             return newMap;
@@ -1339,7 +1361,50 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             return newMap;
           });
         } else if (data.type === "agent_seen") {
-          updateChannelState(msgChannel, { agentLastSeenTs: data.last_seen_ts });
+          updateChannelState(msgChannel, {
+            agentLastSeenTs: data.last_seen_ts,
+          });
+        } else if (data.type === "agent_poll") {
+          // Consolidated poll event — combines agent_seen + message_seen + agent_status
+          updateChannelState(msgChannel, {
+            agentLastSeenTs: data.last_seen_ts,
+            agentStatus: {
+              status: data.status,
+              hibernate_until: data.hibernate_until,
+            },
+          });
+          // Update message seen_by if message_seen_ts is provided
+          if (data.message_seen_ts) {
+            setChannelStates((prev) => {
+              const current = prev.get(msgChannel);
+              if (!current) return prev;
+              let hasChange = false;
+              const updated = current.messages.map((m) => {
+                if (m.ts === data.message_seen_ts) {
+                  const seenBy = m.seen_by || [];
+                  if (!seenBy.some((s: any) => s.agent_id === data.agent_id)) {
+                    hasChange = true;
+                    return {
+                      ...m,
+                      seen_by: [
+                        ...seenBy,
+                        {
+                          agent_id: data.agent_id,
+                          avatar_color: data.avatar_color || "#D97853",
+                          is_sleeping: data.is_sleeping,
+                        },
+                      ],
+                    };
+                  }
+                }
+                return m;
+              });
+              if (!hasChange) return prev;
+              const newMap = new Map(prev);
+              newMap.set(msgChannel, { ...current, messages: updated });
+              return newMap;
+            });
+          }
         } else if (data.type === "user_seen") {
           // Human user marked messages as seen
           updateChannelState(msgChannel, { userLastSeenTs: data.ts });
@@ -1358,7 +1423,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           const key = `${msgChannel}:${data.agent_id}`;
           let info = streamingOutputRef.current.get(key);
           if (!info) {
-            info = { agentId: data.agent_id, avatarColor: data.avatar_color || "#D97853", entries: [] };
+            info = {
+              agentId: data.agent_id,
+              avatarColor: data.avatar_color || "#D97853",
+              entries: [],
+            };
             streamingOutputRef.current.set(key, info);
           } else if (info.completed) {
             // Agent was previously completed but is streaming again -- add a session divider
@@ -1395,7 +1464,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               ...current,
               streamingAgents: [
                 ...current.streamingAgents,
-                { agentId: data.agent_id, avatarColor: data.avatar_color || "#D97853" },
+                {
+                  agentId: data.agent_id,
+                  avatarColor: data.avatar_color || "#D97853",
+                },
               ],
             });
             return newMap;
@@ -1405,7 +1477,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           const key = `${msgChannel}:${data.agent_id}`;
           let info = streamingOutputRef.current.get(key);
           if (!info) {
-            info = { agentId: data.agent_id, avatarColor: data.avatar_color || "#D97853", entries: [] };
+            info = {
+              agentId: data.agent_id,
+              avatarColor: data.avatar_color || "#D97853",
+              entries: [],
+            };
             streamingOutputRef.current.set(key, info);
           } else if (info.completed) {
             // Agent was previously completed but is streaming again -- add a session divider
@@ -1438,7 +1514,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               ...current,
               streamingAgents: [
                 ...current.streamingAgents,
-                { agentId: data.agent_id, avatarColor: data.avatar_color || "#D97853" },
+                {
+                  agentId: data.agent_id,
+                  avatarColor: data.avatar_color || "#D97853",
+                },
               ],
             });
             return newMap;
@@ -1447,7 +1526,9 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           if (data.is_streaming) {
             // Agent started streaming - ensure tracked and mark as NOT sleeping
             setChannelStates((prev) => {
-              const current = prev.get(msgChannel) || { ...defaultChannelState };
+              const current = prev.get(msgChannel) || {
+                ...defaultChannelState,
+              };
               const alreadyTracked = current.streamingAgents.some((a) => a.agentId === data.agent_id);
               const newMap = new Map(prev);
               newMap.set(msgChannel, {
@@ -1456,7 +1537,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                   ? current.streamingAgents
                   : [
                       ...current.streamingAgents,
-                      { agentId: data.agent_id, avatarColor: data.avatar_color || "#D97853" },
+                      {
+                        agentId: data.agent_id,
+                        avatarColor: data.avatar_color || "#D97853",
+                      },
                     ],
                 // Clear sleeping status for this agent since it's actively streaming
                 messages: current.messages.map((m) => ({
@@ -1478,7 +1562,9 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             streamingVersionRef.current++;
 
             setChannelStates((prev) => {
-              const current = prev.get(msgChannel) || { ...defaultChannelState };
+              const current = prev.get(msgChannel) || {
+                ...defaultChannelState,
+              };
 
               const newMap = new Map(prev);
               newMap.set(msgChannel, {
@@ -1520,7 +1606,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             const current = prev.get(msgChannel);
             if (!current) return prev;
             const newMap = new Map(prev);
-            newMap.set(msgChannel, { ...current, messages: [], pendingMessages: [] });
+            newMap.set(msgChannel, {
+              ...current,
+              messages: [],
+              pendingMessages: [],
+            });
             return newMap;
           });
         }
@@ -1645,7 +1735,12 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   const sendMessage = async (text: string, files?: File[]) => {
     const pendingId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const pendingMsg: PendingMessage = { id: pendingId, text, files, status: "sending" };
+    const pendingMsg: PendingMessage = {
+      id: pendingId,
+      text,
+      files,
+      status: "sending",
+    };
 
     // Add pending message immediately (optimistic UI)
     setChannelStates((prev) => {

@@ -644,9 +644,8 @@ export class CopilotClient extends EventEmitter {
         streamState = "streaming";
       }
       resetIdleTimer(); // Reset with 180s timeout for chunk gaps
-      buffer += chunk.toString().replace(/\r\n/g, "\n").replace(/\r/g, "\n"); // SSE spec: handle \r\n and \r
-
-      const lines = buffer.split("\n");
+      const normalized = chunk.toString().replace(/\r\n/g, "\n").replace(/\r/g, "\n"); // SSE spec
+      const lines = (buffer + normalized).split("\n");
       buffer = lines.pop() || "";
 
       for (const line of lines) {

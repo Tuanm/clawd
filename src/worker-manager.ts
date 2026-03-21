@@ -200,7 +200,11 @@ export class WorkerManager {
           worktreePath = wt.path;
           worktreeBranch = wt.branch;
           effectiveProjectRoot = wt.path;
-          this.worktreeInfo.set(key, { path: wt.path, branch: wt.branch, originalRoot: originalProjectRoot });
+          this.worktreeInfo.set(key, {
+            path: wt.path,
+            branch: wt.branch,
+            originalRoot: originalProjectRoot,
+          });
           // Persist to DB so worktree survives server restart
           this.persistWorktreeInfo(agent.channel, agent.agentId, wt.path, wt.branch);
           console.log(`[WorkerManager] Worktree ready: ${wt.path} (branch: ${wt.branch})`);
@@ -240,7 +244,7 @@ export class WorkerManager {
       model: agent.model,
       projectRoot: effectiveProjectRoot,
       chatApiUrl: this.config.chatApiUrl,
-      wsUrl: this.config.chatApiUrl.replace(/^http(s?):\/\//, "ws$1://"),
+      wsUrl: this.config.chatApiUrl.replace(/^http(s?):\/\//, "ws$1://").replace(/\/?$/, "/ws"),
       debug: this.config.debug,
       yolo: this.config.yolo,
       contextMode: this.config.contextMode,
@@ -321,10 +325,18 @@ export class WorkerManager {
   }
 
   /** Get all worktree info for a channel */
-  getChannelWorktreeInfo(
-    channel: string,
-  ): Array<{ agentId: string; path: string; branch: string; originalRoot: string }> {
-    const results: Array<{ agentId: string; path: string; branch: string; originalRoot: string }> = [];
+  getChannelWorktreeInfo(channel: string): Array<{
+    agentId: string;
+    path: string;
+    branch: string;
+    originalRoot: string;
+  }> {
+    const results: Array<{
+      agentId: string;
+      path: string;
+      branch: string;
+      originalRoot: string;
+    }> = [];
     for (const [key, info] of this.worktreeInfo) {
       if (key.startsWith(`${channel}:`)) {
         const agentId = key.slice(channel.length + 1);
@@ -335,11 +347,20 @@ export class WorkerManager {
   }
 
   /** Get all git-capable agent info for a channel (worktree + non-worktree) */
-  getChannelGitInfo(
-    channel: string,
-  ): Array<{ agentId: string; path: string; branch: string; originalRoot: string; isWorktree: boolean }> {
-    const results: Array<{ agentId: string; path: string; branch: string; originalRoot: string; isWorktree: boolean }> =
-      [];
+  getChannelGitInfo(channel: string): Array<{
+    agentId: string;
+    path: string;
+    branch: string;
+    originalRoot: string;
+    isWorktree: boolean;
+  }> {
+    const results: Array<{
+      agentId: string;
+      path: string;
+      branch: string;
+      originalRoot: string;
+      isWorktree: boolean;
+    }> = [];
     const seen = new Set<string>();
 
     // First: agents with worktrees
@@ -364,7 +385,13 @@ export class WorkerManager {
         if (!seen.has(agentId)) {
           const projectRoot = loop.getProjectRoot();
           if (projectRoot && isGitRepo(projectRoot)) {
-            results.push({ agentId, path: projectRoot, branch: "", originalRoot: projectRoot, isWorktree: false });
+            results.push({
+              agentId,
+              path: projectRoot,
+              branch: "",
+              originalRoot: projectRoot,
+              isWorktree: false,
+            });
           }
         }
       }

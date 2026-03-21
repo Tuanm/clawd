@@ -392,13 +392,31 @@ export function getPendingMessages(channel: string, lastTs?: string, includeBot:
     messages = messages.reverse();
   }
 
-  // Enrich messages with seen_by and avatar_color
+  // Batch-fetch seen_by data to avoid N+1 queries
+  const humanMsgTimestamps = messages.filter((m) => m.user === "UHUMAN").map((m) => m.ts);
+  const seenByMap = new Map<string, string[]>();
+  if (humanMsgTimestamps.length > 0) {
+    // Single query for all seen_by relationships instead of per-message
+    const placeholders = humanMsgTimestamps.map(() => "?").join(",");
+    const seenRows = db
+      .query<{ message_ts: string; agent_id: string }, string[]>(
+        `SELECT message_ts, agent_id FROM message_seen WHERE channel = ? AND message_ts IN (${placeholders})`,
+      )
+      .all(channel, ...humanMsgTimestamps);
+    for (const row of seenRows) {
+      const list = seenByMap.get(row.message_ts) || [];
+      list.push(row.agent_id);
+      seenByMap.set(row.message_ts, list);
+    }
+  }
+
+  // Enrich messages (getAgent is now cached with 2s TTL, no N+1 concern)
   const enrichedMessages = messages.map((msg) => {
     const slackMsg = toSlackMessage(msg);
 
     // Add seen_by for UHUMAN messages
     if (msg.user === "UHUMAN") {
-      const seenBy = getMessageSeenBy(channel, msg.ts);
+      const seenBy = seenByMap.get(msg.ts) || [];
       const seenByWithColors = seenBy.map((agentId) => {
         const agent = getAgent(agentId, channel);
         return {
@@ -548,7 +566,10 @@ export function getConversationNewer(channel: string, newestTs: string, limit = 
 // Only allowed for channels in CLEARABLE_CHANNELS.
 export const CLEARABLE_CHANNELS = new Set(["demo"]);
 
-export function clearChannelHistory(channel: string): { ok: boolean; error?: string } {
+export function clearChannelHistory(channel: string): {
+  ok: boolean;
+  error?: string;
+} {
   if (!CLEARABLE_CHANNELS.has(channel)) {
     return { ok: false, error: "channel_not_clearable" };
   }

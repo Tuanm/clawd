@@ -309,8 +309,7 @@ class OpenAIProvider implements LLMProvider {
         const { done, value } = await readNext();
         if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
+        const lines = (buffer + decoder.decode(value, { stream: true })).split("\n");
         buffer = lines.pop() || "";
 
         for (const line of lines) {
@@ -530,8 +529,7 @@ class AnthropicProvider implements LLMProvider {
         const { done, value } = await readNext();
         if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
+        const lines = (buffer + decoder.decode(value, { stream: true })).split("\n");
         buffer = lines.pop() || "";
 
         for (const line of lines) {
@@ -1035,8 +1033,7 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
         const { done, value } = await readNext();
         if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
+        const lines = (buffer + decoder.decode(value, { stream: true })).split("\n");
         buffer = lines.pop() || "";
 
         for (const line of lines) {

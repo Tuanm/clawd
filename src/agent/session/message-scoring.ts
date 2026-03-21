@@ -150,7 +150,14 @@ export function scoreMessages(messages: Message[]): ScoredMessage[] {
     // Anchor detection — always keep first, last, last 5 messages (recent tool chain), task definitions, errors
     const isAnchor = isTaskDefinition(content) || isUnresolvedError(content) || i === 0 || i >= total - 5;
 
-    return { message: msg, index: i, score, stage, isAnchor, atomicGroupId: atomicGroups.get(i) };
+    return {
+      message: msg,
+      index: i,
+      score,
+      stage,
+      isAnchor,
+      atomicGroupId: atomicGroups.get(i),
+    };
   });
 
   // Atomic group scoring: entire group gets max score of its members
@@ -194,15 +201,27 @@ export function compressMessage(msg: Message): Message {
         ...msg,
         content:
           content.length > 500
-            ? smartTruncate(content, { maxLength: Math.max(100, Math.floor(content.length * 0.2)) })
+            ? smartTruncate(content, {
+                maxLength: Math.max(100, Math.floor(content.length * 0.2)),
+              })
             : content,
       };
     }
-    return { ...msg, content: smartTruncate(content, { maxLength: Math.max(200, Math.floor(content.length * 0.2)) }) };
+    return {
+      ...msg,
+      content: smartTruncate(content, {
+        maxLength: Math.max(200, Math.floor(content.length * 0.2)),
+      }),
+    };
   }
 
   if (msg.role === "user") {
-    return { ...msg, content: smartTruncate(content, { maxLength: Math.max(200, Math.floor(content.length * 0.3)) }) };
+    return {
+      ...msg,
+      content: smartTruncate(content, {
+        maxLength: Math.max(200, Math.floor(content.length * 0.3)),
+      }),
+    };
   }
 
   return msg;
@@ -243,7 +262,9 @@ function compressToolOutput(content: string): string {
   }
 
   // Fallback: smart truncate to 20%
-  return smartTruncate(content, { maxLength: Math.max(200, Math.floor(content.length * 0.2)) });
+  return smartTruncate(content, {
+    maxLength: Math.max(200, Math.floor(content.length * 0.2)),
+  });
 }
 
 // ── Budget Demotion ────────────────────────────────────────────────
@@ -320,6 +341,73 @@ export function fitToBudget(scored: ScoredMessage[], tokenBudget: number): Score
   }
 
   return scored;
+}
+
+/**
+ * Reorder messages to mitigate lost-in-the-middle effect.
+ * Places higher-importance messages at start and end of context,
+ * lower-importance in the middle. Preserves:
+ * - System prompt (first), first 3 messages, and last 5 messages
+ * - Tool_call/result atomic groups (moved as units, never split)
+ * Note: call validateToolCallPairs AFTER this to repair any remaining issues.
+ */
+export function reorderForAttention(messages: Message[], scores?: Map<number, number>): Message[] {
+  if (messages.length <= 10) return messages; // Too short to benefit
+
+  // Keep system prompt + first 3 messages, and last 5 messages in place
+  const headCount = Math.min(4, messages.length);
+  const tailCount = Math.min(5, messages.length - headCount);
+  const head = messages.slice(0, headCount);
+  const tail = messages.slice(messages.length - tailCount);
+  const middle = messages.slice(headCount, messages.length - tailCount);
+
+  if (middle.length <= 2) return messages; // Nothing to reorder
+
+  // Group tool_call assistant messages with their tool results (atomic units)
+  type Block = { messages: Message[]; score: number };
+  const blocks: Block[] = [];
+  let i = 0;
+  while (i < middle.length) {
+    const msg = middle[i];
+    if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+      // Collect this assistant + all following tool results (positional grouping)
+      const group: Message[] = [msg];
+      let j = i + 1;
+      while (j < middle.length && middle[j].role === "tool") {
+        group.push(middle[j]);
+        j++;
+      }
+      const externalScore = scores?.get(headCount + i);
+      blocks.push({ messages: group, score: externalScore ?? 60 });
+      i = j;
+    } else {
+      const externalScore = scores?.get(headCount + i);
+      const score = externalScore ?? (msg.role === "user" ? 70 : 40);
+      blocks.push({ messages: [msg], score });
+      i++;
+    }
+  }
+
+  if (blocks.length <= 2) return messages;
+
+  // Sort blocks by score descending
+  blocks.sort((a, b) => b.score - a.score);
+
+  // U-shaped interleave: high-score at edges, low-score in center
+  const reordered: Block[] = new Array(blocks.length);
+  let left = 0;
+  let right = blocks.length - 1;
+  for (let idx = 0; idx < blocks.length; idx++) {
+    if (idx % 2 === 0) {
+      reordered[left++] = blocks[idx];
+    } else {
+      reordered[right--] = blocks[idx];
+    }
+  }
+
+  // Flatten blocks back to messages
+  const reorderedMessages = reordered.flatMap((b) => b.messages);
+  return [...head, ...reorderedMessages, ...tail];
 }
 
 // ── Atomic Groups ──────────────────────────────────────────────────

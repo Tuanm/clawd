@@ -94,14 +94,35 @@ function estimateNonBase64Tokens(charCount: number, text: string): number {
   return Math.ceil(charCount / charsPerToken);
 }
 
-const messageTokenCache = new WeakMap<Message, { tokens: number; contentLen: number; contentHash: number }>();
+// Content-based token cache (keyed by length + hash, survives object spreads)
+const tokenCacheByContent = new Map<string, number>();
+const TOKEN_CACHE_MAX = 2000;
 
-// Simple string hash for cache invalidation (FNV-1a)
+// String hash (FNV-1a) — samples first 500, middle 100, and last 100 chars for collision resistance
 function hashContent(s: string): number {
   let h = 2166136261;
-  for (let i = 0, len = Math.min(s.length, 500); i < len; i++) {
+  const len = s.length;
+  const sampleEnd = Math.min(len, 500);
+  for (let i = 0; i < sampleEnd; i++) {
     h ^= s.charCodeAt(i);
     h = (h * 16777619) | 0;
+  }
+  // Middle sample to catch body differences (same prefix/suffix, different body)
+  if (len > 600) {
+    const mid = Math.floor(len / 2);
+    const midStart = Math.max(sampleEnd, mid - 50);
+    const midEnd = Math.min(len - 100, mid + 50);
+    for (let i = midStart; i < midEnd; i++) {
+      h ^= s.charCodeAt(i);
+      h = (h * 16777619) | 0;
+    }
+  }
+  // Last 100 chars to catch tail differences
+  if (len > 500) {
+    for (let i = Math.max(sampleEnd, len - 100); i < len; i++) {
+      h ^= s.charCodeAt(i);
+      h = (h * 16777619) | 0;
+    }
   }
   return h;
 }
@@ -110,18 +131,24 @@ export function estimateMessagesTokens(messages: Message[]): number {
   let total = 0;
   for (const msg of messages) {
     const content = msg.content || "";
-    const contentLen = content.length + (msg.tool_calls ? JSON.stringify(msg.tool_calls).length : 0);
-    const contentHash = hashContent(content);
-    const cached = messageTokenCache.get(msg);
-    if (cached !== undefined && cached.contentLen === contentLen && cached.contentHash === contentHash) {
-      total += cached.tokens;
+    const toolCallsStr = msg.tool_calls ? JSON.stringify(msg.tool_calls) : "";
+    const contentLen = content.length + toolCallsStr.length;
+    const cacheKey = `${contentLen}:${hashContent(content + toolCallsStr)}`;
+    const cached = tokenCacheByContent.get(cacheKey);
+    if (cached !== undefined) {
+      total += cached;
       continue;
     }
     let msgTokens = estimateTokens(content);
-    if (msg.tool_calls) {
-      msgTokens += estimateTokens(JSON.stringify(msg.tool_calls));
+    if (toolCallsStr) {
+      msgTokens += estimateTokens(toolCallsStr);
     }
-    messageTokenCache.set(msg, { tokens: msgTokens, contentLen, contentHash });
+    // Evict oldest entries if cache too large
+    if (tokenCacheByContent.size >= TOKEN_CACHE_MAX) {
+      const firstKey = tokenCacheByContent.keys().next().value;
+      if (firstKey !== undefined) tokenCacheByContent.delete(firstKey);
+    }
+    tokenCacheByContent.set(cacheKey, msgTokens);
     total += msgTokens;
   }
   return total;
@@ -152,9 +179,9 @@ export class MemoryManager {
     // Balanced sync mode
     this.db.exec("PRAGMA synchronous = NORMAL");
     // Increase cache size for better performance
-    this.db.exec("PRAGMA cache_size = -64000"); // 64MB cache
-    // Enable memory-mapped I/O
-    this.db.exec("PRAGMA mmap_size = 268435456"); // 256MB mmap
+    const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
+    this.db.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`);
+    this.db.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`);
   }
 
   private init() {
@@ -269,15 +296,17 @@ export class MemoryManager {
 
     // Get messages in reverse chronological order
     const rows = this.db
-      .query(`
+      .query(
+        `
       SELECT role, content, tool_calls, tool_call_id
       FROM messages
       WHERE session_id = ?
       ORDER BY id DESC
-    `)
+    `,
+      )
       .all(sessionId) as any[];
 
-    // Add messages until we hit token limit
+    // Add messages until we hit token limit (push + reverse to avoid O(n²) unshift)
     for (const row of rows) {
       const msg: Message = {
         role: row.role,
@@ -293,10 +322,11 @@ export class MemoryManager {
         break;
       }
 
-      messages.unshift(msg); // Add to front to maintain order
+      messages.push(msg);
       totalTokens += msgTokens;
     }
 
+    messages.reverse(); // Restore chronological order
     return messages;
   }
 
@@ -313,24 +343,28 @@ export class MemoryManager {
     if (!session) return null;
 
     const stats = this.db
-      .query(`
+      .query(
+        `
       SELECT 
         COUNT(*) as count,
         MIN(created_at) as minTime,
         MAX(created_at) as maxTime
       FROM messages
       WHERE session_id = ?
-    `)
+    `,
+      )
       .get(sessionId) as { count: number; minTime: number; maxTime: number };
 
     // Get key messages for summary
     const keyMessages = this.db
-      .query(`
+      .query(
+        `
       SELECT content FROM messages
       WHERE session_id = ? AND role = 'user'
       ORDER BY created_at DESC
       LIMIT 10
-    `)
+    `,
+      )
       .all(sessionId) as { content: string }[];
 
     // Extract key topics (simple word frequency)
@@ -388,13 +422,19 @@ export class MemoryManager {
     // Get oldest messages to compact
     const toCompact = count.count - maxMessages + 1; // +1 for summary message
     const oldMessages = this.db
-      .query(`
+      .query(
+        `
       SELECT id, role, content FROM messages
       WHERE session_id = ?
       ORDER BY id ASC
       LIMIT ?
-    `)
-      .all(sessionId, toCompact) as { id: number; role: string; content: string }[];
+    `,
+      )
+      .all(sessionId, toCompact) as {
+      id: number;
+      role: string;
+      content: string;
+    }[];
 
     if (oldMessages.length < 2) return;
 

@@ -295,7 +295,12 @@ import { SpaceWorkerManager } from "./spaces/worker";
 
 const spaceManager = new SpaceManager();
 const spaceWorkerManager = new SpaceWorkerManager(
-  { chatApiUrl: config.chatApiUrl, projectRoot: config.projectRoot, debug: config.debug, yolo: config.yolo },
+  {
+    chatApiUrl: config.chatApiUrl,
+    projectRoot: config.projectRoot,
+    debug: config.debug,
+    yolo: config.yolo,
+  },
   spaceManager,
 );
 
@@ -309,9 +314,9 @@ initRunner({
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 10000);
-      const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`, { signal: ctrl.signal }).finally(() =>
-        clearTimeout(timer),
-      );
+      const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`, {
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
       const data = (await res.json()) as any;
       if (data.ok && Array.isArray(data.agents)) {
         const agent = data.agents.find((a: any) => a.channel === channel && a.active !== false);
@@ -335,7 +340,11 @@ initRunner({
       try {
         return await handler(args);
       } catch (err: any) {
-        return { success: false, output: "", error: err.message || String(err) };
+        return {
+          success: false,
+          output: "",
+          error: err.message || String(err),
+        };
       }
     }
     // Fall back to MCP tools for the channel
@@ -350,7 +359,11 @@ initRunner({
         return { success: false, output: "", error: mcpResult.error };
       }
     }
-    return { success: false, output: "", error: `Tool "${toolName}" not found` };
+    return {
+      success: false,
+      output: "",
+      error: `Tool "${toolName}" not found`,
+    };
   },
 });
 
@@ -557,7 +570,10 @@ async function handleBrowserFileRequest(req: Request, url: URL, path: string): P
       if (!file) return json({ ok: false, error: "Missing 'file' in form data" }, 400);
       if (file.size > MAX_BROWSER_FILE_SIZE) {
         return json(
-          { ok: false, error: `File too large (${(file.size / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.` },
+          {
+            ok: false,
+            error: `File too large (${(file.size / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.`,
+          },
           413,
         );
       }
@@ -577,7 +593,10 @@ async function handleBrowserFileRequest(req: Request, url: URL, path: string): P
     if (!file) return new Response("Not found", { status: 404 });
     if (file.data.length > MAX_BROWSER_FILE_SIZE) {
       return json(
-        { ok: false, error: `File too large (${(file.data.length / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.` },
+        {
+          ok: false,
+          error: `File too large (${(file.data.length / 1024 / 1024).toFixed(1)} MiB). Max 500 MiB.`,
+        },
         413,
       );
     }
@@ -670,11 +689,31 @@ const server = Bun.serve({
     if (scriptMatch) {
       const lang = scriptMatch[1];
       const scriptMap: Record<string, { content: string; name: string; ct: string }> = {
-        python: { content: REMOTE_WORKER_PY, name: "remote_worker.py", ct: "text/x-python" },
-        py: { content: REMOTE_WORKER_PY, name: "remote_worker.py", ct: "text/x-python" },
-        typescript: { content: REMOTE_WORKER_TS, name: "remote-worker.ts", ct: "text/typescript" },
-        ts: { content: REMOTE_WORKER_TS, name: "remote-worker.ts", ct: "text/typescript" },
-        java: { content: REMOTE_WORKER_JAVA, name: "RemoteWorker.java", ct: "text/x-java-source" },
+        python: {
+          content: REMOTE_WORKER_PY,
+          name: "remote_worker.py",
+          ct: "text/x-python",
+        },
+        py: {
+          content: REMOTE_WORKER_PY,
+          name: "remote_worker.py",
+          ct: "text/x-python",
+        },
+        typescript: {
+          content: REMOTE_WORKER_TS,
+          name: "remote-worker.ts",
+          ct: "text/typescript",
+        },
+        ts: {
+          content: REMOTE_WORKER_TS,
+          name: "remote-worker.ts",
+          ct: "text/typescript",
+        },
+        java: {
+          content: REMOTE_WORKER_JAVA,
+          name: "RemoteWorker.java",
+          ct: "text/x-java-source",
+        },
       };
       const info = scriptMap[lang];
       return new Response(info.content, {
@@ -841,7 +880,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         const serverConfig = configs[serverName];
         if (!serverConfig?.oauth) {
           console.error(`[OAuth callback] No OAuth config found for ${channel}:${serverName}`);
-          return new Response("Unknown OAuth server", { status: 404, headers: { "Content-Type": "text/plain" } });
+          return new Response("Unknown OAuth server", {
+            status: 404,
+            headers: { "Content-Type": "text/plain" },
+          });
         }
         // Use token_endpoint from flow (most reliable), fall back to config
         const tokenUrl = token_endpoint || serverConfig.oauth.token_url || "";
@@ -959,7 +1001,12 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     // Auth test
     if (path === "/api/auth.test") {
-      return json({ ok: true, user_id: "UBOT", team_id: "T001", user: "Claw'd App" });
+      return json({
+        ok: true,
+        user_id: "UBOT",
+        team_id: "T001",
+        user: "Claw'd App",
+      });
     }
 
     // Migration
@@ -1020,7 +1067,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     // GET /api/analytics/copilot/summary?granularity=day|hour|week&from=<ms>&to=<ms>&...
     if (path === "/api/analytics/copilot/summary" && req.method === "GET") {
       const granularity = (url.searchParams.get("granularity") ?? "day") as "day" | "hour" | "week";
-      const opts: CallsQueryOptions & { granularity?: "day" | "hour" | "week" } = {
+      const opts: CallsQueryOptions & {
+        granularity?: "day" | "hour" | "week";
+      } = {
         from: numParam(url, "from"),
         to: numParam(url, "to"),
         model: url.searchParams.get("model") ?? undefined,
@@ -1077,7 +1126,11 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     // GET /api/analytics/copilot/recent?window=60  (last N minutes rolling window)
     if (path === "/api/analytics/copilot/recent" && req.method === "GET") {
       const window = numParam(url, "window") ?? 60;
-      return json({ ok: true, windowMinutes: window, ...queryRecentStats(window) });
+      return json({
+        ok: true,
+        windowMinutes: window,
+        ...queryRecentStats(window),
+      });
     }
 
     if (path === "/api/conversations.create" && req.method === "POST") {
@@ -1275,7 +1328,12 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         const maxHeight = parseInt(url.searchParams.get("maxHeight") || "720", 10);
         const quality = parseInt(url.searchParams.get("quality") || "70", 10);
         const maxBytes = parseInt(url.searchParams.get("maxBytes") || "102400", 10);
-        const optimized = await getOptimizedFile(fileId, { maxWidth, maxHeight, quality, maxBytes });
+        const optimized = await getOptimizedFile(fileId, {
+          maxWidth,
+          maxHeight,
+          quality,
+          maxBytes,
+        });
         if (!optimized) return new Response("Not found", { status: 404 });
         return new Response(optimized.data, {
           headers: {
@@ -1347,16 +1405,30 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         [agentId, channel],
       );
 
-      broadcastUpdate(channel, { type: "agent_seen", agent_id: agentId, last_seen_ts: lastSeenTs });
+      broadcastUpdate(channel, {
+        type: "agent_seen",
+        agent_id: agentId,
+        last_seen_ts: lastSeenTs,
+      });
       const lastNonSelfMsg = db
         .query<{ ts: string }, [string, string, string]>(
           `SELECT ts FROM messages WHERE channel = ? AND ts <= ? AND (agent_id IS NULL OR agent_id != ?) ORDER BY ts DESC LIMIT 1`,
         )
         .get(channel, lastSeenTs, agentId);
       if (lastNonSelfMsg) broadcastMessageSeen(channel, lastNonSelfMsg.ts, agentId);
-      broadcastUpdate(channel, { type: "agent_status", agent_id: agentId, status: "ready", hibernate_until: null });
+      broadcastUpdate(channel, {
+        type: "agent_status",
+        agent_id: agentId,
+        status: "ready",
+        hibernate_until: null,
+      });
 
-      return json({ ok: true, agent_id: agentId, channel, last_seen_ts: lastSeenTs });
+      return json({
+        ok: true,
+        agent_id: agentId,
+        channel,
+        last_seen_ts: lastSeenTs,
+      });
     }
 
     // Get last seen
@@ -1368,7 +1440,12 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           `SELECT last_seen_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
         )
         .get(agentId, channel);
-      return json({ ok: true, agent_id: agentId, channel, last_seen_ts: result?.last_seen_ts || null });
+      return json({
+        ok: true,
+        agent_id: agentId,
+        channel,
+        last_seen_ts: result?.last_seen_ts || null,
+      });
     }
 
     // Mark processed
@@ -1386,8 +1463,17 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
          last_processed_ts = excluded.last_processed_ts, updated_at = excluded.updated_at`,
         [agentId, channel, lastProcessedTs, lastProcessedTs],
       );
-      broadcastUpdate(channel, { type: "agent_processed", agent_id: agentId, last_processed_ts: lastProcessedTs });
-      return json({ ok: true, agent_id: agentId, channel, last_processed_ts: lastProcessedTs });
+      broadcastUpdate(channel, {
+        type: "agent_processed",
+        agent_id: agentId,
+        last_processed_ts: lastProcessedTs,
+      });
+      return json({
+        ok: true,
+        agent_id: agentId,
+        channel,
+        last_processed_ts: lastProcessedTs,
+      });
     }
 
     // Set sleeping
@@ -1398,8 +1484,18 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const isSleeping = body.is_sleeping === true || body.is_sleeping === 1;
       if (!agentId) return json({ ok: false, error: "agent_id required" }, 400);
       const success = setAgentSleeping(agentId, channel, isSleeping);
-      if (success) broadcastUpdate(channel, { type: "agent_sleep", agent_id: agentId, is_sleeping: isSleeping });
-      return json({ ok: success, agent_id: agentId, channel, is_sleeping: isSleeping });
+      if (success)
+        broadcastUpdate(channel, {
+          type: "agent_sleep",
+          agent_id: agentId,
+          is_sleeping: isSleeping,
+        });
+      return json({
+        ok: success,
+        agent_id: agentId,
+        channel,
+        is_sleeping: isSleeping,
+      });
     }
 
     // Set streaming
@@ -1411,7 +1507,12 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       if (!agentId) return json({ ok: false, error: "agent_id required" }, 400);
       const success = setAgentStreaming(agentId, channel, isStreaming);
       if (success) broadcastAgentStreaming(channel, agentId, isStreaming);
-      return json({ ok: success, agent_id: agentId, channel, is_streaming: isStreaming });
+      return json({
+        ok: success,
+        agent_id: agentId,
+        channel,
+        is_streaming: isStreaming,
+      });
     }
 
     // Stream token
@@ -1456,7 +1557,12 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           `SELECT last_processed_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
         )
         .get(agentId, channel);
-      return json({ ok: true, agent_id: agentId, channel, last_processed_ts: result?.last_processed_ts || null });
+      return json({
+        ok: true,
+        agent_id: agentId,
+        channel,
+        last_processed_ts: result?.last_processed_ts || null,
+      });
     }
 
     // Set last_processed_ts — used by continuation cap to force-mark messages as processed
@@ -1476,8 +1582,17 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
            updated_at = strftime('%s', 'now')`,
         [agentId, channel, lastProcessedTs, lastProcessedTs],
       );
-      broadcastUpdate(channel, { type: "agent_processed", agent_id: agentId, last_processed_ts: lastProcessedTs });
-      return json({ ok: true, agent_id: agentId, channel, last_processed_ts: lastProcessedTs });
+      broadcastUpdate(channel, {
+        type: "agent_processed",
+        agent_id: agentId,
+        last_processed_ts: lastProcessedTs,
+      });
+      return json({
+        ok: true,
+        agent_id: agentId,
+        channel,
+        last_processed_ts: lastProcessedTs,
+      });
     }
 
     // Agent status
@@ -1494,8 +1609,19 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
            status = excluded.status, hibernate_until = excluded.hibernate_until, updated_at = strftime('%s', 'now')`,
         [agentId, channel, status, hibernateUntil],
       );
-      broadcastUpdate(channel, { type: "agent_status", agent_id: agentId, status, hibernate_until: hibernateUntil });
-      return json({ ok: true, agent_id: agentId, channel, status, hibernate_until: hibernateUntil });
+      broadcastUpdate(channel, {
+        type: "agent_status",
+        agent_id: agentId,
+        status,
+        hibernate_until: hibernateUntil,
+      });
+      return json({
+        ok: true,
+        agent_id: agentId,
+        channel,
+        status,
+        hibernate_until: hibernateUntil,
+      });
     }
 
     if (path === "/api/agent.getStatus") {
@@ -1589,7 +1715,13 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           .reverse();
 
         // Map to StreamEntry[] format
-        type Entry = { type: string; text: string; timestamp: number; toolName?: string; toolArgs?: any };
+        type Entry = {
+          type: string;
+          text: string;
+          timestamp: number;
+          toolName?: string;
+          toolArgs?: any;
+        };
         const entries: Entry[] = [];
 
         // Build tool_call_id → tool_name lookup from assistant messages
@@ -1608,7 +1740,11 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           if (row.role === "assistant") {
             // Content text → thinking/content entry
             if (row.content) {
-              entries.push({ type: "content", text: row.content, timestamp: row.created_at });
+              entries.push({
+                type: "content",
+                text: row.content,
+                timestamp: row.created_at,
+              });
             }
             // Tool calls → tool_start entries
             if (row.tool_calls) {
@@ -1673,7 +1809,12 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           last_poll_ts: lastPollTs,
         });
       }
-      return json({ ok: true, channel, status: anyOnline ? "online" : "offline", agents: agentStatuses });
+      return json({
+        ok: true,
+        channel,
+        status: anyOnline ? "online" : "offline",
+        agents: agentStatuses,
+      });
     }
 
     // Get message by ts
@@ -1694,7 +1835,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const status = url.searchParams.get("status") || undefined;
       const channel = url.searchParams.get("channel") || undefined;
       const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!, 10) : undefined;
-      return json({ ok: true, tasks: listTasks({ agent_id, status, channel, limit }) });
+      return json({
+        ok: true,
+        tasks: listTasks({ agent_id, status, channel, limit }),
+      });
     }
 
     if (path === "/api/tasks.get") {
@@ -1708,7 +1852,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     if (path === "/api/tasks.create" && req.method === "POST") {
       const body = await parseBody(req);
       if (!body.title) return json({ ok: false, error: "title required" }, 400);
-      return json({ ok: true, task: createTask(body as Parameters<typeof createTask>[0]) });
+      return json({
+        ok: true,
+        task: createTask(body as Parameters<typeof createTask>[0]),
+      });
     }
 
     if (path === "/api/tasks.update" && req.method === "POST") {
@@ -1716,12 +1863,19 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       if (!body.task_id) return json({ ok: false, error: "task_id required" }, 400);
       const result = updateTask(body.task_id, body);
       if (!result.success) {
-        const r = result as { success: false; error: string; claimed_by?: string };
+        const r = result as {
+          success: false;
+          error: string;
+          claimed_by?: string;
+        };
         if (r.error === "not_found") return json({ ok: false, error: "task_not_found" }, 404);
         if (r.error === "already_claimed")
           return json({ ok: false, error: "already_claimed", claimed_by: r.claimed_by }, 409);
       }
-      return json({ ok: true, task: (result as { success: true; task: unknown }).task });
+      return json({
+        ok: true,
+        task: (result as { success: true; task: unknown }).task,
+      });
     }
 
     if (path === "/api/tasks.delete" && req.method === "POST") {
@@ -1784,7 +1938,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const body = await parseBody(req);
       if (!body.channel || !body.title || !body.created_by)
         return json({ ok: false, error: "channel, title, and created_by required" }, 400);
-      return json({ ok: true, plan: createPlan(body as Parameters<typeof createPlan>[0]) });
+      return json({
+        ok: true,
+        plan: createPlan(body as Parameters<typeof createPlan>[0]),
+      });
     }
 
     if (path === "/api/plans.update" && req.method === "POST") {
@@ -1811,7 +1968,14 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     if ((path === "/api/plans.addPhase" || path === "/api/phases.add") && req.method === "POST") {
       const body = await parseBody(req);
       if (!body.plan_id || !body.name) return json({ ok: false, error: "plan_id and name required" }, 400);
-      const phase = addPhase(body.plan_id, body as { name: string; description?: string; agent_in_charge?: string });
+      const phase = addPhase(
+        body.plan_id,
+        body as {
+          name: string;
+          description?: string;
+          agent_in_charge?: string;
+        },
+      );
       if (!phase) return json({ ok: false, error: "plan_not_found" }, 404);
       return json({ ok: true, phase });
     }
@@ -1912,7 +2076,11 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           `SELECT last_seen_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
         )
         .get(HUMAN_USER_ID, channel);
-      return json({ ok: true, channel, last_seen_ts: result?.last_seen_ts || null });
+      return json({
+        ok: true,
+        channel,
+        last_seen_ts: result?.last_seen_ts || null,
+      });
     }
 
     // Spaces API
@@ -2005,9 +2173,9 @@ setTimeout(async () => {
           // Get agent config
           const recoverCtrl = new AbortController();
           const recoverTimer = setTimeout(() => recoverCtrl.abort(), 10000);
-          const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`, { signal: recoverCtrl.signal }).finally(
-            () => clearTimeout(recoverTimer),
-          );
+          const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`, {
+            signal: recoverCtrl.signal,
+          }).finally(() => clearTimeout(recoverTimer));
           const data = (await res.json()) as any;
           const agentEntry =
             data.ok && Array.isArray(data.agents)
@@ -2111,7 +2279,10 @@ setTimeout(async () => {
 if (config.openBrowser) {
   const openCmd = process.platform === "darwin" ? "open" : "xdg-open";
   try {
-    Bun.spawn([openCmd, `http://localhost:${PORT}`], { stdout: "ignore", stderr: "ignore" });
+    Bun.spawn([openCmd, `http://localhost:${PORT}`], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
   } catch {
     console.log(`[clawd-app] Open http://localhost:${PORT} in your browser`);
   }
@@ -2138,6 +2309,39 @@ setInterval(() => {
     console.error("[Cleanup] Error clearing stale streaming:", err);
   }
 }, 60_000);
+
+// ============================================================================
+// DB Maintenance — WAL checkpoint, prune old analytics, orphaned seen rows
+// ============================================================================
+
+function runDbMaintenance() {
+  try {
+    // WAL checkpoint — flush WAL to main DB file and truncate
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+
+    // Prune copilot_calls older than 30 days
+    const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 86400;
+    db.run(`DELETE FROM copilot_calls WHERE ts < ?`, [thirtyDaysAgo]);
+
+    // Clean orphaned message_seen rows (message no longer exists)
+    db.run(`DELETE FROM message_seen WHERE message_ts NOT IN (SELECT ts FROM messages)`);
+
+    // Purge old sessions from memory.db (>30 days)
+    try {
+      const { getSessionManager } = require("./agent/session/manager");
+      const sm = getSessionManager();
+      if (sm) sm.purgeOldSessions(30);
+    } catch {}
+
+    console.log("[DB Maintenance] Checkpoint + cleanup completed");
+  } catch (err) {
+    console.error("[DB Maintenance] Error:", err);
+  }
+}
+
+// Run maintenance every 30 minutes
+const dbMaintenanceTimer = setInterval(runDbMaintenance, 30 * 60 * 1000);
+dbMaintenanceTimer.unref();
 
 // Graceful shutdown (SP25: scheduler → spaces → workers)
 // Force-exit after 8s to prevent hang if cleanup gets stuck
@@ -2166,6 +2370,10 @@ const gracefulShutdown = async (signal: string) => {
   } catch (err) {
     console.error("[clawd-app] Error during shutdown:", err);
   }
+  // Final DB maintenance — checkpoint WAL before exit
+  try {
+    runDbMaintenance();
+  } catch {}
   process.exit(0);
 };
 
