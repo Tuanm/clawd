@@ -87,13 +87,22 @@ export default function InteractiveRenderer({
     );
   }
 
-  const isOneShot = spec.one_shot !== false;
+  // Quick-reply mode: message handler with no submit component = buttons fire immediately
+  const actionType = (spec as any).on_action?.type;
+  const hasSubmit = spec.components.some((c) => c.type === "submit");
+  const isQuickReply = actionType === "message" && !hasSubmit;
+
+  const isOneShot = isQuickReply ? true : spec.one_shot !== false;
   const isDisabled = (isOneShot && state.submitted) || state.submitting;
 
-  // All components (including button/button_group) use this to update local state
+  // All components use this to update local state (or fire immediately in quick-reply mode)
   const handleChange = (id: string, value: unknown) => {
     if (isDisabled) return;
     dispatch({ type: "SET_VALUE", id, value });
+    // In quick-reply mode, button/button_group clicks fire immediately
+    if (isQuickReply) {
+      handleSubmit(id, value);
+    }
   };
 
   // Only "submit" component calls this — fires to server
@@ -138,6 +147,7 @@ export default function InteractiveRenderer({
             spec={comp}
             disabled={isDisabled}
             value={state.values[String(comp.id ?? "")]}
+            values={state.values}
             onChange={handleChange}
             onSubmit={handleSubmit}
             selectedComponentId={state.selectedComponentId}
@@ -153,6 +163,7 @@ function ComponentRenderer({
   spec,
   disabled,
   value,
+  values,
   onChange,
   onSubmit,
   selectedComponentId,
@@ -161,6 +172,7 @@ function ComponentRenderer({
   spec: ComponentSpec;
   disabled: boolean;
   value: unknown;
+  values: Record<string, unknown>;
   onChange: (id: string, value: unknown) => void;
   onSubmit: (id: string, value: unknown) => void;
   selectedComponentId: string | null;
@@ -212,11 +224,11 @@ function ComponentRenderer({
     case "image":
       return <ImageComponent spec={spec} />;
     case "table":
-      return <TableComponent spec={spec} />;
+      return <TableComponent spec={spec} values={values} />;
     case "tabs":
       return <TabsComponent spec={spec} disabled={disabled} value={value} onChange={onChange} />;
     case "chart":
-      return <ChartEmbedComponent spec={spec} />;
+      return <ChartEmbedComponent spec={spec} values={values} />;
     default:
       return null;
   }

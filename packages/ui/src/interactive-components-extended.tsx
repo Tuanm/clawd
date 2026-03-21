@@ -4,6 +4,7 @@
 
 import React, { Suspense } from "react";
 import type { ComponentSpec } from "./interactive-types";
+import { useDatasource } from "./use-datasource";
 
 const ChartRenderer = React.lazy(() => import("./chart-renderer"));
 
@@ -168,12 +169,36 @@ export function ImageComponent({ spec }: { spec: ComponentSpec }) {
 }
 
 // ── Table (display only) ──────────────────────────────────────────────────
-export function TableComponent({ spec }: { spec: ComponentSpec }) {
-  const headers = (spec.headers as string[]) ?? [];
-  const rows = ((spec.rows as unknown[][]) ?? []).slice(0, 20);
+export function TableComponent({ spec, values }: { spec: ComponentSpec; values?: Record<string, unknown> }) {
+  const ds = useDatasource(spec.datasource as Parameters<typeof useDatasource>[0], values ?? {});
+
+  // Derive headers/rows from datasource response when available
+  const headers: string[] = ds.data ? ds.columns : ((spec.headers as string[]) ?? []);
+  const rawRows: unknown[][] = ds.data
+    ? ds.data.map((row) => headers.map((h) => row[h]))
+    : ((spec.rows as unknown[][]) ?? []);
+  const rows = rawRows.slice(0, ds.data ? rawRows.length : 20);
+
+  if (ds.loading && !ds.data) {
+    return <div className="interactive-artifact-skeleton" style={{ height: 120 }} />;
+  }
+
+  if (ds.error) {
+    return (
+      <div className="interactive-error-inline" role="alert">
+        {ds.error}
+      </div>
+    );
+  }
+
+  if (ds.data && ds.data.length === 0) {
+    return <div className="interactive-empty-state">No data matches filters</div>;
+  }
 
   return (
     <div className="interactive-table-wrap">
+      {ds.truncated && <div className="interactive-truncation-banner">Showing first 10,000 rows</div>}
+      {ds.loading && <div className="interactive-artifact-skeleton interactive-artifact-skeleton--overlay" />}
       <table className="interactive-table">
         {headers.length > 0 && (
           <thead>
@@ -186,7 +211,7 @@ export function TableComponent({ spec }: { spec: ComponentSpec }) {
         )}
         <tbody>
           {rows.map((row, ri) => (
-            <tr key={`row-${ri}-${String(row[0] ?? ri)}`}>
+            <tr key={`row-${ri}-${String((row as unknown[])[0] ?? ri)}`}>
               {(row as unknown[]).map((cell, ci) => (
                 <td key={ci}>{String(cell ?? "")}</td>
               ))}
@@ -228,11 +253,48 @@ export function TabsComponent({ spec, disabled, value, onChange }: BaseProps & {
 }
 
 // ── Chart embed (display only, lazy-loaded) ───────────────────────────────
-export function ChartEmbedComponent({ spec }: { spec: ComponentSpec }) {
-  const content = typeof spec.spec === "string" ? spec.spec : JSON.stringify(spec.spec ?? {});
+export function ChartEmbedComponent({ spec, values }: { spec: ComponentSpec; values?: Record<string, unknown> }) {
+  const ds = useDatasource(spec.datasource as Parameters<typeof useDatasource>[0], values ?? {});
+
+  const chartSpec = typeof spec.spec === "object" && spec.spec !== null ? spec.spec : {};
+
+  // Warn once when xKey column is missing from datasource response
+  if (ds.data && ds.columns.length > 0) {
+    const xKey = (chartSpec as Record<string, unknown>).xKey as string | undefined;
+    if (xKey && !ds.columns.includes(xKey)) {
+      console.warn(`[ChartEmbed] xKey "${xKey}" not found in datasource columns:`, ds.columns);
+    }
+  }
+
+  // Build content string: merge fetched data into spec, or fall back to inline spec
+  let content: string;
+  if (ds.data) {
+    content = JSON.stringify({ ...chartSpec, data: ds.data });
+  } else if (typeof spec.spec === "string") {
+    content = spec.spec;
+  } else {
+    content = JSON.stringify(chartSpec);
+  }
+
+  if (ds.loading && !ds.data) {
+    return <div className="interactive-artifact-skeleton" style={{ height: 300 }} />;
+  }
+
+  if (ds.error) {
+    return (
+      <div className="interactive-error-inline" role="alert">
+        {ds.error}
+      </div>
+    );
+  }
+
+  if (ds.data && ds.data.length === 0) {
+    return <div className="interactive-empty-state">No data matches filters</div>;
+  }
 
   return (
-    <div className="interactive-chart-embed">
+    <div className="interactive-chart-embed" style={{ position: "relative" }}>
+      {ds.loading && <div className="interactive-artifact-skeleton interactive-artifact-skeleton--overlay" />}
       <Suspense fallback={<div className="interactive-artifact-skeleton" />}>
         <ChartRenderer content={content} />
       </Suspense>

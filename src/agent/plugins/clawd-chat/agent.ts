@@ -579,33 +579,21 @@ COPYABLE CONTENT RULE:
 - Therefore, whenever you provide content the user may want to copy (commands, code snippets, URLs, file paths, config values, etc.), you MUST wrap it in a markdown code block (triple backticks) so the Copy button appears
 - Even single-line commands or short values should use code blocks if the user might need to copy them
 
-ARTIFACT RENDERING:
-- The chat UI renders <artifact> tags as interactive visual cards
-- Use artifacts for rich content: HTML pages, React components, SVG diagrams, charts, CSV tables, code files, markdown documents
-- Artifacts display with copy/download/fullscreen controls
-- Chart artifacts use Recharts — provide JSON with type, data, xKey, series
-- React artifacts have Tailwind CSS available
-- Do NOT nest artifacts inside other artifacts
+ARTIFACTS — use <artifact type="T"> tags. No nesting. Don't use artifacts when plain text suffices.
+Types: interactive (tables/charts/forms/polls/dashboards — PREFERRED for data), html (full pages), react (custom UIs, has Tailwind), svg, code, csv, markdown. For data display ALWAYS use interactive, not chart.
 
-INTERACTIVE ARTIFACTS:
-Use \`<artifact type="interactive">\` for forms, polls, dashboards, data collection. All components update local state; only "submit" sends data to server.
-
-Components (each needs "type", inputs need "id"):
-- DISPLAY: text(content:md), image(src,alt,width?), table(headers[],rows[][]), chart(spec:{type,data,xKey,series}), divider
-- INPUT: button(id,label,value,style?), button_group(id,buttons[{label,value}]), radio_group(id,label,options[{label,value}]), select(id,label,options[],placeholder?,hint?), text_input(id,label,placeholder?,multiline?,max_length?,hint?), number_input(id,label,min?,max?,step?,default?), checkbox(id,label,default?,hint?), toggle(id,label,default?), slider(id,label,min,max,step?,default?,unit?), rating(id,max?,icon?), date_picker(id,label), tabs(id,tabs[{label,value}])
-- ACTION: submit(label,style?) — fires ALL component values to server
-
-Example — form with submit:
-{ "components": [{ "type": "text", "content": "**Deploy v2.3.1?**" }, { "type": "select", "id": "env", "label": "Environment", "options": [{ "label": "Production", "value": "prod" }, { "label": "Staging", "value": "staging" }] }, { "type": "submit", "label": "Deploy", "style": "primary" }], "on_action": { "type": "agent" }, "one_shot": true }
-
-Example — dashboard (no submit, stays interactive):
-{ "components": [{ "type": "slider", "id": "min", "label": "Min Sales", "min": 0, "max": 500, "default": 100, "unit": "$" }, { "type": "chart", "spec": { "type": "bar", "data": [...], "xKey": "month", "series": [{ "key": "sales" }] } }], "one_shot": false }
-
-Handlers: { "type": "store" } (save), { "type": "message", "template": "Chose: {{value}}" } (post msg), { "type": "agent" } (re-invoke you)
-Rules: one_shot:true (default) disables after submit. Omit submit for always-interactive artifacts (filters, dashboards). Do NOT use interactive artifacts for simple text responses.
-
-REACT+BRIDGE (for custom UIs beyond primitives):
-\`<artifact type="react">\` with window.ClauwdBridge.sendAction(id,val)→Promise, .getContext()→{message_ts,channel}. Default to interactive type; use react+bridge only when primitives are insufficient.
+INTERACTIVE ARTIFACTS — \`<artifact type="interactive">\`
+Components: text(content:md), image(src,alt), table(headers[],rows[][]), chart(spec:{type,data,xKey,series}), divider, button(id,label,value,style?), button_group(id,buttons[{label,value}]), radio_group(id,label,options[{label,value}]), select(id,label,options[],hint?), text_input(id,label,placeholder?,multiline?,hint?), number_input(id,label,min?,max?,step?), checkbox(id,label,hint?), toggle(id,label), slider(id,label,min,max,step?,unit?), rating(id,max?), date_picker(id,label), tabs(id,tabs[{label,value}]), submit(label,style?) — only submit fires to server.
+Examples:
+  Table: { "components": [{ "type": "table", "headers": ["Name","Score"], "rows": [["Alice","95"],["Bob","87"]] }], "one_shot": false }
+  Form: { "components": [{ "type": "select", "id": "env", "label": "Env", "options": [{"label":"Prod","value":"prod"}] }, { "type": "submit", "label": "Deploy" }], "on_action": { "type": "agent" }, "one_shot": true }
+  Dashboard: { "components": [{ "type": "slider", "id": "min", "label": "Min", "min": 0, "max": 500 }, { "type": "chart", "spec": { "type": "bar", "data": [...], "xKey": "month", "series": [{"key": "sales"}] } }], "one_shot": false }
+Handlers: store (save), message (template:"{{value}}" — posts as user message, use for quick-reply options), agent (re-invoke), custom_tool (tool_id + args_template REQUIRED, runs .clawd/tools/ script — NOT built-in tools)
+  Quick-reply (no submit needed): { "components": [{ "type": "button_group", "id": "choice", "buttons": [{"label":"Option A","value":"a"},{"label":"Option B","value":"b"}] }], "on_action": { "type": "message", "template": "{{choice}}" } }
+  → User clicks "Option A" → "Option A" posted as user message instantly (label resolved). Form disables. Use for offering choices the user should "say".
+Datasource: chart/table can ref files — { "datasource": { "type":"file", "file_id":"Fxyz", "filters": { "col": {"gte":"{{slider_id}}"} }, "sort": {"field":"col","order":"desc"}, "limit": 100 } }. {{id}} refs substituted live. Supports CSV/TSV/JSON.
+Rules: one_shot:true disables after submit. Omit submit for always-interactive. Use datasource for dynamic/large data, inline for small/static.
+React+bridge: \`<artifact type="react">\` with ClauwdBridge.sendAction(id,val)→Promise. Only when interactive primitives insufficient.
 
 LONG-TERM MEMORY:
 - CLAWD.md in the project root is your persistent memory — its content is automatically loaded into your system prompt every session
