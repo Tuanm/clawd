@@ -1,5 +1,16 @@
-// Home page - Static branding with Copilot + Claw'd and input box
+// Home page — shows Spaces list if user has channels, otherwise branding + input
 import { useEffect, useRef, useState } from "react";
+
+const CHANNELS_STORAGE_KEY = "clawd-open-channels";
+
+function getStoredChannels(): string[] {
+  try {
+    const stored = localStorage.getItem(CHANNELS_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+}
 
 // Send icon for input (filled, same as composer)
 function SendIcon() {
@@ -59,8 +70,26 @@ function ClawdSvg() {
   );
 }
 
+// Small Clawd avatar for channel list
+function ClawdAvatarSmall() {
+  return (
+    <svg width="20" height="16" viewBox="0 0 66 52" fill="none">
+      <rect x="6" width="54" height="39" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="0" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="60" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="6" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="18" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="42" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="54" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="12" y="13" width="6" height="6.5" fill="#000" />
+      <rect x="48" y="13" width="6" height="6.5" fill="#000" />
+    </svg>
+  );
+}
+
 export default function HomePage() {
   const [spaceId, setSpaceId] = useState("");
+  const [channels] = useState(() => getStoredChannels());
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Focus input on mount
@@ -84,6 +113,54 @@ export default function HomePage() {
     }
   };
 
+  const hasChannels = channels.length > 0;
+
+  // If user has previously opened channels, show Spaces view
+  if (hasChannels) {
+    return (
+      <div className="home-page">
+        <div className="home-spaces">
+          <div className="home-spaces-header">
+            <ClawdAvatarSmall />
+            <span className="home-spaces-title">Spaces</span>
+          </div>
+          <div className="home-spaces-list">
+            {channels.map((ch) => (
+              <button
+                key={ch}
+                className="home-spaces-item"
+                onClick={() => {
+                  window.location.pathname = `/${ch}`;
+                }}
+              >
+                <span className="home-spaces-item-name">{ch}</span>
+              </button>
+            ))}
+          </div>
+          <div className="home-spaces-new">
+            <input
+              ref={inputRef}
+              type="text"
+              className="home-spaces-input"
+              placeholder="Join new space..."
+              value={spaceId}
+              onChange={(e) => setSpaceId(e.target.value)}
+              onKeyDown={handleInputKeyDown}
+            />
+            <button
+              className={`home-space-send ${spaceId.trim() ? "has-content" : ""}`}
+              onClick={navigateToSpace}
+              disabled={!spaceId.trim()}
+            >
+              <SendIcon />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // No channels — show original branding page
   return (
     <div className="home-page">
       <div className="branding-container">
