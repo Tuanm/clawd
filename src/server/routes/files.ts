@@ -30,9 +30,9 @@ export async function uploadFile(file: File, _channel: string, _threadTs?: strin
   const filename = `${id}.${ext}`;
   const filepath = join(ATTACHMENTS_DIR, filename);
 
-  // Save file to disk
+  // Save file to disk (async to avoid blocking event loop on large files)
   const buffer = await file.arrayBuffer();
-  writeFileSync(filepath, Buffer.from(buffer));
+  await Bun.write(filepath, Buffer.from(buffer));
 
   // Insert file record
   db.run(`INSERT INTO files (id, name, mimetype, size, path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)`, [
@@ -75,7 +75,13 @@ export function getFile(id: string) {
 
 // Attach files to a message
 export function attachFilesToMessage(messageTs: string, fileIds: string[]) {
-  const files: { id: string; name: string; mimetype: string; size: number; url_private: string }[] = [];
+  const files: {
+    id: string;
+    name: string;
+    mimetype: string;
+    size: number;
+    url_private: string;
+  }[] = [];
 
   for (const id of fileIds) {
     const file = db.query<FileRecord, [string]>(`SELECT * FROM files WHERE id = ?`).get(id);
@@ -186,8 +192,19 @@ async function optimizeWithSips(
 //   - maxBytes: target max file size in bytes (default: 100KB)
 export async function getOptimizedFile(
   id: string,
-  options: { maxWidth?: number; maxHeight?: number; quality?: number; maxBytes?: number } = {},
-): Promise<{ data: Buffer; mimetype: string; name: string; originalSize: number; optimizedSize: number } | null> {
+  options: {
+    maxWidth?: number;
+    maxHeight?: number;
+    quality?: number;
+    maxBytes?: number;
+  } = {},
+): Promise<{
+  data: Buffer;
+  mimetype: string;
+  name: string;
+  originalSize: number;
+  optimizedSize: number;
+} | null> {
   const file = db.query<FileRecord, [string]>(`SELECT * FROM files WHERE id = ?`).get(id);
 
   if (!file || !existsSync(file.path)) {

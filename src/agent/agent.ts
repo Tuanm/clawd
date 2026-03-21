@@ -253,6 +253,7 @@ export class Agent {
   private _systemPromptOverhead = 12000; // Default fallback, updated with real measurement
   /** Track which tools the agent actually uses for smart filtering after warmup */
   private _usedTools = new Set<string>();
+  private _builtinToolNames: Set<string> | null = null;
   private _toolFilterWarmupIterations = 5; // Send all tools for first N iterations
   private plugins: PluginManager | null = null;
   private toolPluginManager: ToolPluginManager = new ToolPluginManager();
@@ -445,6 +446,16 @@ export class Agent {
       // Aggressive compaction — keep last 15 messages instead of wiping everything.
       // Full reset causes the agent to lose all context and exit prematurely.
       const aggressiveKeepCount = 15;
+
+      // Pre-compaction harvest: extract critical facts before messages are dropped
+      const allMsgsForHarvest = this.sessions.getRecentMessages(this.session.id, 200);
+      const msgsToDropCount = Math.max(0, allMsgsForHarvest.length - aggressiveKeepCount);
+      if (msgsToDropCount > 0 && this.plugins) {
+        try {
+          await this.plugins.beforeCompaction(allMsgsForHarvest.slice(0, msgsToDropCount));
+        } catch {}
+      }
+
       const summary = `[Emergency compaction — context exceeded critical limit (${tokens} tokens)]`;
       this.sessions.compactSessionByName(this.session.name, aggressiveKeepCount, summary);
 
@@ -458,6 +469,12 @@ export class Agent {
         let resetSummary = "";
         try {
           const allMessages = this.sessions.getRecentMessages(this.session.id, 200);
+          // Pre-reset harvest: extract critical facts before full wipe
+          if (allMessages.length > 0 && this.plugins) {
+            try {
+              await this.plugins.beforeCompaction(allMessages);
+            } catch {}
+          }
           resetSummary = await this.generateCompactionSummary(allMessages);
         } catch {
           resetSummary = `[Session reset — ${postStats?.messageCount ?? 0} messages exceeded critical token limit]`;
@@ -481,7 +498,10 @@ export class Agent {
         }
 
         recoveryParts.push("[Resume from the summary above. Verify current state before making changes.]");
-        this.sessions.addMessage(this.session.id, { role: "user", content: recoveryParts.join("\n\n") });
+        this.sessions.addMessage(this.session.id, {
+          role: "user",
+          content: recoveryParts.join("\n\n"),
+        });
       }
 
       const remaining = postTokens < this.tokenLimitCritical ? (postStats?.messageCount ?? 0) : 0;
@@ -556,7 +576,10 @@ export class Agent {
           // Delete all messages and re-insert selected ones
           this.sessions.resetSession(this.session.name);
           // Insert summary as first message
-          this.sessions.addMessage(this.session.id, { role: "system", content: summary });
+          this.sessions.addMessage(this.session.id, {
+            role: "system",
+            content: summary,
+          });
           // Re-insert kept messages
           for (const msg of repaired) {
             this.sessions.addMessage(this.session.id, msg);
@@ -1031,8 +1054,11 @@ SUMMARY:`;
       }
     }
 
-    // Cache builtin names for O(1) lookup
-    const builtinNames = new Set(toolDefinitions.map((td) => td.function.name));
+    // Cache builtin names at class level for O(1) lookup (avoids recreating Set per iteration)
+    if (!this._builtinToolNames) {
+      this._builtinToolNames = new Set(toolDefinitions.map((td) => td.function.name));
+    }
+    const builtinNames = this._builtinToolNames;
 
     return tools.filter((t) => {
       const name = t.function.name;
@@ -1433,7 +1459,9 @@ SUMMARY:`;
 
     // Register state persistence plugin when contextMode is enabled
     if (this.config.contextMode) {
-      const statePersistence = createStatePersistencePlugin({ contextMode: true });
+      const statePersistence = createStatePersistencePlugin({
+        contextMode: true,
+      });
       this.usePlugin(statePersistence).catch((err) => {
         if (this.config.verbose) {
           console.log(`[Agent] State persistence plugin failed:`, err?.message || err);
@@ -1830,7 +1858,8 @@ SUMMARY:`;
     // This replaces the hardcoded 12K estimate with a real measurement.
     const systemPromptTokens = estimateTokens(finalSystemPrompt);
     let lastToolCount = tools.length;
-    let toolsTokenEstimate = estimateTokens(JSON.stringify(tools));
+    let cachedToolsJson = JSON.stringify(tools);
+    let toolsTokenEstimate = estimateTokens(cachedToolsJson);
     this._systemPromptOverhead = systemPromptTokens + toolsTokenEstimate;
 
     // Check for interrupt periodically (from interruptChecker and plugins)
@@ -1950,7 +1979,8 @@ SUMMARY:`;
         // Re-measure overhead when tool count changes (new MCP server connected)
         if (tools.length !== lastToolCount) {
           lastToolCount = tools.length;
-          toolsTokenEstimate = estimateTokens(JSON.stringify(tools));
+          cachedToolsJson = JSON.stringify(tools);
+          toolsTokenEstimate = estimateTokens(cachedToolsJson);
           this._systemPromptOverhead = systemPromptTokens + toolsTokenEstimate;
         }
 
@@ -2009,8 +2039,21 @@ SUMMARY:`;
           messages.push({ role: "user", content: userMessage });
         }
 
+        // Reorder middle messages to mitigate lost-in-the-middle effect
+        // High-importance messages placed at start/end of context for better attention
+        // Must run BEFORE validateToolCallPairs so pair repair runs on the reordered result
+        if (messages.length > 10) {
+          try {
+            const { reorderForAttention } = await import("./session/message-scoring");
+            messages = reorderForAttention(messages);
+          } catch (e) {
+            logSilentError("reorderForAttention", e);
+          }
+        }
+
         // ALWAYS validate tool_call/result pairs before API call
         // This is critical to prevent 400 errors from corrupted state
+        // Also repairs role alternation broken by reordering
         messages = this.validateToolCallPairs(messages);
 
         // Filter tools after warmup to reduce token overhead (saves 4-10K tokens/call)
@@ -2209,10 +2252,20 @@ SUMMARY:`;
               contextTokens = estimateMessagesTokens(messages);
             }
 
-            // Sync session DB: compact to match in-memory messages count
+            // Pre-compaction harvest: extract critical facts before overflow compaction
             const nonSystemCount = messages.filter((m) => m.role !== "system").length;
+            const keepCount = Math.max(nonSystemCount, 5);
+            const allMsgsForOverflow = this.sessions.getRecentMessages(this.session.id, 200);
+            const overflowDropCount = Math.max(0, allMsgsForOverflow.length - keepCount);
+            if (overflowDropCount > 0 && this.plugins) {
+              try {
+                await this.plugins.beforeCompaction(allMsgsForOverflow.slice(0, overflowDropCount));
+              } catch {}
+            }
+
+            // Sync session DB: compact to match in-memory messages count
             const summary = `[Context overflow — compacted (actual ${actualTokens} tokens exceeded ${apiLimit} limit)]`;
-            this.sessions.compactSessionByName(session.name, Math.max(nonSystemCount, 5), summary);
+            this.sessions.compactSessionByName(session.name, keepCount, summary);
 
             const remaining = messages.length - 1;
             this.config.onCompaction?.(beforeCount - 1, remaining);
@@ -2557,7 +2610,11 @@ SUMMARY:`;
                         error: s.reason?.message || "Tool execution failed",
                       } as ToolResult,
                     };
-              toolResults.push({ toolCall: toolPrep[i].toolCall, parsedArgs: toolPrep[i].parsedArgs, result });
+              toolResults.push({
+                toolCall: toolPrep[i].toolCall,
+                parsedArgs: toolPrep[i].parsedArgs,
+                result,
+              });
             }
           } else {
             // Single tool — direct execution (no overhead)

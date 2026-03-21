@@ -29,12 +29,22 @@ export class ContextTracker {
     if (indexed) stats.totalIndexed++;
     this.toolStats.set(toolName, stats);
     this.totalToolCalls++;
+    // Cap map size to prevent unbounded growth
+    if (this.toolStats.size > 500) {
+      const firstKey = this.toolStats.keys().next().value;
+      if (firstKey !== undefined) this.toolStats.delete(firstKey);
+    }
   }
   /** Record a knowledge_search query for retry detection */
   recordSearch(query) {
     const normalized = query.toLowerCase().trim();
     const count = (this.searchQueries.get(normalized) || 0) + 1;
     this.searchQueries.set(normalized, count);
+    // Cap map size to prevent unbounded growth in long sessions
+    if (this.searchQueries.size > 200) {
+      const firstKey = this.searchQueries.keys().next().value;
+      if (firstKey !== undefined) this.searchQueries.delete(firstKey);
+    }
   }
   /** Check for retry amplification (>3 searches for similar content) */
   getRetryWarning() {

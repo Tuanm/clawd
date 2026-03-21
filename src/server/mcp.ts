@@ -1081,16 +1081,39 @@ Best practices:
     inputSchema: {
       type: "object",
       properties: {
-        title: { type: "string", description: "Job/reminder title (max 200 chars)" },
-        prompt: { type: "string", description: "Task prompt or reminder message" },
-        schedule: { type: "string", description: 'Schedule: "in 5 minutes", "every 2 hours", cron, or ISO 8601' },
-        is_reminder: { type: "boolean", description: "If true, creates a reminder instead of a job" },
-        max_runs: { type: "number", description: "Max runs before auto-completing" },
-        timeout_seconds: { type: "number", description: "Per-run timeout (default: 300, max: 3600)" },
+        title: {
+          type: "string",
+          description: "Job/reminder title (max 200 chars)",
+        },
+        prompt: {
+          type: "string",
+          description: "Task prompt or reminder message",
+        },
+        schedule: {
+          type: "string",
+          description: 'Schedule: "in 5 minutes", "every 2 hours", cron, or ISO 8601',
+        },
+        is_reminder: {
+          type: "boolean",
+          description: "If true, creates a reminder instead of a job",
+        },
+        max_runs: {
+          type: "number",
+          description: "Max runs before auto-completing",
+        },
+        timeout_seconds: {
+          type: "number",
+          description: "Per-run timeout (default: 300, max: 3600)",
+        },
       },
       required: ["title", "prompt", "schedule"],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
   },
   {
     name: "scheduler_list",
@@ -1098,11 +1121,19 @@ Best practices:
     inputSchema: {
       type: "object",
       properties: {
-        status: { type: "string", description: "Filter by status: active, paused, completed, failed, cancelled" },
+        status: {
+          type: "string",
+          description: "Filter by status: active, paused, completed, failed, cancelled",
+        },
       },
       required: [],
     },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "scheduler_cancel",
@@ -1114,7 +1145,12 @@ Best practices:
       },
       required: ["id"],
     },
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "scheduler_history",
@@ -1123,11 +1159,19 @@ Best practices:
       type: "object",
       properties: {
         id: { type: "string", description: "Job/reminder ID" },
-        limit: { type: "number", description: "Number of recent runs (default: 10, max: 50)" },
+        limit: {
+          type: "number",
+          description: "Number of recent runs (default: 10, max: 50)",
+        },
       },
       required: ["id"],
     },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
 
   // ============================================================================
@@ -1160,7 +1204,12 @@ Requires MiniMax provider (providers.minimax) or GEMINI_API_KEY in ~/.clawd/conf
       },
       required: ["file_id"],
     },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
 
   {
@@ -1193,7 +1242,12 @@ Requires MiniMax provider (providers.minimax) or GEMINI_API_KEY in ~/.clawd/conf
       },
       required: ["prompt"],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
   },
 
   {
@@ -1225,7 +1279,12 @@ Requires MiniMax provider (providers.minimax) or GEMINI_API_KEY in ~/.clawd/conf
       },
       required: ["file_id", "prompt"],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
   },
 
   {
@@ -1260,7 +1319,12 @@ Requires: GEMINI_API_KEY in ~/.clawd/config.json, ffmpeg/ffprobe for fallback fr
       },
       required: ["file_id"],
     },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
 ];
 
@@ -1331,7 +1395,13 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
         if (scope === "space" && !name.startsWith("chat_")) {
           result = {
             content: [
-              { type: "text", text: JSON.stringify({ ok: false, error: "Tool not available in space scope" }) },
+              {
+                type: "text",
+                text: JSON.stringify({
+                  ok: false,
+                  error: "Tool not available in space scope",
+                }),
+              },
             ],
           };
           break;
@@ -1402,18 +1472,34 @@ async function executeToolCall(
     // Handle scheduler tools before main switch
     if (name.startsWith("scheduler_")) {
       if (!_scheduler) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Scheduler not available" }) }] };
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                ok: false,
+                error: "Scheduler not available",
+              }),
+            },
+          ],
+        };
       }
       switch (name) {
         case "scheduler_create": {
           const maxRuns = args.max_runs as number | undefined;
           const timeoutSeconds = args.timeout_seconds as number | undefined;
           if (maxRuns !== undefined && (!Number.isFinite(maxRuns) || maxRuns <= 0 || !Number.isInteger(maxRuns))) {
-            resultText = JSON.stringify({ ok: false, error: "max_runs must be a positive integer" });
+            resultText = JSON.stringify({
+              ok: false,
+              error: "max_runs must be a positive integer",
+            });
             break;
           }
           if (timeoutSeconds !== undefined && (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)) {
-            resultText = JSON.stringify({ ok: false, error: "timeout_seconds must be a positive number" });
+            resultText = JSON.stringify({
+              ok: false,
+              error: "timeout_seconds must be a positive number",
+            });
             break;
           }
           const r = _scheduler.createJobFromTool({
@@ -1426,27 +1512,33 @@ async function executeToolCall(
             timeoutSeconds,
             isReminder: args.is_reminder as boolean | undefined,
           });
-          resultText = JSON.stringify(r.success ? { ok: true, job: r.job } : { ok: false, error: r.error }, null, 2);
+          resultText = JSON.stringify(r.success ? { ok: true, job: r.job } : { ok: false, error: r.error });
           break;
         }
         case "scheduler_list": {
           const jobs = _scheduler.listJobsForChannel(args.channel as string, args.status as string | undefined);
-          resultText = JSON.stringify({ ok: true, jobs }, null, 2);
+          resultText = JSON.stringify({ ok: true, jobs });
           break;
         }
         case "scheduler_cancel": {
           const r = _scheduler.cancelJobFromTool(args.id as string, args.agent_id as string, args.channel as string);
-          resultText = JSON.stringify({ ok: r.success, error: r.success ? undefined : r.error }, null, 2);
+          resultText = JSON.stringify({
+            ok: r.success,
+            error: r.success ? undefined : r.error,
+          });
           break;
         }
         case "scheduler_history": {
           const limit = Math.min((args.limit as number) || 10, 50);
           const runs = _scheduler.getJobRunsForTool(args.id as string, limit, args.channel as string | undefined);
-          resultText = JSON.stringify({ ok: true, runs }, null, 2);
+          resultText = JSON.stringify({ ok: true, runs });
           break;
         }
         default:
-          resultText = JSON.stringify({ ok: false, error: `Unknown scheduler tool: ${name}` });
+          resultText = JSON.stringify({
+            ok: false,
+            error: `Unknown scheduler tool: ${name}`,
+          });
       }
       return { content: [{ type: "text", text: resultText }] };
     }
@@ -1582,8 +1674,14 @@ async function executeToolCall(
         });
 
         // Truncate message text for agent context
-        const truncatedMessages = messagesWithSeenBy.map((m) => ({ ...m, text: truncateForAgent(m.text) }));
-        const truncatedPending = pendingWithSeenBy.map((m) => ({ ...m, text: truncateForAgent(m.text) }));
+        const truncatedMessages = messagesWithSeenBy.map((m) => ({
+          ...m,
+          text: truncateForAgent(m.text),
+        }));
+        const truncatedPending = pendingWithSeenBy.map((m) => ({
+          ...m,
+          text: truncateForAgent(m.text),
+        }));
 
         resultText = JSON.stringify(
           {
@@ -1705,7 +1803,7 @@ async function executeToolCall(
           workspace_json: workspaceJson,
         });
 
-        resultText = JSON.stringify(result, null, 2);
+        resultText = JSON.stringify(result);
         break;
       }
 
@@ -1726,11 +1824,15 @@ async function executeToolCall(
                 avatar_color: agent?.avatar_color || "#D97853",
               };
             });
-            return { ...m, text: truncateForAgent(m.text), seen_by: seenByWithColors };
+            return {
+              ...m,
+              text: truncateForAgent(m.text),
+              seen_by: seenByWithColors,
+            };
           }) as typeof result.messages;
         }
 
-        resultText = JSON.stringify(result, null, 2);
+        resultText = JSON.stringify(result);
         break;
       }
 
@@ -1748,7 +1850,10 @@ async function executeToolCall(
         } else {
           const slackMsg = toSlackMessage(message);
           resultText = JSON.stringify(
-            { ok: true, message: { ...slackMsg, text: truncateForAgent(slackMsg.text) } },
+            {
+              ok: true,
+              message: { ...slackMsg, text: truncateForAgent(slackMsg.text) },
+            },
             null,
             2,
           );
@@ -1816,7 +1921,7 @@ async function executeToolCall(
           fileResults.push(fileInfo);
         }
 
-        resultText = JSON.stringify({ ok: true, files: fileResults }, null, 2);
+        resultText = JSON.stringify({ ok: true, files: fileResults });
         break;
       }
 
@@ -1895,7 +2000,7 @@ async function executeToolCall(
               `For documents (PDF, DOCX, XLSX, PPTX), use convert_to_markdown(path="${file.path}") to convert to readable text.`;
           }
 
-          resultText = JSON.stringify(response, null, 2);
+          resultText = JSON.stringify(response);
         }
         break;
       }
@@ -2051,14 +2156,20 @@ async function executeToolCall(
 
         // Validate file exists
         if (!existsSync(filePath)) {
-          resultText = JSON.stringify({ ok: false, error: `File not found: ${filePath}` });
+          resultText = JSON.stringify({
+            ok: false,
+            error: `File not found: ${filePath}`,
+          });
           break;
         }
 
         // Check it's a file (not directory)
         const stat = statSync(filePath);
         if (!stat.isFile()) {
-          resultText = JSON.stringify({ ok: false, error: `Not a file: ${filePath}` });
+          resultText = JSON.stringify({
+            ok: false,
+            error: `Not a file: ${filePath}`,
+          });
           break;
         }
 
@@ -2173,7 +2284,7 @@ async function executeToolCall(
             2,
           );
         } else {
-          resultText = JSON.stringify(msgResult, null, 2);
+          resultText = JSON.stringify(msgResult);
         }
         break;
       }
@@ -2186,7 +2297,7 @@ async function executeToolCall(
         const { deleteMessage } = await import("./routes/messages");
         const result = deleteMessage(channel, ts);
 
-        resultText = JSON.stringify(result, null, 2);
+        resultText = JSON.stringify(result);
         break;
       }
 
@@ -2207,7 +2318,7 @@ async function executeToolCall(
           }
         }
 
-        resultText = JSON.stringify(result, null, 2);
+        resultText = JSON.stringify(result);
         break;
       }
 
@@ -2228,7 +2339,7 @@ async function executeToolCall(
           }
         }
 
-        resultText = JSON.stringify(result, null, 2);
+        resultText = JSON.stringify(result);
         break;
       }
 
@@ -2463,14 +2574,14 @@ async function executeToolCall(
           agent_in_charge: args.agent_in_charge as string | undefined,
           created_by: (args.created_by as string) || "agent",
         });
-        resultText = JSON.stringify({ ok: true, plan }, null, 2);
+        resultText = JSON.stringify({ ok: true, plan });
         break;
       }
 
       case "plan_list": {
         const { listPlans } = await import("./routes/tasks");
         const plans = listPlans(args.channel as string);
-        resultText = JSON.stringify({ ok: true, plans }, null, 2);
+        resultText = JSON.stringify({ ok: true, plans });
         break;
       }
 
@@ -2480,7 +2591,7 @@ async function executeToolCall(
         if (!plan) {
           resultText = JSON.stringify({ ok: false, error: "Plan not found" });
         } else {
-          resultText = JSON.stringify({ ok: true, plan }, null, 2);
+          resultText = JSON.stringify({ ok: true, plan });
         }
         break;
       }
@@ -2496,7 +2607,7 @@ async function executeToolCall(
         if (!plan) {
           resultText = JSON.stringify({ ok: false, error: "Plan not found" });
         } else {
-          resultText = JSON.stringify({ ok: true, plan }, null, 2);
+          resultText = JSON.stringify({ ok: true, plan });
         }
         break;
       }
@@ -2511,7 +2622,7 @@ async function executeToolCall(
         if (!phase) {
           resultText = JSON.stringify({ ok: false, error: "Plan not found" });
         } else {
-          resultText = JSON.stringify({ ok: true, phase }, null, 2);
+          resultText = JSON.stringify({ ok: true, phase });
         }
         break;
       }
@@ -2527,7 +2638,7 @@ async function executeToolCall(
         if (!phase) {
           resultText = JSON.stringify({ ok: false, error: "Phase not found" });
         } else {
-          resultText = JSON.stringify({ ok: true, phase }, null, 2);
+          resultText = JSON.stringify({ ok: true, phase });
         }
         break;
       }
@@ -2535,14 +2646,17 @@ async function executeToolCall(
       case "plan_link_task": {
         const { linkTaskToPhase } = await import("./routes/tasks");
         const success = linkTaskToPhase(args.plan_id as string, args.phase_id as string, args.task_id as string);
-        resultText = JSON.stringify({ ok: success, error: success ? undefined : "Failed to link task" }, null, 2);
+        resultText = JSON.stringify({
+          ok: success,
+          error: success ? undefined : "Failed to link task",
+        });
         break;
       }
 
       case "plan_get_tasks": {
         const { getTasksForPlan } = await import("./routes/tasks");
         const phases = getTasksForPlan(args.plan_id as string);
-        resultText = JSON.stringify({ ok: true, phases }, null, 2);
+        resultText = JSON.stringify({ ok: true, phases });
         break;
       }
 
@@ -2557,15 +2671,25 @@ async function executeToolCall(
           "Describe this image in detail, including any text, diagrams, or notable visual elements.";
 
         const file = db
-          .query<{ id: string; name: string; mimetype: string; size: number; path: string }, [string]>(
-            `SELECT id, name, mimetype, size, path FROM files WHERE id = ?`,
-          )
+          .query<
+            {
+              id: string;
+              name: string;
+              mimetype: string;
+              size: number;
+              path: string;
+            },
+            [string]
+          >(`SELECT id, name, mimetype, size, path FROM files WHERE id = ?`)
           .get(fileId);
 
         if (!file) {
           resultText = JSON.stringify({ ok: false, error: "File not found" });
         } else if (!file.mimetype.toLowerCase().startsWith("image/")) {
-          resultText = JSON.stringify({ ok: false, error: `File is not an image (${file.mimetype})` });
+          resultText = JSON.stringify({
+            ok: false,
+            error: `File is not an image (${file.mimetype})`,
+          });
         } else {
           const result = await analyzeImage(file.path, prompt, [ATTACHMENTS_DIR, "/tmp"]);
           resultText = JSON.stringify({
@@ -2649,7 +2773,11 @@ async function executeToolCall(
                 prompt,
                 aspect_ratio: aspectRatio,
               },
-              quota: { used: quota.used, limit: quota.limit, remaining: quota.remaining },
+              quota: {
+                used: quota.used,
+                limit: quota.limit,
+                remaining: quota.remaining,
+              },
             });
           } catch (err) {
             resultText = JSON.stringify({
@@ -2659,7 +2787,11 @@ async function executeToolCall(
             });
           }
         } else {
-          resultText = JSON.stringify({ ok: false, error: result.error, quota: getImageQuotaStatus() });
+          resultText = JSON.stringify({
+            ok: false,
+            error: result.error,
+            quota: getImageQuotaStatus(),
+          });
         }
         break;
       }
@@ -2669,15 +2801,28 @@ async function executeToolCall(
         const prompt = args.prompt as string;
 
         const sourceFile = db
-          .query<{ id: string; name: string; mimetype: string; size: number; path: string }, [string]>(
-            `SELECT id, name, mimetype, size, path FROM files WHERE id = ?`,
-          )
+          .query<
+            {
+              id: string;
+              name: string;
+              mimetype: string;
+              size: number;
+              path: string;
+            },
+            [string]
+          >(`SELECT id, name, mimetype, size, path FROM files WHERE id = ?`)
           .get(sourceFileId);
 
         if (!sourceFile) {
-          resultText = JSON.stringify({ ok: false, error: "Source file not found" });
+          resultText = JSON.stringify({
+            ok: false,
+            error: "Source file not found",
+          });
         } else if (!sourceFile.mimetype.toLowerCase().startsWith("image/")) {
-          resultText = JSON.stringify({ ok: false, error: `Source file is not an image (${sourceFile.mimetype})` });
+          resultText = JSON.stringify({
+            ok: false,
+            error: `Source file is not an image (${sourceFile.mimetype})`,
+          });
         } else {
           const newFileId = generateId("F");
           const baseName = `edited-${newFileId}-${Date.now()}`;
@@ -2714,7 +2859,11 @@ async function executeToolCall(
                   source_file_id: sourceFileId,
                   prompt,
                 },
-                quota: { used: quota.used, limit: quota.limit, remaining: quota.remaining },
+                quota: {
+                  used: quota.used,
+                  limit: quota.limit,
+                  remaining: quota.remaining,
+                },
               });
             } catch (err) {
               resultText = JSON.stringify({
@@ -2724,7 +2873,11 @@ async function executeToolCall(
               });
             }
           } else {
-            resultText = JSON.stringify({ ok: false, error: result.error, quota: getImageQuotaStatus() });
+            resultText = JSON.stringify({
+              ok: false,
+              error: result.error,
+              quota: getImageQuotaStatus(),
+            });
           }
         }
         break;
@@ -2738,15 +2891,25 @@ async function executeToolCall(
         const maxFrames = (args.max_frames as number) || 30;
 
         const file = db
-          .query<{ id: string; name: string; mimetype: string; size: number; path: string }, [string]>(
-            `SELECT id, name, mimetype, size, path FROM files WHERE id = ?`,
-          )
+          .query<
+            {
+              id: string;
+              name: string;
+              mimetype: string;
+              size: number;
+              path: string;
+            },
+            [string]
+          >(`SELECT id, name, mimetype, size, path FROM files WHERE id = ?`)
           .get(fileId);
 
         if (!file) {
           resultText = JSON.stringify({ ok: false, error: "File not found" });
         } else if (!file.mimetype.toLowerCase().startsWith("video/")) {
-          resultText = JSON.stringify({ ok: false, error: `File is not a video (${file.mimetype})` });
+          resultText = JSON.stringify({
+            ok: false,
+            error: `File is not a video (${file.mimetype})`,
+          });
         } else {
           const result = await analyzeVideo(file.path, prompt, [ATTACHMENTS_DIR, "/tmp"], maxFrames);
           resultText = JSON.stringify({

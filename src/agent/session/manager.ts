@@ -81,9 +81,9 @@ export class SessionManager {
     // Balanced sync mode
     this.db.exec("PRAGMA synchronous = NORMAL");
     // Increase cache size for better performance (negative = KB)
-    this.db.exec("PRAGMA cache_size = -64000"); // 64MB cache
-    // Enable memory-mapped I/O for better read performance
-    this.db.exec("PRAGMA mmap_size = 268435456"); // 256MB mmap
+    const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
+    this.db.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`);
+    this.db.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`);
     // WAL mode already provides excellent read concurrency without dirty reads
   }
 
@@ -375,7 +375,11 @@ export class SessionManager {
   /**
    * Get statistics about a session's size
    */
-  getSessionStats(sessionId: string): { messageCount: number; totalBytes: number; estimatedTokens: number } {
+  getSessionStats(sessionId: string): {
+    messageCount: number;
+    totalBytes: number;
+    estimatedTokens: number;
+  } {
     const row = this.db
       .query(
         `SELECT COUNT(*) as count, COALESCE(SUM(LENGTH(content)), 0) + COALESCE(SUM(LENGTH(tool_calls)), 0) as bytes 
@@ -394,7 +398,11 @@ export class SessionManager {
   /**
    * Get session stats by name
    */
-  getSessionStatsByName(name: string): { messageCount: number; totalBytes: number; estimatedTokens: number } | null {
+  getSessionStatsByName(name: string): {
+    messageCount: number;
+    totalBytes: number;
+    estimatedTokens: number;
+  } | null {
     const session = this.db
       .query("SELECT id FROM sessions WHERE name = ? ORDER BY updated_at DESC LIMIT 1")
       .get(name) as { id: string } | null;
@@ -479,7 +487,10 @@ export class SessionManager {
           `SELECT id FROM messages 
          WHERE session_id = ? AND id < ? AND tool_call_id IS NOT NULL`,
         )
-        .all(sessionId, threshold.id) as { id: number; tool_call_id?: string }[];
+        .all(sessionId, threshold.id) as {
+        id: number;
+        tool_call_id?: string;
+      }[];
 
       // Re-query with tool_call_id to check
       const toolResultMsgs = this.db
@@ -563,19 +574,33 @@ export class SessionManager {
    * @returns true if compaction was performed
    */
   autoCompact(name: string, maxTokens: number = 50000, keepCount: number = 30): boolean {
-    if (!this.needsCompaction(name, maxTokens)) {
-      return false;
-    }
-
+    // Single stats query used for both check and logging (avoids redundant DB scan)
     const stats = this.getSessionStatsByName(name);
+    if (!stats || stats.estimatedTokens <= maxTokens) return false;
+
     console.log(
-      `[SessionManager] Session "${name}" exceeds token limit (${stats?.estimatedTokens} > ${maxTokens}), compacting...`,
+      `[SessionManager] Session "${name}" exceeds token limit (${stats.estimatedTokens} > ${maxTokens}), compacting...`,
     );
 
-    const summary = `Previous conversation had approximately ${stats?.messageCount} messages and ${stats?.estimatedTokens} tokens. The older messages have been compacted to stay within context limits.`;
+    const summary = `Previous conversation had approximately ${stats.messageCount} messages and ${stats.estimatedTokens} tokens. The older messages have been compacted to stay within context limits.`;
 
     const deleted = this.compactSessionByName(name, keepCount, summary);
     return deleted > 0;
+  }
+
+  /**
+   * Purge sessions older than maxAgeDays. Call periodically or on startup.
+   */
+  purgeOldSessions(maxAgeDays: number = 30): number {
+    const cutoff = Date.now() - maxAgeDays * 86_400_000;
+    const old = this.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE updated_at < ?").all(cutoff);
+    if (old.length === 0) return 0;
+    for (const { id } of old) {
+      this.db.run("DELETE FROM messages WHERE session_id = ?", [id]);
+      this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
+    }
+    console.log(`[SessionManager] Purged ${old.length} sessions older than ${maxAgeDays} days`);
+    return old.length;
   }
 
   /**

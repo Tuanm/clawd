@@ -319,7 +319,16 @@ export function getBuiltinAgent(name: string): AgentFileConfig | null {
 /**
  * List all available agent files, deduplicated by name (highest priority wins).
  */
+// Cache listAgentFiles results per projectRoot with 60s TTL
+const agentFilesCache = new Map<string, { result: AgentFileConfig[]; ts: number }>();
+const AGENT_FILES_CACHE_TTL = 60_000;
+
 export function listAgentFiles(projectRoot: string): AgentFileConfig[] {
+  const cached = agentFilesCache.get(projectRoot);
+  if (cached && Date.now() - cached.ts < AGENT_FILES_CACHE_TTL) {
+    return cached.result;
+  }
+
   const dirs = getAgentDirs(projectRoot);
   const agentMap = new Map<string, AgentFileConfig>();
 
@@ -341,13 +350,14 @@ export function listAgentFiles(projectRoot: string): AgentFileConfig[] {
       const filePath = join(dir, filename);
       const agent = parseAgentFile(filePath, source);
       if (agent) {
-        // Later entries (higher priority) overwrite earlier ones
         agentMap.set(agent.name, agent);
       }
     }
   }
 
-  return Array.from(agentMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  const result = Array.from(agentMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  agentFilesCache.set(projectRoot, { result, ts: Date.now() });
+  return result;
 }
 
 /**

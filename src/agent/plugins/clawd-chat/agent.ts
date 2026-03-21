@@ -69,14 +69,17 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
   let pendingInterrupt: string | null = null;
   let isProcessingMessage = false; // Guard against multiple "..." messages
   let interruptCount = 0; // Track interrupts per user message
-  const MAX_INTERRUPTS = 3; // Maximum interrupts to handle per user message
+  const MAX_INTERRUPTS = 10; // Maximum interrupts to handle per user message
   let isInterruptCall = false; // Flag to distinguish interrupt vs initial onUserMessage call
   const injectedTimestamps = new Set<string>(); // Track already-injected message timestamps
   const _channelSummary: string | null = null; // Cached channel summary
   const _summaryGeneratedAt: number | null = null; // When summary was generated
 
   const apiUrl = config.apiUrl.replace(/\/$/, "");
-  const _pollInterval = config.pollInterval || 500;
+  const _pollIntervalBase = config.pollInterval || 500;
+  let _pollIntervalCurrent = _pollIntervalBase;
+  const _POLL_INTERVAL_MAX = 3000; // Backoff to 3s when idle
+  let _lastInterruptPollAt = 0;
   const _SUMMARY_TTL = 30 * 60 * 1000; // Refresh summary every 30 minutes
 
   // Determine user ID based on whether this is a worker/sub-agent
@@ -102,7 +105,17 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
     }
   }
 
-  async function streamToken(token: string, tokenType: "content" | "thinking" | "event" = "content"): Promise<void> {
+  // Batch token streaming — coalesces tokens and flushes every 50ms instead of per-token HTTP POST
+  let tokenBuffer = "";
+  let tokenBufferType: "content" | "thinking" | "event" = "content";
+  let tokenFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  const TOKEN_FLUSH_INTERVAL = 50; // ms
+
+  async function flushTokenBuffer(): Promise<void> {
+    if (!tokenBuffer) return;
+    const batch = tokenBuffer;
+    const batchType = tokenBufferType;
+    tokenBuffer = "";
     try {
       await timedFetch(`${apiUrl}/api/agent.streamToken`, {
         method: "POST",
@@ -110,12 +123,36 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
         body: JSON.stringify({
           agent_id: config.agentId,
           channel: config.channel,
-          token,
-          token_type: tokenType,
+          token: batch,
+          token_type: batchType,
         }),
       });
     } catch {
       // Ignore errors - streaming tokens are best-effort
+    }
+  }
+
+  async function streamToken(token: string, tokenType: "content" | "thinking" | "event" = "content"): Promise<void> {
+    // Event tokens flush immediately (they're infrequent and important)
+    if (tokenType === "event") {
+      await flushTokenBuffer();
+      tokenBuffer = token;
+      tokenBufferType = "event";
+      await flushTokenBuffer();
+      return;
+    }
+    // If type changed, flush the old buffer first
+    if (tokenBufferType !== tokenType && tokenBuffer) {
+      await flushTokenBuffer();
+    }
+    tokenBufferType = tokenType;
+    tokenBuffer += token;
+    // Schedule flush if not already pending
+    if (!tokenFlushTimer) {
+      tokenFlushTimer = setTimeout(async () => {
+        tokenFlushTimer = null;
+        await flushTokenBuffer();
+      }, TOKEN_FLUSH_INTERVAL);
     }
   }
 
@@ -652,7 +689,12 @@ LONG-TERM MEMORY:
       },
 
       async onStreamEnd(_content: string, _ctx: PluginContext) {
-        // Just keep accumulating - final message sent in onAgentResponse
+        // Flush any remaining batched tokens
+        if (tokenFlushTimer) {
+          clearTimeout(tokenFlushTimer);
+          tokenFlushTimer = null;
+        }
+        await flushTokenBuffer();
       },
 
       async onAgentResponse(response, _ctx: PluginContext) {
@@ -696,6 +738,7 @@ LONG-TERM MEMORY:
         isProcessingMessage = false;
         currentProcessingTs = null;
         injectedTimestamps.clear();
+        _pollIntervalCurrent = _pollIntervalBase; // Reset polling backoff for next message
         // Server auto-detects sleeping based on polling activity
       },
 
@@ -710,17 +753,28 @@ LONG-TERM MEMORY:
           const msg = pendingInterrupt;
           pendingInterrupt = null;
           interruptCount++;
-          // Set flag so onUserMessage knows this is an interrupt, not a fresh prompt
+          _pollIntervalCurrent = _pollIntervalBase; // Reset backoff on interrupt
           isInterruptCall = true;
           return msg;
         }
+
+        // Adaptive polling: skip if too soon since last poll
+        const now = Date.now();
+        if (now - _lastInterruptPollAt < _pollIntervalCurrent) {
+          return null;
+        }
+        _lastInterruptPollAt = now;
 
         // Poll for new messages
         const result = await pollForInterrupt();
         if (result) {
           interruptCount++;
+          _pollIntervalCurrent = _pollIntervalBase; // Reset backoff on interrupt
           // Set flag so onUserMessage knows this is an interrupt, not a fresh prompt
           isInterruptCall = true;
+        } else {
+          // No interrupt — back off polling interval
+          _pollIntervalCurrent = Math.min(_pollIntervalCurrent * 2, _POLL_INTERVAL_MAX);
         }
         return result;
       },
@@ -913,7 +967,10 @@ chat_send_message_with_files(
               if (!existsSync(filePath)) {
                 return {
                   success: false,
-                  output: JSON.stringify({ ok: false, error: `File not found: ${filePath}` }),
+                  output: JSON.stringify({
+                    ok: false,
+                    error: `File not found: ${filePath}`,
+                  }),
                 };
               }
 
@@ -922,7 +979,10 @@ chat_send_message_with_files(
               if (!stat.isFile()) {
                 return {
                   success: false,
-                  output: JSON.stringify({ ok: false, error: `Not a file: ${filePath}` }),
+                  output: JSON.stringify({
+                    ok: false,
+                    error: `Not a file: ${filePath}`,
+                  }),
                 };
               }
 

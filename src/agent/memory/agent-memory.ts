@@ -134,8 +134,9 @@ export class AgentMemoryStore {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA busy_timeout = 30000");
     this.db.exec("PRAGMA synchronous = NORMAL");
-    this.db.exec("PRAGMA cache_size = -64000");
-    this.db.exec("PRAGMA mmap_size = 268435456");
+    const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
+    this.db.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`);
+    this.db.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`);
   }
 
   private ensureInit(): void {
@@ -234,7 +235,10 @@ export class AgentMemoryStore {
         `UPDATE agent_memories SET content = ?, priority = ?, tags = ?, updated_at = unixepoch(), access_count = access_count + 1 WHERE id = ?`,
         [content, priority, tags, similar.id],
       );
-      return { id: similar.id, warning: `Updated existing memory #${similar.id} (similar content found)` };
+      return {
+        id: similar.id,
+        warning: `Updated existing memory #${similar.id} (similar content found)`,
+      };
     }
 
     // Enforce per-agent cap
@@ -331,9 +335,15 @@ export class AgentMemoryStore {
     return rows.map(rowToMemory);
   }
 
-  private buildChannelClause(opts: MemoryRecallOptions): { sql: string; params: any[] } {
+  private buildChannelClause(opts: MemoryRecallOptions): {
+    sql: string;
+    params: any[];
+  } {
     if (opts.includeGlobal && opts.channel) {
-      return { sql: "AND (channel = ? OR channel IS NULL)", params: [opts.channel] };
+      return {
+        sql: "AND (channel = ? OR channel IS NULL)",
+        params: [opts.channel],
+      };
     }
     if (opts.channel) {
       return { sql: "AND channel = ?", params: [opts.channel] };
@@ -620,6 +630,10 @@ export class AgentMemoryStore {
       )`,
       [agentId, toDelete],
     );
+    // Optimize FTS5 index after bulk deletes to prevent query degradation
+    try {
+      this.db.run(`INSERT INTO agent_memories_fts(agent_memories_fts) VALUES('optimize')`);
+    } catch {}
   }
 
   // ── Pin / Unpin / Decay ─────────────────────────────────────────
@@ -634,7 +648,10 @@ export class AgentMemoryStore {
       .get(agentId, id) as { count: number };
 
     if (pinCount.count >= 25) {
-      return { success: false, error: "Maximum 25 pinned memories. Unpin some first." };
+      return {
+        success: false,
+        error: "Maximum 25 pinned memories. Unpin some first.",
+      };
     }
 
     const result = this.db.run(
@@ -644,7 +661,10 @@ export class AgentMemoryStore {
 
     return result.changes > 0
       ? { success: true }
-      : { success: false, error: `Memory #${id} not found or not owned by you` };
+      : {
+          success: false,
+          error: `Memory #${id} not found or not owned by you`,
+        };
   }
 
   /** Unpin a memory (reset priority to 60). */
@@ -659,7 +679,10 @@ export class AgentMemoryStore {
 
     return result.changes > 0
       ? { success: true }
-      : { success: false, error: `Memory #${id} not found, not owned, or not pinned` };
+      : {
+          success: false,
+          error: `Memory #${id} not found, not owned, or not pinned`,
+        };
   }
 
   /** Run periodic priority decay on old unaccessed memories. */
@@ -736,7 +759,11 @@ export class AgentMemoryStore {
                 MAX(effectiveness) as maxEffectiveness
          FROM agent_memories WHERE id IN (${placeholders}) AND agent_id = ? AND priority < 80`,
       )
-      .get(...mergeIds, agentId) as { maxPriority: number; totalAccess: number; maxEffectiveness: number } | null;
+      .get(...mergeIds, agentId) as {
+      maxPriority: number;
+      totalAccess: number;
+      maxEffectiveness: number;
+    } | null;
 
     if (!stats) return { id: null };
 
@@ -774,6 +801,12 @@ export class AgentMemoryStore {
       effectiveness,
       stats.totalAccess || 0,
     );
+
+    // Optimize FTS5 index after bulk deletes from merge
+    try {
+      this.db.run(`INSERT INTO agent_memories_fts(agent_memories_fts) VALUES('optimize')`);
+    } catch {}
+
     return { id: Number(result.lastInsertRowid) };
   }
 

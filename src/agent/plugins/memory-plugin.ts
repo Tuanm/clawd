@@ -104,7 +104,11 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
     });
 
     if (result.id === null) {
-      return { success: false, output: "", error: result.warning || "Failed to save memory" };
+      return {
+        success: false,
+        output: "",
+        error: result.warning || "Failed to save memory",
+      };
     }
 
     const output = result.warning
@@ -154,7 +158,11 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
 
     const deleted = store.delete(id, agentId);
     if (!deleted) {
-      return { success: false, output: "", error: `Memory #${id} not found or not owned by you` };
+      return {
+        success: false,
+        output: "",
+        error: `Memory #${id} not found or not owned by you`,
+      };
     }
 
     return { success: true, output: `Memory #${id} deleted` };
@@ -167,9 +175,16 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
     }
     const result = store.pin(id, agentId);
     if (!result.success) {
-      return { success: false, output: "", error: result.error || "Failed to pin" };
+      return {
+        success: false,
+        output: "",
+        error: result.error || "Failed to pin",
+      };
     }
-    return { success: true, output: `Memory #${id} pinned — it will always be loaded into your context.` };
+    return {
+      success: true,
+      output: `Memory #${id} pinned — it will always be loaded into your context.`,
+    };
   }
 
   async function handleMemoUnpin(args: Record<string, any>): Promise<ToolResult> {
@@ -179,15 +194,26 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
     }
     const result = store.unpin(id, agentId);
     if (!result.success) {
-      return { success: false, output: "", error: result.error || "Failed to unpin" };
+      return {
+        success: false,
+        output: "",
+        error: result.error || "Failed to unpin",
+      };
     }
-    return { success: true, output: `Memory #${id} unpinned — it will only be loaded when relevant.` };
+    return {
+      success: true,
+      output: `Memory #${id} unpinned — it will only be loaded when relevant.`,
+    };
   }
 
   async function handleIdentityUpdate(args: Record<string, any>): Promise<ToolResult> {
     const content = args.content;
     if (!content || typeof content !== "string") {
-      return { success: false, output: "", error: "Content is required (string)" };
+      return {
+        success: false,
+        output: "",
+        error: "Content is required (string)",
+      };
     }
 
     const trimmed = content.trim();
@@ -218,7 +244,11 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
       const resolvedAgent = resolvePath(agentPath);
       const resolvedAgentsDir = resolvePath(agentsDir);
       if (!resolvedAgent.startsWith(resolvedAgentsDir + "/")) {
-        return { success: false, output: "", error: "Invalid agent ID for path" };
+        return {
+          success: false,
+          output: "",
+          error: "Invalid agent ID for path",
+        };
       }
 
       // Write agent file with frontmatter
@@ -230,7 +260,11 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
         output: `Identity updated (${trimmed.length} chars). Changes take effect on next iteration.`,
       };
     } catch (err: any) {
-      return { success: false, output: "", error: `Failed to update identity: ${err.message}` };
+      return {
+        success: false,
+        output: "",
+        error: `Failed to update identity: ${err.message}`,
+      };
     }
   }
 
@@ -325,29 +359,43 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
 
   // ── Auto-Extraction (onAgentResponse) ─────────────────────────
 
+  let lastConsolidationTurn = 0;
+  let consolidationRunning = false; // Prevent concurrent fire-and-forget consolidation
+  const CONSOLIDATION_COOLDOWN = 50; // Min turns between consolidations
+  const MEMORY_CAP_THRESHOLD = 1600; // 80% of MAX_MEMORIES_PER_AGENT (2000)
+
   async function onAgentResponse(response: any, ctx: PluginContext): Promise<void> {
     turnCount++;
 
-    // Periodic priority decay (every 50 turns) — must run regardless of extraction
-    if (turnCount % 50 === 0) {
-      try {
-        store.decayPriorities(agentId);
-      } catch {
-        /* ignore */
+    // Volume-triggered consolidation — event-driven with cooldown
+    // Check count only every 25 turns to avoid per-turn DB query
+    if (turnCount % 25 === 0) {
+      const memoryCount = store.getCount(agentId);
+      const needsConsolidation = memoryCount >= MEMORY_CAP_THRESHOLD || turnCount % 200 === 0;
+      if (needsConsolidation && !consolidationRunning && turnCount - lastConsolidationTurn >= CONSOLIDATION_COOLDOWN) {
+        lastConsolidationTurn = turnCount;
+        consolidationRunning = true;
+        consolidateMemories(ctx)
+          .catch(() => {})
+          .finally(() => {
+            consolidationRunning = false;
+          });
       }
     }
+    // Note: turnCount % 200 is already handled above (200 is divisible by 25)
 
-    // Periodic consolidation (every 200 turns) — merge similar memories
-    // Stagger: consolidation at 200, reflection at non-200 multiples of 100
-    if (turnCount % 200 === 0) {
-      consolidateMemories(ctx).catch(() => {
-        /* best-effort */
-      });
-    } else if (turnCount % 100 === 0 && turnCount > 10) {
-      // Periodic reflection (every 100 turns, skipped when consolidation runs)
+    // Reflection every 100 turns (staggered with consolidation)
+    if (turnCount % 100 === 0 && turnCount > 10 && turnCount !== lastConsolidationTurn) {
       reflectOnMemories(ctx).catch(() => {
         /* best-effort */
       });
+    }
+
+    // Priority decay every 50 turns (lightweight, no LLM)
+    if (turnCount % 50 === 0 && turnCount > 10) {
+      try {
+        store.decayPriorities(agentId);
+      } catch {}
     }
 
     // Update keywords from recent context
@@ -398,7 +446,10 @@ ${content.slice(0, 2000)}`;
       const jsonArray = extractFirstJsonArray(responseText);
       if (!jsonArray) return;
 
-      const facts = JSON.parse(jsonArray) as Array<{ content: string; category: string }>;
+      const facts = JSON.parse(jsonArray) as Array<{
+        content: string;
+        category: string;
+      }>;
       if (!Array.isArray(facts)) return;
 
       for (const fact of facts.slice(0, 5)) {

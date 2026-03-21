@@ -24,9 +24,11 @@ db.exec("PRAGMA busy_timeout = 5000"); // 5 second timeout
 // Enable WAL mode for better concurrent read/write performance
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA synchronous = NORMAL");
-db.exec("PRAGMA cache_size = -64000"); // 64MB cache
+// Use conservative cache/mmap for container deployments (ENV=dev/prod uses 8MB cache, no mmap)
+const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
+db.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`); // 8MB (container) or 64MB (desktop)
 db.exec("PRAGMA temp_store = MEMORY");
-db.exec("PRAGMA mmap_size = 268435456"); // 256MB memory-mapped I/O
+db.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`); // Disable mmap in containers
 
 export { ATTACHMENTS_DIR };
 
@@ -155,6 +157,7 @@ export function initDatabase() {
 
     -- Create indexes
     CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel);
+    CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel, ts DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_ts);
     CREATE INDEX IF NOT EXISTS idx_files_message ON files(message_ts);
 
@@ -654,9 +657,6 @@ export interface SlackFile {
 }
 
 export function toSlackMessage(msg: Message): SlackMessage {
-  const files = JSON.parse(msg.files_json || "[]");
-  const reactions = JSON.parse(msg.reactions_json || "{}");
-
   const result: SlackMessage = {
     ts: msg.ts,
     type: "message",
@@ -684,16 +684,28 @@ export function toSlackMessage(msg: Message): SlackMessage {
     result.thread_ts = msg.thread_ts;
   }
 
-  if (files.length > 0) {
-    result.files = files;
+  if (msg.files_json && msg.files_json !== "[]") {
+    try {
+      const files = JSON.parse(msg.files_json);
+      if (files.length > 0) result.files = files;
+    } catch {
+      /* Invalid JSON */
+    }
   }
 
-  if (Object.keys(reactions).length > 0) {
-    result.reactions = Object.entries(reactions).map(([name, users]) => ({
-      name,
-      users: users as string[],
-      count: (users as string[]).length,
-    }));
+  if (msg.reactions_json && msg.reactions_json !== "{}") {
+    try {
+      const reactions = JSON.parse(msg.reactions_json);
+      if (Object.keys(reactions).length > 0) {
+        result.reactions = Object.entries(reactions).map(([name, users]) => ({
+          name,
+          users: users as string[],
+          count: (users as string[]).length,
+        }));
+      }
+    } catch {
+      /* Invalid JSON */
+    }
   }
 
   // Include agent_id if present
@@ -883,18 +895,28 @@ export function listAgents(channel: string): Agent[] {
 // Sleep threshold - 2 minutes of inactivity = sleeping
 const SLEEP_THRESHOLD_SECONDS = 2 * 60;
 
+// Agent cache — avoids 2 DB queries per getAgent() call in hot paths (broadcasts, polling)
+const agentCache = new Map<string, { agent: Agent; ts: number }>();
+const AGENT_CACHE_TTL_MS = 2000; // 2s TTL — fresh enough for UI, avoids 100+ queries/sec
+
 // Get agent by ID and channel (with dynamic is_sleeping calculation)
 export function getAgent(agentId: string, channel: string): Agent | null {
-  // Get base agent data
-  const agent = db
-    .query<Agent, [string, string]>(`SELECT * FROM agents WHERE id = ? AND channel = ?`)
-    .get(agentId, channel);
+  const cacheKey = `${agentId}:${channel}`;
+  const now = Date.now();
+  const cached = agentCache.get(cacheKey);
+  if (cached && now - cached.ts < AGENT_CACHE_TTL_MS) {
+    return cached.agent;
+  }
 
+  // Use prepared statement instead of ad-hoc query
+  const agent = preparedStatements.getAgent.get(agentId, channel);
   if (!agent) return null;
 
   // If agent is actively streaming, it's never sleeping
   if (agent.is_streaming) {
-    return { ...agent, is_sleeping: 0 };
+    const result = { ...agent, is_sleeping: 0 };
+    agentCache.set(cacheKey, { agent: result, ts: now });
+    return result;
   }
 
   // Get last activity time from agent_seen table
@@ -905,10 +927,21 @@ export function getAgent(agentId: string, channel: string): Agent | null {
     .get(agentId, channel);
 
   // Compute is_sleeping dynamically based on last activity
-  const nowSeconds = Math.floor(Date.now() / 1000);
+  const nowSeconds = Math.floor(now / 1000);
   const isSleeping = !lastActivity || nowSeconds - lastActivity.updated_at > SLEEP_THRESHOLD_SECONDS;
 
-  return { ...agent, is_sleeping: isSleeping ? 1 : 0 };
+  const result = { ...agent, is_sleeping: isSleeping ? 1 : 0 };
+  agentCache.set(cacheKey, { agent: result, ts: now });
+  return result;
+}
+
+// Invalidate agent cache (call when agent state changes)
+export function invalidateAgentCache(agentId?: string, channel?: string): void {
+  if (agentId && channel) {
+    agentCache.delete(`${agentId}:${channel}`);
+  } else {
+    agentCache.clear();
+  }
 }
 
 // Set agent's sleeping state
@@ -918,6 +951,7 @@ export function setAgentSleeping(agentId: string, channel: string, isSleeping: b
     agentId,
     channel,
   ]);
+  if (result.changes > 0) invalidateAgentCache(agentId, channel);
   return result.changes > 0;
 }
 
@@ -929,6 +963,7 @@ export function setAgentStreaming(agentId: string, channel: string, isStreaming:
     agentId,
     channel,
   ]);
+  if (result.changes > 0) invalidateAgentCache(agentId, channel);
   return result.changes > 0;
 }
 
@@ -989,7 +1024,9 @@ export function markMessagesSeen(channel: string, agentId: string, messageTsList
   db.transaction(() => {
     for (const ts of messageTsList) {
       markSeenStmt.run(ts, channel, agentId, now);
-      const result = db.query(`SELECT changes()`).get() as { "changes()": number };
+      const result = db.query(`SELECT changes()`).get() as {
+        "changes()": number;
+      };
       if (result && result["changes()"] > 0) {
         newlySeen.push(ts);
       }

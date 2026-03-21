@@ -24,14 +24,9 @@ import { setDebug } from "./agent/utils/debug";
 import { initializeSandbox } from "./agent/utils/sandbox";
 import { smartTruncate } from "./agent/utils/smart-truncation";
 import { loadConfigFile } from "./config-file";
-import { db, getOrRegisterAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
+import { db, getAgent, getOrRegisterAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
 import { getPendingMessages, postMessage } from "./server/routes/messages";
-import {
-  broadcastAgentStreaming,
-  broadcastAgentToken,
-  broadcastMessageSeen,
-  broadcastUpdate,
-} from "./server/websocket";
+import { broadcastAgentStreaming, broadcastAgentToken, broadcastUpdate } from "./server/websocket";
 import type { TrackedSpace } from "./spaces/spawn-plugin";
 import { timedFetch } from "./utils/timed-fetch";
 
@@ -703,7 +698,15 @@ export class WorkerLoop {
         }
       }
 
-      return { ok: true, messages, pending, unseen, seenNotProcessed, serverLastProcessed, serverLastSeen };
+      return {
+        ok: true,
+        messages,
+        pending,
+        unseen,
+        seenNotProcessed,
+        serverLastProcessed,
+        serverLastSeen,
+      };
     } catch (error) {
       this.log(`Poll error (direct): ${error}`);
       return empty;
@@ -745,15 +748,22 @@ export class WorkerLoop {
       [agentId, channel],
     );
 
-    // Broadcast UI events
-    broadcastUpdate(channel, { type: "agent_seen", agent_id: agentId, last_seen_ts: lastSeenTs });
+    // Single consolidated broadcast instead of 3 separate ones
     const lastNonSelfMsg = db
       .query<{ ts: string }, [string, string, string]>(
         `SELECT ts FROM messages WHERE channel = ? AND ts <= ? AND (agent_id IS NULL OR agent_id != ?) ORDER BY ts DESC LIMIT 1`,
       )
       .get(channel, lastSeenTs, agentId);
-    if (lastNonSelfMsg) broadcastMessageSeen(channel, lastNonSelfMsg.ts, agentId);
-    broadcastUpdate(channel, { type: "agent_status", agent_id: agentId, status: "ready", hibernate_until: null });
+    const agentData = getAgent(agentId, channel);
+    broadcastUpdate(channel, {
+      type: "agent_poll",
+      agent_id: agentId,
+      last_seen_ts: lastSeenTs,
+      message_seen_ts: lastNonSelfMsg?.ts || null,
+      status: "ready",
+      hibernate_until: null,
+      avatar_color: agentData?.avatar_color || "#D97853",
+    });
   }
 
   /** HTTP poll — fallback for external/remote workers that cannot access DB directly */
@@ -825,14 +835,29 @@ export class WorkerLoop {
         if (maxTs !== this.lastMarkedSeenTs) {
           await timedFetch(`${chatApiUrl}/api/agent.markSeen`, {
             method: "POST",
-            headers: { "Content-Type": "application/json", ...this.authHeaders() },
-            body: JSON.stringify({ agent_id: agentId, channel, last_seen_ts: maxTs }),
+            headers: {
+              "Content-Type": "application/json",
+              ...this.authHeaders(),
+            },
+            body: JSON.stringify({
+              agent_id: agentId,
+              channel,
+              last_seen_ts: maxTs,
+            }),
           });
           this.lastMarkedSeenTs = maxTs;
         }
       }
 
-      return { ok: true, messages, pending, unseen, seenNotProcessed, serverLastProcessed, serverLastSeen };
+      return {
+        ok: true,
+        messages,
+        pending,
+        unseen,
+        seenNotProcessed,
+        serverLastProcessed,
+        serverLastSeen,
+      };
     } catch (error) {
       this.log(`Poll error: ${error}`);
       return empty;
@@ -860,7 +885,10 @@ export class WorkerLoop {
     try {
       const res = await timedFetch(`${this.config.chatApiUrl}/api/chat.postMessage`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...this.authHeaders() },
+        headers: {
+          "Content-Type": "application/json",
+          ...this.authHeaders(),
+        },
         body: JSON.stringify({
           channel: this.config.channel,
           text,
@@ -889,7 +917,11 @@ export class WorkerLoop {
              updated_at = strftime('%s', 'now')`,
           [agentId, channel, ts, ts],
         );
-        broadcastUpdate(channel, { type: "agent_processed", agent_id: agentId, last_processed_ts: ts });
+        broadcastUpdate(channel, {
+          type: "agent_processed",
+          agent_id: agentId,
+          last_processed_ts: ts,
+        });
         this.log(`Force-marked processed up to ts=${ts}`);
         return true;
       } catch (err) {
@@ -900,7 +932,10 @@ export class WorkerLoop {
     try {
       const res = await timedFetch(`${this.config.chatApiUrl}/api/agent.setLastProcessed`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...this.authHeaders() },
+        headers: {
+          "Content-Type": "application/json",
+          ...this.authHeaders(),
+        },
         body: JSON.stringify({
           agent_id: this.config.agentId,
           channel: this.config.channel,
@@ -920,13 +955,65 @@ export class WorkerLoop {
     }
   }
 
+  /**
+   * Collapse consecutive bot messages with identical or near-identical text from
+   * the same author into a single entry with a repeat count. Human messages are
+   * never collapsed — every human message is significant.
+   */
+  private deduplicateMessages(messages: Message[]): Message[] {
+    if (messages.length <= 1) return messages;
+    const result: (Message & { _repeatCount?: number })[] = [];
+    for (const m of messages) {
+      const prev = result[result.length - 1];
+      // Never collapse human messages
+      if (m.user === "UHUMAN" || !prev || prev.user === "UHUMAN") {
+        result.push({ ...m, _repeatCount: 1 });
+        continue;
+      }
+      // Same author?
+      const prevAuthor = prev.agent_id || prev.user;
+      const curAuthor = m.agent_id || m.user;
+      if (prevAuthor !== curAuthor) {
+        result.push({ ...m, _repeatCount: 1 });
+        continue;
+      }
+      // Compare text — exact match or >90% overlap (first 500 chars)
+      const prevText = (prev.text || "").slice(0, 500);
+      const curText = (m.text || "").slice(0, 500);
+      if (
+        prevText === curText ||
+        (prevText.length > 50 && curText.length > 50 && this.textSimilarity(prevText, curText) > 0.9)
+      ) {
+        prev._repeatCount = (prev._repeatCount || 1) + 1;
+        // Keep the latest timestamp
+        prev.ts = m.ts;
+      } else {
+        result.push({ ...m, _repeatCount: 1 });
+      }
+    }
+    return result;
+  }
+
+  /** Simple similarity ratio: shared chars / max length (good enough for duplicate detection) */
+  private textSimilarity(a: string, b: string): number {
+    if (a === b) return 1;
+    const shorter = a.length <= b.length ? a : b;
+    const longer = a.length > b.length ? a : b;
+    let matches = 0;
+    for (let i = 0; i < shorter.length; i++) {
+      if (shorter[i] === longer[i]) matches++;
+    }
+    return matches / longer.length;
+  }
+
   private buildPrompt(pending: Message[]): string {
     const { channel, agentId, projectRoot } = this.config;
+    const deduplicated = this.deduplicateMessages(pending);
     const tsFrom = pending[0]?.ts || "none";
     const tsTo = pending[pending.length - 1]?.ts || "none";
 
-    const taskMsgs = pending
-      .map((m) => {
+    const taskMsgs = deduplicated
+      .map((m: Message & { _repeatCount?: number }) => {
         const hasFiles = m.files && m.files.length > 0;
         const fileInfo = hasFiles ? `\n[Attached files: ${m.files!.map((f) => f.name).join(", ")}]` : "";
         const author =
@@ -936,7 +1023,8 @@ export class WorkerLoop {
               ? `[Sub-agent: ${m.agent_id || "unknown"}]`
               : m.agent_id || m.user || "unknown";
         const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
-        return `[ts:${m.ts}] ${author}: ${text}${fileInfo}`;
+        const repeatSuffix = (m._repeatCount || 1) > 1 ? ` [×${m._repeatCount} similar messages]` : "";
+        return `[ts:${m.ts}] ${author}: ${text}${fileInfo}${repeatSuffix}`;
       })
       .join("\n\n---\n\n");
 
@@ -981,11 +1069,19 @@ Project root: ${projectRoot}`
   /** Build continuation prompt */
   private buildContinuationPrompt(unprocessedMessages: Message[]): string {
     const { channel, agentId } = this.config;
-    const messageContext = unprocessedMessages
-      .map(
-        (m) =>
-          `[ts:${m.ts}] ${m.user === "UHUMAN" ? "human" : m.user?.startsWith("UWORKER-") ? `[Sub-agent: ${m.agent_id || "unknown"}]` : m.agent_id || "bot"}: ${this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text)}`,
-      )
+    const deduplicated = this.deduplicateMessages(unprocessedMessages);
+    const messageContext = deduplicated
+      .map((m: Message & { _repeatCount?: number }) => {
+        const author =
+          m.user === "UHUMAN"
+            ? "human"
+            : m.user?.startsWith("UWORKER-")
+              ? `[Sub-agent: ${m.agent_id || "unknown"}]`
+              : m.agent_id || "bot";
+        const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
+        const repeatSuffix = (m._repeatCount || 1) > 1 ? ` [×${m._repeatCount} similar messages]` : "";
+        return `[ts:${m.ts}] ${author}: ${text}${repeatSuffix}`;
+      })
       .join("\n\n---\n\n");
 
     const targetTs = unprocessedMessages[unprocessedMessages.length - 1]?.ts || "";
@@ -1131,7 +1227,9 @@ Please:
             }
 
             // Register built-in copilot analytics tools (always available)
-            await agent.usePlugin({ toolPlugin: createCopilotAnalyticsPlugin(channel) });
+            await agent.usePlugin({
+              toolPlugin: createCopilotAnalyticsPlugin(channel),
+            });
 
             // Register additional plugins (space tools, etc.)
             if (this.config.additionalPlugins) {
@@ -1187,7 +1285,11 @@ Please:
                 this.trackedSpaces,
               );
               await agent.usePlugin({
-                plugin: { name: "spawn-agent-spaces", version: "1.0.0", hooks: {} },
+                plugin: {
+                  name: "spawn-agent-spaces",
+                  version: "1.0.0",
+                  hooks: {},
+                },
                 toolPlugin: spawnPlugin,
               });
             }
@@ -1246,8 +1348,13 @@ Please:
     return buildAgentSystemPrompt(agent, allAgents);
   }
 
-  /** Load CLAWD.md instructions from project root */
+  // Cache CLAWD.md instructions per worker instance (avoids disk reads per agent init)
+  private clawdInstructionsCache: string | null = null;
+
+  /** Load CLAWD.md instructions from project root (cached after first load) */
   private loadClawdInstructions(): string {
+    if (this.clawdInstructionsCache !== null) return this.clawdInstructionsCache;
+
     const { projectRoot } = this.config;
     const contexts: string[] = [];
 
@@ -1268,10 +1375,10 @@ Please:
     }
 
     // 3. Agent identity — from agentFileConfig (sub-agent spawn) or disk lookup
+    // Cache listAgentFiles result to avoid redundant dir scans
+    const agentFiles = listAgentFiles(projectRoot);
     if (this.config.agentFileConfig) {
-      // Sub-agent spawned with agent= parameter: use provided config directly
-      const allAgents = listAgentFiles(projectRoot);
-      const identity = buildAgentSystemPrompt(this.config.agentFileConfig, allAgents);
+      const identity = buildAgentSystemPrompt(this.config.agentFileConfig, agentFiles);
       if (identity) {
         contexts.push(`# Agent Identity & Configuration\n\n${identity}`);
       }
@@ -1282,7 +1389,7 @@ Please:
       }
     }
 
-    const result = contexts.join("\n\n---\n\n");
+    let result = contexts.join("\n\n---\n\n");
     if (result.length > MAX_SYSTEM_INSTRUCTIONS_LENGTH) {
       const suffix = "\n\n[TRUNCATED — CLAWD instructions truncated for context budget]";
       let cutPoint = MAX_SYSTEM_INSTRUCTIONS_LENGTH - suffix.length;
@@ -1290,8 +1397,9 @@ Please:
         const code = result.charCodeAt(cutPoint - 1);
         if (code >= 0xd800 && code <= 0xdbff) cutPoint--;
       }
-      return result.slice(0, cutPoint) + suffix;
+      result = result.slice(0, cutPoint) + suffix;
     }
+    this.clawdInstructionsCache = result;
     return result;
   }
 
@@ -1310,7 +1418,10 @@ Please:
         `${this.config.chatApiUrl}/api/agent.setStreaming`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...this.authHeaders() },
+          headers: {
+            "Content-Type": "application/json",
+            ...this.authHeaders(),
+          },
           body: JSON.stringify({
             agent_id: this.config.agentId,
             channel: this.config.channel,

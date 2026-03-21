@@ -68,7 +68,7 @@ const HEARTBEAT_CHECK_INTERVAL_MS = 30_000; // check every 30s
 const HEARTBEAT_DEAD_THRESHOLD_MS = 45_000; // consider dead if no pong for 45s
 
 // Server-initiated heartbeat: detect dead extensions and reject pending requests
-setInterval(() => {
+const heartbeatInterval = setInterval(() => {
   const now = Date.now();
   for (const [extId, ws] of connections) {
     const lastSeen = lastPong.get(extId) ?? ws.data.connectedAt;
@@ -88,6 +88,7 @@ setInterval(() => {
     } catch {}
   }
 }, HEARTBEAT_CHECK_INTERVAL_MS);
+heartbeatInterval.unref(); // Don't prevent process exit
 
 const DEFAULT_TIMEOUT_MS = 30_000; // 30s default — agents can override with timeout param
 
@@ -311,7 +312,11 @@ function selectBrowser(agentId: string, channel?: string): ServerWebSocket<Brows
   }
 
   // Build candidate list
-  const candidates: Array<{ extId: string; ws: ServerWebSocket<BrowserWsData>; load: number }> = [];
+  const candidates: Array<{
+    extId: string;
+    ws: ServerWebSocket<BrowserWsData>;
+    load: number;
+  }> = [];
 
   for (const [extId, ws] of connections) {
     // Auth filter: if auth is required and channel is specified,
@@ -460,7 +465,13 @@ export async function sendBrowserCommand(
       reject(new Error(`Browser command '${method}' timed out after ${timeoutMs / 1000}s`));
     }, timeoutMs);
 
-    pendingRequests.set(id, { resolve, reject, method, timer, extensionId: extId });
+    pendingRequests.set(id, {
+      resolve,
+      reject,
+      method,
+      timer,
+      extensionId: extId,
+    });
 
     try {
       ws!.send(JSON.stringify({ id, method, params }));
@@ -491,7 +502,9 @@ export function upgradeBrowserWs(req: Request, server: any): Response | undefine
   if (isBrowserAuthRequired()) {
     if (!rawToken) {
       console.warn("[browser-bridge] Rejected connection: auth token required but not provided");
-      return new Response("Auth token required. Provide ?token= parameter.", { status: 401 });
+      return new Response("Auth token required. Provide ?token= parameter.", {
+        status: 401,
+      });
     }
     if (!AUTH_TOKEN_PATTERN.test(rawToken)) {
       console.warn("[browser-bridge] Rejected connection: invalid token format");
