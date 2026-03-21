@@ -1,6 +1,6 @@
 # Claw'd Codebase Summary
 
-> Generated: 2026-03-18 | Total Files: ~260 | Total Tokens: 1,173,410 | Codebase size: 4.8M chars
+> Generated: 2026-03-21 | Total Files: ~260 | Total Tokens: ~1.2M | Codebase size: 4.8M chars
 
 ---
 
@@ -1014,6 +1014,47 @@ bun run dev
 ```sh
 docker compose up -d
 ```
+
+---
+
+## Recent Performance Optimizations (March 2026)
+
+### Database
+- **Container-aware tuning**: SQLite cache reduced to 8MB for cloud deployments
+- **Composite indexes**: `(channel, ts DESC)` for faster message history queries
+- **Maintenance**: Automatic WAL checkpoint, PRAGMA optimize, copilot_calls pruning, orphan cleanup
+
+### Query & Streaming
+- **Cached agent lookup**: 2-second TTL on `getAgent()` results
+- **Batch operations**: `getMessageSeenBy()` grouped queries
+- **Token batching**: 50ms coalesce reduces WebSocket overhead
+- **SSE buffer fix**: Fixed mid-frame chunking in Server-Sent Events
+- **Consolidated broadcast**: 3→1 agent_poll messages
+
+### Agent Loop
+- **Instruction caching**: `loadClawdInstructions()` with file invalidation
+- **File list caching**: 60-second TTL on `listAgentFiles()`
+- **Content-based tokens**: Hash-based deduplication avoids redundant tokenization
+- **Adaptive backoff**: 500ms → 3s polling for idle agents
+- **O(n²) fixes**: `getRecentContext` now O(n)
+
+### Memory Architecture
+- **Lost-in-middle mitigation**: `reorderForAttention()` with U-shaped interleaving
+- **Event-driven consolidation**: Volume-triggered (50 turns) + 50-turn cooldown
+- **Pre-compaction flush**: `beforeCompaction()` on all 4 paths
+- **Max interrupts**: 3 → 10
+- **Message deduplication**: Collapse consecutive similar messages
+
+### UI Changes
+- **Thoughts dialog**: Combined tool input/output in single accordion
+- **Image previews**: Built-in for screenshot/read_image tools
+- **Diff view**: Client-side rendering for edit/create tools
+- **Charts**: Borderless, warm palette, mobile responsive
+
+### Infrastructure
+- **WebSocket path**: Fixed `/ws` routing
+- **K8s deployment**: 512Mi → 1Gi memory, 1 → 2 CPU
+- **Async uploads**: Non-blocking file operations
 
 ---
 

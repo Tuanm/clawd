@@ -12,13 +12,14 @@
 4. [Naming Conventions](#4-naming-conventions)
 5. [TypeScript Standards](#5-typescript-standards)
 6. [Error Handling](#6-error-handling)
-7. [Plugin System](#7-plugin-system)
-8. [Database Patterns](#8-database-patterns)
-9. [API Design](#9-api-design)
-10. [Testing Standards](#10-testing-standards)
-11. [Performance Guidelines](#11-performance-guidelines)
-12. [Security Best Practices](#12-security-best-practices)
-13. [Git & Worktree Integration](#13-git--worktree-integration)
+7. [Memory Architecture](#7-memory-architecture)
+8. [Plugin System](#8-plugin-system)
+9. [Database Patterns](#9-database-patterns)
+10. [API Design](#10-api-design)
+11. [Testing Standards](#11-testing-standards)
+12. [Performance Guidelines](#12-performance-guidelines)
+13. [Security Best Practices](#13-security-best-practices)
+14. [Git & Worktree Integration](#14-git--worktree-integration)
 
 ---
 
@@ -388,9 +389,66 @@ if (!channel) return json({ ok: false, error: "channel_required" }, 400);
 
 ---
 
-## 7. Plugin System
+## 7. Memory Architecture
 
-### 7.1 Implementing a Tool Plugin
+Agent memory systems include session history, knowledge retrieval, and long-term storage. Recent improvements focus on lost-in-middle mitigation and event-driven consolidation.
+
+### 7.1 Lost-in-Middle Mitigation
+
+**Pattern**: `reorderForAttention()` implements atomic-group-aware U-shaped interleaving to keep relevant context in optimal positions.
+
+- Preserves message relationships (tool calls with results)
+- Prioritizes recent and important messages at start/end of context
+- Deprioritizes middle sections (where LLM attention is weaker)
+- Uses message scoring weights (system: 100, user: 90, tool_error: 80, etc.)
+
+### 7.2 Volume-Triggered Consolidation
+
+Replaces fixed 200-turn interval with event-driven compaction:
+
+- **Trigger**: Message volume threshold (e.g., 50 turns)
+- **Cooldown**: 50-turn minimum between consecutive compactions (prevents thrashing)
+- **Concurrency guard**: Only one compaction in flight globally (prevents race conditions)
+- **Automatic**: Activates on overflow, full reset, smart compaction, or API error
+
+### 7.3 Pre-Compaction Flush
+
+**Enhancement**: `beforeCompaction()` hook now called on ALL 4 compaction paths:
+1. Critical overflow (>95% token limit)
+2. Full reset (max turns exceeded)
+3. Smart compaction (automatic volume-based)
+4. API error overflow (fallback when trimming insufficient)
+
+Ensures consistent state before destructive operations.
+
+### 7.4 Interrupt Polling
+
+- **Maximum interrupts**: Increased from 3 → 10 (more resilient)
+- **Adaptive backoff**: 500ms → 3s when idle (reduces CPU usage)
+- **Heartbeat signal**: `[HEARTBEAT]` injected as wake signal, stripped during compaction
+
+### 7.5 Message Deduplication
+
+Consecutive similar bot messages collapsed in prompts to reduce token usage:
+- Detects duplicate or near-duplicate assistant/tool messages
+- Collapses into single message with count indicator
+- Preserves important response sequences
+
+### 7.6 Token Budget Strategy
+
+| Threshold | Action |
+|-----------|--------|
+| <50% | Full history retained |
+| 50-70% | Soft compaction begins |
+| 70-85% | Aggressive pruning + summarization |
+| >85% | Full LLM-generated summary, reset |
+| >95% | Emergency full reset (critical overflow) |
+
+---
+
+## 8. Plugin System
+
+### 8.1 Implementing a Tool Plugin
 
 ```typescript
 import type { ToolPlugin, ToolDefinition, ToolCall } from "../agent";
@@ -422,7 +480,7 @@ export class CustomPlugin implements ToolPlugin {
 }
 ```
 
-### 7.2 Plugin Registration
+### 8.2 Plugin Registration
 
 Register in agent's plugin list:
 
@@ -437,9 +495,9 @@ agent.registerPlugins(plugins);
 
 ---
 
-## 8. Database Patterns
+## 9. Database Patterns
 
-### 8.1 Schema Definition
+### 9.1 Schema Definition
 
 Use typed migrations:
 
@@ -463,7 +521,7 @@ for (const m of migrations) {
 }
 ```
 
-### 8.2 Prepared Statements
+### 9.2 Prepared Statements
 
 Always use parameterized queries:
 
@@ -476,7 +534,7 @@ const agent = stmt.get(channel, agentId);
 const agent = db.query(`SELECT * FROM agents WHERE channel = '${channel}'`);
 ```
 
-### 8.3 Transactions
+### 9.3 Transactions
 
 Explicit transactions for multi-step operations:
 
@@ -487,7 +545,7 @@ db.transaction(() => {
 })();
 ```
 
-### 8.4 WAL Mode
+### 9.4 WAL Mode
 
 Ensure WAL mode for concurrent access:
 
@@ -498,9 +556,9 @@ db.pragma("journal_mode = wal");  // Enable WAL
 
 ---
 
-## 9. API Design
+## 10. API Design
 
-### 9.1 REST Endpoint Structure
+### 10.1 REST Endpoint Structure
 
 Organize endpoints by resource:
 
@@ -514,7 +572,7 @@ POST /api/app.worktree.commit
 
 **Pattern**: `/{resource}.{action}` where `resource` is domain (app, chat, agent) and `action` is operation.
 
-### 9.2 Request/Response Format
+### 10.2 Request/Response Format
 
 All responses return JSON:
 
@@ -526,7 +584,7 @@ All responses return JSON:
 { "ok": false, "error": "error_code", "message": "Human-readable message" }
 ```
 
-### 9.3 Status Codes
+### 10.3 Status Codes
 
 - **200**: Success
 - **400**: Bad request (missing/invalid parameters)
@@ -536,9 +594,9 @@ All responses return JSON:
 
 ---
 
-## 10. Testing Standards
+## 11. Testing Standards
 
-### 10.1 Unit Tests
+### 8.1 Unit Tests
 
 Test individual functions in isolation:
 
@@ -554,7 +612,7 @@ test("stageFile validates path traversal", () => {
 });
 ```
 
-### 10.2 Integration Tests
+### 8.2 Integration Tests
 
 Test across components:
 
@@ -567,7 +625,7 @@ test("worktree creation and status flow", () => {
 });
 ```
 
-### 10.3 No Mocking
+### 8.3 No Mocking
 
 Avoid mocking for database/file operations when possible:
 
@@ -582,38 +640,71 @@ const mockGit = { commit: () => ({ ok: true }) };
 
 ---
 
-## 11. Performance Guidelines
+## 12. Performance Guidelines
 
-### 11.1 Token Management
+### 8.1 Token Management
 
 - **Context compaction**: Aggressive at 75% token limit, critical reset at 95%
 - **Tool filtering**: Prune unused tools after 5-iteration warmup
 - **Model tiering**: Auto-downgrade to Haiku for tool routing decisions
 - **Prompt caching**: Use Anthropic's prompt-caching beta header
 
-### 11.2 Database Query Optimization
+### 8.2 Database Query Optimization
 
 - Use indexes on frequently queried columns (channel, agent_id, ts)
+- Composite indexes: `(channel, ts DESC)` for message history
 - Prepared statements for repeated queries
 - Pagination for large result sets
+- Cache `getAgent()` results with 2-second TTL
+- Batch operations like `getMessageSeenBy()`
 
-### 11.3 WebSocket Efficiency
+**Maintenance tasks:**
+- Run `PRAGMA optimize` after bulk insert/update operations (FTS5 indexes)
+- Periodic WAL checkpoint to prevent runaway WAL file growth
+- Prune `copilot_calls` table for entries >30 days old
+- Clean up orphaned sessions with no agent references
+
+### 8.3 WebSocket Efficiency
 
 - Broadcast events to subscribed clients only
-- Compress large payloads (diffs, large messages)
-- Batch updates when possible
+- Coalesce token emissions in 50ms batches (reduces frame overhead)
+- Merge multiple agent_poll messages into single broadcast
+- Use fixed-size buffers for SSE to prevent mid-frame chunking
 
-### 11.4 Worktree Performance
+### 8.4 Streaming Optimizations
+
+- Remove JSON pretty-printing in API responses (MCP)
+- Guard JSON.parse with try-catch for robustness
+- Use state-based stream timeouts (CONNECTING, PROCESSING, STREAMING)
+
+### 8.5 Agent Loop Optimizations
+
+- Cache `loadClawdInstructions()` with file-change invalidation
+- Cache `listAgentFiles()` with 60-second TTL
+- Cache built-in tool names at startup
+- Use content-based token hashing to avoid redundant tokenization
+- Implement adaptive polling backoff (500ms → 3s) for idle agents
+- Mark browser bridge heartbeat with `.unref()` for graceful shutdown
+- Use async file operations to prevent blocking message loop
+
+### 8.6 Worktree Performance
 
 - Lazy-load worktree diffs (only fetch when user opens dialog)
 - Cache worktree status for 5 seconds (avoid repeated git calls)
 - Use `git worktree list --porcelain` for efficient listing
+- Identify hunks by SHA1 content hash (not index-based)
+
+### 8.7 Memory Optimization
+
+- Cap context tracker maps to prevent unbounded growth
+- Use atomic grouping for tool calls + results
+- Fix O(n²) algorithms (e.g., `getRecentContext` → O(n))
 
 ---
 
-## 12. Security Best Practices
+## 13. Security Best Practices
 
-### 12.1 Path Validation
+### 8.1 Path Validation
 
 Always validate paths before use:
 
@@ -627,7 +718,7 @@ function validateWorktreePath(filePath: string, worktreeRoot: string): string | 
 }
 ```
 
-### 12.2 Sandboxing
+### 8.2 Sandboxing
 
 All tool execution runs in isolated namespace:
 
@@ -638,7 +729,7 @@ const result = runInSandbox(command, args, {
 });
 ```
 
-### 12.3 Input Sanitization
+### 8.3 Input Sanitization
 
 Sanitize all user inputs before using in commands:
 
@@ -650,14 +741,14 @@ execFileSync("git", ["commit", "-m", message], { cwd: path });
 execFileSync("bash", ["-c", `git commit -m "${message}"`]);
 ```
 
-### 12.4 Token Handling
+### 8.4 Token Handling
 
 - Hash tokens with SHA256 before storing
 - Compare with constant-time functions
 - Never log or expose tokens in errors
 - Rotate keys periodically via key pool
 
-### 12.5 Database Security
+### 8.5 Database Security
 
 - Use parameterized queries (prevents SQL injection)
 - Validate schema changes at startup
@@ -666,9 +757,9 @@ execFileSync("bash", ["-c", `git commit -m "${message}"`]);
 
 ---
 
-## 13. Git & Worktree Integration
+## 14. Git & Worktree Integration
 
-### 13.1 Worktree Lifecycle
+### 8.1 Worktree Lifecycle
 
 Always use `execFileSync` with array arguments (prevents shell injection):
 
@@ -690,7 +781,7 @@ execFileSync(`git worktree add -b ${branchName} ${worktreePath}`, { shell: true 
 - Reuse on server restart if path/branch still valid
 - Safe-delete checks for uncommitted changes before removal
 
-### 13.2 Branch Naming
+### 8.2 Branch Naming
 
 Use the `clawd/{randomId}` convention (6-char hex):
 
@@ -700,7 +791,7 @@ export function generateBranchName(): string {
 }
 ```
 
-### 13.3 Commit Author Handling
+### 8.3 Commit Author Handling
 
 Respect git local config first, then fallback to config.author:
 
@@ -727,7 +818,7 @@ if (hasLocal && author) {
 }
 ```
 
-### 13.4 Hunk Staging (SHA1 Content Hash)
+### 8.4 Hunk Staging (SHA1 Content Hash)
 
 Identify hunks by SHA1 content hash (not index-based) for stability:
 
@@ -755,7 +846,7 @@ execFileSync("git", ["apply", "--cached", "--unidiff-zero"], {
 });
 ```
 
-### 13.5 Sandbox & Worktree Integration
+### 8.5 Sandbox & Worktree Integration
 
 When a worktree is active:
 - **sandbox projectRoot** = worktree path (agent sees worktree as root)
@@ -772,7 +863,7 @@ const context: AgentContext = {
 };
 ```
 
-### 13.6 Git Tool Guards
+### 8.6 Git Tool Guards
 
 Tools like `git_commit` have guards that apply to worktrees:
 - Detect protected branches (main/master/develop) — block commit/push/merge
