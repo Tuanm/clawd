@@ -1,6 +1,6 @@
 # Claw'd Architecture Reference
 
-> Last updated: 2026-03-18
+> Last updated: 2026-03-21
 
 ---
 
@@ -22,23 +22,29 @@
    - [Heartbeat Monitor](#66-heartbeat-monitor)
    - [Stream Timeouts (State-Based)](#67-stream-timeouts-state-based)
    - [Model Tiering & Tool Filtering](#68-model-tiering--tool-filtering)
-7. [Browser Extension](#7-browser-extension)
+7. [Performance Optimizations](#7-performance-optimizations)
+   - [Database Optimizations](#71-database-optimizations)
+   - [Query Optimizations](#72-query-optimizations)
+   - [Streaming & WebSocket Optimizations](#73-streaming--websocket-optimizations)
+   - [Agent Loop Optimizations](#74-agent-loop-optimizations)
+   - [Memory Architecture Improvements](#75-memory-architecture-improvements)
+8. [Browser Extension](#8-browser-extension)
    - [Architecture Overview](#71-architecture-overview)
    - [Normal Mode (CDP)](#72-normal-mode-cdp)
    - [Stealth Mode (Anti-Bot)](#73-stealth-mode-anti-bot)
    - [Anti-Detection Shield](#74-anti-detection-shield)
    - [Distribution](#75-distribution)
    - [Artifact Rendering Pipeline](#76-artifact-rendering-pipeline)
-8. [Sub-Agent System (Spaces)](#8-sub-agent-system-spaces)
-   - [Space Lifecycle](#81-space-lifecycle)
-   - [Scheduler Integration](#82-scheduler-integration)
-9. [Sandbox Security](#9-sandbox-security)
-   - [Linux (bubblewrap)](#91-linux-bubblewrap)
-   - [macOS (sandbox-exec)](#92-macos-sandbox-exec)
-   - [Access Policy](#93-access-policy)
-10. [Remote Worker Bridge](#10-remote-worker-bridge)
-11. [WebSocket Events](#11-websocket-events)
-12. [API Reference](#12-api-reference)
+9. [Sub-Agent System (Spaces)](#9-sub-agent-system-spaces)
+   - [Space Lifecycle](#91-space-lifecycle)
+   - [Scheduler Integration](#92-scheduler-integration)
+10. [Sandbox Security](#10-sandbox-security)
+   - [Linux (bubblewrap)](#101-linux-bubblewrap)
+   - [macOS (sandbox-exec)](#102-macos-sandbox-exec)
+   - [Access Policy](#103-access-policy)
+11. [Remote Worker Bridge](#11-remote-worker-bridge)
+12. [WebSocket Events](#12-websocket-events)
+13. [API Reference](#13-api-reference)
     - [Chat APIs](#121-chat-apis)
     - [File APIs](#122-file-apis)
     - [Reaction APIs](#123-reaction-apis)
@@ -710,12 +716,113 @@ This approach accommodates slow models (Opus, o1, o3) with extended thinking wit
 
 ---
 
-## 7. Browser Extension
+## 7. Performance Optimizations
+
+Recent optimizations across database, query, streaming, and memory systems improve latency, reduce resource usage, and enhance scalability.
+
+### 7.1 Database Optimizations
+
+**SQLite Container-Aware Tuning:**
+- Cache size reduced to 8MB (vs 64MB default) for containerized environments
+- Minimizes memory footprint in Kubernetes deployments
+- Tuned for cloud resource constraints
+
+**Composite Index:**
+- Added `(channel, ts DESC)` composite index on `messages` table
+- Accelerates message history retrieval by timestamp
+- Significantly faster for large channels (1000+ messages)
+
+**Periodic Maintenance:**
+- **WAL checkpoint**: Periodic synchronization between WAL log and main database (prevents runaway WAL file growth)
+- **Database maintenance**: `PRAGMA optimize` run asynchronously after bulk operations
+- **Automatic pruning**: `copilot_calls` table pruned for entries >30 days old
+- **Orphan cleanup**: Removes sessions with no agent references
+
+### 7.2 Query Optimizations
+
+**Cached Agent Lookup:**
+- `getAgent()` results cached with 2-second TTL
+- Prepared statements reused for repeated queries
+- Reduces database roundtrips for agent metadata
+
+**Batch Message Operations:**
+- `getMessageSeenBy()` batches read tracking queries
+- Reduces per-message database calls
+- Improves bulk message processing performance
+
+**Response Optimization:**
+- Removed JSON pretty-printing in MCP responses
+- Guarded `toSlackMessage()` with safe JSON.parse error handling
+- Reduces serialization overhead
+
+### 7.3 Streaming & WebSocket Optimizations
+
+**Token Batching:**
+- Token emissions coalesced in 50ms batches
+- Reduces WebSocket frame overhead
+- Smooths streaming performance
+
+**SSE Buffer Fix:**
+- Fixed Server-Sent Events buffer handling
+- Prevents mid-frame chunking issues
+- More reliable streaming delivery
+
+**Consolidated Broadcasting:**
+- Merged multiple `agent_poll` WebSocket messages into single broadcast (3→1 messages)
+- Reduces network traffic by 66%
+- Maintains message ordering guarantees
+
+### 7.4 Agent Loop Optimizations
+
+**Instruction Caching:**
+- `loadClawdInstructions()` cached with invalidation on file changes
+- Reduces filesystem I/O for system prompt assembly
+
+**File List Caching:**
+- `listAgentFiles()` cached with 60-second TTL
+- Speeds up tool filtering and validation
+
+**Tool Name Caching:**
+- Built-in tool names cached at startup
+- Eliminates repeated string lookups
+
+**Content-Based Token Cache:**
+- Agent token calculations cached based on message content hash
+- Avoids redundant tokenization of identical messages
+
+**Adaptive Interrupt Polling:**
+- Polling interval increases dynamically: 500ms → 3s backoff
+- Reduces CPU usage for idle agents
+- Maintains responsiveness for active agents
+
+**getRecentContext Fix:**
+- Fixed O(n²) algorithmic complexity → O(n)
+- Significant improvement for agents with large message histories
+
+**Browser Bridge Heartbeat:**
+- Heartbeat socket marked with `.unref()` to not keep process alive
+- Enables graceful shutdown of idle servers
+
+**Async File Upload:**
+- File operations made asynchronous
+- Prevents blocking of message processing loop
+
+**FTS5 Optimization:**
+- `PRAGMA optimize` run after bulk knowledge base insertions
+- Improves full-text search performance
+
+**Context Tracker Map Caps:**
+- Memory-bounded context tracking maps prevent unbounded growth
+- Automatic eviction of old/cold entries
+
+---
+
+## 8. Browser Extension
 
 The Chrome browser extension is the primary mechanism for agent browser automation. It
 connects to the clawd server via WebSocket and executes browser commands on behalf of agents.
 
-### 7.1 Architecture Overview
+### 8.1 Architecture Overview
 
 ```mermaid
 flowchart LR
@@ -743,7 +850,7 @@ flowchart LR
 **25+ command types** are supported: navigate, screenshot, click, type, execute, scroll,
 hover, select, drag, upload, accessibility tree, tab management, and more.
 
-### 7.2 Normal Mode (CDP)
+### 8.2 Normal Mode (CDP)
 
 Normal mode uses the **Chrome DevTools Protocol** via `chrome.debugger` API for precise,
 full-featured browser control.
@@ -765,7 +872,7 @@ full-featured browser control.
 **Trade-off**: CDP attaches a debugger to the tab, which is **detectable by anti-bot
 systems** (Cloudflare, DataDome, PerimeterX, etc.).
 
-### 7.3 Stealth Mode (Anti-Bot)
+### 8.3 Stealth Mode (Anti-Bot)
 
 Stealth mode uses `chrome.scripting.executeScript()` instead of CDP, making automation
 **invisible to anti-bot detection systems**.
@@ -802,7 +909,7 @@ Stealth mode uses `chrome.scripting.executeScript()` instead of CDP, making auto
 | Touch events | Requires CDP `Input.dispatchTouchEvent` |
 | Device emulation | Requires CDP `Emulation.setDeviceMetricsOverride` |
 
-### 7.4 Anti-Detection Shield
+### 8.4 Anti-Detection Shield
 
 **File**: `packages/browser-extension/src/shield.js`
 
@@ -820,7 +927,7 @@ executes. It patches browser APIs to prevent detection of automation:
 | Debugger trap neutralization | Prevents `debugger` statement traps from detecting automation |
 | `chrome.csi` / `chrome.loadTimes` | Spoofs Chrome-specific API fingerprints |
 
-### 7.5 Distribution
+### 8.5 Distribution
 
 The browser extension is **not installed from a store**. Instead:
 
@@ -874,12 +981,12 @@ Max 1000 data points, 10 series per chart.
 
 ---
 
-## 8. Sub-Agent System (Spaces)
+## 9. Sub-Agent System (Spaces)
 
 The Spaces system allows agents to delegate tasks to isolated sub-agents that run in
 parallel.
 
-### 8.1 Space Lifecycle
+### 9.1 Space Lifecycle
 
 ```mermaid
 sequenceDiagram
@@ -914,7 +1021,7 @@ sequenceDiagram
 
 **Space statuses**: `active` → `completed` | `failed` | `timed_out`
 
-### 8.2 Scheduler Integration
+### 9.2 Scheduler Integration
 
 **Files**: `src/scheduler/manager.ts`, `src/scheduler/runner.ts`, `src/scheduler/parse-schedule.ts`
 
@@ -938,12 +1045,12 @@ The scheduler creates and manages recurring or one-time jobs:
 
 ---
 
-## 9. Sandbox Security
+## 10. Sandbox Security
 
 Tool execution is sandboxed to prevent agents from accessing sensitive host resources.
 The sandbox implementation differs by platform.
 
-### 9.1 Linux (bubblewrap)
+### 10.1 Linux (bubblewrap)
 
 Uses [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) for
 **filesystem isolation via bind mounts and a clean environment**:
@@ -953,14 +1060,14 @@ Uses [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) for
 - Agents share the host PID and network namespace (no PID or network namespace isolation)
 - No access to anything not explicitly allowed
 
-### 9.2 macOS (sandbox-exec)
+### 10.2 macOS (sandbox-exec)
 
 Uses `sandbox-exec` with Seatbelt profiles:
 
 - **Allow-default** policy with explicit deny rules for writes
 - Less strict than Linux bubblewrap but still prevents unauthorized file access
 
-### 9.3 Access Policy
+### 10.3 Access Policy
 
 | Access | Paths |
 |--------|-------|
@@ -981,7 +1088,7 @@ Uses `sandbox-exec` with Seatbelt profiles:
 - `~/.bun/install` mounted read-write (overrides the read-only `~/.bun` mount)
 - `.clawd/skills/`, `.clawd/tools/`, `.clawd/files/` re-mounted read-only as exceptions to the blocked `.clawd/` rule
 
-### 9.4 Git Worktree Isolation
+### 10.4 Git Worktree Isolation
 
 Multi-agent file isolation via git worktrees. When enabled, each agent in a channel gets its own isolated working directory with a dedicated branch (`clawd/{randomId}`), enabling concurrent edits without conflicts.
 
@@ -1251,7 +1358,7 @@ Reused on server restart to avoid orphaned branches and recreating worktrees.
 
 ---
 
-## 10. Remote Worker Bridge
+## 11. Remote Worker Bridge
 
 External machines can connect to the clawd server as **remote tool providers**, extending
 an agent's capabilities across multiple hosts.
@@ -1285,7 +1392,7 @@ flowchart LR
 
 ---
 
-## 11. WebSocket Events
+## 12. WebSocket Events
 
 All real-time communication flows through the WebSocket connection at `/ws`.
 
@@ -1312,11 +1419,11 @@ a **server-to-client push channel** — clients send messages via the REST API.
 
 ---
 
-## 12. API Reference
+## 13. API Reference
 
 All API endpoints are available at `/api/{method}` via POST (or GET where noted).
 
-### 12.1 Chat APIs
+### 13.1 Chat APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -1331,21 +1438,21 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `chat.update` | POST | Edit an existing message |
 | `chat.delete` | POST | Delete a message |
 
-### 12.2 File APIs
+### 13.2 File APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `files.upload` | POST | Upload a file attachment |
 | `files/{id}` | GET | Download/serve a file by ID |
 
-### 12.3 Reaction APIs
+### 13.3 Reaction APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `reactions.add` | POST | Add an emoji reaction to a message |
 | `reactions.remove` | POST | Remove an emoji reaction |
 
-### 12.4 Agent Streaming APIs
+### 13.4 Agent Streaming APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -1353,7 +1460,7 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `agent.streamToken` | POST | Push a streaming LLM token |
 | `agent.streamToolCall` | POST | Push a tool call event |
 
-### 12.5 Agent Management APIs
+### 13.5 Agent Management APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -1365,7 +1472,7 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `agents.info` | GET | Get info about a specific agent |
 | `agents.register` | POST | Register a new agent |
 
-### 12.6 App Management APIs
+### 13.6 App Management APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -1378,7 +1485,7 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `app.mcp.add` | POST | Add an MCP server configuration |
 | `app.mcp.remove` | POST | Remove an MCP server configuration |
 
-### 12.7 Project Browser APIs
+### 13.7 Project Browser APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -1386,7 +1493,7 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `app.project.listDir` | GET | List files in a directory |
 | `app.project.readFile` | GET | Read a file's contents |
 
-### 12.8 Analytics APIs
+### 13.8 Analytics APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -1396,7 +1503,7 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `analytics/copilot/models` | GET | Per-model usage statistics |
 | `analytics/copilot/recent` | GET | Recent API calls |
 
-### 12.9 Task Management APIs
+### 13.9 Task Management APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -1409,13 +1516,13 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `tasks.removeAttachment` | POST | Remove an attachment from a task |
 | `tasks.addComment` | POST | Add a comment to a task |
 
-### 12.9b Plan Management APIs
+### 13.9b Plan Management APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `plans.*` | Various | Plan management CRUD |
 
-### 12.9c User APIs
+### 13.9c User APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -1423,14 +1530,14 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `user.getUnreadCounts` | GET | Get unread message counts |
 | `user.getLastSeen` | GET | Get last seen timestamps |
 
-### 12.9d Spaces APIs
+### 13.9d Spaces APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `spaces.list` | GET | List spaces |
 | `spaces.get` | GET | Get a specific space |
 
-### 12.9e Skills APIs
+### 13.9e Skills APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -1439,13 +1546,13 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `app.skills.save` | POST | Create or update a skill |
 | `app.skills.delete` | DELETE | Remove a custom skill |
 
-### 12.9f Custom Tools APIs
+### 13.9f Custom Tools APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `custom_tool` | POST | Create/edit/delete/execute custom tools |
 
-### 12.9g Worktree APIs
+### 13.9g Worktree APIs
 
 **Read Endpoints** (query params: `?channel=...&agent_id=...`):
 
@@ -1475,7 +1582,7 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `app.worktree.unstage_hunk` | Unstage a specific hunk (`file`: string, `hunk_hash`: string) |
 | `app.worktree.revert_hunk` | Revert a specific hunk (`file`: string, `hunk_hash`: string) |
 
-### 12.10 Special Endpoints
+### 13.10 Special Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
