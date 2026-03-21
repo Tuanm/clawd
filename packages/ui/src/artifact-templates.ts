@@ -1,5 +1,7 @@
 // HTML document templates for sandboxed artifact iframes
 
+import { type BridgeContext, generateBridgeScript } from "./artifact-bridge";
+
 const HTML_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob: https:; font-src https:; connect-src 'none';">`;
 
 const REACT_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdn.tailwindcss.com; style-src 'unsafe-inline' https://cdn.tailwindcss.com; img-src data: blob: https:; font-src https:; connect-src 'none';">`;
@@ -33,10 +35,12 @@ ${RESIZE_SCRIPT}
 </body></html>`;
 }
 
-export function reactArtifactTemplate(jsxCode: string): string {
+export function reactArtifactTemplate(jsxCode: string, context?: BridgeContext): string {
+  const bridgeScript = context ? `<script>${generateBridgeScript(context)}</script>\n` : "";
   return `<!DOCTYPE html>
 <html><head>
 ${REACT_CSP}
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js"></script>
@@ -45,7 +49,7 @@ ${BASE_STYLES}
 </head><body>
 <div id="root"></div>
 ${RESIZE_SCRIPT}
-<script type="text/babel" data-type="module">
+${bridgeScript}<script type="text/babel" data-type="module">
 try {
   ${jsxCode}
 

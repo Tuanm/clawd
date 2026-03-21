@@ -1,6 +1,6 @@
 // Shared ArtifactType and configuration — imported by artifact-card, artifact-modal, artifact-renderer.
 
-export type ArtifactType = "html" | "react" | "svg" | "chart" | "csv" | "markdown" | "code";
+export type ArtifactType = "html" | "react" | "svg" | "chart" | "csv" | "markdown" | "code" | "interactive";
 
 export const TYPE_CONFIG: Record<ArtifactType, { label: string; icon: string; color: string }> = {
   html: { label: "HTML", icon: "</>", color: "hsl(15 80% 55%)" },
@@ -10,6 +10,7 @@ export const TYPE_CONFIG: Record<ArtifactType, { label: string; icon: string; co
   csv: { label: "CSV", icon: "T", color: "hsl(140 60% 45%)" },
   markdown: { label: "Markdown", icon: "M", color: "hsl(210 15% 55%)" },
   code: { label: "Code", icon: "{}", color: "hsl(180 50% 45%)" },
+  interactive: { label: "Interactive", icon: "⚡", color: "hsl(30 70% 55%)" },
 };
 
 export const ARTIFACT_EXTENSION_MAP: Record<ArtifactType, string> = {
@@ -20,4 +21,5 @@ export const ARTIFACT_EXTENSION_MAP: Record<ArtifactType, string> = {
   csv: ".csv",
   markdown: ".md",
   code: ".txt",
+  interactive: ".json",
 };

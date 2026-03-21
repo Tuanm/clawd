@@ -20,6 +20,8 @@ import { CheckIcon, CopyIcon, PreBlock } from "./ui-primitives";
 
 // Lazy-load ChartRenderer (Recharts) for inline chart rendering in messages
 const LazyChartRenderer = React.lazy(() => import("./chart-renderer"));
+// Lazy-load InteractiveRenderer for declarative interactive artifacts
+const LazyInteractiveRenderer = React.lazy(() => import("./interactive-renderer"));
 
 // Initialize mermaid with dark-aware theme
 const prefersDark = typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -91,6 +93,10 @@ interface Message {
     error?: string;
     job_id?: string;
   };
+  // Path B: MCP-sent interactive artifact (interactive_json column parsed by server)
+  interactive?: string;
+  interactive_acted?: boolean;
+  interactive_action?: { action_id: string; value: string; user: string } | null;
 }
 
 // Pending message type
@@ -453,7 +459,16 @@ function IframePreviewCard({
   );
 }
 
-const ARTIFACT_VALID_TYPES: ArtifactType[] = ["html", "react", "svg", "chart", "csv", "markdown", "code"];
+const ARTIFACT_VALID_TYPES: ArtifactType[] = [
+  "html",
+  "react",
+  "svg",
+  "chart",
+  "csv",
+  "markdown",
+  "code",
+  "interactive",
+];
 // embed is a special pseudo-type that opens a URL in the sidebar (not an ArtifactType)
 const ARTIFACT_EMBED_TYPE = "embed";
 
@@ -2555,6 +2570,23 @@ export default function MessageList({
                                   </div>
                                 );
                               case "artifact":
+                                // interactive renders inline (not via ArtifactPreviewCard)
+                                if (block.artifactType === "interactive") {
+                                  return (
+                                    <div key={`block-${i}`} className="message-block">
+                                      <React.Suspense fallback={<div className="interactive-artifact-skeleton" />}>
+                                        <LazyInteractiveRenderer
+                                          content={block.content}
+                                          messagTs={msg.ts}
+                                          channel={channel}
+                                          artifactIndex={i}
+                                          preSubmitted={msg.interactive_acted}
+                                          preAction={msg.interactive_action}
+                                        />
+                                      </React.Suspense>
+                                    </div>
+                                  );
+                                }
                                 // chart and svg render inline; all other types use preview card + modal
                                 if (block.artifactType === "chart") {
                                   return (
@@ -2647,6 +2679,14 @@ export default function MessageList({
                                   </div>
                                 );
                               case "streaming-artifact":
+                                // interactive streaming: show skeleton
+                                if (block.artifactType === "interactive") {
+                                  return (
+                                    <div key={`block-${i}`} className="message-block">
+                                      <div className="interactive-artifact-skeleton" />
+                                    </div>
+                                  );
+                                }
                                 // chart streaming: minimal skeleton matching borderless design
                                 if (block.artifactType === "chart") {
                                   return (
@@ -2693,6 +2733,19 @@ export default function MessageList({
                     </>
                   );
                 })()}
+                {/* Path B: interactive_json column from server (MCP-sent artifacts) */}
+                {msg.interactive && (
+                  <React.Suspense fallback={<div className="interactive-artifact-skeleton" />}>
+                    <LazyInteractiveRenderer
+                      content={msg.interactive}
+                      messagTs={msg.ts}
+                      channel={channel}
+                      artifactIndex={0}
+                      preSubmitted={msg.interactive_acted}
+                      preAction={msg.interactive_action}
+                    />
+                  </React.Suspense>
+                )}
                 {msg.html_preview && <HtmlPreview html={msg.html_preview} />}
                 {msg.code_preview && (
                   <CodePreview

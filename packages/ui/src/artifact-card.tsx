@@ -53,6 +53,10 @@ export interface ArtifactPreviewCardProps {
   isStreaming?: boolean;
   lineCount?: number;
   language?: string;
+  /** Slack message timestamp — threaded through to SandboxedIframe for bridge actions */
+  messagTs?: string;
+  /** Slack channel ID — threaded through to SandboxedIframe for bridge actions */
+  channel?: string;
   // When provided, clicking opens the sidebar instead of the modal
   onOpenSidebar?: (title: string, type: ArtifactType, content: string, language?: string) => void;
 }
@@ -69,6 +73,8 @@ export function ArtifactPreviewCard({
   isStreaming = false,
   lineCount,
   language,
+  messagTs,
+  channel,
   onOpenSidebar,
 }: ArtifactPreviewCardProps) {
   const [modalOpen, setModalOpen] = useState(false);
@@ -125,6 +131,8 @@ export function ArtifactPreviewCard({
           title={title}
           content={content}
           language={language}
+          messagTs={messagTs}
+          channel={channel}
           onClose={() => setModalOpen(false)}
         />
       )}

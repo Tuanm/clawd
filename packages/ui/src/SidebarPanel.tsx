@@ -151,7 +151,7 @@ export default function SidebarPanel({
               sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"
             />
           )}
-          {isOpen && type === "artifact" && content !== undefined && artifactType && (
+          {isOpen && type === "artifact" && content !== undefined && artifactType && artifactType !== "interactive" && (
             <div className="sidebar-panel-artifact">
               <FullArtifactRenderer artifactType={artifactType} content={content} language={language} />
             </div>

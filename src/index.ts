@@ -207,6 +207,7 @@ import {
   broadcastAgentStreaming,
   broadcastAgentToken,
   broadcastAgentToolCall,
+  broadcastArtifactAction,
   broadcastChannelCleared,
   broadcastMessage,
   broadcastMessageSeen,
@@ -217,6 +218,7 @@ import {
   handleWebSocketMessage,
   handleWebSocketOpen,
 } from "./server/websocket";
+import { getArtifactActions, handleArtifactAction } from "./server/routes/artifact-actions";
 
 // ============================================================================
 // Helpers
@@ -1218,6 +1220,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         article_json: body.article_json,
         subspace_json: body.subspace_json,
         workspace_json: body.workspace_json,
+        interactive_json: body.interactive_json,
       });
       if ((result as any).cleared) {
         const clearedChannel = body.channel || "general";
@@ -1237,6 +1240,37 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         if (msg) broadcastMessage(body.channel || "general", msg);
       }
       return json(result);
+    }
+
+    // Interactive artifact action
+    if (path === "/api/artifact.action" && req.method === "POST") {
+      const body = await parseBody(req);
+      // Resolve user from auth context or fallback to body
+      const user = body.user || "UHUMAN";
+      const result = handleArtifactAction(
+        {
+          message_ts: body.message_ts,
+          channel: body.channel,
+          action_id: body.action_id,
+          value: body.value,
+          values: body.values || {},
+        },
+        user,
+      );
+      // Broadcast if action succeeded
+      if (result.ok && (result as any)._broadcast) {
+        broadcastArtifactAction(body.channel, (result as any)._broadcast);
+      }
+      // Remove internal _broadcast from response
+      const { _broadcast, ...response } = result as any;
+      return json(response);
+    }
+
+    // Get artifact actions (for agents to read user responses)
+    if (path === "/api/artifact.actions" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!body.message_ts || !body.channel) return json({ ok: false, error: "message_ts and channel required" }, 400);
+      return json(getArtifactActions(body.message_ts, body.channel));
     }
 
     // Update message

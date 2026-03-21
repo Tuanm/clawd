@@ -3,8 +3,10 @@
  */
 
 import Database from "bun:sqlite";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getDataDir } from "../../config-file";
 import type { Message } from "../api/client";
 
 // ============================================================================
@@ -165,8 +167,15 @@ export class MemoryManager {
   private db: Database;
 
   constructor(dbPath?: string) {
-    const defaultPath = join(homedir(), ".clawd", "memory.db");
-    this.db = new Database(dbPath || defaultPath);
+    // New default: ~/.clawd/data/memory.db (alongside chat.db)
+    // Backward compat: if old location exists and new doesn't, use old location
+    const newDefault = join(getDataDir(), "memory.db");
+    const oldDefault = join(homedir(), ".clawd", "memory.db");
+    let resolvedPath = dbPath || newDefault;
+    if (!dbPath && !existsSync(newDefault) && existsSync(oldDefault)) {
+      resolvedPath = oldDefault; // use legacy location until user migrates
+    }
+    this.db = new Database(resolvedPath);
     this.setupConcurrency();
     this.init();
   }

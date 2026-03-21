@@ -7,8 +7,10 @@
  */
 
 import Database from "bun:sqlite";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getDataDir } from "../../config-file";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -125,8 +127,13 @@ export class AgentMemoryStore {
   private initialized = false;
 
   constructor(dbPath?: string) {
-    const defaultPath = join(homedir(), ".clawd", "memory.db");
-    this.db = new Database(dbPath || defaultPath);
+    const newDefault = join(getDataDir(), "memory.db");
+    const oldDefault = join(homedir(), ".clawd", "memory.db");
+    let resolvedPath = dbPath || newDefault;
+    if (!dbPath && !existsSync(newDefault) && existsSync(oldDefault)) {
+      resolvedPath = oldDefault;
+    }
+    this.db = new Database(resolvedPath);
     this.setupConcurrency();
   }
 
