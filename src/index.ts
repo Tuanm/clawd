@@ -161,6 +161,7 @@ import {
 import { handleMcpRequest, setMcpScheduler } from "./server/mcp";
 // Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
 import { upgradeRemoteWorkerWs } from "./server/remote-worker";
+import { getArtifactActions, handleArtifactAction } from "./server/routes/artifact-actions";
 import { createChannel, getChannelInfo, listChannels } from "./server/routes/channels";
 import {
   attachFilesToMessage,
@@ -223,7 +224,6 @@ import {
   handleWebSocketMessage,
   handleWebSocketOpen,
 } from "./server/websocket";
-import { getArtifactActions, handleArtifactAction } from "./server/routes/artifact-actions";
 
 // ============================================================================
 // Helpers
@@ -2312,9 +2312,21 @@ setTimeout(async () => {
           const agentConfig = {
             provider: agentEntry.provider || "copilot",
             model: agentEntry.model || "default",
-            agentId: agentEntry.agent_id,
+            // Use space.agent_id (sub-agent ID) instead of parent agent ID.
+            // The task message was posted with the parent's agent_id — if we poll
+            // as the parent, the message is filtered as "own message" and the
+            // recovered worker finds nothing to process.
+            agentId: space.agent_id,
             project: agentEntry.project,
           };
+
+          // Reset agent_seen for the sub-agent in the space channel so the
+          // initial task message is treated as unseen by the recovered worker.
+          try {
+            db.run(`DELETE FROM agent_seen WHERE agent_id = ? AND channel = ?`, [space.agent_id, space.space_channel]);
+          } catch {
+            /* best-effort — worker will still poll */
+          }
 
           // Create abort controller with remaining timeout
           const controller = new AbortController();
