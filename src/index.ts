@@ -187,6 +187,7 @@ import {
   addTaskComment,
   createPlan,
   createTask,
+  createTasksBatch,
   deletePhase,
   deletePlan,
   deleteTask,
@@ -1909,6 +1910,20 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       });
     }
 
+    if (path === "/api/tasks.batchCreate" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!Array.isArray(body.tasks)) return json({ ok: false, error: "tasks array required" }, 400);
+      if (body.tasks.length === 0) return json({ ok: false, error: "tasks array is empty" }, 400);
+      if (body.tasks.length > 20) return json({ ok: false, error: "max 20 tasks per batch" }, 400);
+      for (const t of body.tasks) {
+        if (!t.title) return json({ ok: false, error: "each task must have a title" }, 400);
+      }
+      const agentId: string = body.agent_id || "default";
+      const channel: string | undefined = body.channel || undefined;
+      const tasks = createTasksBatch(body.tasks as Parameters<typeof createTasksBatch>[0], agentId, channel);
+      return json({ ok: true, tasks });
+    }
+
     if (path === "/api/tasks.update" && req.method === "POST") {
       const body = await parseBody(req);
       if (!body.task_id) return json({ ok: false, error: "task_id required" }, 400);
@@ -1923,9 +1938,29 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         if (r.error === "already_claimed")
           return json({ ok: false, error: "already_claimed", claimed_by: r.claimed_by }, 409);
       }
+      const updatedTask = (result as { success: true; task: { channel?: string; title: string } }).task;
+      if (body.status === "done" || body.status === "completed") {
+        const channel = updatedTask.channel;
+        const allTasks = listTasks(channel ? { channel } : {});
+        const done = allTasks.filter((t: { status: string }) => t.status === "done").length;
+        const total = allTasks.length;
+        const remaining = allTasks
+          .filter((t: { status: string }) => t.status !== "done")
+          .map((t: { title: string }) => t.title)
+          .slice(0, 5);
+        return json({
+          ok: true,
+          task: updatedTask,
+          progress: { done, total, remaining },
+          hint:
+            remaining.length > 0
+              ? `Consider reporting progress to chat: "Done: ${updatedTask.title}. (${done}/${total})"`
+              : "All tasks complete! Send a summary to chat.",
+        });
+      }
       return json({
         ok: true,
-        task: (result as { success: true; task: unknown }).task,
+        task: updatedTask,
       });
     }
 

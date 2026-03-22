@@ -1785,6 +1785,7 @@ registerTool(
           tags,
           due_at,
           agent_id: currentAgentId,
+          channel: currentChannel,
         }),
       });
       const data = (await res.json()) as any;
@@ -1795,6 +1796,53 @@ registerTool(
         success: true,
         output: `✅ Created: [${task.priority}] ${task.title} (${task.id})`,
       };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+registerTool(
+  "task_batch_add",
+  "Create multiple tasks at once (max 20). Preferred for 3+ related tasks.",
+  {
+    tasks: {
+      type: "array",
+      description: "Array of task objects with title (required), description, priority (P0-P3), tags",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          description: { type: "string" },
+          priority: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+        },
+        required: ["title"],
+      },
+    },
+  },
+  ["tasks"],
+  async ({ tasks }) => {
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      return { success: false, output: "", error: "tasks must be a non-empty array" };
+    }
+    try {
+      const res = await toolFetch(`${chatApiUrl}/api/tasks.batchCreate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tasks: tasks.slice(0, 20),
+          agent_id: currentAgentId,
+          channel: currentChannel,
+        }),
+      });
+      const data = (await res.json()) as any;
+      if (!data.ok) return { success: false, output: "", error: data.error || "batch create failed" };
+
+      const created = (data.tasks as any[]) || [];
+      let output = `Created ${created.length} task(s):\n`;
+      for (const t of created) output += `- [${t.priority}] ${t.title} (${t.id})\n`;
+      return { success: true, output };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
     }
@@ -1817,6 +1865,7 @@ registerTool(
       const params = new URLSearchParams();
       if (status) params.set("status", status);
       if (limit) params.set("limit", String(limit));
+      params.set("channel", currentChannel);
 
       const res = await toolFetch(`${chatApiUrl}/api/tasks.list?${params}`);
       const data = (await res.json()) as any;
