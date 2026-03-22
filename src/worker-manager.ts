@@ -9,6 +9,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { loadAgentFile } from "./agent/agents/loader";
 import { getChannelMCPServers } from "./agent/api/provider-config";
 import { MCPManager } from "./agent/mcp/client";
 import {
@@ -18,7 +19,6 @@ import {
   pruneWorktrees,
   safeDeleteWorktree,
 } from "./agent/workspace/worktree";
-import { loadAgentFile } from "./agent/agents/loader";
 import type { AppConfig } from "./config";
 import { getAuthToken, isWorktreeEnabled } from "./config-file";
 import { loadOAuthToken } from "./mcp-oauth";
@@ -601,7 +601,7 @@ export class WorkerManager {
   }
 
   /** Max consecutive heartbeats for a space agent before auto-failing (circuit breaker) */
-  private static readonly MAX_SPACE_HEARTBEATS = 10;
+  private static readonly MAX_SPACE_HEARTBEATS = 30;
   /** Track consecutive heartbeat count per space (resets on activity) */
   private spaceHeartbeatCounts = new Map<string, number>();
 
@@ -660,16 +660,36 @@ export class WorkerManager {
         continue;
       }
 
-      // CHECK 2: Space agent idle with incomplete task — inject heartbeat
+      // CHECK 2: Space agent idle with incomplete task — inject heartbeat (with circuit breaker)
       if (!health.processing && health.idleDurationMs > this.heartbeatConfig.spaceIdleTimeoutMs) {
         const spaceStatus = this.getSpaceStatus(health.channel);
         if (!spaceStatus || !spaceStatus.active || spaceStatus.locked) continue;
+
+        // Circuit breaker: auto-fail space worker after too many consecutive heartbeats
+        const count = (this.spaceHeartbeatCounts.get(key) || 0) + 1;
+        this.spaceHeartbeatCounts.set(key, count);
+
+        if (count > WorkerManager.MAX_SPACE_HEARTBEATS) {
+          console.log(`[Heartbeat] Space worker ${key} unresponsive after ${count} heartbeats, failing space`);
+          if (this.spaceManager) {
+            this.spaceManager.failSpace(
+              spaceStatus.spaceId,
+              "Heartbeat: agent unresponsive after max heartbeat attempts",
+            );
+            this.spaceWorkerManager.stopSpaceWorker(spaceStatus.spaceId);
+          }
+          this.spaceHeartbeatCounts.delete(key);
+          this.broadcastHeartbeatEvent(health.channel, health.agentId, "space_auto_failed");
+          continue;
+        }
 
         const loop = this.spaceWorkerManager.getWorkerLoop(spaceId);
         if (loop) {
           heartbeatActions.push(async () => {
             loop.injectHeartbeat();
-            console.log(`[Heartbeat] Injected heartbeat for idle space agent: ${key}`);
+            console.log(
+              `[Heartbeat] Injected heartbeat for idle space worker: ${key} (${count}/${WorkerManager.MAX_SPACE_HEARTBEATS})`,
+            );
             this.broadcastHeartbeatEvent(health.channel, health.agentId, "heartbeat_sent");
           });
         }
