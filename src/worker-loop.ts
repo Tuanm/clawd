@@ -467,42 +467,40 @@ export class WorkerLoop {
           continue;
         }
 
-        // If a heartbeat is pending, inject as synthetic prompt.
-        // Skip if real messages are waiting (hasNewMessages from WS push OR actual pending in DB).
-        // Pre-check DB to prevent heartbeat from starving user messages when WS push is missed.
-        if (this.heartbeatPending && !this.hasNewMessages) {
-          const preCheck = await this.pollPending();
-          if (preCheck.ok && preCheck.pending.length > 0) {
-            this.heartbeatPending = false;
-          }
-        }
-        if (this.heartbeatPending) {
-          this.heartbeatPending = false;
-          const heartbeatPrompt = "[HEARTBEAT]";
-          broadcastAgentToken(this.config.channel, this.config.agentId, "[HEARTBEAT]", "event");
-          this.isProcessing = true;
-          this.processingStartedAt = Date.now();
-          this.wasCancelledByHeartbeat = false;
-          try {
-            const execResult = await this.executePrompt(heartbeatPrompt, this.sessionName);
-            const output = execResult.output || "";
-            this.lastExecutionHadError =
-              !execResult.success ||
-              this.wasCancelledByHeartbeat ||
-              output.includes("[Agent stopped") ||
-              output.includes("[stream error");
-            this.wasCancelledByHeartbeat = false;
-          } finally {
-            this.isProcessing = false;
-            this.processingStartedAt = null;
-            this.lastActivityAt = Date.now();
-            this.stoppedPromise?.resolve();
-            this.stoppedPromise = null;
-          }
-          continue;
-        }
-
+        // Poll for pending messages (single DB query, reused for both heartbeat check and message processing)
         const result = await this.pollPending();
+
+        // If a heartbeat is pending, only process it if no real messages are waiting.
+        // This prevents heartbeat from starving user messages (even when WS push is missed).
+        if (this.heartbeatPending) {
+          const hasRealMessages = this.hasNewMessages || (result.ok && result.pending.length > 0);
+          this.heartbeatPending = false;
+          if (!hasRealMessages) {
+            const heartbeatPrompt = "[HEARTBEAT]";
+            broadcastAgentToken(this.config.channel, this.config.agentId, "[HEARTBEAT]", "event");
+            this.isProcessing = true;
+            this.processingStartedAt = Date.now();
+            this.wasCancelledByHeartbeat = false;
+            try {
+              const execResult = await this.executePrompt(heartbeatPrompt, this.sessionName);
+              const output = execResult.output || "";
+              this.lastExecutionHadError =
+                !execResult.success ||
+                this.wasCancelledByHeartbeat ||
+                output.includes("[Agent stopped") ||
+                output.includes("[stream error");
+              this.wasCancelledByHeartbeat = false;
+            } finally {
+              this.isProcessing = false;
+              this.processingStartedAt = null;
+              this.lastActivityAt = Date.now();
+              this.stoppedPromise?.resolve();
+              this.stoppedPromise = null;
+            }
+            continue;
+          }
+          // Real messages exist — skip heartbeat, fall through to process them
+        }
 
         if (result.ok && result.pending.length > 0) {
           // Snap back to fast polling when messages arrive
