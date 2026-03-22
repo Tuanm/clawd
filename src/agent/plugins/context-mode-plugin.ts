@@ -22,6 +22,7 @@ const STOP_WORDS =
 interface ContextModeConfig {
   sessionId: string;
   sessionDir: string;
+  channel?: string;
   dbPath?: string;
   /** Callback for manual compaction — set by agent.ts */
   onCompactRequest?: () => Promise<{ before: number; after: number }>;
@@ -101,7 +102,9 @@ export function createContextModePlugin(config: ContextModeConfig): ContextModeP
             if (availableSpace > 200) {
               // minimum useful snippet size
               const query = recentKeywords.slice(-5).join(" ");
-              const hits = kb.search(query, config.sessionId, 1);
+              const hits = config.channel
+                ? kb.searchByChannel(query, config.channel, 1)
+                : kb.search(query, undefined, 1);
               if (hits.length > 0 && hits[0].content.length > 0) {
                 const headerLen = 46; // length of "\n\n[Relevant excerpt matching current context]\n"
                 const snippetLen = Math.min(availableSpace - headerLen, 1500);
@@ -143,14 +146,15 @@ export function createContextModePlugin(config: ContextModeConfig): ContextModeP
       const query = args.query as string;
       if (!query) return { success: false, output: "", error: "query is required" };
 
-      // Default to "global" scope to enable cross-agent knowledge sharing.
-      // Agents benefit from each other's indexed tool outputs across sessions.
-      // Note: no project-level isolation exists yet — "global" searches all sessions.
-      const scope = (args.scope as string) || "global";
+      // Default to "channel" scope — agents only see knowledge from their own channel.
+      // Use scope="global" to search across all channels.
+      const scope = (args.scope as string) || "channel";
       const limit = Math.min(args.limit || 10, 50);
 
-      const sessionId = scope === "session" ? config.sessionId : undefined;
-      const results = kb.search(query, sessionId, limit);
+      const results =
+        scope === "channel" && config.channel
+          ? kb.searchByChannel(query, config.channel, limit)
+          : kb.search(query, undefined, limit);
 
       if (results.length === 0) {
         return { success: true, output: "No results found for query: " + query };
@@ -281,14 +285,14 @@ export function createContextModePlugin(config: ContextModeConfig): ContextModeP
         {
           name: "knowledge_search",
           description:
-            "Search indexed tool outputs. Use when you see [Indexed] markers or need to retrieve previously truncated content.",
+            "Search indexed tool outputs from this channel. Use when you see [Indexed] markers or need to retrieve previously truncated content.",
           parameters: {
             query: { type: "string", description: "Search query (keywords or phrases)" },
             scope: {
               type: "string",
-              description: 'Search scope: "session" (current only) or "global" (all sessions, default)',
-              enum: ["session", "global"],
-              default: "global",
+              description: 'Search scope: "channel" (this channel only, default) or "global" (all channels)',
+              enum: ["channel", "global"],
+              default: "channel",
             },
             limit: {
               type: "number",
