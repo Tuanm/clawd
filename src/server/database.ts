@@ -522,57 +522,59 @@ export function migrateChannelIds() {
     return results;
   }
 
-  for (const { id: oldId, name } of mismatchedChannels) {
-    // Skip space channels (they use composite IDs like "demo:uuid")
-    if (oldId.includes(":")) continue;
+  db.transaction(() => {
+    for (const { id: oldId, name } of mismatchedChannels) {
+      // Skip space channels (they use composite IDs like "demo:uuid")
+      if (oldId.includes(":")) continue;
 
-    const newId = name;
+      const newId = name;
 
-    // Check if a channel with the target name already exists as an ID
-    const existing = db.query<{ id: string }, [string]>(`SELECT id FROM channels WHERE id = ?`).get(newId);
+      // Check if a channel with the target name already exists as an ID
+      const existing = db.query<{ id: string }, [string]>(`SELECT id FROM channels WHERE id = ?`).get(newId);
 
-    // Update all tables that reference this channel
-    const tables: Array<{ table: string; column: string }> = [
-      { table: "messages", column: "channel" },
-      { table: "agent_seen", column: "channel" },
-      { table: "agent_status", column: "channel" },
-      { table: "agents", column: "channel" },
-      { table: "message_seen", column: "channel" },
-      { table: "summaries", column: "channel" },
-      { table: "articles", column: "channel" },
-      { table: "spaces", column: "channel" },
-      { table: "artifact_actions", column: "channel" },
-    ];
+      // Update all tables that reference this channel
+      const tables: Array<{ table: string; column: string }> = [
+        { table: "messages", column: "channel" },
+        { table: "agent_seen", column: "channel" },
+        { table: "agent_status", column: "channel" },
+        { table: "agents", column: "channel" },
+        { table: "message_seen", column: "channel" },
+        { table: "summaries", column: "channel" },
+        { table: "articles", column: "channel" },
+        { table: "spaces", column: "channel" },
+        { table: "artifact_actions", column: "channel" },
+      ];
 
-    // Also migrate channel_agents if it exists
-    try {
-      db.query(`SELECT 1 FROM channel_agents LIMIT 0`).get();
-      tables.push({ table: "channel_agents", column: "channel" });
-    } catch {
-      // Table doesn't exist yet
-    }
-
-    for (const { table, column } of tables) {
+      // Also migrate channel_agents if it exists
       try {
-        const stmt = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`);
-        const info = stmt.run(newId, oldId);
-        if ((info as any).changes > 0) {
-          results.push(`${table}: ${oldId} -> ${newId} (${(info as any).changes} rows)`);
-        }
+        db.query(`SELECT 1 FROM channel_agents LIMIT 0`).get();
+        tables.push({ table: "channel_agents", column: "channel" });
       } catch {
-        // Table or column may not exist in all schemas
+        // Table doesn't exist yet
+      }
+
+      for (const { table, column } of tables) {
+        try {
+          const stmt = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`);
+          const info = stmt.run(newId, oldId);
+          if ((info as any).changes > 0) {
+            results.push(`${table}: ${oldId} -> ${newId} (${(info as any).changes} rows)`);
+          }
+        } catch {
+          // Table or column may not exist in all schemas
+        }
+      }
+
+      // Update channels table itself
+      if (existing) {
+        db.run(`DELETE FROM channels WHERE id = ?`, [oldId]);
+        results.push(`channels: deleted ${oldId} (merged with ${newId})`);
+      } else {
+        db.run(`UPDATE channels SET id = ?, name = ? WHERE id = ?`, [newId, name, oldId]);
+        results.push(`channels: ${oldId} -> ${newId}`);
       }
     }
-
-    // Update channels table itself
-    if (existing) {
-      db.run(`DELETE FROM channels WHERE id = ?`, [oldId]);
-      results.push(`channels: deleted ${oldId} (merged with ${newId})`);
-    } else {
-      db.run(`UPDATE channels SET id = ?, name = ? WHERE id = ?`, [newId, name, oldId]);
-      results.push(`channels: ${oldId} -> ${newId}`);
-    }
-  }
+  })();
 
   return results;
 }
@@ -581,36 +583,38 @@ export function migrateChannelIds() {
 export function renameChannel(oldChannel: string, newChannel: string) {
   const results: string[] = [];
 
-  // Count messages
-  const msgCount = db
-    .query<{ count: number }, [string]>(`SELECT COUNT(*) as count FROM messages WHERE channel = ?`)
-    .get(oldChannel);
+  db.transaction(() => {
+    // Count messages
+    const msgCount = db
+      .query<{ count: number }, [string]>(`SELECT COUNT(*) as count FROM messages WHERE channel = ?`)
+      .get(oldChannel);
 
-  // Update messages
-  db.run(`UPDATE messages SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
-  results.push(`messages: ${oldChannel} -> ${newChannel} (${msgCount?.count || 0} messages)`);
+    // Update messages
+    db.run(`UPDATE messages SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`messages: ${oldChannel} -> ${newChannel} (${msgCount?.count || 0} messages)`);
 
-  // Update or delete channel entry
-  const existing = db.query<{ id: string }, [string]>(`SELECT id FROM channels WHERE id = ?`).get(newChannel);
-  if (existing) {
-    db.run(`DELETE FROM channels WHERE id = ?`, [oldChannel]);
-    results.push(`channels: deleted ${oldChannel} (merged with ${newChannel})`);
-  } else {
-    db.run(`UPDATE channels SET id = ?, name = ? WHERE id = ?`, [newChannel, newChannel, oldChannel]);
-    results.push(`channels: ${oldChannel} -> ${newChannel}`);
-  }
+    // Update or delete channel entry
+    const existing = db.query<{ id: string }, [string]>(`SELECT id FROM channels WHERE id = ?`).get(newChannel);
+    if (existing) {
+      db.run(`DELETE FROM channels WHERE id = ?`, [oldChannel]);
+      results.push(`channels: deleted ${oldChannel} (merged with ${newChannel})`);
+    } else {
+      db.run(`UPDATE channels SET id = ?, name = ? WHERE id = ?`, [newChannel, newChannel, oldChannel]);
+      results.push(`channels: ${oldChannel} -> ${newChannel}`);
+    }
 
-  // Update agent_seen
-  db.run(`UPDATE agent_seen SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
-  results.push(`agent_seen: ${oldChannel} -> ${newChannel}`);
+    // Update agent_seen
+    db.run(`UPDATE agent_seen SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`agent_seen: ${oldChannel} -> ${newChannel}`);
 
-  // Update channel_agents
-  try {
-    db.run(`UPDATE channel_agents SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
-    results.push(`channel_agents: ${oldChannel} -> ${newChannel}`);
-  } catch {
-    // Table may not exist in older DBs
-  }
+    // Update channel_agents
+    try {
+      db.run(`UPDATE channel_agents SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+      results.push(`channel_agents: ${oldChannel} -> ${newChannel}`);
+    } catch {
+      // Table may not exist in older DBs
+    }
+  })();
 
   return results;
 }
@@ -945,27 +949,27 @@ export function getOrRegisterAgent(agentId: string, channel: string, isWorker: b
 
 // List all agents in a channel (with dynamic is_sleeping calculation)
 export function listAgents(channel: string): Agent[] {
-  const agents = db
-    .query<Agent, [string]>(`SELECT * FROM agents WHERE channel = ? ORDER BY joined_at ASC`)
+  // Single query with LEFT JOIN instead of per-agent query
+  const rows = db
+    .query<any, [string]>(
+      `SELECT a.*, as2.updated_at as last_activity
+     FROM agents a
+     LEFT JOIN agent_seen as2 ON a.id = as2.agent_id AND a.channel = as2.channel
+     WHERE a.channel = ? ORDER BY a.joined_at ASC`,
+    )
     .all(channel);
 
   const nowSeconds = Math.floor(Date.now() / 1000);
 
-  return agents.map((agent) => {
+  return rows.map((row: any) => {
     // If agent is actively streaming, it's never sleeping
-    if (agent.is_streaming) {
-      return { ...agent, is_sleeping: 0 };
+    if (row.is_streaming) {
+      return { ...row, is_sleeping: 0, last_activity: undefined };
     }
 
-    const lastActivity = db
-      .query<{ updated_at: number }, [string, string]>(
-        `SELECT updated_at FROM agent_seen WHERE agent_id = ? AND channel = ?`,
-      )
-      .get(agent.id, channel);
+    const isSleeping = !row.last_activity || nowSeconds - row.last_activity > SLEEP_THRESHOLD_SECONDS;
 
-    const isSleeping = !lastActivity || nowSeconds - lastActivity.updated_at > SLEEP_THRESHOLD_SECONDS;
-
-    return { ...agent, is_sleeping: isSleeping ? 1 : 0 };
+    return { ...row, is_sleeping: isSleeping ? 1 : 0, last_activity: undefined };
   });
 }
 
@@ -1100,11 +1104,8 @@ export function markMessagesSeen(channel: string, agentId: string, messageTsList
   // Use transaction for batch insert (much faster)
   db.transaction(() => {
     for (const ts of messageTsList) {
-      markSeenStmt.run(ts, channel, agentId, now);
-      const result = db.query(`SELECT changes()`).get() as {
-        "changes()": number;
-      };
-      if (result && result["changes()"] > 0) {
+      const runResult = markSeenStmt.run(ts, channel, agentId, now);
+      if (runResult.changes > 0) {
         newlySeen.push(ts);
       }
     }

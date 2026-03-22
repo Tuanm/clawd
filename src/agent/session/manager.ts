@@ -57,6 +57,7 @@ let _defaultSessionManager: SessionManager | null = null;
 
 export class SessionManager {
   private db: Database;
+  private _sessionUpdateTimes = new Map<number, number>(); // per-session debounce
 
   constructor(dbPath?: string) {
     const defaultPath = join(homedir(), ".clawd", "memory.db");
@@ -171,8 +172,10 @@ export class SessionManager {
   }
 
   deleteSession(id: string) {
-    this.db.run("DELETE FROM messages WHERE session_id = ?", [id]);
-    this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
+    this.db.transaction(() => {
+      this.db.run("DELETE FROM messages WHERE session_id = ?", [id]);
+      this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
+    })();
   }
 
   // ============================================================================
@@ -195,8 +198,13 @@ export class SessionManager {
       ],
     );
 
-    // Update session timestamp
-    this.db.run("UPDATE sessions SET updated_at = ? WHERE id = ?", [now, sessionId]);
+    // Update session timestamp (batched: at most once per 5 seconds per session)
+    const nowMs = Date.now();
+    const lastUpdate = this._sessionUpdateTimes.get(sessionId) || 0;
+    if (nowMs - lastUpdate > 5000) {
+      this.db.run("UPDATE sessions SET updated_at = ? WHERE id = ?", [nowMs, sessionId]);
+      this._sessionUpdateTimes.set(sessionId, nowMs);
+    }
 
     return Number(result.lastInsertRowid);
   }
@@ -595,10 +603,12 @@ export class SessionManager {
     const cutoff = Date.now() - maxAgeDays * 86_400_000;
     const old = this.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE updated_at < ?").all(cutoff);
     if (old.length === 0) return 0;
-    for (const { id } of old) {
-      this.db.run("DELETE FROM messages WHERE session_id = ?", [id]);
-      this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
-    }
+    this.db.transaction(() => {
+      for (const { id } of old) {
+        this.db.run("DELETE FROM messages WHERE session_id = ?", [id]);
+        this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
+      }
+    })();
     console.log(`[SessionManager] Purged ${old.length} sessions older than ${maxAgeDays} days`);
     return old.length;
   }

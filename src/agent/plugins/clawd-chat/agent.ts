@@ -69,7 +69,8 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
   let pendingInterrupt: string | null = null;
   let isProcessingMessage = false; // Guard against multiple "..." messages
   let interruptCount = 0; // Track interrupts per user message
-  const MAX_INTERRUPTS = 10; // Maximum interrupts to handle per user message
+  let lastInterruptAt = 0; // Rate-limit: min 3s between interrupts to prevent flood loops
+  const INTERRUPT_MIN_INTERVAL_MS = 3000;
   let isInterruptCall = false; // Flag to distinguish interrupt vs initial onUserMessage call
   const injectedTimestamps = new Set<string>(); // Track already-injected message timestamps
   const _channelSummary: string | null = null; // Cached channel summary
@@ -751,8 +752,9 @@ LONG-TERM MEMORY:
       },
 
       async checkInterrupt(_ctx: PluginContext): Promise<string | null> {
-        // Don't allow more than MAX_INTERRUPTS per user message
-        if (interruptCount >= MAX_INTERRUPTS) {
+        // Rate-limit interrupts to prevent flood loops (min 3s between interrupts)
+        const now = Date.now();
+        if (lastInterruptAt && now - lastInterruptAt < INTERRUPT_MIN_INTERVAL_MS) {
           return null;
         }
 
@@ -761,13 +763,13 @@ LONG-TERM MEMORY:
           const msg = pendingInterrupt;
           pendingInterrupt = null;
           interruptCount++;
+          lastInterruptAt = now;
           _pollIntervalCurrent = _pollIntervalBase; // Reset backoff on interrupt
           isInterruptCall = true;
           return msg;
         }
 
         // Adaptive polling: skip if too soon since last poll
-        const now = Date.now();
         if (now - _lastInterruptPollAt < _pollIntervalCurrent) {
           return null;
         }
@@ -777,6 +779,7 @@ LONG-TERM MEMORY:
         const result = await pollForInterrupt();
         if (result) {
           interruptCount++;
+          lastInterruptAt = Date.now();
           _pollIntervalCurrent = _pollIntervalBase; // Reset backoff on interrupt
           // Set flag so onUserMessage knows this is an interrupt, not a fresh prompt
           isInterruptCall = true;

@@ -268,15 +268,27 @@ export function getConversationHistory(channel: string, limit = 100, oldest?: st
   // Get the last acknowledged message for each agent
   const lastSeenByAgents = getLastSeenByAgents(channel);
 
+  // Batch: get all reply counts in one query
+  const tsList = messages.map((m) => m.ts);
+  const replyMap = new Map<string, number>();
+  if (tsList.length > 0) {
+    const placeholders = tsList.map(() => "?").join(",");
+    const replyCounts = db
+      .query<{ thread_ts: string; count: number }, string[]>(
+        `SELECT thread_ts, COUNT(*) as count FROM messages WHERE thread_ts IN (${placeholders}) GROUP BY thread_ts`,
+      )
+      .all(...tsList);
+    for (const r of replyCounts) {
+      replyMap.set(r.thread_ts, r.count);
+    }
+  }
+
   // Get reply counts for each message and add seen_by
   const result = messages.map((msg) => {
-    const replyCount = db
-      .query<{ count: number }, [string]>(`SELECT COUNT(*) as count FROM messages WHERE thread_ts = ?`)
-      .get(msg.ts);
-
     const slackMsg = toSlackMessage(msg);
-    if (replyCount && replyCount.count > 0) {
-      slackMsg.reply_count = replyCount.count;
+    const count = replyMap.get(msg.ts) || 0;
+    if (count > 0) {
+      slackMsg.reply_count = count;
     }
 
     // Add seen_by only for the LAST message each agent has acknowledged
