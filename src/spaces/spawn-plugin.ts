@@ -69,7 +69,7 @@ export function createSpawnAgentPlugin(
         {
           name: "spawn_agent",
           description:
-            "Spawn a sub-agent to handle a task. Defaults to 'explore' agent (fast, read-only, haiku). Use agent= to specify a different agent (e.g., 'general' for full access, 'plan' for research). Use list_agents(type='available') to discover agents.",
+            "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning. The sub-agent will report back via complete_task when done. Use list_agents(type='running') to check status, get_agent_report(agent_id) to read results, or kill_agent(agent_id) to stop it. Defaults to 'explore' agent (fast, read-only, haiku). Use agent= to specify a different agent (e.g., 'general' for full access, 'plan' for research).",
           parameters: {
             task: { type: "string", description: "The task for the sub-agent" },
             name: { type: "string", description: "Optional friendly name" },
@@ -154,7 +154,7 @@ export function createSpawnAgentPlugin(
         {
           name: "get_agent_report",
           description:
-            "Get a spawned sub-agent's full result or error report by ID. Use after list_agents shows a completed or failed agent.",
+            "Get a spawned sub-agent's result, status, or error report by ID. Works for running, completed, or failed agents. Use to check on sub-agents you spawned earlier.",
           parameters: {
             agent_id: { type: "string", description: "The sub-agent ID (from list_agents output)" },
           },
@@ -193,6 +193,52 @@ export function createSpawnAgentPlugin(
           },
           required: ["agent_id", "task"],
           handler: async (args) => handleRetaskAgent(args),
+        },
+        {
+          name: "stop_agent",
+          description:
+            "Stop a running sub-agent immediately. Use when the sub-agent is no longer needed, stuck, or the task has been superseded. The sub-agent's space is marked as failed and its resources are cleaned up.",
+          parameters: {
+            agent_id: {
+              type: "string",
+              description: "The sub-agent ID to stop (from list_agents or spawn_agent output)",
+            },
+            reason: { type: "string", description: "Optional reason for stopping (logged for debugging)" },
+          },
+          required: ["agent_id"],
+          handler: async (args) => {
+            const id = args.agent_id as string;
+            const reason = (args.reason as string) || "Stopped by parent agent";
+            if (!id) return { success: false, output: "", error: "Missing required parameter: agent_id" };
+
+            const tracked = trackedSpaces.get(id);
+            if (!tracked) {
+              return { success: false, output: "", error: `No tracked agent with id '${id}'` };
+            }
+            if (tracked.status !== "running") {
+              return {
+                success: false,
+                output: "",
+                error: `Agent '${id}' is already ${tracked.status}, cannot stop`,
+              };
+            }
+
+            // Mark as failed and stop the worker
+            spaceManager.failSpace(id, reason);
+            spaceWorkerManager.stopSpaceWorker(id);
+            tracked.status = "failed";
+            tracked.error = reason;
+
+            return {
+              success: true,
+              output: JSON.stringify({
+                agent_id: id,
+                name: tracked.name,
+                status: "stopped",
+                reason,
+              }),
+            };
+          },
         },
       ];
     },
@@ -396,7 +442,8 @@ export function createSpawnAgentPlugin(
           name: sanitizedTitle,
           status: "spawned",
           space_channel: space.space_channel,
-          message: "Sub-agent started. It will respond directly to this channel when done.",
+          message:
+            "Sub-agent started and working independently. Do NOT wait — continue with other tasks. The sub-agent will report back when done. Use list_agents(type='running') to check status or get_agent_report(agent_id) to read results.",
         }),
       };
     } catch (err: any) {
