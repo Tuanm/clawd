@@ -468,8 +468,15 @@ export class WorkerLoop {
         }
 
         // If a heartbeat is pending, inject as synthetic prompt.
-        // Skip if real messages are waiting (hasNewMessages from WS push) — prioritize real work.
+        // Skip if real messages are waiting (hasNewMessages from WS push OR actual pending in DB).
+        // Pre-check DB to prevent heartbeat from starving user messages when WS push is missed.
         if (this.heartbeatPending && !this.hasNewMessages) {
+          const preCheck = await this.pollPending();
+          if (preCheck.ok && preCheck.pending.length > 0) {
+            this.heartbeatPending = false;
+          }
+        }
+        if (this.heartbeatPending) {
           this.heartbeatPending = false;
           const heartbeatPrompt = "[HEARTBEAT]";
           broadcastAgentToken(this.config.channel, this.config.agentId, "[HEARTBEAT]", "event");
