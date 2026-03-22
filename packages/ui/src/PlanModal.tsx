@@ -27,10 +27,29 @@ interface Props {
   onClose: () => void;
 }
 
-function statusEmoji(status: TodoItem["status"]): string {
-  if (status === "completed") return "✅";
-  if (status === "in_progress") return "🔧";
-  return "❌";
+function TodoCheckbox({ status }: { status: TodoItem["status"] }) {
+  const checked = status === "completed";
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: "16px",
+        height: "16px",
+        border: checked ? "none" : "1.5px solid rgba(255,255,255,0.4)",
+        borderRadius: "3px",
+        background: checked ? "rgba(255,255,255,0.15)" : "transparent",
+        fontSize: "11px",
+        lineHeight: 1,
+        flexShrink: 0,
+        marginTop: "1px",
+        cursor: "default",
+      }}
+    >
+      {checked ? "✓" : ""}
+    </span>
+  );
 }
 
 export default function TodoDialog({ channel, isOpen, onClose }: Props) {
@@ -88,8 +107,6 @@ export default function TodoDialog({ channel, isOpen, onClose }: Props) {
   if (!isOpen) return null;
 
   const agentItems = items.filter((i) => i.agent_id === selectedAgent);
-  const completedCount = agentItems.filter((i) => i.status === "completed").length;
-  const total = agentItems.length;
 
   return createPortal(
     <div className="stream-dialog-overlay" onClick={onClose}>
@@ -132,13 +149,6 @@ export default function TodoDialog({ channel, isOpen, onClose }: Props) {
 
           {!loading && !error && selectedAgent && (
             <>
-              {/* Progress counter */}
-              {total > 0 && (
-                <div style={{ padding: "8px 16px 4px", fontSize: "12px", opacity: 0.6 }}>
-                  {completedCount}/{total} completed
-                </div>
-              )}
-
               {/* Todo items */}
               <div style={{ padding: "4px 0" }}>
                 {agentItems.length === 0 ? (
@@ -155,12 +165,13 @@ export default function TodoDialog({ channel, isOpen, onClose }: Props) {
                         opacity: item.status === "completed" ? 0.5 : 1,
                       }}
                     >
-                      <span style={{ flexShrink: 0, fontSize: "13px" }}>{statusEmoji(item.status)}</span>
+                      <TodoCheckbox status={item.status} />
                       <span
                         style={{
                           fontSize: "13px",
                           lineHeight: "1.4",
                           textDecoration: item.status === "completed" ? "line-through" : "none",
+                          fontWeight: item.status === "in_progress" ? 600 : 400,
                         }}
                       >
                         {item.content}
