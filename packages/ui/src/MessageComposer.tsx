@@ -137,6 +137,7 @@ interface Props {
   mcpButton?: React.ReactNode;
   skillsButton?: React.ReactNode;
   worktreeButton?: React.ReactNode;
+  onPlanClick?: () => void;
 }
 
 /**
@@ -311,6 +312,7 @@ export default function MessageComposer({
   mcpButton,
   skillsButton,
   worktreeButton,
+  onPlanClick,
 }: Props) {
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -618,7 +620,7 @@ export default function MessageComposer({
                 <path d="M4 3h16c.55 0 1 .45 1 1v16c0 .55-.45 1-1 1H4c-.55 0-1-.45-1-1V4c0-.55.45-1 1-1zm1 2v14h14V5H5zm3.4 10.6L4.8 12l3.6-3.6L9.8 7l-5 5 5 5-1.4-1.4zm7.2 0l3.6-3.6-3.6-3.6L14.2 7l5 5-5 5 1.4-1.4z" />
               </svg>
             </button>
-            {(searchButton || projectsButton || worktreeButton || mcpButton || skillsButton) && (
+            {(searchButton || projectsButton || worktreeButton || mcpButton || skillsButton || onPlanClick) && (
               <>
                 <div className="toolbar-divider" />
                 <ToolsMenuButton>
@@ -627,6 +629,23 @@ export default function MessageComposer({
                   {worktreeButton}
                   {mcpButton}
                   {skillsButton}
+                  {onPlanClick && (
+                    <button className="plan-btn" onClick={onPlanClick} title="Plan">
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M9 11l3 3L22 4" />
+                        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                      </svg>
+                    </button>
+                  )}
                 </ToolsMenuButton>
               </>
             )}
@@ -759,15 +778,33 @@ export default function MessageComposer({
               </svg>
             </button>
             {/* Icon buttons — auto-collapses into ⋮ when container overflows */}
-            {!showToolbar && (searchButton || projectsButton || mcpButton || skillsButton || worktreeButton) && (
-              <IconButtonRow>
-                {searchButton}
-                {projectsButton}
-                {worktreeButton}
-                {mcpButton}
-                {skillsButton}
-              </IconButtonRow>
-            )}
+            {!showToolbar &&
+              (searchButton || projectsButton || mcpButton || skillsButton || worktreeButton || onPlanClick) && (
+                <IconButtonRow>
+                  {searchButton}
+                  {projectsButton}
+                  {worktreeButton}
+                  {mcpButton}
+                  {skillsButton}
+                  {onPlanClick && (
+                    <button className="plan-btn" onClick={onPlanClick} title="Plan">
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M9 11l3 3L22 4" />
+                        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                      </svg>
+                    </button>
+                  )}
+                </IconButtonRow>
+              )}
           </div>
           <input
             ref={fileInputRef}

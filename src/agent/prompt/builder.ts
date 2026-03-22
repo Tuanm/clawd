@@ -237,9 +237,24 @@ Do NOT delegate:
 
 function sectionTasks(): string {
   return `# Tasks
-- Quick/single-turn work: just do it, no tasks needed
-- Multi-step work: create tasks to track progress, mark completed when done
-- Use task_update(status="doing") to claim, update as you progress`;
+Use tasks to track multi-step work. Skip for quick single-turn requests.
+
+**When to create tasks:**
+- Work requiring 3+ distinct steps → create tasks BEFORE starting
+- Batch-create related tasks with task_batch_add (preferred over multiple task_add calls)
+
+**Workflow:**
+1. Plan: create tasks for each step (batch preferred)
+2. Execute: mark current task "doing" (only ONE at a time)
+3. Complete: mark "done" immediately on success; stay "doing" on errors
+4. Report: after each milestone, send progress to chat: "Done: [task]. Next: [task]. (3/7)"
+5. Summary: when all tasks complete, send a final summary to chat
+
+**Best practices:**
+- Priorities: P0=blocking/urgent, P1=important, P2=normal, P3=nice-to-have
+- Use tags for grouping: #backend, #frontend, #testing
+- Mark blocked tasks with a comment explaining the blocker
+- Keep task titles short and actionable (imperative: "Add validation", not "Adding validation")`;
 }
 
 // ============================================================================

@@ -49,6 +49,7 @@ export interface Task {
   due_at?: number;
   agent_id: string;
   claimed_by?: string; // Agent that claimed this task (set when status -> "doing")
+  channel?: string;
   attachments?: TaskAttachment[];
   comments?: TaskComment[];
 }
@@ -136,6 +137,14 @@ function getKanbanDb(): Database {
     // Column already exists, ignore
   }
 
+  // Migration: Add channel column if it doesn't exist
+  try {
+    kanbanDb.exec(`ALTER TABLE tasks ADD COLUMN channel TEXT`);
+  } catch {
+    /* Column already exists */
+  }
+  kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_channel ON tasks(channel)`);
+
   kanbanDb.exec(`
     CREATE TABLE IF NOT EXISTS plans (
       id TEXT PRIMARY KEY,
@@ -218,6 +227,11 @@ export function listTasks(
     params.push(options.status);
   }
 
+  if (options.channel) {
+    sql += " AND (channel = ? OR channel IS NULL)";
+    params.push(options.channel);
+  }
+
   sql += " ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END, created_at DESC";
 
   if (options.limit) {
@@ -242,6 +256,7 @@ export function createTask(data: {
   tags?: string[];
   agent_id?: string;
   due_at?: number;
+  channel?: string;
 }): Task {
   const db = getKanbanDb();
   const id = `task_${randomUUID().slice(0, 8)}`;
@@ -249,8 +264,8 @@ export function createTask(data: {
 
   db.query(
     `
-    INSERT INTO tasks (id, title, description, status, priority, tags, created_at, agent_id, due_at, attachments, comments)
-    VALUES (?, ?, ?, 'todo', ?, ?, ?, ?, ?, '[]', '[]')
+    INSERT INTO tasks (id, title, description, status, priority, tags, created_at, agent_id, channel, due_at, attachments, comments)
+    VALUES (?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, '[]', '[]')
   `,
   ).run(
     id,
@@ -260,10 +275,43 @@ export function createTask(data: {
     data.tags ? JSON.stringify(data.tags) : null,
     now,
     data.agent_id || "default",
+    data.channel || null,
     data.due_at || null,
   );
 
   return getTask(id)!;
+}
+
+export function createTasksBatch(
+  tasks: Array<{ title: string; description?: string; priority?: string; tags?: string[] }>,
+  agentId: string,
+  channel?: string,
+): Task[] {
+  const db = getKanbanDb();
+  const now = Date.now();
+  const created: Task[] = [];
+
+  db.transaction(() => {
+    for (const t of tasks.slice(0, 20)) {
+      const id = `task_${randomUUID().slice(0, 8)}`;
+      db.query(
+        `INSERT INTO tasks (id, title, description, status, priority, tags, created_at, agent_id, channel, due_at, attachments, comments)
+         VALUES (?, ?, ?, 'todo', ?, ?, ?, ?, ?, NULL, '[]', '[]')`,
+      ).run(
+        id,
+        t.title,
+        t.description || null,
+        t.priority || "P2",
+        t.tags ? JSON.stringify(t.tags) : null,
+        now,
+        agentId,
+        channel || null,
+      );
+      created.push(getTask(id)!);
+    }
+  })();
+
+  return created;
 }
 
 export type UpdateTaskResult =

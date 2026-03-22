@@ -2318,6 +2318,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               </button>
             ) : undefined
           }
+          onPlanClick={() => setShowPlanModal(true)}
         />
       )}
       <StreamOutputDialog
