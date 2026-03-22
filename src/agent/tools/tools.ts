@@ -2207,7 +2207,11 @@ registerTool(
       const res = await toolFetch(`${chatApiUrl}/api/todos.write`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_id: currentAgentId, channel: currentChannel, items: todoItems }),
+        body: JSON.stringify({
+          agent_id: getContextAgentId() || currentAgentId,
+          channel: getContextChannel() || currentChannel,
+          items: todoItems,
+        }),
       });
       const data = (await res.json()) as any;
       if (!data.ok) return { success: false, output: "", error: data.error };
@@ -2226,7 +2230,7 @@ registerTool(
 registerTool("todo_read", "Read your current Todo list.", {}, [], async () => {
   try {
     const res = await toolFetch(
-      `${chatApiUrl}/api/todos.read?agent_id=${encodeURIComponent(currentAgentId)}&channel=${encodeURIComponent(currentChannel)}`,
+      `${chatApiUrl}/api/todos.read?agent_id=${encodeURIComponent(getContextAgentId() || currentAgentId)}&channel=${encodeURIComponent(getContextChannel() || currentChannel)}`,
     );
     const data = (await res.json()) as any;
     if (!data.ok) return { success: false, output: "", error: data.error };
@@ -2256,7 +2260,12 @@ registerTool(
       const res = await toolFetch(`${chatApiUrl}/api/todos.update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_id: currentAgentId, channel: currentChannel, item_id, status }),
+        body: JSON.stringify({
+          agent_id: getContextAgentId() || currentAgentId,
+          channel: getContextChannel() || currentChannel,
+          item_id,
+          status,
+        }),
       });
       const data = (await res.json()) as any;
       if (!data.ok) return { success: false, output: "", error: data.error };
