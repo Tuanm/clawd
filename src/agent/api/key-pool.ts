@@ -26,11 +26,34 @@ const COPILOT_API_BASE = "https://api.githubcopilot.com";
 const GITHUB_API_BASE = "https://api.github.com";
 
 const RPM_WINDOW_MS = 60_000;
-const RPM_LIMIT = 9; // 90% of documented 10 RPM
-const SPACING_JITTER_MS = 200; // +[0, 200ms] random jitter (reduced from 500ms)
-const COOLDOWN_429_DEFAULT_MS = 180_000; // 3 min default when no Retry-After header
+const RPM_LIMIT = 9; // 90% of documented 10 RPM (per-key GitHub limit, not adjustable)
 const CONNECT_TIMEOUT_MS = 10_000;
 const PREMIUM_LIMIT_PER_KEY = 300; // Pro plan monthly premium request allowance
+
+// ---- Dynamic throttle values (scaled by key count) --------------------------
+// With more keys, each key gets less traffic so we can afford tighter spacing.
+// sqrt(n) scaling gives diminishing returns: 1 key = baseline, 4 keys = 2x faster, 9 keys = 3x faster.
+
+/** Spacing thresholds scaled by key count */
+function getScaledSpacing(keyCount: number): { idle: number; moderate: number; high: number; jitter: number } {
+  const scale = Math.sqrt(Math.max(1, keyCount));
+  return {
+    idle: Math.round(Math.max(200, 600 / scale)), // 1 key: 600ms, 4 keys: 300ms, 9 keys: 200ms
+    moderate: Math.round(Math.max(300, 800 / scale)), // 1 key: 800ms, 4 keys: 400ms, 9 keys: 300ms
+    high: Math.round(Math.max(500, 1200 / scale)), // 1 key: 1200ms, 4 keys: 600ms, 9 keys: 500ms
+    jitter: Math.round(Math.max(50, 200 / scale)), // 1 key: 200ms, 4 keys: 100ms, 9 keys: 67ms
+  };
+}
+
+/** 429 cooldown delays scaled by key count (more keys = shorter cooldown, others cover) */
+function getScaled429Delays(keyCount: number): [number, number, number] {
+  const n = Math.max(1, keyCount);
+  return [
+    Math.round(Math.max(60_000, 180_000 / n)), // 1 key: 3min, 2 keys: 1.5min, 3+ keys: 1min
+    Math.round(Math.max(120_000, 600_000 / n)), // 1 key: 10min, 2 keys: 5min, 5+ keys: 2min
+    Math.round(Math.max(300_000, 1_800_000 / n)), // 1 key: 30min, 3 keys: 10min, 6+ keys: 5min
+  ];
+}
 
 /** Model premium request multipliers (official GitHub docs, verified 2026-03) */
 export const MODEL_MULTIPLIERS: Record<string, number> = {
@@ -144,13 +167,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Adaptive spacing: faster when idle, cautious when loaded */
-function getAdaptiveSpacingMs(record: KeyRecord): number {
+/** Adaptive spacing: faster when idle, cautious when loaded. Scales by key pool size. */
+function getAdaptiveSpacingMs(record: KeyRecord, keyCount: number): number {
   const now = Date.now();
   const rpm = record.window60s.filter((t) => t > now - RPM_WINDOW_MS).length;
-  if (rpm <= 2) return 600; // key idle — safe to go faster
-  if (rpm <= 5) return 800; // moderate load
-  return 1_200; // approaching limit — full caution
+  const { idle, moderate, high } = getScaledSpacing(keyCount);
+  if (rpm <= 2) return idle;
+  if (rpm <= 5) return moderate;
+  return high;
 }
 
 // ============================================================================
@@ -318,8 +342,9 @@ class KeyPool {
    */
   async waitForSpacing(record: KeyRecord): Promise<void> {
     const now = Date.now();
-    const spacing = getAdaptiveSpacingMs(record);
-    const jitter = Math.floor(Math.random() * SPACING_JITTER_MS);
+    const kc = this.keyCount;
+    const spacing = getAdaptiveSpacingMs(record, kc);
+    const jitter = Math.floor(Math.random() * getScaledSpacing(kc).jitter);
     const mySlot = Math.max(record.nextAvailableAt, now);
     record.nextAvailableAt = mySlot + spacing + jitter; // atomic advance before await
     const waitMs = mySlot - now;
@@ -385,8 +410,8 @@ class KeyPool {
     } else {
       // 429 rate limited — escalate backoff on repeated rate limits.
       // Server-provided Retry-After always takes precedence; otherwise
-      // use exponential backoff: 3min → 10min → 30min → 30min (capped).
-      const rateLimitDelays = [COOLDOWN_429_DEFAULT_MS, 10 * 60_000, 30 * 60_000];
+      // use scaled exponential backoff (shorter with more keys since others cover).
+      const rateLimitDelays = getScaled429Delays(this.keyCount);
       const strikes = record.suspendStrikes;
       const delay = retryAfterMs ?? rateLimitDelays[Math.min(strikes, rateLimitDelays.length - 1)];
       record.cooldownUntil = Date.now() + delay;
