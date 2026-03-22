@@ -69,14 +69,14 @@ export function createSpawnAgentPlugin(
         {
           name: "spawn_agent",
           description:
-            "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning. The sub-agent will report back via complete_task when done. Use list_agents(type='running') to check status, get_agent_report(agent_id) to read results, or kill_agent(agent_id) to stop it. Defaults to 'explore' agent (fast, read-only, haiku). Use agent= to specify a different agent (e.g., 'general' for full access, 'plan' for research).",
+            "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning. The sub-agent will report back via complete_task when done. Use list_agents(type='running') to check status, get_agent_report(agent_id) to read results, or kill_agent(agent_id) to stop it.\n\nChoose the right agent type for the task:\n- agent='general' (DEFAULT) — full access: read, write, edit, bash. Use for implementation, fixes, multi-step tasks.\n- agent='explore' — read-only, fast (haiku model). Use ONLY for search, analysis, code review where no file changes are needed.\n- agent='plan' — read-only research for gathering context before planning.\n\nCustom agents from .clawd/agents/ are also available (use list_agents(type='available') to discover).",
           parameters: {
             task: { type: "string", description: "The task for the sub-agent" },
             name: { type: "string", description: "Optional friendly name" },
             agent: {
               type: "string",
               description:
-                "Agent to use. Built-in: 'explore' (read-only, haiku), 'plan' (research, inherit model), 'general' (full access, inherit model). Default: 'explore'. Use list_agents to see all available.",
+                "Agent type. 'general' (default, full access), 'explore' (read-only, haiku — for search/analysis only), 'plan' (read-only research). Use list_agents(type='available') to see all.",
             },
             context: {
               type: "string",
@@ -259,8 +259,8 @@ export function createSpawnAgentPlugin(
       }
       if (agentConfig.project) _cachedProjectRoot = agentConfig.project;
 
-      // Load agent file config — explicit agent= param, or default to "explore"
-      const agentName = (args.agent as string) || "explore";
+      // Load agent file config — explicit agent= param, or default to "general"
+      const agentName = (args.agent as string) || "general";
       let agentFileConfig: AgentFileConfig | null = null;
       const projectRoot = agentConfig.project || "";
       agentFileConfig = loadAgentFile(agentName, projectRoot);
