@@ -91,7 +91,7 @@ export class WorkerManager {
       enabled: config.heartbeat?.enabled ?? true,
       intervalMs: config.heartbeat?.intervalMs ?? 30_000,
       processingTimeoutMs: config.heartbeat?.processingTimeoutMs ?? 300_000,
-      spaceIdleTimeoutMs: config.heartbeat?.spaceIdleTimeoutMs ?? 60_000,
+      spaceIdleTimeoutMs: config.heartbeat?.spaceIdleTimeoutMs ?? 15_000,
     };
   }
 
