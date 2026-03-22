@@ -25,6 +25,7 @@ import { destroyHooks, initializeHooks } from "./hooks/manager";
 import { MCPManager } from "./mcp/client";
 import { estimateMessagesTokens, estimateTokens } from "./memory/memory";
 import { type ContextModePluginResult, createContextModePlugin } from "./plugins/context-mode-plugin";
+import { BrowserPlugin } from "./plugins/browser-plugin";
 import { CustomToolPlugin } from "./plugins/custom-tool-plugin";
 import { type Plugin, PluginManager } from "./plugins/manager";
 import { createStatePersistencePlugin } from "./plugins/state-persistence-plugin";
@@ -39,6 +40,14 @@ import { executeTools, getSandboxProjectRoot, type ToolResult, toolDefinitions }
 import { getAgentContext, getContextProjectRoot } from "./utils/agent-context";
 import { ContextTracker } from "./utils/context-tracker";
 import { isDebugEnabled } from "./utils/debug";
+import { smartTruncate } from "./utils/smart-truncation";
+import {
+  scoreMessages,
+  fitToBudget,
+  compressMessage,
+  repairRoleAlternation,
+  reorderForAttention,
+} from "./session/message-scoring";
 
 // ============================================================================
 // Colored Logging Helpers
@@ -278,6 +287,8 @@ export class Agent {
   private _tunnelPluginRegistered = false;
   private _browserPluginRegistered = false;
   private _customToolPluginRegistered = false;
+  private _toolsCache: ToolDefinition[] | null = null;
+  private _toolsCacheKey: string = "";
 
   constructor(tokenOrProvider: string | LLMProvider, config: AgentConfig) {
     // Accept either token (legacy) or provider instance
@@ -530,9 +541,6 @@ export class Agent {
       if (this.config.contextMode) {
         try {
           // Smart compaction: importance-weighted selection (Phase 2)
-          const { scoreMessages, fitToBudget, compressMessage, repairRoleAlternation } = await import(
-            "./session/message-scoring"
-          );
           const { loadWorkingState, formatForContext } = await import("./session/working-state");
 
           const scored = scoreMessages(allMessages);
@@ -694,7 +702,6 @@ export class Agent {
 
         // If still large, use smart truncation to 20%
         if (compressed.length > MIN_COMPRESS_SIZE) {
-          const { smartTruncate } = require("./utils/smart-truncation");
           compressed = smartTruncate(compressed, {
             maxLength: Math.max(200, Math.floor(compressed.length * 0.2)),
           });
@@ -769,9 +776,10 @@ ${conversationText}
 
 SUMMARY:`;
 
-      // Use default model for quality summary
+      // Use fast model for compaction summaries to reduce cost/latency
+      const summaryModel = this.config.fastModel || "claude-haiku-4.5";
       const response = await this.client.complete({
-        model: this.config.model,
+        model: summaryModel,
         messages: [{ role: "user", content: summaryPrompt }],
         max_tokens: 4096,
       });
@@ -911,7 +919,22 @@ SUMMARY:`;
   // Get Tools (including MCP)
   // ============================================================================
 
-  private getTools() {
+  private getTools(): ToolDefinition[] {
+    // Cache by tool names to invalidate when tools change (not just count — handles add+remove)
+    const _mcpDefs = this.mcpManager.getToolDefinitions();
+    const _sharedMcpDefs = this.config.sharedMcpManager?.getToolDefinitions() ?? [];
+    const _pluginDefs = this.toolPluginManager.getToolDefinitions();
+    const cacheKey = [
+      ..._mcpDefs.map((t) => t.function.name),
+      "|",
+      ..._sharedMcpDefs.map((t) => t.function.name),
+      "|",
+      ..._pluginDefs.map((t) => t.function.name),
+    ].join(",");
+    if (this._toolsCache && this._toolsCacheKey === cacheKey) {
+      return this._toolsCache;
+    }
+
     const tools = [...toolDefinitions];
     const toolNames = new Set(tools.map((t) => t.function.name));
 
@@ -987,6 +1010,8 @@ SUMMARY:`;
       );
     }
 
+    this._toolsCache = filtered;
+    this._toolsCacheKey = cacheKey;
     return filtered;
   }
 
@@ -1604,7 +1629,6 @@ SUMMARY:`;
     // Only enabled when config.json has "browser": true, ["channel-1", ...], or { channel: [tokens] }.
     if (!this._browserPluginRegistered && isBrowserEnabled(ctx?.channel)) {
       try {
-        const { BrowserPlugin } = require("./plugins/browser-plugin");
         // Use channel:agentName as browser identity — two agents in different channels
         // can share the same name, so both parts are needed for uniqueness.
         const browserAgentId =
@@ -2044,7 +2068,6 @@ SUMMARY:`;
         // Must run BEFORE validateToolCallPairs so pair repair runs on the reordered result
         if (messages.length > 10) {
           try {
-            const { reorderForAttention } = await import("./session/message-scoring");
             messages = reorderForAttention(messages);
           } catch (e) {
             logSilentError("reorderForAttention", e);

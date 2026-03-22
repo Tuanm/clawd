@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AgentDialog from "./AgentDialog";
 import AgentFilesChannel from "./AgentFilesChannel";
 import { authFetch, getStoredAuthToken, setStoredAuthToken } from "./auth-fetch";
@@ -1314,37 +1314,23 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           // Refetch unread counts when new message arrives (slight delay to ensure DB commit)
           setTimeout(() => fetchUnreadCounts(), 200);
         } else if (data.type === "message_changed") {
-          setChannelStates((prev) => {
-            const current = prev.get(msgChannel);
-            if (!current) return prev;
-            const newMap = new Map(prev);
-            newMap.set(msgChannel, {
-              ...current,
-              messages: current.messages.map((m) =>
-                m.ts === data.message.ts
-                  ? {
-                      ...data.message,
-                      seen_by: m.seen_by || data.message.seen_by,
-                    }
-                  : m,
-              ),
-            });
-            return newMap;
+          updateChannelState(msgChannel, {
+            messages: (channelStatesRef.current.get(msgChannel)?.messages || []).map((m) =>
+              m.ts === data.message.ts
+                ? {
+                    ...data.message,
+                    seen_by: m.seen_by || data.message.seen_by,
+                  }
+                : m,
+            ),
           });
         } else if (data.type === "artifact_action") {
           // Mark interactive artifact as submitted (one-shot cross-user disable)
           if (data.one_shot) {
-            setChannelStates((prev) => {
-              const current = prev.get(msgChannel);
-              if (!current) return prev;
-              const newMap = new Map(prev);
-              newMap.set(msgChannel, {
-                ...current,
-                messages: current.messages.map((m) =>
-                  m.ts === data.message_ts ? { ...m, interactive_acted: true } : m,
-                ),
-              });
-              return newMap;
+            updateChannelState(msgChannel, {
+              messages: (channelStatesRef.current.get(msgChannel)?.messages || []).map((m) =>
+                m.ts === data.message_ts ? { ...m, interactive_acted: true } : m,
+              ),
             });
           }
         } else if (data.type === "message_seen") {
@@ -1554,6 +1540,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                 ...defaultChannelState,
               };
               const alreadyTracked = current.streamingAgents.some((a) => a.agentId === data.agent_id);
+              // Only map messages if any message has this agent in seen_by or as agent_id
+              const agentId = data.agent_id;
+              const hasAgent = current.messages.some(
+                (m) => m.agent_id === agentId || m.seen_by?.some((s) => s.agent_id === agentId),
+              );
               const newMap = new Map(prev);
               newMap.set(msgChannel, {
                 ...current,
@@ -1567,11 +1558,13 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                       },
                     ],
                 // Clear sleeping status for this agent since it's actively streaming
-                messages: current.messages.map((m) => ({
-                  ...m,
-                  is_sleeping: m.agent_id === data.agent_id ? false : m.is_sleeping,
-                  seen_by: m.seen_by?.map((s) => (s.agent_id === data.agent_id ? { ...s, is_sleeping: false } : s)),
-                })),
+                messages: hasAgent
+                  ? current.messages.map((m) => ({
+                      ...m,
+                      is_sleeping: m.agent_id === agentId ? false : m.is_sleeping,
+                      seen_by: m.seen_by?.map((s) => (s.agent_id === agentId ? { ...s, is_sleeping: false } : s)),
+                    }))
+                  : current.messages,
               });
               return newMap;
             });
@@ -1585,20 +1578,17 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             }
             streamingVersionRef.current++;
 
-            setChannelStates((prev) => {
-              const current = prev.get(msgChannel) || {
-                ...defaultChannelState,
-              };
-
-              const newMap = new Map(prev);
-              newMap.set(msgChannel, {
-                ...current,
-                streamingAgents: current.streamingAgents.filter((a) => a.agentId !== data.agent_id),
-                // Also remove legacy thinking messages
-                messages: current.messages.filter((m) => m.ts !== `thinking_${data.agent_id}`),
-              });
-              return newMap;
-            });
+            updateChannelState(
+              msgChannel,
+              (() => {
+                const current = channelStatesRef.current.get(msgChannel) || defaultChannelState;
+                return {
+                  streamingAgents: current.streamingAgents.filter((a) => a.agentId !== data.agent_id),
+                  // Also remove legacy thinking messages
+                  messages: current.messages.filter((m) => m.ts !== `thinking_${data.agent_id}`),
+                };
+              })(),
+            );
           }
         } else if (data.type === "agent_sleep") {
           // Update is_sleeping status for this agent in seen_by arrays
@@ -1606,15 +1596,20 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             const current = prev.get(msgChannel);
             if (!current) return prev;
 
+            // Early exit: only map if any message has this agent in seen_by or as agent_id
+            const agentId = data.agent_id;
+            const hasAgent = current.messages.some(
+              (m) => m.agent_id === agentId || m.seen_by?.some((s) => s.agent_id === agentId),
+            );
+            if (!hasAgent) return prev;
+
             const newMap = new Map(prev);
             newMap.set(msgChannel, {
               ...current,
               messages: current.messages.map((m) => ({
                 ...m,
-                is_sleeping: m.agent_id === data.agent_id ? data.is_sleeping : m.is_sleeping,
-                seen_by: m.seen_by?.map((s) =>
-                  s.agent_id === data.agent_id ? { ...s, is_sleeping: data.is_sleeping } : s,
-                ),
+                is_sleeping: m.agent_id === agentId ? data.is_sleeping : m.is_sleeping,
+                seen_by: m.seen_by?.map((s) => (s.agent_id === agentId ? { ...s, is_sleeping: data.is_sleeping } : s)),
               })),
             });
             return newMap;
@@ -1626,17 +1621,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           // Agent processed a message - could update last activity indicator
           console.log(`[WS] Agent processed: ${data.agent_id}, ts=${data.last_processed_ts}`);
         } else if (data.type === "channel_cleared") {
-          setChannelStates((prev) => {
-            const current = prev.get(msgChannel);
-            if (!current) return prev;
-            const newMap = new Map(prev);
-            newMap.set(msgChannel, {
-              ...current,
-              messages: [],
-              pendingMessages: [],
-            });
-            return newMap;
-          });
+          updateChannelState(msgChannel, { messages: [], pendingMessages: [] });
         }
       } catch {
         // Ignore parse errors
@@ -1747,7 +1732,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       });
       // Fetch unread counts
       fetchUnreadCounts();
-    }, 3000); // Increased from 1s to 3s - WebSocket handles real-time updates
+    }, 10000); // Increased from 3s to 10s - WebSocket handles real-time updates
 
     return () => {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
@@ -1896,6 +1881,41 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     }
   }, [activeChannel]);
 
+  // Stable callback for marking messages as seen (passed to MessageList)
+  const handleMarkSeen = useCallback(
+    (ts: string) => {
+      // Only update if ts is newer than current userLastSeenTs
+      const current = channelStatesRef.current.get(activeChannel)?.userLastSeenTs;
+      if (!current || ts > current) {
+        // Optimistically update state immediately
+        updateChannelState(activeChannel, { userLastSeenTs: ts });
+        // Then sync to server
+        authFetch(`${API_URL}/api/user.markSeen`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: activeChannel, ts }),
+        })
+          .then(() => fetchUnreadCounts())
+          .catch((err) => console.error("Failed to mark seen:", err));
+      }
+    },
+    [activeChannel, updateChannelState, fetchUnreadCounts],
+  );
+
+  // Memoize recentAgents to avoid recomputing on every render
+  const recentAgents = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          messages
+            .slice(-50)
+            .flatMap((m) => m.seen_by || [])
+            .map((agent) => [agent.agent_id, agent]),
+        ).values(),
+      ),
+    [messages],
+  );
+
   // Open thoughts dialog for a specific agent (loads historical entries from memory.db)
   const openAgentThoughts = useCallback(
     async (agentId: string, avatarColor: string) => {
@@ -1980,15 +2000,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     );
   }
 
-  // Compute active agents from recent messages
-  const recentAgents = Array.from(
-    new Map(
-      messages
-        .slice(-50)
-        .flatMap((m) => m.seen_by || [])
-        .map((agent) => [agent.agent_id, agent]),
-    ).values(),
-  );
+  // Compute active agents from recent messages (recentAgents is memoized above)
   const activeAgents = recentAgents.filter((a) => !a.is_sleeping);
   const allAgentsSleeping = recentAgents.length > 0 && activeAgents.length === 0;
 
@@ -2186,22 +2198,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               onLoadNewer={loadNewerMessages}
               onJumpToMessage={jumpToMessage}
               onJumpToLatest={jumpToLatest}
-              onMarkSeen={(ts) => {
-                // Only update if ts is newer than current userLastSeenTs
-                const current = channelStates.get(activeChannel)?.userLastSeenTs;
-                if (!current || ts > current) {
-                  // Optimistically update state immediately
-                  updateChannelState(activeChannel, { userLastSeenTs: ts });
-                  // Then sync to server
-                  authFetch(`${API_URL}/api/user.markSeen`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ channel: activeChannel, ts }),
-                  })
-                    .then(() => fetchUnreadCounts())
-                    .catch((err) => console.error("Failed to mark seen:", err));
-                }
-              }}
+              onMarkSeen={handleMarkSeen}
               channelKey={activeChannel}
               jumpToMessageTs={jumpToMessageTs}
               onJumpComplete={() => setJumpToMessageTs(null)}

@@ -207,7 +207,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   useEffect(() => {
     if (!isOpen || !channel) return;
     loadAgents();
-    const interval = setInterval(loadAgents, 5000);
+    const interval = setInterval(loadAgents, 15000);
     return () => clearInterval(interval);
   }, [isOpen, channel]);
 

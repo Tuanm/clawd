@@ -1,6 +1,6 @@
 // Management content for /agents channel — renders inside App's message area
 // Shows "System" messages with preview cards (same style as sub-agent cards)
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
 import { ClawdAvatar } from "./MessageList";
@@ -70,6 +70,7 @@ export default function AgentFilesChannel() {
   const [editEditable, setEditEditable] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveWarning, setSaveWarning] = useState<string | null>(null);
+  const saveWarningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadAgents = useCallback(async () => {
     setError(null);
@@ -88,6 +89,15 @@ export default function AgentFilesChannel() {
   useEffect(() => {
     loadAgents();
   }, [loadAgents]);
+
+  // Clear save warning timer on unmount to prevent setState on unmounted component
+  useEffect(() => {
+    return () => {
+      if (saveWarningTimerRef.current !== null) {
+        clearTimeout(saveWarningTimerRef.current);
+      }
+    };
+  }, []);
 
   // Escape key to close dialog
   useEffect(() => {
@@ -158,7 +168,8 @@ export default function AgentFilesChannel() {
       if (data.ok) {
         setDialogOpen(false);
         setSaveWarning(`Saved "${name}". Agents using this type may need restart to pick up changes.`);
-        setTimeout(() => setSaveWarning(null), 6000);
+        if (saveWarningTimerRef.current !== null) clearTimeout(saveWarningTimerRef.current);
+        saveWarningTimerRef.current = setTimeout(() => setSaveWarning(null), 6000);
         await loadAgents();
       } else {
         setError(data.error || "Failed to save");
