@@ -210,6 +210,51 @@ export class KnowledgeBase {
     return this.db.query(sql).all(...params) as KBSearchResult[];
   }
 
+  /** Search scoped to a channel (all agents in the channel share knowledge) */
+  searchByChannel(query: string, channel: string, limit = 10): KBSearchResult[] {
+    try {
+      this.ensureInit();
+      if (!this.initialized) return [];
+
+      const ftsQuery = query
+        .replace(/['"]/g, "")
+        .split(/\s+/)
+        .filter((w) => w.length > 1)
+        .map((w) => `"${w}"`)
+        .join(" OR ");
+
+      if (!ftsQuery) return [];
+
+      // Session IDs are formatted as "{channel}-{agentId}", so LIKE '{channel}-%' matches all agents in the channel
+      const channelPrefix = `${channel}-%`;
+
+      // FTS search with channel filter
+      const ftsResults = this.db
+        .query(
+          `SELECT k.source_id AS sourceId, k.tool_name AS toolName, k.chunk_index AS chunkIndex, k.content, rank AS rank
+           FROM knowledge_fts f JOIN knowledge k ON k.id = f.rowid
+           WHERE knowledge_fts MATCH ? AND k.session_id LIKE ?
+           ORDER BY rank LIMIT ?`,
+        )
+        .all(ftsQuery, channelPrefix, limit) as KBSearchResult[];
+
+      if (ftsResults.length > 0) return ftsResults;
+
+      // Substring fallback
+      const escapedQuery = query.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+      return this.db
+        .query(
+          `SELECT source_id AS sourceId, tool_name AS toolName, chunk_index AS chunkIndex, content, 0 as rank
+           FROM knowledge WHERE content LIKE ? ESCAPE '\\' AND session_id LIKE ?
+           ORDER BY created_at DESC LIMIT ?`,
+        )
+        .all(`%${escapedQuery}%`, channelPrefix, limit) as KBSearchResult[];
+    } catch (err) {
+      console.error("[KnowledgeBase] Channel search failed:", err);
+      return [];
+    }
+  }
+
   /** Invalidate entries for a specific source (file path) */
   invalidateSource(sessionId: string, sourceId: string): void {
     try {

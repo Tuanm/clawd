@@ -1498,9 +1498,14 @@ SUMMARY:`;
     if (this.config.contextMode && this.session) {
       try {
         const sessionDir = `${homedir()}/.clawd/sessions/${this.session.id}`;
+        // Extract channel from session ID (format: "{channel}-{agentId}")
+        const sessionChannel = this.session.id.endsWith(`-${this.agentId}`)
+          ? this.session.id.slice(0, -(this.agentId.length + 1))
+          : undefined;
         this.contextModePlugin = createContextModePlugin({
           sessionId: this.session.id,
           sessionDir,
+          channel: sessionChannel,
           onCompactRequest: async () => {
             // Prevent concurrent compaction
             if (this.compacting) {
