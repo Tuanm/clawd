@@ -142,7 +142,7 @@ QUICK/SINGLE-TURN WORK (no tasks needed):
 
 MULTI-STEP WORK (use tasks):
 - Create tasks to track your own work items
-- Use task_update(status="doing", claimer="AgentName") to claim
+- Use todo_update(status="doing", claimer="AgentName") to claim
 - Update status as you progress
 
 MULTI-AGENT COLLABORATION (use plans):
@@ -152,7 +152,7 @@ MULTI-AGENT COLLABORATION (use plans):
 - Check plan_list at session start when joining a channel
 
 CLAIMING TASKS:
-- task_update(task_id="...", status="doing", claimer="YourAgentName")
+- todo_update(task_id="...", status="doing", claimer="YourAgentName")
 - Success: Task is yours, start working
 - "already_claimed" error: Pick another task
 - When returning to "todo": claimed_by auto-clears
@@ -1038,7 +1038,7 @@ SUMMARY:`;
       "git_reset",
       "git_show",
     ],
-    task: ["task_add", "task_list", "task_update", "task_complete", "task_next"],
+    task: ["todo_write", "todo_read", "todo_update"],
     job: ["job_submit", "job_status", "job_cancel", "job_wait"],
     memory: ["memory_search", "memory_summary"],
   };

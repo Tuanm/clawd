@@ -193,6 +193,20 @@ function getKanbanDb(): Database {
   kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_plans_channel ON plans(channel)`);
   kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_phases_plan ON phases(plan_id)`);
 
+  // Todos table (per-agent, per-channel)
+  kanbanDb.exec(`
+    CREATE TABLE IF NOT EXISTS todos (
+      id TEXT PRIMARY KEY,
+      channel TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      order_index INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL
+    )
+  `);
+  kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_todos_agent_channel ON todos(agent_id, channel)`);
+
   return kanbanDb;
 }
 
@@ -706,6 +720,94 @@ export function unlinkTaskFromPlan(planId: string, taskId: string): boolean {
 
   db.query("DELETE FROM plan_tasks WHERE plan_id = ? AND task_id = ?").run(plan.id, task.id);
   return true;
+}
+
+// ============================================================================
+// Todo Functions (per-agent, per-channel)
+// ============================================================================
+
+export interface TodoItem {
+  id: string;
+  channel: string;
+  agent_id: string;
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  order_index: number;
+  created_at: number;
+}
+
+export function getTodos(agentId: string, channel: string): TodoItem[] {
+  const db = getKanbanDb();
+  return db
+    .query("SELECT * FROM todos WHERE agent_id = ? AND channel = ? ORDER BY order_index ASC")
+    .all(agentId, channel) as TodoItem[];
+}
+
+const VALID_TODO_STATUSES = new Set(["pending", "in_progress", "completed"]);
+const MAX_TODO_ITEMS = 50;
+
+export function writeTodos(
+  agentId: string,
+  channel: string,
+  items: Array<{ id?: string; content: string; status?: string }>,
+): TodoItem[] {
+  const db = getKanbanDb();
+  const capped = items.slice(0, MAX_TODO_ITEMS);
+
+  // Atomic: delete + insert + auto-cleanup all in one transaction
+  let result: TodoItem[] = [];
+  db.transaction(() => {
+    db.run("DELETE FROM todos WHERE agent_id = ? AND channel = ?", [agentId, channel]);
+    const now = Date.now();
+    for (let i = 0; i < capped.length; i++) {
+      const item = capped[i];
+      const id = item.id || `todo_${randomUUID().slice(0, 8)}`;
+      const status = VALID_TODO_STATUSES.has(item.status || "") ? item.status! : "pending";
+      db.query(
+        "INSERT INTO todos (id, channel, agent_id, content, status, order_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(id, channel, agentId, item.content, status, i, now);
+    }
+    // Auto-cleanup: if all items completed, delete the list
+    const rows = db.query("SELECT status FROM todos WHERE agent_id = ? AND channel = ?").all(agentId, channel) as {
+      status: string;
+    }[];
+    if (rows.length > 0 && rows.every((r) => r.status === "completed")) {
+      db.run("DELETE FROM todos WHERE agent_id = ? AND channel = ?", [agentId, channel]);
+    }
+  })();
+  result = getTodos(agentId, channel);
+  return result;
+}
+
+export function updateTodoItem(agentId: string, channel: string, itemId: string, status: string): TodoItem[] {
+  const db = getKanbanDb();
+  const validStatus = VALID_TODO_STATUSES.has(status) ? status : "pending";
+
+  // Atomic: update + auto-cleanup in one transaction
+  db.transaction(() => {
+    db.run("UPDATE todos SET status = ? WHERE id = ? AND agent_id = ? AND channel = ?", [
+      validStatus,
+      itemId,
+      agentId,
+      channel,
+    ]);
+    // Auto-cleanup: if all items completed, delete the list
+    const rows = db.query("SELECT status FROM todos WHERE agent_id = ? AND channel = ?").all(agentId, channel) as {
+      status: string;
+    }[];
+    if (rows.length > 0 && rows.every((r) => r.status === "completed")) {
+      db.run("DELETE FROM todos WHERE agent_id = ? AND channel = ?", [agentId, channel]);
+    }
+  })();
+  return getTodos(agentId, channel);
+}
+
+export function listChannelTodos(channel: string): Array<{ agent_id: string; items: TodoItem[] }> {
+  const db = getKanbanDb();
+  const rows = db.query("SELECT DISTINCT agent_id FROM todos WHERE channel = ? ORDER BY agent_id").all(channel) as {
+    agent_id: string;
+  }[];
+  return rows.map((r) => ({ agent_id: r.agent_id, items: getTodos(r.agent_id, channel) }));
 }
 
 export function getTasksForPlan(planId: string): { phase: Phase; tasks: Task[] }[] {

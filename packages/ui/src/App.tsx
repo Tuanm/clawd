@@ -5,7 +5,7 @@ import { authFetch, getStoredAuthToken, setStoredAuthToken } from "./auth-fetch"
 import McpDialog, { McpIcon } from "./McpDialog";
 import MessageComposer from "./MessageComposer";
 import MessageList, { StreamOutputDialog } from "./MessageList";
-import PlanModal from "./PlanModal";
+import TodoDialog from "./PlanModal";
 import ProjectsDialog from "./ProjectsDialog";
 import SearchModal from "./SearchModal";
 import SidebarPanel from "./SidebarPanel";
@@ -2333,7 +2333,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
         streamingAgents={streamingAgents}
         initialAgentId={streamDialogAgentId}
       />
-      <PlanModal channel={activeChannel} isOpen={showPlanModal} onClose={() => setShowPlanModal(false)} />
+      <TodoDialog channel={activeChannel} isOpen={showPlanModal} onClose={() => setShowPlanModal(false)} />
       <SearchModal
         messages={messages}
         channel={activeChannel}
