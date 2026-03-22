@@ -43,7 +43,7 @@ function hasTool(ctx: PromptContext, ...names: string[]): boolean {
 
 const hasGitTools = (ctx: PromptContext) => hasTool(ctx, "git_status", "git_commit");
 const hasSpawnAgent = (ctx: PromptContext) => hasTool(ctx, "spawn_agent");
-const hasTaskTools = (ctx: PromptContext) => hasTool(ctx, "task_add", "task_list");
+const hasTaskTools = (ctx: PromptContext) => hasTool(ctx, "todo_write", "todo_read");
 
 // ============================================================================
 // Section: Identity
@@ -236,25 +236,23 @@ Do NOT delegate:
 // ============================================================================
 
 function sectionTasks(): string {
-  return `# Tasks
-Use tasks to track multi-step work. Skip for quick single-turn requests.
+  return `# Todo List
+You have a personal Todo list to track multi-step work. Skip for quick single-turn tasks.
 
-**When to create tasks:**
-- Work requiring 3+ distinct steps → create tasks BEFORE starting
-- Batch-create related tasks with task_batch_add (preferred over multiple task_add calls)
+**When to use:**
+- Work requiring 3+ distinct steps → create a Todo list BEFORE starting
+- Write all items at once with todo_write (not one at a time)
 
 **Workflow:**
-1. Plan: create tasks for each step (batch preferred)
-2. Execute: mark current task "doing" (only ONE at a time)
-3. Complete: mark "done" immediately on success; stay "doing" on errors
-4. Report: after each milestone, send progress to chat: "Done: [task]. Next: [task]. (3/7)"
-5. Summary: when all tasks complete, send a final summary to chat
+1. Plan: call todo_write([{content: "step 1"}, {content: "step 2"}, ...]) — creates your list
+2. Work: update items as you go with todo_update(item_id, "in_progress") then todo_update(item_id, "completed")
+3. Report: after each completed item, tell the user: "Done: [item]. Next: [item]. (3/7)"
+4. Finish: when all items completed, the list auto-deletes. Send a final summary.
 
-**Best practices:**
-- Priorities: P0=blocking/urgent, P1=important, P2=normal, P3=nice-to-have
-- Use tags for grouping: #backend, #frontend, #testing
-- Mark blocked tasks with a comment explaining the blocker
-- Keep task titles short and actionable (imperative: "Add validation", not "Adding validation")`;
+**Rules:**
+- Only ONE active Todo list at a time — complete or clear before creating new
+- Keep items short and actionable (imperative: "Add validation", not "Adding validation")
+- Use todo_read to check your current list state`;
 }
 
 // ============================================================================

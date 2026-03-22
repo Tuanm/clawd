@@ -195,7 +195,9 @@ import {
   getPlan,
   getTask,
   getTasksForPlan,
+  getTodos,
   linkTaskToPhase,
+  listChannelTodos,
   listPlans,
   listTasks,
   removeTaskAttachment,
@@ -203,6 +205,8 @@ import {
   updatePhase,
   updatePlan,
   updateTask,
+  updateTodoItem,
+  writeTodos,
 } from "./server/routes/tasks";
 import {
   broadcastAgentStreaming,
@@ -2001,6 +2005,40 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const task = addTaskComment(body.task_id, body.author || "api", body.text);
       if (!task) return json({ ok: false, error: "task_not_found" }, 404);
       return json({ ok: true, task });
+    }
+
+    // ========================================================================
+    // Todo APIs (per-agent todo lists)
+    // ========================================================================
+
+    if (path === "/api/todos.read") {
+      const agent_id = url.searchParams.get("agent_id");
+      const channel = url.searchParams.get("channel");
+      if (!agent_id || !channel) return json({ ok: false, error: "agent_id and channel required" }, 400);
+      return json({ ok: true, items: getTodos(agent_id, channel) });
+    }
+
+    if (path === "/api/todos.write" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!body.agent_id || !body.channel) return json({ ok: false, error: "agent_id and channel required" }, 400);
+      if (!Array.isArray(body.items)) return json({ ok: false, error: "items array required" }, 400);
+      if (body.items.length > 50) return json({ ok: false, error: "max 50 items per todo list" }, 400);
+      const items = writeTodos(body.agent_id, body.channel, body.items);
+      return json({ ok: true, items, completed: items.length === 0 && body.items.length > 0 });
+    }
+
+    if (path === "/api/todos.update" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!body.agent_id || !body.channel || !body.item_id || !body.status)
+        return json({ ok: false, error: "agent_id, channel, item_id, and status required" }, 400);
+      const items = updateTodoItem(body.agent_id, body.channel, body.item_id, body.status);
+      return json({ ok: true, items, completed: items.length === 0 });
+    }
+
+    if (path === "/api/todos.list") {
+      const channel = url.searchParams.get("channel");
+      if (!channel) return json({ ok: false, error: "channel required" }, 400);
+      return json({ ok: true, agents: listChannelTodos(channel) });
     }
 
     // ========================================================================

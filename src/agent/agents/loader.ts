@@ -506,39 +506,40 @@ const TOOL_ALIASES: Record<string, string> = {
   Read: "view",
   Write: "create",
   Edit: "edit",
+  MultiEdit: "multi_edit",
   Glob: "glob",
   Grep: "grep",
+  LS: "glob",
   Bash: "bash",
   // Notebook
   NotebookEdit: "edit",
   // Web tools
   WebFetch: "web_fetch",
   WebSearch: "web_search",
-  // Agent/task tools
+  // Agent/sub-agent tools
   Agent: "spawn_agent",
-  TaskCreate: "task_add",
-  TaskGet: "task_get",
-  TaskList: "task_list",
-  TaskUpdate: "task_update",
+  TaskCreate: "todo_write",
+  TaskGet: "todo_read",
+  TaskList: "todo_read",
+  TaskUpdate: "todo_update",
   TaskOutput: "agent_logs",
-  TaskStop: "kill_agent",
-  TodoWrite: "task_add",
+  TaskStop: "stop_agent",
+  TodoWrite: "todo_write",
   // Skill tool
   Skill: "skill_activate",
   // MCP tools
   ListMcpResourcesTool: "list_mcp_resources",
   ReadMcpResourceTool: "read_mcp_resource",
   ToolSearch: "tool_search",
-  // Plan/worktree (no direct Claw'd equivalents — pass through)
-  // EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree
-  // Cron tools
-  CronCreate: "job_submit",
-  CronDelete: "job_cancel",
-  CronList: "task_list",
-  // Message tool (Claude Code SendMessage → Claw'd chat_send_message)
+  // Cron/scheduler tools
+  CronCreate: "schedule_job",
+  CronDelete: "schedule_cancel",
+  CronList: "schedule_list",
+  // Message/communication tools
   SendMessage: "chat_send_message",
-  // Question tool
   AskUserQuestion: "chat_send_message",
+  // Plan/worktree (pass through — no direct Claw'd equivalents)
+  // EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree
 };
 
 /**

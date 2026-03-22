@@ -400,23 +400,40 @@ const MAX_BASH_OUTPUT = 10 * 1024 * 1024; // 10MB
 
 registerTool(
   "bash",
-  "Execute a shell command. On Linux/macOS uses bash, on Windows uses cmd.exe or PowerShell natively. No command conversion needed — use the OS-native syntax.",
+  "Execute a shell command. Use run_in_background=true for long-running commands (returns job ID). Prefer dedicated tools when available: use grep instead of rg/grep, glob instead of find, view instead of cat, edit instead of sed.",
   {
-    command: {
-      type: "string",
-      description: "The shell command to execute (use OS-native syntax)",
-    },
-    timeout: {
-      type: "number",
-      description: "Timeout in milliseconds (default: 30000)",
-    },
-    cwd: {
-      type: "string",
-      description: "Working directory for the command",
+    command: { type: "string", description: "The shell command to execute (use OS-native syntax)" },
+    timeout: { type: "number", description: "Timeout in milliseconds (default: 30000, max: 600000)" },
+    cwd: { type: "string", description: "Working directory for the command" },
+    description: { type: "string", description: "Brief description of what this command does (for logging/audit)" },
+    run_in_background: {
+      type: "boolean",
+      description: "Run command in background (returns immediately with job ID). Use job_status to check output later.",
     },
   },
   ["command"],
-  async ({ command, timeout = 30000, cwd }) => {
+  async ({ command, timeout = 30000, cwd, description, run_in_background }) => {
+    // Background mode: delegate to job_submit (tmux-based, survives agent exit)
+    if (run_in_background) {
+      if (!isTmuxAvailable()) {
+        return {
+          success: false,
+          output: "",
+          error: "Background execution requires tmux. Install with: apt install tmux (or brew install tmux on macOS)",
+        };
+      }
+      try {
+        const { tmuxJobManager } = await import("../jobs/tmux-manager");
+        const name = description || command.slice(0, 40).replace(/[^a-zA-Z0-9-_]/g, "_");
+        const jobId = tmuxJobManager.submit(name, command);
+        return {
+          success: true,
+          output: `Background job started: ${jobId}\nUse job_status(job_id="${jobId}") to check output.`,
+        };
+      } catch (err: any) {
+        return { success: false, output: "", error: `Failed to start background job: ${err.message}` };
+      }
+    }
     let workDir = cwd ? resolveSafePath(cwd) : undefined;
 
     // When sandbox enabled, use platform-specific isolation (bwrap on Linux, sandbox-exec on macOS)
@@ -616,15 +633,26 @@ registerTool(
     },
     start_line: {
       type: "number",
-      description: "Start line number (1-indexed, for files)",
+      description: "Start line number (1-indexed). Alias: offset",
     },
     end_line: {
       type: "number",
-      description: "End line number (for files)",
+      description: "End line number. Alias: limit (as count from start_line)",
+    },
+    offset: {
+      type: "number",
+      description: "Alias for start_line (1-indexed line offset)",
+    },
+    limit: {
+      type: "number",
+      description: "Number of lines to read from start_line/offset",
     },
   },
   ["path"],
-  async ({ path, start_line, end_line }) => {
+  async ({ path, start_line, end_line, offset, limit }) => {
+    // Resolve aliases: offset → start_line, limit → end_line (as count)
+    if (offset && !start_line) start_line = offset;
+    if (limit && !end_line && start_line) end_line = start_line + limit - 1;
     try {
       const resolvedPath = resolveSafePath(path);
 
@@ -758,119 +786,164 @@ registerTool(
 
 registerTool(
   "edit",
-  "Edit a file by replacing text. The old_str must match exactly.",
+  "Edit a file by replacing exact text. Use replace_all=true for renaming across the file. For multiple edits in one file, prefer multi_edit.",
   {
-    path: {
-      type: "string",
-      description: "Absolute path to file",
-    },
-    old_str: {
-      type: "string",
-      description: "Text to find and replace (must match exactly)",
-    },
-    new_str: {
-      type: "string",
-      description: "Replacement text",
-    },
+    path: { type: "string", description: "Absolute path to file" },
+    old_str: { type: "string", description: "Text to find and replace (must be unique unless replace_all is true)" },
+    new_str: { type: "string", description: "Replacement text" },
+    replace_all: { type: "boolean", description: "Replace ALL occurrences (default: false, requires unique match)" },
   },
   ["path", "old_str", "new_str"],
-  async ({ path, old_str, new_str }) => {
+  async ({ path, old_str, new_str, replace_all = false }) => {
     try {
       const resolvedPath = resolveSafePath(path);
-
-      // Always validate path first (checks both allowed paths AND sensitive files like .env)
       const pathError = validatePath(resolvedPath, "edit");
-      if (pathError) {
-        return { success: false, output: "", error: pathError };
-      }
+      if (pathError) return { success: false, output: "", error: pathError };
 
-      // Use sandbox for filesystem isolation
+      // Read file content
+      let content: string;
       if (isSandboxReady()) {
-        // Read file content
         const readResult = await runInSandbox("cat", [resolvedPath]);
         if (!readResult.success) {
-          if (readResult.stderr.includes("No such file")) {
-            return {
-              success: false,
-              output: "",
-              error: `File not found: ${path}`,
-            };
-          }
           return {
             success: false,
             output: "",
-            error: readResult.stderr || "Failed to read file",
+            error: readResult.stderr.includes("No such file")
+              ? `File not found: ${path}`
+              : readResult.stderr || "Failed to read file",
           };
         }
+        content = readResult.stdout;
+      } else {
+        if (!existsSync(resolvedPath)) return { success: false, output: "", error: `File not found: ${path}` };
+        content = readFileSync(resolvedPath, "utf-8");
+      }
 
-        let content = readResult.stdout;
-        const count = content.split(old_str).length - 1;
+      const count = content.split(old_str).length - 1;
+      if (count === 0) return { success: false, output: "", error: "old_str not found in file" };
+      if (count > 1 && !replace_all)
+        return {
+          success: false,
+          output: "",
+          error: `old_str found ${count} times, must be unique. Use replace_all=true to replace all occurrences.`,
+        };
 
-        if (count === 0) {
-          return {
-            success: false,
-            output: "",
-            error: "old_str not found in file",
-          };
-        }
-
-        if (count > 1) {
-          return {
-            success: false,
-            output: "",
-            error: `old_str found ${count} times, must be unique`,
-          };
-        }
-
+      // Apply replacement
+      if (replace_all) {
+        content = content.split(old_str).join(new_str);
+      } else {
         content = content.replace(old_str, new_str);
+      }
 
-        // Write file using heredoc with random delimiter to prevent injection
+      // Write file
+      if (isSandboxReady()) {
         const { randomUUID } = await import("node:crypto");
         const heredocDelim = `CLAWD_EOF_${randomUUID().replace(/-/g, "")}`;
         const writeResult = await runInSandbox("bash", [
           "-c",
           `cat > "${resolvedPath}" << '${heredocDelim}'\n${content}\n${heredocDelim}`,
         ]);
-        if (!writeResult.success) {
+        if (!writeResult.success)
+          return { success: false, output: "", error: writeResult.stderr || "Failed to write file" };
+      } else {
+        writeFileSync(resolvedPath, content);
+      }
+
+      return {
+        success: true,
+        output: replace_all ? `File updated: ${path} (${count} replacements)` : `File updated: ${path}`,
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+// ============================================================================
+// Tool: Multi-Edit (batch string replacements in a single file)
+// ============================================================================
+
+registerTool(
+  "multi_edit",
+  "Apply multiple edits to a single file. Each edit replaces old_str with new_str. All edits are applied atomically — if any edit fails, no changes are made.",
+  {
+    path: { type: "string", description: "Absolute path to file" },
+    edits: {
+      type: "array",
+      description: "Array of edits: [{old_str, new_str}]. Each old_str must be unique in the file.",
+      items: {
+        type: "object",
+        properties: {
+          old_str: { type: "string", description: "Text to find (must be unique)" },
+          new_str: { type: "string", description: "Replacement text" },
+        },
+        required: ["old_str", "new_str"],
+      },
+    },
+  },
+  ["path", "edits"],
+  async ({ path: inputPath, edits }) => {
+    try {
+      if (!Array.isArray(edits) || edits.length === 0) {
+        return { success: false, output: "", error: "edits must be a non-empty array" };
+      }
+      if (edits.length > 50) {
+        return { success: false, output: "", error: "max 50 edits per call" };
+      }
+
+      const resolvedPath = resolveSafePath(inputPath);
+      const pathError = validatePath(resolvedPath, "edit");
+      if (pathError) return { success: false, output: "", error: pathError };
+
+      // Read file
+      let content: string;
+      if (isSandboxReady()) {
+        const readResult = await runInSandbox("cat", [resolvedPath]);
+        if (!readResult.success) {
           return {
             success: false,
             output: "",
-            error: writeResult.stderr || "Failed to write file",
+            error: readResult.stderr.includes("No such file")
+              ? `File not found: ${inputPath}`
+              : readResult.stderr || "Failed to read file",
           };
         }
-
-        return { success: true, output: `File updated: ${path}` };
+        content = readResult.stdout;
+      } else {
+        if (!existsSync(resolvedPath)) return { success: false, output: "", error: `File not found: ${inputPath}` };
+        content = readFileSync(resolvedPath, "utf-8");
       }
 
-      // Fallback: direct fs access (path already validated above)
-      if (!existsSync(resolvedPath)) {
-        return { success: false, output: "", error: `File not found: ${path}` };
+      // Validate all edits first (atomic — fail before any changes)
+      for (let i = 0; i < edits.length; i++) {
+        const { old_str } = edits[i];
+        if (!old_str) return { success: false, output: "", error: `Edit ${i + 1}: old_str is required` };
+        const count = content.split(old_str).length - 1;
+        if (count === 0) return { success: false, output: "", error: `Edit ${i + 1}: old_str not found in file` };
+        if (count > 1)
+          return { success: false, output: "", error: `Edit ${i + 1}: old_str found ${count} times, must be unique` };
       }
 
-      let content = readFileSync(resolvedPath, "utf-8");
-
-      const count = content.split(old_str).length - 1;
-
-      if (count === 0) {
-        return {
-          success: false,
-          output: "",
-          error: "old_str not found in file",
-        };
+      // Apply all edits sequentially
+      for (const { old_str, new_str } of edits) {
+        content = content.replace(old_str, new_str);
       }
 
-      if (count > 1) {
-        return {
-          success: false,
-          output: "",
-          error: `old_str found ${count} times, must be unique`,
-        };
+      // Write file
+      if (isSandboxReady()) {
+        const { randomUUID } = await import("node:crypto");
+        const heredocDelim = `CLAWD_EOF_${randomUUID().replace(/-/g, "")}`;
+        const writeResult = await runInSandbox("bash", [
+          "-c",
+          `cat > "${resolvedPath}" << '${heredocDelim}'\n${content}\n${heredocDelim}`,
+        ]);
+        if (!writeResult.success)
+          return { success: false, output: "", error: writeResult.stderr || "Failed to write file" };
+      } else {
+        writeFileSync(resolvedPath, content);
       }
 
-      content = content.replace(old_str, new_str);
-      writeFileSync(resolvedPath, content);
-
-      return { success: true, output: `File updated: ${path}` };
+      return { success: true, output: `Applied ${edits.length} edit(s) to ${inputPath}` };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
     }
@@ -883,38 +956,31 @@ registerTool(
 
 registerTool(
   "create",
-  "Create a new file with content. Parent directories must exist.",
+  "Create a new file. Fails if file exists unless overwrite=true. Prefer edit/multi_edit for modifying existing files.",
   {
-    path: {
-      type: "string",
-      description: "Absolute path for new file",
-    },
-    content: {
-      type: "string",
-      description: "File content",
-    },
+    path: { type: "string", description: "Absolute path for the file" },
+    content: { type: "string", description: "File content" },
+    overwrite: { type: "boolean", description: "Allow overwriting existing files (default: false)" },
   },
   ["path", "content"],
-  async ({ path, content }) => {
+  async ({ path, content, overwrite = false }) => {
     try {
       const resolvedPath = resolveSafePath(path);
-
-      // Always validate path first (checks both allowed paths AND sensitive files like .env)
       const pathError = validatePath(resolvedPath, "create");
-      if (pathError) {
-        return { success: false, output: "", error: pathError };
-      }
+      if (pathError) return { success: false, output: "", error: pathError };
 
       // Use sandbox for filesystem isolation
       if (isSandboxReady()) {
-        // Check if file exists
-        const existsResult = await runInSandbox("test", ["-e", resolvedPath]);
-        if (existsResult.success) {
-          return {
-            success: false,
-            output: "",
-            error: `File already exists: ${path}`,
-          };
+        // Check if file exists (block unless overwrite)
+        if (!overwrite) {
+          const existsResult = await runInSandbox("test", ["-e", resolvedPath]);
+          if (existsResult.success) {
+            return {
+              success: false,
+              output: "",
+              error: `File already exists: ${path}. Use overwrite=true to replace.`,
+            };
+          }
         }
 
         // Create file using heredoc with random delimiter to prevent injection
@@ -936,12 +1002,8 @@ registerTool(
       }
 
       // Fallback: direct fs access (path already validated above)
-      if (existsSync(resolvedPath)) {
-        return {
-          success: false,
-          output: "",
-          error: `File already exists: ${path}`,
-        };
+      if (!overwrite && existsSync(resolvedPath)) {
+        return { success: false, output: "", error: `File already exists: ${path}. Use overwrite=true to replace.` };
       }
 
       writeFileSync(resolvedPath, content);
@@ -958,32 +1020,35 @@ registerTool(
 
 registerTool(
   "grep",
-  "Search for patterns in files using ripgrep.",
+  "Search for patterns in files using ripgrep. Output modes: 'content' shows matching lines, 'files_with_matches' shows file paths only (default), 'count' shows match counts.",
   {
-    pattern: {
+    pattern: { type: "string", description: "Regex pattern to search for" },
+    path: { type: "string", description: "Directory or file to search (default: project root)" },
+    glob: { type: "string", description: 'File glob filter (e.g., "*.ts", "*.{js,tsx}")' },
+    type: { type: "string", description: 'File type filter (e.g., "ts", "py", "rust")' },
+    output_mode: {
       type: "string",
-      description: "Search pattern (regex)",
+      description: '"content" (matching lines), "files_with_matches" (paths only, default), "count" (match counts)',
     },
-    path: {
-      type: "string",
-      description: "Directory or file to search",
-    },
-    glob: {
-      type: "string",
-      description: 'File glob pattern (e.g., "*.ts")',
-    },
-    context: {
-      type: "number",
-      description: "Lines of context around matches",
-    },
+    context: { type: "number", description: "Lines of context around matches (for content mode)" },
+    head_limit: { type: "number", description: "Limit output to first N results (default: unlimited)" },
+    case_insensitive: { type: "boolean", description: "Case-insensitive search" },
+    multiline: { type: "boolean", description: "Enable multiline matching (patterns can span lines)" },
   },
   ["pattern"],
-  async ({ pattern, path = ".", glob, context }) => {
+  async ({ pattern, path = ".", glob, type, output_mode, context, head_limit, case_insensitive, multiline }) => {
     const resolvedPath = resolveSafePath(path);
+    const mode = output_mode || "files_with_matches";
 
-    const args = ["--color=never", "--line-number"];
+    const args = ["--color=never"];
+    if (mode === "files_with_matches") args.push("-l");
+    else if (mode === "count") args.push("-c");
+    else args.push("--line-number");
     if (glob) args.push("-g", glob);
-    if (context) args.push("-C", String(context));
+    if (type) args.push("-t", type);
+    if (context && mode === "content") args.push("-C", String(context));
+    if (case_insensitive) args.push("-i");
+    if (multiline) args.push("-U", "--multiline-dotall");
     args.push(pattern, resolvedPath);
 
     // Use sandbox for filesystem isolation
@@ -1008,10 +1073,14 @@ registerTool(
       }
 
       // rg returns 1 for no matches, which is not an error
-      return {
-        success: result.code === 0 || result.code === 1,
-        output: result.stdout.trim() || "(no matches)",
-      };
+      let output = result.stdout.trim() || "(no matches)";
+      if (head_limit && head_limit > 0 && output !== "(no matches)") {
+        const lines = output.split("\n");
+        if (lines.length > head_limit) {
+          output = lines.slice(0, head_limit).join("\n") + `\n... (${lines.length - head_limit} more)`;
+        }
+      }
+      return { success: result.code === 0 || result.code === 1, output };
     }
 
     // Fallback: path validation + direct execution
@@ -1096,19 +1165,14 @@ registerTool(
 
 registerTool(
   "glob",
-  "Find files matching a glob pattern.",
+  "Find files matching a glob pattern. Returns matching file paths sorted by modification time.",
   {
-    pattern: {
-      type: "string",
-      description: 'Glob pattern (e.g., "**/*.ts")',
-    },
-    path: {
-      type: "string",
-      description: "Base directory (default: current directory)",
-    },
+    pattern: { type: "string", description: 'Glob pattern (e.g., "**/*.ts", "src/**/*.tsx")' },
+    path: { type: "string", description: "Base directory (default: project root)" },
+    head_limit: { type: "number", description: "Limit output to first N files (default: unlimited)" },
   },
   ["pattern"],
-  async ({ pattern, path = "." }) => {
+  async ({ pattern, path = ".", head_limit }) => {
     const resolvedPath = resolveSafePath(path);
 
     // Use sandbox for filesystem isolation
@@ -1116,10 +1180,14 @@ registerTool(
       const result = await runInSandbox("find", [resolvedPath, "-name", pattern.replace("**/", "")], {
         timeout: 30000,
       });
-      return {
-        success: true,
-        output: result.stdout.trim() || "(no files found)",
-      };
+      let output = result.stdout.trim() || "(no files found)";
+      if (head_limit && head_limit > 0 && output !== "(no files found)") {
+        const lines = output.split("\n");
+        if (lines.length > head_limit) {
+          output = lines.slice(0, head_limit).join("\n") + `\n... (${lines.length - head_limit} more files)`;
+        }
+      }
+      return { success: true, output };
     }
 
     // Fallback: path validation + direct execution
@@ -1152,10 +1220,14 @@ registerTool(
           });
           return;
         }
-        resolve({
-          success: true,
-          output: output.trim() || "(no files found)",
-        });
+        let result = output.trim() || "(no files found)";
+        if (head_limit && head_limit > 0 && result !== "(no files found)") {
+          const lines = result.split("\n");
+          if (lines.length > head_limit) {
+            result = lines.slice(0, head_limit).join("\n") + `\n... (${lines.length - head_limit} more files)`;
+          }
+        }
+        resolve({ success: true, output: result });
       });
 
       proc.on("error", (err) => {
@@ -1281,242 +1353,262 @@ Summary: ${summary.summary}`;
 );
 
 // ============================================================================
-// Tool: Job Submit (tmux-based, survives agent exit)
+// Tmux availability check (job + tmux tools only registered if tmux is installed)
 // ============================================================================
 
-registerTool(
-  "job_submit",
-  "Submit a one-off background command (runs in an isolated tmux session). Returns a job ID. For recurring/scheduled tasks, use schedule_job instead.",
-  {
-    name: {
-      type: "string",
-      description: "Short name for the job",
-    },
-    command: {
-      type: "string",
-      description: "Bash command to execute",
-    },
-  },
-  ["name", "command"],
-  async ({ name, command }) => {
+let _tmuxAvailable: boolean | null = null;
+function isTmuxAvailable(): boolean {
+  if (_tmuxAvailable === null) {
     try {
-      const { tmuxJobManager } = await import("../jobs/tmux-manager");
-
-      // When sandbox enabled, wrap the command with platform-specific sandboxing
-      // (tmux-manager runs commands directly; sandboxing is enforced here at tool level)
-      let sandboxedCommand = command;
-      if (isSandboxReady()) {
-        sandboxedCommand = await wrapCommandForSandbox(command);
-      }
-
-      const jobId = tmuxJobManager.submit(name, sandboxedCommand);
-
-      return {
-        success: true,
-        output: `Job submitted: ${jobId}\nName: ${name}\nUse job_status or job_logs with this ID to check progress.`,
-      };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+      const { execSync } = require("node:child_process");
+      execSync("which tmux", { stdio: "ignore" });
+      _tmuxAvailable = true;
+    } catch {
+      _tmuxAvailable = false;
     }
-  },
-);
+  }
+  return _tmuxAvailable;
+}
 
-// ============================================================================
-// Tool: Job Status (tmux-based)
-// ============================================================================
+if (isTmuxAvailable()) {
+  // ============================================================================
+  // Tool: Job Submit (tmux-based, survives agent exit)
+  // ============================================================================
 
-registerTool(
-  "job_status",
-  "Get status of one-off background jobs (from job_submit). For recurring scheduled tasks, use schedule_list instead.",
-  {
-    job_id: {
-      type: "string",
-      description: "Specific job ID (optional, lists all if not provided)",
+  registerTool(
+    "job_submit",
+    "Submit a one-off background command (runs in an isolated tmux session). Returns a job ID. For recurring/scheduled tasks, use schedule_job instead.",
+    {
+      name: {
+        type: "string",
+        description: "Short name for the job",
+      },
+      command: {
+        type: "string",
+        description: "Bash command to execute",
+      },
     },
-    status_filter: {
-      type: "string",
-      enum: ["pending", "running", "completed", "failed", "cancelled"],
-      description: "Filter by status",
-    },
-  },
-  [],
-  async ({ job_id, status_filter }) => {
-    try {
-      const { tmuxJobManager } = await import("../jobs/tmux-manager");
+    ["name", "command"],
+    async ({ name, command }) => {
+      try {
+        const { tmuxJobManager } = await import("../jobs/tmux-manager");
 
-      if (job_id) {
-        const job = tmuxJobManager.get(job_id);
-        if (!job) {
+        // When sandbox enabled, wrap the command with platform-specific sandboxing
+        // (tmux-manager runs commands directly; sandboxing is enforced here at tool level)
+        let sandboxedCommand = command;
+        if (isSandboxReady()) {
+          sandboxedCommand = await wrapCommandForSandbox(command);
+        }
+
+        const jobId = tmuxJobManager.submit(name, sandboxedCommand);
+
+        return {
+          success: true,
+          output: `Job submitted: ${jobId}\nName: ${name}\nUse job_status or job_logs with this ID to check progress.`,
+        };
+      } catch (err: any) {
+        return { success: false, output: "", error: err.message };
+      }
+    },
+  );
+
+  // ============================================================================
+  // Tool: Job Status (tmux-based)
+  // ============================================================================
+
+  registerTool(
+    "job_status",
+    "Get status of one-off background jobs (from job_submit). For recurring scheduled tasks, use schedule_list instead.",
+    {
+      job_id: {
+        type: "string",
+        description: "Specific job ID (optional, lists all if not provided)",
+      },
+      status_filter: {
+        type: "string",
+        enum: ["pending", "running", "completed", "failed", "cancelled"],
+        description: "Filter by status",
+      },
+    },
+    [],
+    async ({ job_id, status_filter }) => {
+      try {
+        const { tmuxJobManager } = await import("../jobs/tmux-manager");
+
+        if (job_id) {
+          const job = tmuxJobManager.get(job_id);
+          if (!job) {
+            return {
+              success: false,
+              output: "",
+              error: `Job ${job_id} not found`,
+            };
+          }
+
+          // Include logs in detailed view
+          const logs = tmuxJobManager.getLogs(job_id, 50);
+          const output = [
+            JSON.stringify(job, null, 2),
+            "",
+            "--- Last 50 lines of output ---",
+            logs || "(no output yet)",
+          ].join("\n");
+
+          return { success: true, output };
+        }
+
+        const jobs = tmuxJobManager.list({
+          status: status_filter as any,
+          limit: 20,
+        });
+
+        if (jobs.length === 0) {
+          return { success: true, output: "No jobs found." };
+        }
+
+        const formatted = jobs
+          .map((j) => {
+            const elapsed = j.completedAt
+              ? `${Math.round((j.completedAt - j.createdAt) / 1000)}s`
+              : j.startedAt
+                ? `${Math.round((Date.now() - j.startedAt) / 1000)}s (running)`
+                : "pending";
+            return `[${j.status.toUpperCase()}] ${j.id.slice(0, 8)} - ${j.name} (${elapsed})`;
+          })
+          .join("\n");
+
+        return { success: true, output: formatted };
+      } catch (err: any) {
+        return { success: false, output: "", error: err.message };
+      }
+    },
+  );
+
+  // ============================================================================
+  // Tool: Job Cancel (tmux-based)
+  // ============================================================================
+
+  registerTool(
+    "job_cancel",
+    "Cancel a one-off background job by its job ID (from job_submit). For recurring schedules, use schedule_cancel instead.",
+    {
+      job_id: {
+        type: "string",
+        description: "Job ID to cancel",
+      },
+    },
+    ["job_id"],
+    async ({ job_id }) => {
+      try {
+        const { tmuxJobManager } = await import("../jobs/tmux-manager");
+
+        const cancelled = tmuxJobManager.cancel(job_id);
+
+        if (cancelled) {
+          return { success: true, output: `Job ${job_id} cancelled.` };
+        } else {
           return {
             success: false,
             output: "",
-            error: `Job ${job_id} not found`,
+            error: `Could not cancel job ${job_id} (not running or not found)`,
           };
         }
-
-        // Include logs in detailed view
-        const logs = tmuxJobManager.getLogs(job_id, 50);
-        const output = [
-          JSON.stringify(job, null, 2),
-          "",
-          "--- Last 50 lines of output ---",
-          logs || "(no output yet)",
-        ].join("\n");
-
-        return { success: true, output };
+      } catch (err: any) {
+        return { success: false, output: "", error: err.message };
       }
+    },
+  );
 
-      const jobs = tmuxJobManager.list({
-        status: status_filter as any,
-        limit: 20,
-      });
+  // ============================================================================
+  // Tool: Job Wait (tmux-based)
+  // ============================================================================
 
-      if (jobs.length === 0) {
-        return { success: true, output: "No jobs found." };
+  registerTool(
+    "job_wait",
+    "Wait for a job to complete and return its result with full logs.",
+    {
+      job_id: {
+        type: "string",
+        description: "Job ID to wait for",
+      },
+      timeout_ms: {
+        type: "number",
+        description: "Maximum time to wait in milliseconds (default: 60000)",
+      },
+    },
+    ["job_id"],
+    async ({ job_id, timeout_ms = 60000 }) => {
+      try {
+        const { tmuxJobManager } = await import("../jobs/tmux-manager");
+
+        const job = await tmuxJobManager.waitFor(job_id, timeout_ms);
+        const logs = tmuxJobManager.getLogs(job_id);
+
+        if (job.status === "completed") {
+          return {
+            success: true,
+            output: `Job completed (exit code: ${job.exitCode}):\n${logs || "(no output)"}`,
+          };
+        } else if (job.status === "failed") {
+          return {
+            success: false,
+            output: logs,
+            error: `Job failed with exit code: ${job.exitCode}`,
+          };
+        } else if (job.status === "cancelled") {
+          return { success: false, output: logs, error: "Job was cancelled" };
+        } else {
+          return {
+            success: false,
+            output: "",
+            error: `Job status: ${job.status}`,
+          };
+        }
+      } catch (err: any) {
+        return { success: false, output: "", error: err.message };
       }
-
-      const formatted = jobs
-        .map((j) => {
-          const elapsed = j.completedAt
-            ? `${Math.round((j.completedAt - j.createdAt) / 1000)}s`
-            : j.startedAt
-              ? `${Math.round((Date.now() - j.startedAt) / 1000)}s (running)`
-              : "pending";
-          return `[${j.status.toUpperCase()}] ${j.id.slice(0, 8)} - ${j.name} (${elapsed})`;
-        })
-        .join("\n");
-
-      return { success: true, output: formatted };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
-    }
-  },
-);
-
-// ============================================================================
-// Tool: Job Cancel (tmux-based)
-// ============================================================================
-
-registerTool(
-  "job_cancel",
-  "Cancel a one-off background job by its job ID (from job_submit). For recurring schedules, use schedule_cancel instead.",
-  {
-    job_id: {
-      type: "string",
-      description: "Job ID to cancel",
     },
-  },
-  ["job_id"],
-  async ({ job_id }) => {
-    try {
-      const { tmuxJobManager } = await import("../jobs/tmux-manager");
+  );
 
-      const cancelled = tmuxJobManager.cancel(job_id);
+  // ============================================================================
+  // Tool: Job Logs (tmux-based)
+  // ============================================================================
 
-      if (cancelled) {
-        return { success: true, output: `Job ${job_id} cancelled.` };
-      } else {
-        return {
-          success: false,
-          output: "",
-          error: `Could not cancel job ${job_id} (not running or not found)`,
-        };
-      }
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
-    }
-  },
-);
-
-// ============================================================================
-// Tool: Job Wait (tmux-based)
-// ============================================================================
-
-registerTool(
-  "job_wait",
-  "Wait for a job to complete and return its result with full logs.",
-  {
-    job_id: {
-      type: "string",
-      description: "Job ID to wait for",
+  registerTool(
+    "job_logs",
+    "Get the full output logs of a job.",
+    {
+      job_id: {
+        type: "string",
+        description: "Job ID to get logs for",
+      },
+      tail: {
+        type: "number",
+        description: "Only get last N lines (optional, returns all if not specified)",
+      },
     },
-    timeout_ms: {
-      type: "number",
-      description: "Maximum time to wait in milliseconds (default: 60000)",
-    },
-  },
-  ["job_id"],
-  async ({ job_id, timeout_ms = 60000 }) => {
-    try {
-      const { tmuxJobManager } = await import("../jobs/tmux-manager");
+    ["job_id"],
+    async ({ job_id, tail }) => {
+      try {
+        const { tmuxJobManager } = await import("../jobs/tmux-manager");
 
-      const job = await tmuxJobManager.waitFor(job_id, timeout_ms);
-      const logs = tmuxJobManager.getLogs(job_id);
+        const job = tmuxJobManager.get(job_id);
+        if (!job) {
+          return { success: false, output: "", error: `Job ${job_id} not found` };
+        }
 
-      if (job.status === "completed") {
+        const logs = tmuxJobManager.getLogs(job_id, tail);
+
         return {
           success: true,
-          output: `Job completed (exit code: ${job.exitCode}):\n${logs || "(no output)"}`,
+          output: `Job: ${job.name} [${job.status.toUpperCase()}]\nCommand: ${job.command}\n\n--- Output ---\n${logs || "(no output yet)"}`,
         };
-      } else if (job.status === "failed") {
-        return {
-          success: false,
-          output: logs,
-          error: `Job failed with exit code: ${job.exitCode}`,
-        };
-      } else if (job.status === "cancelled") {
-        return { success: false, output: logs, error: "Job was cancelled" };
-      } else {
-        return {
-          success: false,
-          output: "",
-          error: `Job status: ${job.status}`,
-        };
+      } catch (err: any) {
+        return { success: false, output: "", error: err.message };
       }
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
-    }
-  },
-);
-
-// ============================================================================
-// Tool: Job Logs (tmux-based)
-// ============================================================================
-
-registerTool(
-  "job_logs",
-  "Get the full output logs of a job.",
-  {
-    job_id: {
-      type: "string",
-      description: "Job ID to get logs for",
     },
-    tail: {
-      type: "number",
-      description: "Only get last N lines (optional, returns all if not specified)",
-    },
-  },
-  ["job_id"],
-  async ({ job_id, tail }) => {
-    try {
-      const { tmuxJobManager } = await import("../jobs/tmux-manager");
-
-      const job = tmuxJobManager.get(job_id);
-      if (!job) {
-        return { success: false, output: "", error: `Job ${job_id} not found` };
-      }
-
-      const logs = tmuxJobManager.getLogs(job_id, tail);
-
-      return {
-        success: true,
-        output: `Job: ${job.name} [${job.status.toUpperCase()}]\nCommand: ${job.command}\n\n--- Output ---\n${logs || "(no output yet)"}`,
-      };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
-    }
-  },
-);
+  );
+} // end if (isTmuxAvailable()) — job tools
 
 // ============================================================================
 // Tool: Skill List
@@ -1746,9 +1838,14 @@ function toolFetch(url: string, options: RequestInit = {}, ms = 15000): Promise<
 }
 
 // ============================================================================
-// Task Tools - Call server API
+// Todo List Tools (Claude Code-style) — replaces old task tools
 // ============================================================================
 
+// Old task tools (task_add, task_batch_add, task_list, task_get, task_update,
+// task_complete, task_delete, task_attach, task_comment) have been replaced
+// by todo_write, todo_read, todo_update below.
+
+/* COMMENTED OUT - legacy task tools
 registerTool(
   "task_add",
   "Add a new task to the channel kanban board.",
@@ -2081,6 +2178,100 @@ registerTool(
     }
   },
 );
+*/
+
+registerTool(
+  "todo_write",
+  "Write your Todo list. Creates a new list or replaces the existing one. Each item needs content and status. Only ONE active list per agent — complete or clear it before creating a new one.",
+  {
+    todos: {
+      type: "array",
+      description:
+        "Todo items: [{id?, content, status}]. Status: pending, in_progress, completed. IDs auto-generated if omitted. Alias: items",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          content: { type: "string" },
+          status: { type: "string" },
+        },
+        required: ["content"],
+      },
+    },
+  },
+  ["todos"],
+  async ({ todos, items }) => {
+    // Accept both "todos" (Claude Code compat) and "items" as parameter name
+    const todoItems = todos || items;
+    try {
+      const res = await toolFetch(`${chatApiUrl}/api/todos.write`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id: currentAgentId, channel: currentChannel, items: todoItems }),
+      });
+      const data = (await res.json()) as any;
+      if (!data.ok) return { success: false, output: "", error: data.error };
+
+      if (data.completed) return { success: true, output: "All items completed. Todo list cleared." };
+      const list = (data.items as any[]) || [];
+      let output = `Todo list (${list.length} items):\n`;
+      for (const t of list) output += `- [${t.status}] ${t.content} (${t.id})\n`;
+      return { success: true, output };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
+
+registerTool("todo_read", "Read your current Todo list.", {}, [], async () => {
+  try {
+    const res = await toolFetch(
+      `${chatApiUrl}/api/todos.read?agent_id=${encodeURIComponent(currentAgentId)}&channel=${encodeURIComponent(currentChannel)}`,
+    );
+    const data = (await res.json()) as any;
+    if (!data.ok) return { success: false, output: "", error: data.error };
+
+    const list = (data.items as any[]) || [];
+    if (list.length === 0) return { success: true, output: "No active todo list." };
+
+    const done = list.filter((t: any) => t.status === "completed").length;
+    let output = `Todo list (${done}/${list.length} completed):\n`;
+    for (const t of list) output += `- [${t.status}] ${t.content} (${t.id})\n`;
+    return { success: true, output };
+  } catch (err: any) {
+    return { success: false, output: "", error: err.message };
+  }
+});
+
+registerTool(
+  "todo_update",
+  "Update a Todo item's status. Use after completing a step.",
+  {
+    item_id: { type: "string", description: "The item ID to update" },
+    status: { type: "string", description: "New status: pending, in_progress, completed" },
+  },
+  ["item_id", "status"],
+  async ({ item_id, status }) => {
+    try {
+      const res = await toolFetch(`${chatApiUrl}/api/todos.update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id: currentAgentId, channel: currentChannel, item_id, status }),
+      });
+      const data = (await res.json()) as any;
+      if (!data.ok) return { success: false, output: "", error: data.error };
+
+      if (data.completed) return { success: true, output: "All items completed. Todo list cleared." };
+      const list = (data.items as any[]) || [];
+      const done = list.filter((t: any) => t.status === "completed").length;
+      let output = `Updated. Progress: ${done}/${list.length}\n`;
+      for (const t of list) output += `- [${t.status}] ${t.content} (${t.id})\n`;
+      return { success: true, output };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  },
+);
 
 // ============================================================================
 // Tool: Web Fetch
@@ -2178,21 +2369,29 @@ registerTool(
   "web_search",
   "Search the web. Returns search results with titles, URLs, and snippets. Automatically uses the best search backend for the current provider.",
   {
-    query: {
-      type: "string",
-      description: "The search query",
+    query: { type: "string", description: "The search query" },
+    max_results: { type: "number", description: "Maximum number of results (default: 5)" },
+    allowed_domains: {
+      type: "array",
+      description: "Only include results from these domains",
+      items: { type: "string" },
     },
-    max_results: {
-      type: "number",
-      description: "Maximum number of results to return (default: 5)",
-    },
+    blocked_domains: { type: "array", description: "Exclude results from these domains", items: { type: "string" } },
   },
   ["query"],
   async (args) => {
-    const { query, max_results = 5 } = args;
+    const { query, max_results = 5, allowed_domains, blocked_domains } = args;
     try {
       const { webSearch } = await import("./web-search");
-      const result = await webSearch(query, max_results);
+      // Append domain filters to query for DuckDuckGo (site: syntax)
+      let effectiveQuery = query;
+      if (Array.isArray(allowed_domains) && allowed_domains.length > 0) {
+        effectiveQuery += " " + allowed_domains.map((d: string) => `site:${d}`).join(" OR ");
+      }
+      if (Array.isArray(blocked_domains) && blocked_domains.length > 0) {
+        effectiveQuery += " " + blocked_domains.map((d: string) => `-site:${d}`).join(" ");
+      }
+      const result = await webSearch(effectiveQuery, max_results);
 
       if (result.error && result.results.length === 0) {
         return { success: false, output: "", error: result.error };
@@ -2978,283 +3177,285 @@ function getTmuxSocket(): string {
   return `clawd_${hash}_${safeAgent}`;
 }
 
-/**
- * Run command in tmux session (new or existing)
- */
-registerTool(
-  "tmux_send_command",
-  "Send a command to a tmux session. Creates session if it doesn't exist. Use this to run long-running processes, servers, or interactive programs in a persistent tmux session.",
-  {
-    session: { type: "string", description: "Session name (alphanumeric, no spaces)" },
-    command: { type: "string", description: "Command to run" },
-    cwd: { type: "string", description: "Working directory (defaults to project root)" },
-  },
-  ["session", "command"],
-  async ({ session, command, cwd }) => {
-    // Validate session name
-    if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
-      return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
-    }
-
-    const projectRoot = getSandboxProjectRoot();
-    const workDir = cwd || projectRoot;
-    const socket = getTmuxSocket();
-
-    // Check if session exists
-    const listResult = await execTmux(["-L", socket, "list-sessions", "-F", "#{session_name}"]);
-    const sessions = listResult.success ? listResult.output.split("\n").filter(Boolean) : [];
-    const sessionExists = sessions.includes(session);
-
-    // Build the command - cd to workdir first
-    const cdCmd = `cd "${workDir}" && ${command}`;
-
-    if (!sessionExists) {
-      // Create new session and send command
-      const createResult = await execTmux(["-L", socket, "new-session", "-d", "-s", session, cdCmd]);
-      if (!createResult.success) {
-        return { success: false, error: createResult.error || "Failed to create session", output: "" };
-      }
-      return {
-        success: true,
-        output: JSON.stringify({
-          session,
-          status: "created",
-          command: command.slice(0, 100) + (command.length > 100 ? "..." : ""),
-          cwd: workDir,
-        }),
-      };
-    } else {
-      // Send command to existing session (run in the default pane)
-      const sendResult = await execTmux(["-L", socket, "send-keys", "-t", session, cdCmd, "C-m"]);
-      if (!sendResult.success) {
-        return { success: false, error: sendResult.error || "Failed to send command", output: "" };
-      }
-      return {
-        success: true,
-        output: JSON.stringify({
-          session,
-          status: "command_sent",
-          command: command.slice(0, 100) + (command.length > 100 ? "..." : ""),
-        }),
-      };
-    }
-  },
-);
-
-/**
- * List tmux sessions for this project
- */
-registerTool(
-  "tmux_list",
-  "List all tmux sessions for this project. Shows session names and their current state.",
-  {},
-  [],
-  async () => {
-    const socket = getTmuxSocket();
-
-    // List sessions with details
-    const result = await execTmux([
-      "-L",
-      socket,
-      "list-sessions",
-      "-F",
-      "#{session_name}|#{session_created}|#{session_windows}",
-    ]);
-
-    if (!result.success || !result.output) {
-      return {
-        success: true,
-        output: JSON.stringify({ sessions: [], message: "No tmux sessions for this project" }),
-      };
-    }
-
-    const sessions = result.output
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => {
-        const [name, created, windows] = line.split("|");
-        return { name, created, windows };
-      });
-
-    return {
-      success: true,
-      output: JSON.stringify({ sessions }),
-    };
-  },
-);
-
-/**
- * Kill a tmux session
- */
-registerTool(
-  "tmux_kill",
-  "Kill a tmux session. This terminates the session and all processes running in it.",
-  {
-    session: { type: "string", description: "Session name to kill" },
-  },
-  ["session"],
-  async ({ session }) => {
-    const socket = getTmuxSocket();
-
-    const result = await execTmux(["-L", socket, "kill-session", "-t", session]);
-
-    if (!result.success) {
-      return { success: false, error: result.error || "Failed to kill session", output: "" };
-    }
-
-    return {
-      success: true,
-      output: JSON.stringify({ session, status: "killed" }),
-    };
-  },
-);
-
-/**
- * Capture tmux pane output
- */
-registerTool(
-  "tmux_capture",
-  "Capture the visible output from a tmux session pane. Useful for seeing the output of long-running programs or interactive sessions.",
-  {
-    session: { type: "string", description: "Session name" },
-    clear: { type: "boolean", description: "Clear the pane history after capturing" },
-  },
-  ["session"],
-  async ({ session, clear = false }) => {
-    const socket = getTmuxSocket();
-
-    // Capture pane content
-    const captureArgs = ["-L", socket, "capture-pane", "-t", session, "-p"];
-    if (clear) {
-      captureArgs.push("-C"); // Clear history after capture
-    }
-
-    const result = await execTmux(captureArgs);
-
-    if (!result.success) {
-      return { success: false, error: result.error || "Failed to capture pane", output: "" };
-    }
-
-    return {
-      success: true,
-      output: JSON.stringify({
-        session,
-        output: result.output,
-        truncated: result.output.length > 50000,
-      }),
-    };
-  },
-);
-
-/**
- * Send raw input to tmux session
- */
-registerTool(
-  "tmux_send_input",
-  "Send raw keystrokes to a tmux session. Use this to interact with interactive programs (vim, nano, less, etc.). Send special keys using: Enter= C-m, Tab= C-i, Esc= C-[, Arrow keys= A-up, A-down, etc.",
-  {
-    session: { type: "string", description: "Session name" },
-    keys: {
-      type: "string",
-      description: "Keys to send (supports special keys: C-m=Enter, C-i=Tab, C-[=Esc, A-up=Up arrow, etc.)",
+if (isTmuxAvailable()) {
+  /**
+   * Run command in tmux session (new or existing)
+   */
+  registerTool(
+    "tmux_send_command",
+    "Send a command to a tmux session. Creates session if it doesn't exist. Use this to run long-running processes, servers, or interactive programs in a persistent tmux session.",
+    {
+      session: { type: "string", description: "Session name (alphanumeric, no spaces)" },
+      command: { type: "string", description: "Command to run" },
+      cwd: { type: "string", description: "Working directory (defaults to project root)" },
     },
-  },
-  ["session", "keys"],
-  async ({ session, keys }) => {
-    const socket = getTmuxSocket();
+    ["session", "command"],
+    async ({ session, command, cwd }) => {
+      // Validate session name
+      if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
+        return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
+      }
 
-    // Convert special key notation
-    const parsedKeys = keys
-      .replace(/C-m/gi, "Enter")
-      .replace(/C-i/gi, "Tab")
-      .replace(/C-\[/gi, "Escape")
-      .replace(/C-c/gi, "C-c")
-      .replace(/C-d/gi, "C-d")
-      .replace(/A-/gi, "A-");
+      const projectRoot = getSandboxProjectRoot();
+      const workDir = cwd || projectRoot;
+      const socket = getTmuxSocket();
 
-    const result = await execTmux(["-L", socket, "send-keys", "-t", session, parsedKeys, "Enter"]);
+      // Check if session exists
+      const listResult = await execTmux(["-L", socket, "list-sessions", "-F", "#{session_name}"]);
+      const sessions = listResult.success ? listResult.output.split("\n").filter(Boolean) : [];
+      const sessionExists = sessions.includes(session);
 
-    if (!result.success) {
-      return { success: false, error: result.error || "Failed to send keys", output: "" };
-    }
+      // Build the command - cd to workdir first
+      const cdCmd = `cd "${workDir}" && ${command}`;
 
-    return {
-      success: true,
-      output: JSON.stringify({
-        session,
-        keys_sent: keys,
-        status: "sent",
-      }),
-    };
-  },
-);
+      if (!sessionExists) {
+        // Create new session and send command
+        const createResult = await execTmux(["-L", socket, "new-session", "-d", "-s", session, cdCmd]);
+        if (!createResult.success) {
+          return { success: false, error: createResult.error || "Failed to create session", output: "" };
+        }
+        return {
+          success: true,
+          output: JSON.stringify({
+            session,
+            status: "created",
+            command: command.slice(0, 100) + (command.length > 100 ? "..." : ""),
+            cwd: workDir,
+          }),
+        };
+      } else {
+        // Send command to existing session (run in the default pane)
+        const sendResult = await execTmux(["-L", socket, "send-keys", "-t", session, cdCmd, "C-m"]);
+        if (!sendResult.success) {
+          return { success: false, error: sendResult.error || "Failed to send command", output: "" };
+        }
+        return {
+          success: true,
+          output: JSON.stringify({
+            session,
+            status: "command_sent",
+            command: command.slice(0, 100) + (command.length > 100 ? "..." : ""),
+          }),
+        };
+      }
+    },
+  );
 
-/**
- * Create a new window in a tmux session
- */
-registerTool(
-  "tmux_new_window",
-  "Create a new window in an existing tmux session.",
-  {
-    session: { type: "string", description: "Session name" },
-    window: { type: "string", description: "Window name (optional)" },
-    command: { type: "string", description: "Command to run in window (optional)" },
-  },
-  ["session"],
-  async ({ session, window, command }) => {
-    const socket = getTmuxSocket();
+  /**
+   * List tmux sessions for this project
+   */
+  registerTool(
+    "tmux_list",
+    "List all tmux sessions for this project. Shows session names and their current state.",
+    {},
+    [],
+    async () => {
+      const socket = getTmuxSocket();
 
-    const args = ["-L", socket, "new-window", "-t", session];
-    if (window) args.push("-n", window);
-    if (command) args.push(command);
+      // List sessions with details
+      const result = await execTmux([
+        "-L",
+        socket,
+        "list-sessions",
+        "-F",
+        "#{session_name}|#{session_created}|#{session_windows}",
+      ]);
 
-    const result = await execTmux(args);
+      if (!result.success || !result.output) {
+        return {
+          success: true,
+          output: JSON.stringify({ sessions: [], message: "No tmux sessions for this project" }),
+        };
+      }
 
-    if (!result.success) {
-      return { success: false, error: result.error || "Failed to create window", output: "" };
-    }
+      const sessions = result.output
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [name, created, windows] = line.split("|");
+          return { name, created, windows };
+        });
 
-    return {
-      success: true,
-      output: JSON.stringify({
-        session,
-        window: window || result.output.trim(),
-        status: "created",
-      }),
-    };
-  },
-);
+      return {
+        success: true,
+        output: JSON.stringify({ sessions }),
+      };
+    },
+  );
 
-/**
- * Kill a window in a tmux session
- */
-registerTool(
-  "tmux_kill_window",
-  "Kill a specific window in a tmux session.",
-  {
-    session: { type: "string", description: "Session name" },
-    window: { type: "string", description: "Window name or index (e.g., 0, 1, or window name)" },
-  },
-  ["session", "window"],
-  async ({ session, window }) => {
-    const socket = getTmuxSocket();
+  /**
+   * Kill a tmux session
+   */
+  registerTool(
+    "tmux_kill",
+    "Kill a tmux session. This terminates the session and all processes running in it.",
+    {
+      session: { type: "string", description: "Session name to kill" },
+    },
+    ["session"],
+    async ({ session }) => {
+      const socket = getTmuxSocket();
 
-    const result = await execTmux(["-L", socket, "kill-window", "-t", `${session}:${window}`]);
+      const result = await execTmux(["-L", socket, "kill-session", "-t", session]);
 
-    if (!result.success) {
-      return { success: false, error: result.error || "Failed to kill window", output: "" };
-    }
+      if (!result.success) {
+        return { success: false, error: result.error || "Failed to kill session", output: "" };
+      }
 
-    return {
-      success: true,
-      output: JSON.stringify({
-        session,
-        window,
-        status: "killed",
-      }),
-    };
-  },
-);
+      return {
+        success: true,
+        output: JSON.stringify({ session, status: "killed" }),
+      };
+    },
+  );
+
+  /**
+   * Capture tmux pane output
+   */
+  registerTool(
+    "tmux_capture",
+    "Capture the visible output from a tmux session pane. Useful for seeing the output of long-running programs or interactive sessions.",
+    {
+      session: { type: "string", description: "Session name" },
+      clear: { type: "boolean", description: "Clear the pane history after capturing" },
+    },
+    ["session"],
+    async ({ session, clear = false }) => {
+      const socket = getTmuxSocket();
+
+      // Capture pane content
+      const captureArgs = ["-L", socket, "capture-pane", "-t", session, "-p"];
+      if (clear) {
+        captureArgs.push("-C"); // Clear history after capture
+      }
+
+      const result = await execTmux(captureArgs);
+
+      if (!result.success) {
+        return { success: false, error: result.error || "Failed to capture pane", output: "" };
+      }
+
+      return {
+        success: true,
+        output: JSON.stringify({
+          session,
+          output: result.output,
+          truncated: result.output.length > 50000,
+        }),
+      };
+    },
+  );
+
+  /**
+   * Send raw input to tmux session
+   */
+  registerTool(
+    "tmux_send_input",
+    "Send raw keystrokes to a tmux session. Use this to interact with interactive programs (vim, nano, less, etc.). Send special keys using: Enter= C-m, Tab= C-i, Esc= C-[, Arrow keys= A-up, A-down, etc.",
+    {
+      session: { type: "string", description: "Session name" },
+      keys: {
+        type: "string",
+        description: "Keys to send (supports special keys: C-m=Enter, C-i=Tab, C-[=Esc, A-up=Up arrow, etc.)",
+      },
+    },
+    ["session", "keys"],
+    async ({ session, keys }) => {
+      const socket = getTmuxSocket();
+
+      // Convert special key notation
+      const parsedKeys = keys
+        .replace(/C-m/gi, "Enter")
+        .replace(/C-i/gi, "Tab")
+        .replace(/C-\[/gi, "Escape")
+        .replace(/C-c/gi, "C-c")
+        .replace(/C-d/gi, "C-d")
+        .replace(/A-/gi, "A-");
+
+      const result = await execTmux(["-L", socket, "send-keys", "-t", session, parsedKeys, "Enter"]);
+
+      if (!result.success) {
+        return { success: false, error: result.error || "Failed to send keys", output: "" };
+      }
+
+      return {
+        success: true,
+        output: JSON.stringify({
+          session,
+          keys_sent: keys,
+          status: "sent",
+        }),
+      };
+    },
+  );
+
+  /**
+   * Create a new window in a tmux session
+   */
+  registerTool(
+    "tmux_new_window",
+    "Create a new window in an existing tmux session.",
+    {
+      session: { type: "string", description: "Session name" },
+      window: { type: "string", description: "Window name (optional)" },
+      command: { type: "string", description: "Command to run in window (optional)" },
+    },
+    ["session"],
+    async ({ session, window, command }) => {
+      const socket = getTmuxSocket();
+
+      const args = ["-L", socket, "new-window", "-t", session];
+      if (window) args.push("-n", window);
+      if (command) args.push(command);
+
+      const result = await execTmux(args);
+
+      if (!result.success) {
+        return { success: false, error: result.error || "Failed to create window", output: "" };
+      }
+
+      return {
+        success: true,
+        output: JSON.stringify({
+          session,
+          window: window || result.output.trim(),
+          status: "created",
+        }),
+      };
+    },
+  );
+
+  /**
+   * Kill a window in a tmux session
+   */
+  registerTool(
+    "tmux_kill_window",
+    "Kill a specific window in a tmux session.",
+    {
+      session: { type: "string", description: "Session name" },
+      window: { type: "string", description: "Window name or index (e.g., 0, 1, or window name)" },
+    },
+    ["session", "window"],
+    async ({ session, window }) => {
+      const socket = getTmuxSocket();
+
+      const result = await execTmux(["-L", socket, "kill-window", "-t", `${session}:${window}`]);
+
+      if (!result.success) {
+        return { success: false, error: result.error || "Failed to kill window", output: "" };
+      }
+
+      return {
+        success: true,
+        output: JSON.stringify({
+          session,
+          window,
+          status: "killed",
+        }),
+      };
+    },
+  );
+} // end if (isTmuxAvailable()) — tmux tools
 
 // ============================================================================
 // Article Tools

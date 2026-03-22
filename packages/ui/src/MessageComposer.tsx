@@ -630,7 +630,7 @@ export default function MessageComposer({
                   {mcpButton}
                   {skillsButton}
                   {onPlanClick && (
-                    <button className="plan-btn" onClick={onPlanClick} title="Plan">
+                    <button className="plan-btn" onClick={onPlanClick} title="Tasks">
                       <svg
                         width="16"
                         height="16"
@@ -787,7 +787,7 @@ export default function MessageComposer({
                   {mcpButton}
                   {skillsButton}
                   {onPlanClick && (
-                    <button className="plan-btn" onClick={onPlanClick} title="Plan">
+                    <button className="plan-btn" onClick={onPlanClick} title="Tasks">
                       <svg
                         width="16"
                         height="16"

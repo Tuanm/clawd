@@ -4551,8 +4551,8 @@ body {
 }
 
 .plan-btn:hover {
-  background: hsl(var(--text) / 8%);
-  color: var(--text-primary);
+  color: hsl(var(--accent));
+  background: hsl(var(--text) / 5%);
 }
 
 .plan-btn svg {
