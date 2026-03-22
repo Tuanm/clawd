@@ -604,6 +604,14 @@ export function renameChannel(oldChannel: string, newChannel: string) {
   db.run(`UPDATE agent_seen SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
   results.push(`agent_seen: ${oldChannel} -> ${newChannel}`);
 
+  // Update channel_agents
+  try {
+    db.run(`UPDATE channel_agents SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`channel_agents: ${oldChannel} -> ${newChannel}`);
+  } catch {
+    // Table may not exist in older DBs
+  }
+
   return results;
 }
 

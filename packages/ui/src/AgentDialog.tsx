@@ -439,7 +439,8 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
             model: editModel.trim() || "default",
             project: editProject.trim(),
             heartbeat_interval: editHeartbeat,
-            agent_type: editAgentType || null,
+            // Only send agent_type when it changed (avoids unnecessary restart)
+            ...(editAgentType !== savedEditAgentType ? { agent_type: editAgentType || null } : {}),
           }),
         });
         const data = await res.json();

@@ -566,10 +566,9 @@ export class WorkerManager {
           continue;
         }
 
-        // CHECK 3: Per-agent heartbeat interval — inject heartbeat for idle agents with configured interval
+        // CHECK 3: Per-agent heartbeat interval — inject heartbeat when agent has been idle for the configured duration
         if (!health.processing && loop.heartbeatInterval > 0) {
-          const timeSinceLastHeartbeat = now - health.lastHeartbeatAt;
-          if (timeSinceLastHeartbeat > loop.heartbeatInterval * 1000) {
+          if (health.idleDurationMs > loop.heartbeatInterval * 1000) {
             heartbeatActions.push(async () => {
               loop.injectHeartbeat();
               console.log(`[Heartbeat] Injected heartbeat for agent: ${key} (interval: ${loop.heartbeatInterval}s)`);
