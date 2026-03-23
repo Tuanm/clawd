@@ -2319,14 +2319,19 @@ SUMMARY:`;
 
           // If we have partial tool calls, we must add tool_results for them
           if (toolCalls.length > 0) {
-            try {
-              this.sessions.addMessage(session.id, {
-                role: "assistant",
-                content: content || null,
-                tool_calls: toolCalls,
-              });
-            } catch {
-              /* ignore */
+            // Only persist to session on first error — subsequent retries keep in-memory only
+            // to avoid poisoning the session store with dangling tool calls
+            const shouldPersist = consecutiveStreamErrors <= 1;
+            if (shouldPersist) {
+              try {
+                this.sessions.addMessage(session.id, {
+                  role: "assistant",
+                  content: content || null,
+                  tool_calls: toolCalls,
+                });
+              } catch {
+                /* ignore */
+              }
             }
             messages.push({
               role: "assistant",
@@ -2336,14 +2341,16 @@ SUMMARY:`;
 
             // Add error tool_results for each
             for (const tc of toolCalls) {
-              try {
-                this.sessions.addMessage(session.id, {
-                  role: "tool",
-                  content: `[stream error before execution: ${errorMsg}]`,
-                  tool_call_id: tc.id,
-                });
-              } catch {
-                /* ignore */
+              if (shouldPersist) {
+                try {
+                  this.sessions.addMessage(session.id, {
+                    role: "tool",
+                    content: `[stream error before execution: ${errorMsg}]`,
+                    tool_call_id: tc.id,
+                  });
+                } catch {
+                  /* ignore */
+                }
               }
               messages.push({
                 role: "tool",
