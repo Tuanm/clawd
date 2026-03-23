@@ -25,6 +25,18 @@ export function setAgentMcpInfra(
 }
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+function surrogateSlice(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s;
+  let cut = maxLen;
+  const code = s.charCodeAt(cut - 1);
+  if (code >= 0xd800 && code <= 0xdbff) cut--;
+  return s.slice(0, cut);
+}
+
+// ============================================================================
 // MCP Tool Definitions
 // ============================================================================
 
@@ -168,8 +180,12 @@ export async function executeAgentToolCall(
       }
 
       const taskName = (args.name as string) || agentType || `claude-code-${Date.now()}`;
+      const sanitizedTitle = taskName
+        .replace(/[\n\r]/g, " ")
+        .trim()
+        .slice(0, 100);
       const spaceId = crypto.randomUUID();
-      const safeName = taskName.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40);
+      const safeName = sanitizedTitle.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40);
       const subAgentId = `${safeName}-${spaceId.slice(0, 6)}`;
 
       const space = _spaceManager.createSpace({
@@ -219,7 +235,7 @@ export async function executeAgentToolCall(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channel: space.space_channel,
-          text: context ? `**Context:**\n${context.slice(0, 4000)}\n\n**Task:** ${task}` : `**Task:** ${task}`,
+          text: context ? `**Context:**\n${surrogateSlice(context, 4000)}\n\n**Task:** ${task}` : `**Task:** ${task}`,
           user: "UBOT",
           agent_id: agentId,
         }),
@@ -261,9 +277,19 @@ export async function executeAgentToolCall(
       registerClaudeCodeWorker(space.id, ccWorker);
       spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
 
+      const timeoutMs = 1800 * 1000;
+      const timeoutTimer = setTimeout(() => {
+        ccWorker.stop();
+        if (!ccSettled) {
+          ccSettled = true;
+          _spaceManager!.failSpace(space.id, "Timeout: sub-agent exceeded 30 minute limit");
+        }
+      }, timeoutMs);
+
       spaceCompleteCallbacks.set(space.id, (result: string) => {
         const won = _spaceManager!.completeSpace(space.id, result);
         if (won) {
+          clearTimeout(timeoutTimer);
           timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -315,6 +341,7 @@ export async function executeAgentToolCall(
             }
           })
           .finally(() => {
+            clearTimeout(timeoutTimer);
             spaceCompleteCallbacks.delete(space.id);
             spaceAuthTokens.delete(space.id);
             unregisterClaudeCodeWorker(space.id);
