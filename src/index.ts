@@ -1012,54 +1012,6 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       if (spaceId) return handleSpaceMcpRequest(req, spaceId);
     }
 
-    // Claude Code PostToolUse hook callback
-    if (path === "/api/claude-code.toolResult" && req.method === "POST") {
-      try {
-        const body = (await req.json()) as {
-          space_id?: string;
-          tool_name?: string;
-          tool_input?: unknown;
-          tool_response?: unknown;
-          tool_use_id?: string;
-        };
-        const { space_id, tool_name, tool_input, tool_response, tool_use_id } = body;
-        if (space_id && tool_name) {
-          const { getClaudeCodeWorker } = await import("./spaces/claude-code-worker");
-          const worker = getClaudeCodeWorker(space_id);
-          if (worker) {
-            worker.handleToolResult(tool_name, tool_input, tool_response, tool_use_id);
-          }
-        }
-        return json({ ok: true });
-      } catch {
-        return json({ ok: false }, 400);
-      }
-    }
-
-    // Claude Code main agent PostToolUse hook callback
-    if (path === "/api/claude-code.mainToolResult" && req.method === "POST") {
-      try {
-        const body = (await req.json()) as {
-          worker_key?: string;
-          tool_name?: string;
-          tool_input?: unknown;
-          tool_response?: unknown;
-          tool_use_id?: string;
-        };
-        const { worker_key, tool_name, tool_input, tool_response, tool_use_id } = body;
-        if (worker_key && tool_name) {
-          const { getMainWorker } = await import("./claude-code-main-worker");
-          const worker = getMainWorker(worker_key);
-          if (worker) {
-            worker.handleToolResult(tool_name, tool_input, tool_response, tool_use_id);
-          }
-        }
-        return json({ ok: true });
-      } catch {
-        return json({ ok: false }, 400);
-      }
-    }
-
     // MCP endpoint
     if (path === "/mcp" || path === "/api/mcp") {
       return handleMcpRequest(req);
