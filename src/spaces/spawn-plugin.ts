@@ -9,7 +9,14 @@ import { type AgentFileConfig, listAgentFiles, loadAgentFile, resolveModelAlias 
 import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
 import type { ToolResult } from "../agent/tools/tools";
 import { getOrRegisterAgent } from "../server/database";
+import { spaceAuthTokens, spaceCompleteCallbacks } from "../server/mcp";
 import { timedFetch } from "../utils/timed-fetch";
+import {
+  ClaudeCodeSpaceWorker,
+  getClaudeCodeWorker,
+  registerClaudeCodeWorker,
+  unregisterClaudeCodeWorker,
+} from "./claude-code-worker";
 import type { SpaceManager } from "./manager";
 import type { SpaceWorkerManager } from "./worker";
 
@@ -69,7 +76,7 @@ export function createSpawnAgentPlugin(
         {
           name: "spawn_agent",
           description:
-            "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning. The sub-agent will report back via complete_task when done. Use list_agents(type='running') to check status, get_agent_report(agent_id) to read results, or kill_agent(agent_id) to stop it.\n\nChoose the right agent type for the task:\n- agent='general' (DEFAULT) — full access: read, write, edit, bash. Use for implementation, fixes, multi-step tasks.\n- agent='explore' — read-only, fast (haiku model). Use ONLY for search, analysis, code review where no file changes are needed.\n- agent='plan' — read-only research for gathering context before planning.\n\nCustom agents from .clawd/agents/ are also available (use list_agents(type='available') to discover).",
+            "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning. The sub-agent will report back via complete_task when done. Use list_agents(type='running') to check status, get_agent_report(agent_id) to read results, or kill_agent(agent_id) to stop it.\n\nChoose the right agent type for the task:\n- agent='general' (DEFAULT) — full access: read, write, edit, bash. Use for implementation, fixes, multi-step tasks.\n- agent='explore' — read-only, fast (haiku model). Use ONLY for search, analysis, code review where no file changes are needed.\n- agent='plan' — read-only research for gathering context before planning.\n\nCustom agents from .clawd/agents/ are also available (use list_agents(type='available') to discover).\n\nIMPORTANT: Sub-agents can ONLY use complete_task to report results — they CANNOT use chat_send_message or other chat tools. Write the task as a self-contained work request. The result will be posted to the channel automatically when the sub-agent calls complete_task.",
           parameters: {
             task: { type: "string", description: "The task for the sub-agent" },
             name: { type: "string", description: "Optional friendly name" },
@@ -86,6 +93,36 @@ export function createSpawnAgentPlugin(
           },
           required: ["task"],
           handler: async (args) => handleSpawnAgent(args),
+        },
+        {
+          name: "claude_code",
+          description:
+            "Delegate a task to a Claude Code sub-agent running as a local subprocess. The sub-agent works autonomously with full coding tool access (file read/write/edit, bash, grep, glob, web search, etc.) powered by the user's Claude subscription.\n\nUse claude_code when:\n- The task requires complex multi-file changes or deep codebase exploration\n- You need Claude's coding capabilities for implementation, debugging, or refactoring\n- The task benefits from an independent agent with its own context and tools\n\nModel selection guide:\n- model='opus' — Complex architecture, multi-file refactoring, critical production fixes\n- model='sonnet' (default) — Feature implementation, debugging, code review, general tasks\n- model='haiku' — Quick fixes, simple edits, file search, boilerplate generation\n\nIMPORTANT: The sub-agent can ONLY use coding tools (Read, Write, Edit, Bash, Grep, Glob, etc.) and complete_task. It CANNOT use chat tools (chat_send_message, chat_mark_processed, etc.). Write the task as a self-contained work request — do NOT instruct it to send messages or post to channels. The result will be automatically posted to the channel when the sub-agent calls complete_task.\n\nThe sub-agent runs asynchronously — continue with other work after spawning. Use list_agents to check status and get_agent_report to read results.",
+          parameters: {
+            task: {
+              type: "string",
+              description:
+                "Self-contained task description. Do NOT include instructions to use chat_send_message or post to channels — the sub-agent cannot do that. Just describe the work to be done.",
+            },
+            name: { type: "string", description: "Optional friendly name for tracking" },
+            model: {
+              type: "string",
+              description:
+                "Model: 'opus' (complex tasks), 'sonnet' (default, general), 'haiku' (quick/simple). Claude Code translates aliases automatically.",
+            },
+            agent: {
+              type: "string",
+              description:
+                "Agent type to use (from .clawd/agents/ or .claude/agents/). The agent's system prompt and directives are passed to Claude Code. Use list_agents(type='available') to see options. Default: none (generic worker).",
+            },
+            context: {
+              type: "string",
+              description:
+                "Optional context (project structure, file contents, findings) to seed the sub-agent. Reduces cold-start time.",
+            },
+          },
+          required: ["task"],
+          handler: async (args) => handleClaudeCode(args),
         },
         {
           name: "list_agents",
@@ -225,7 +262,16 @@ export function createSpawnAgentPlugin(
 
             // Mark as failed and stop the worker
             spaceManager.failSpace(id, reason);
-            spaceWorkerManager.stopSpaceWorker(id);
+            // Stop Claude Code worker or normal space worker
+            const ccWorker = getClaudeCodeWorker(id);
+            if (ccWorker) {
+              ccWorker.stop();
+              unregisterClaudeCodeWorker(id);
+              spaceCompleteCallbacks.delete(id);
+              spaceAuthTokens.delete(id);
+            } else {
+              spaceWorkerManager.stopSpaceWorker(id);
+            }
             tracked.status = "failed";
             tracked.error = reason;
 
@@ -355,7 +401,6 @@ export function createSpawnAgentPlugin(
           agentFileConfig || undefined,
         );
       } catch (workerErr: any) {
-        // Worker failed to start — mark space as failed and update card
         spaceManager.failSpace(space.id, workerErr.message);
         return { success: false, output: "", error: `Failed to start worker: ${workerErr.message}` };
       }
@@ -455,6 +500,259 @@ export function createSpawnAgentPlugin(
       } catch {
         /* best-effort cleanup */
       }
+      return { success: false, output: "", error: err.message };
+    }
+  }
+
+  async function handleClaudeCode(args: Record<string, any>): Promise<ToolResult> {
+    const task = args.task as string;
+    const context = (args.context as string) || "";
+    const model = (args.model as string) || "sonnet";
+
+    if (!task) {
+      return { success: false, output: "", error: "Missing required parameter: task" };
+    }
+
+    // Load agent file if specified (for system prompt / directives)
+    const agentName = args.agent as string | undefined;
+    let agentFileConfig: AgentFileConfig | null = null;
+    if (agentName) {
+      const projectRoot = _cachedProjectRoot || "";
+      agentFileConfig = loadAgentFile(agentName, projectRoot);
+      if (!agentFileConfig) {
+        return {
+          success: false,
+          output: "",
+          error: `Agent file "${agentName}" not found. Use list_agents(type='available') to see options.`,
+        };
+      }
+    }
+
+    try {
+      const agentConfig = await getAgentConfig(config.channel);
+      if (!agentConfig) {
+        return { success: false, output: "", error: `No agent configured for channel ${config.channel}` };
+      }
+      if (agentConfig.project) _cachedProjectRoot = agentConfig.project;
+
+      const name = (args.name as string) || agentFileConfig?.name || `claude-code-${Date.now()}`;
+      const spaceId = crypto.randomUUID();
+      const sanitizedTitle = name
+        .replace(/[\n\r]/g, " ")
+        .trim()
+        .slice(0, 100);
+      const safeName = sanitizedTitle.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40);
+      const subAgentId = `${safeName}-${spaceId.slice(0, 6)}`;
+
+      // 1. Create space
+      const space = spaceManager.createSpace({
+        id: spaceId,
+        channel: config.channel,
+        title: sanitizedTitle,
+        description: task.slice(0, 500),
+        agent_id: subAgentId,
+        agent_color: "#D97706", // Anthropic orange — distinguishes from Claw'd agents
+        source: "claude_code",
+        timeout_seconds: 1800, // 30 min — Claude Code tasks typically take longer
+      });
+
+      getOrRegisterAgent(subAgentId, config.channel, false);
+
+      // 2. Post preview card and task in parallel
+      const cardText = `[Claude Code sub-agent spawned: "${sanitizedTitle}" (model: ${model})] ${task.slice(0, 200)}`;
+      const [cardRes, taskRes] = await Promise.all([
+        timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel: config.channel,
+            text: cardText,
+            user: config.agentId,
+            agent_id: config.agentId,
+            subtype: "subspace",
+            subspace_json: JSON.stringify({
+              id: space.id,
+              title: space.title,
+              description: space.description,
+              agent_id: space.agent_id,
+              agent_color: space.agent_color,
+              status: space.status,
+              channel: space.channel,
+            }),
+          }),
+        }),
+        timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel: space.space_channel,
+            text: context ? `**Context:**\n${surrogateSlice(context, 4000)}\n\n**Task:** ${task}` : `**Task:** ${task}`,
+            user: "UBOT",
+            agent_id: config.agentId,
+          }),
+        }),
+      ]);
+
+      if (cardRes.ok) {
+        const cardData = (await cardRes.json()) as any;
+        if (cardData.ts) spaceManager.updateCardTs(space.id, cardData.ts);
+      }
+      if (!taskRes.ok) {
+        spaceManager.failSpace(space.id, "Failed to post task to space channel");
+        return { success: false, output: "", error: "Failed to post task to space channel" };
+      }
+
+      // 3. Create and start Claude Code worker
+      let ccResolve: (v: string) => void;
+      let ccSettled = false;
+
+      const wrappedResolve = (summary: string) => {
+        if (ccSettled) return;
+        ccSettled = true;
+        ccResolve?.(summary);
+      };
+
+      const ccWorker = new ClaudeCodeSpaceWorker({
+        space,
+        task,
+        context,
+        model,
+        agentId: subAgentId,
+        apiUrl: config.apiUrl,
+        spaceManager,
+        resolve: wrappedResolve,
+        onComplete: () => unregisterClaudeCodeWorker(space.id),
+        agentPrompt: agentFileConfig?.systemPrompt || undefined,
+      });
+      registerClaudeCodeWorker(space.id, ccWorker);
+      spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
+
+      // Register completion callback for MCP complete_task
+      spaceCompleteCallbacks.set(space.id, (result: string) => {
+        const won = spaceManager.completeSpace(space.id, result);
+        if (won) {
+          timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              channel: config.channel,
+              text:
+                result.length > 10000
+                  ? result.slice(0, 10000) + "\n\n[Result truncated — full result in sub-space]"
+                  : result,
+              user: subAgentId,
+              agent_id: subAgentId,
+            }),
+          }).catch(() => {});
+          wrappedResolve(result);
+          ccWorker.stop();
+        }
+      });
+
+      // 4. Timeout controller
+      const timeoutMs = (space.timeout_seconds || 600) * 1000;
+      const timeoutTimer = setTimeout(() => {
+        if (!ccSettled) {
+          ccSettled = true;
+          spaceManager.timeoutSpace(space.id);
+          ccWorker.stop();
+          timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              channel: config.channel,
+              text: `Claude Code sub-agent timed out: ${sanitizedTitle}`,
+              user: subAgentId,
+              agent_id: subAgentId,
+            }),
+          }).catch(() => {});
+        }
+      }, timeoutMs);
+      if (typeof timeoutTimer === "object" && "unref" in timeoutTimer) (timeoutTimer as any).unref();
+
+      const completionPromise = new Promise<string>((resolve, reject) => {
+        ccResolve = resolve;
+
+        ccWorker
+          .start()
+          .then(async () => {
+            if (!ccSettled) {
+              ccSettled = true;
+              // Fetch last message from space channel so parent can see what Claude said
+              let lastMsg = "";
+              try {
+                const res = await timedFetch(
+                  `${config.apiUrl}/api/conversations.history?channel=${encodeURIComponent(space.space_channel)}&limit=3`,
+                );
+                const data = (await res.json()) as any;
+                const msgs = (data.messages || []).filter((m: any) => m.agent_id === subAgentId && m.text);
+                if (msgs.length > 0) {
+                  lastMsg = msgs[msgs.length - 1].text.slice(0, 500);
+                }
+              } catch {}
+              const errorMsg = lastMsg
+                ? `Claude Code exited without calling complete_task. Last message: ${lastMsg}`
+                : "Claude Code exited without calling complete_task";
+              spaceManager.failSpace(space.id, errorMsg);
+              reject(new Error(errorMsg));
+            }
+          })
+          .catch((err) => {
+            if (!ccSettled) {
+              ccSettled = true;
+              spaceManager.failSpace(space.id, err.message);
+              reject(err);
+            }
+          })
+          .finally(() => {
+            clearTimeout(timeoutTimer);
+            spaceCompleteCallbacks.delete(space.id);
+            spaceAuthTokens.delete(space.id);
+            unregisterClaudeCodeWorker(space.id);
+            ccWorker.cleanup();
+          });
+      });
+
+      // 5. Track the space
+      const tracked: TrackedSpace = {
+        spaceId,
+        name: sanitizedTitle,
+        promise: completionPromise,
+        startedAt: Date.now(),
+        status: "running",
+      };
+
+      completionPromise
+        .then((summary) => {
+          tracked.status = "completed";
+          tracked.result = summary;
+        })
+        .catch((err) => {
+          tracked.status = "failed";
+          tracked.error = (err as Error).message;
+        })
+        .finally(() => {
+          const evictTimer = setTimeout(() => trackedSpaces.delete(spaceId), 30 * 60 * 1000);
+          if (typeof evictTimer === "object" && "unref" in evictTimer) (evictTimer as any).unref();
+          const t = trackedSpaces.get(spaceId);
+          if (t) t.evictionTimer = evictTimer;
+        });
+
+      trackedSpaces.set(spaceId, tracked);
+
+      return {
+        success: true,
+        output: JSON.stringify({
+          agent_id: spaceId,
+          name: sanitizedTitle,
+          type: "claude-code",
+          status: "spawned",
+          space_channel: space.space_channel,
+          message:
+            "Claude Code sub-agent started. Do NOT wait — continue with other tasks. The sub-agent will report back when done. Use list_agents(type='running') to check status or get_agent_report(agent_id) to read results.",
+        }),
+      };
+    } catch (err: any) {
       return { success: false, output: "", error: err.message };
     }
   }

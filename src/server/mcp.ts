@@ -2988,3 +2988,145 @@ async function executeToolCall(
     };
   }
 }
+
+// ============================================================================
+// Space-Scoped MCP Handler (Claude Code sub-agents)
+// ============================================================================
+
+/**
+ * Callback registry for Claude Code space workers.
+ * When a Claude Code subprocess calls complete_task via MCP,
+ * the handler looks up the resolve callback here.
+ */
+export const spaceCompleteCallbacks = new Map<string, (result: string) => void>();
+
+/** Per-space auth tokens — validated on every MCP and hook API request */
+export const spaceAuthTokens = new Map<string, string>();
+
+/**
+ * Handle MCP requests scoped to a specific space.
+ * Only exposes `complete_task` — no other tools visible.
+ * Route: /mcp/space/{spaceId}
+ */
+export async function handleSpaceMcpRequest(req: Request, spaceId: string): Promise<Response> {
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  };
+
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  // Validate per-space auth token
+  const authHeader = req.headers.get("Authorization") || "";
+  const reqToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  const expectedToken = spaceAuthTokens.get(spaceId);
+  if (expectedToken && reqToken !== expectedToken) {
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  try {
+    const body = (await req.json()) as {
+      jsonrpc: string;
+      id: number | string;
+      method: string;
+      params?: Record<string, unknown>;
+    };
+    const { id, method, params = {} } = body;
+
+    let result: unknown;
+
+    switch (method) {
+      case "initialize":
+        result = {
+          protocolVersion: "2024-11-05",
+          serverInfo: { name: "clawd-space-mcp", version: "1.0.0" },
+          capabilities: { tools: {} },
+        };
+        break;
+
+      case "notifications/initialized":
+        // Client acknowledgment — no response needed for notifications
+        return new Response(null, { status: 204, headers: corsHeaders });
+
+      case "tools/list":
+        result = {
+          tools: [
+            {
+              name: "complete_task",
+              description:
+                "Signal that your task is fully complete. Call this ONCE when done. " +
+                "This posts your result to the parent channel and closes the sub-space.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  space_id: { type: "string", description: "The space ID (from your system prompt)" },
+                  result: { type: "string", description: "Your final result summary" },
+                },
+                required: ["space_id", "result"],
+              },
+            },
+          ],
+        };
+        break;
+
+      case "tools/call": {
+        const { name, arguments: toolArgs } = params as {
+          name: string;
+          arguments: Record<string, unknown>;
+        };
+
+        if (name !== "complete_task") {
+          result = { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Unknown tool" }) }] };
+          break;
+        }
+
+        const argSpaceId = toolArgs?.space_id as string;
+        const taskResult = toolArgs?.result as string;
+
+        if (argSpaceId !== spaceId) {
+          result = { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Invalid space_id" }) }] };
+          break;
+        }
+
+        // Fire the completion callback
+        const callback = spaceCompleteCallbacks.get(spaceId);
+        if (callback) {
+          callback(taskResult || "Task completed");
+        }
+
+        result = { content: [{ type: "text", text: JSON.stringify({ ok: true, message: "Task completed." }) }] };
+        break;
+      }
+
+      default:
+        result = {
+          content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Unknown method: ${method}` }) }],
+        };
+    }
+
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32603, message: error instanceof Error ? error.message : "Internal error" },
+      }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+}

@@ -2144,6 +2144,19 @@ body {
   word-break: break-all;
 }
 
+.tool-result-card-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(139, 92, 246, 0.15);
+  color: rgb(139, 92, 246);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* Space Header */
 .space-header {
   display: flex;
