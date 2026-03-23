@@ -30,6 +30,7 @@ export interface ClaudeCodeWorkerConfig {
   model?: string;
   agentId: string;
   apiUrl: string;
+  projectRoot?: string;
   spaceManager: SpaceManager;
   resolve: (summary: string) => void;
   onComplete?: () => void;
@@ -149,7 +150,7 @@ export class ClaudeCodeSpaceWorker {
         {
           prompt,
           model: this.config.model || "sonnet",
-          cwd: this.config.spaceManager?.getWorkingDirectory?.() || process.cwd(),
+          cwd: this.config.projectRoot || process.cwd(),
           systemPrompt: basePrompt,
           agentName: "clawd-worker",
           agentDef: {
