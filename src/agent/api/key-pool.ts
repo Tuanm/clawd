@@ -26,32 +26,33 @@ const COPILOT_API_BASE = "https://api.githubcopilot.com";
 const GITHUB_API_BASE = "https://api.github.com";
 
 const RPM_WINDOW_MS = 60_000;
-const RPM_LIMIT = 9; // 90% of documented 10 RPM (per-key GitHub limit, not adjustable)
+const RPM_LIMIT = 8; // 80% of documented 10 RPM — target 6-8 RPM per key
 const CONNECT_TIMEOUT_MS = 10_000;
 const PREMIUM_LIMIT_PER_KEY = 300; // Pro plan monthly premium request allowance
 
 // ---- Dynamic throttle values (scaled by key count) --------------------------
-// With more keys, each key gets less traffic so we can afford tighter spacing.
-// sqrt(n) scaling gives diminishing returns: 1 key = baseline, 4 keys = 2x faster, 9 keys = 3x faster.
+// Target 6-8 RPM per key — each key looks like an active Copilot CLI user.
+// 8 RPM = one request every 7.5s; 6 RPM = one request every 10s.
+// Jitter adds 1-2s of irregularity so timing doesn't look robotic.
 
 /** Spacing thresholds scaled by key count */
 function getScaledSpacing(keyCount: number): { idle: number; moderate: number; high: number; jitter: number } {
   const scale = Math.sqrt(Math.max(1, keyCount));
   return {
-    idle: Math.round(Math.max(200, 600 / scale)), // 1 key: 600ms, 4 keys: 300ms, 9 keys: 200ms
-    moderate: Math.round(Math.max(300, 800 / scale)), // 1 key: 800ms, 4 keys: 400ms, 9 keys: 300ms
-    high: Math.round(Math.max(500, 1200 / scale)), // 1 key: 1200ms, 4 keys: 600ms, 9 keys: 500ms
-    jitter: Math.round(Math.max(50, 200 / scale)), // 1 key: 200ms, 4 keys: 100ms, 9 keys: 67ms
+    idle: Math.round(Math.max(7_500, 10_000 / scale)), // 1 key: 10s,   4 keys: 7.5s,  9 keys: 7.5s  → ~8 RPM
+    moderate: Math.round(Math.max(8_500, 12_000 / scale)), // 1 key: 12s,   4 keys: 8.5s,  9 keys: 8.5s  → ~7 RPM
+    high: Math.round(Math.max(10_000, 15_000 / scale)), // 1 key: 15s,   4 keys: 10s,   9 keys: 10s   → ~6 RPM
+    jitter: Math.round(Math.max(1_000, 2_000 / scale)), // 1 key: 2s,    4 keys: 1s,    9 keys: 1s
   };
 }
 
-/** 429 cooldown delays scaled by key count (more keys = shorter cooldown, others cover) */
+/** 429 cooldown delays — intentionally long to avoid repeat rate-limit flags */
 function getScaled429Delays(keyCount: number): [number, number, number] {
   const n = Math.max(1, keyCount);
   return [
-    Math.round(Math.max(60_000, 180_000 / n)), // 1 key: 3min, 2 keys: 1.5min, 3+ keys: 1min
-    Math.round(Math.max(120_000, 600_000 / n)), // 1 key: 10min, 2 keys: 5min, 5+ keys: 2min
-    Math.round(Math.max(300_000, 1_800_000 / n)), // 1 key: 30min, 3 keys: 10min, 6+ keys: 5min
+    Math.round(Math.max(300_000, 600_000 / n)), // 1 key: 10min,  2 keys: 5min,   3+ keys: 5min
+    Math.round(Math.max(600_000, 1_800_000 / n)), // 1 key: 30min,  2 keys: 15min,  3+ keys: 10min
+    Math.round(Math.max(1_800_000, 3_600_000 / n)), // 1 key: 60min,  3 keys: 20min,  6+ keys: 30min
   ];
 }
 

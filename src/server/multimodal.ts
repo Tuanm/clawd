@@ -446,16 +446,25 @@ async function callGeminiGenerateContent(
 const COPILOT_API_BASE = "https://api.githubcopilot.com";
 const DEFAULT_COPILOT_VISION_MODEL = "gpt-4.1";
 
+/**
+ * Build Copilot CLI User-Agent (mirrors logic in agent/src/api/client.ts).
+ * Format: `copilot/{version} ({platform} {nodeVersion}) term/{termProgram}`
+ */
+function _copilotVisionUserAgent(): string {
+  const term = process.env.TERM_PROGRAM ?? "unknown";
+  return `copilot/1.0.5 (${process.platform} ${process.version}) term/${term}`;
+}
+
 /** Headers required by the Copilot API (mirrors BASE_HEADERS in agent/src/api/client.ts) */
 const COPILOT_VISION_HEADERS_BASE: Record<string, string> = {
   "Content-Type": "application/json",
   Accept: "application/json",
-  "X-Interaction-Type": "conversation-agent",
+  "X-Interaction-Type": "conversation-background",
   "Openai-Intent": "conversation-agent",
   // "X-Initiator" is set dynamically per-request (image analysis = "agent" = 0 premium cost)
   "X-GitHub-Api-Version": "2025-05-01",
   "Copilot-Integration-Id": "copilot-developer-cli",
-  "User-Agent": "Claw'd/1.0.0",
+  "User-Agent": _copilotVisionUserAgent(),
 };
 
 /** Round-robin index for Copilot key rotation within image operations (fallback only) */

@@ -3,13 +3,61 @@
  */
 
 import { EventEmitter } from "node:events";
+import { existsSync, readFileSync } from "node:fs";
 import http2 from "node:http2";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { trackFailure, trackSuccess } from "../../analytics";
 import { callContext } from "./call-context";
 import { AllKeysSuspendedError, keyPool } from "./key-pool";
 import { ensureKeyPoolInitialized, getBaseUrlForProvider, getCopilotToken } from "./provider-config";
 
 const COPILOT_API_URL = "https://api.githubcopilot.com";
+
+// ============================================================================
+// Device Identity (matches @github/copilot CLI fingerprinting)
+// ============================================================================
+
+/** Package version — kept in sync with @github/copilot CLI releases */
+const COPILOT_CLI_VERSION = "1.0.5";
+
+/**
+ * Read the stable machine ID from the same location the official Copilot CLI
+ * uses (@vscode/deviceid path: ~/.cache/Microsoft/DeveloperTools/deviceid).
+ * Falls back to a deterministic UUID derived from homedir + hostname.
+ */
+function getStableMachineId(): string {
+  const cacheBase = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
+  const idPath = join(cacheBase, "Microsoft", "DeveloperTools", "deviceid");
+  try {
+    if (existsSync(idPath)) {
+      const id = readFileSync(idPath, "utf8").trim();
+      if (id) return id.toLowerCase();
+    }
+  } catch {
+    /* fall through */
+  }
+  // Deterministic fallback: hash homedir + hostname into UUID-shaped string
+  const { createHash } = require("node:crypto");
+  const raw = createHash("sha256")
+    .update(`${homedir()}:${require("node:os").hostname()}`)
+    .digest("hex");
+  return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20, 32)}`;
+}
+
+const MACHINE_ID = getStableMachineId();
+
+/** Persistent session ID — one per process lifetime (matches CLI behaviour). */
+const SESSION_ID = crypto.randomUUID();
+
+/**
+ * Build a User-Agent string identical to the official Copilot CLI.
+ * Format: `copilot/{version} ({platform} {nodeVersion}) term/{termProgram}`
+ */
+function getCopilotUserAgent(): string {
+  const term = process.env.TERM_PROGRAM ?? "unknown";
+  return `copilot/${COPILOT_CLI_VERSION} (${process.platform} ${process.version}) term/${term}`;
+}
 
 // ============================================================================
 // Types
@@ -85,12 +133,14 @@ export interface StreamEvent {
 const BASE_HEADERS = {
   "Content-Type": "application/json",
   Accept: "application/json",
-  "X-Interaction-Type": "conversation-agent",
+  "X-Interaction-Type": "conversation-background",
   "Openai-Intent": "conversation-agent",
   // "X-Initiator" is NOT set here — it's set dynamically per-request based on initiator
   "X-GitHub-Api-Version": "2025-05-01",
   "Copilot-Integration-Id": "copilot-developer-cli",
-  "User-Agent": "Claw'd/1.0.0",
+  "User-Agent": getCopilotUserAgent(),
+  "X-Client-Machine-Id": MACHINE_ID,
+  "X-Client-Session-Id": SESSION_ID,
 };
 
 // ============================================================================
