@@ -365,8 +365,10 @@ class OpenAIProvider implements LLMProvider {
             if (choice.finish_reason === "stop") {
               yield { type: "done", response: json };
             }
-          } catch {
-            // Skip parse errors
+          } catch (parseErr: any) {
+            console.warn(
+              `[Provider] Stream JSON parse error: ${parseErr.message?.slice(0, 80)} | data: ${data?.slice(0, 120)}`,
+            );
           }
         }
       }
@@ -604,8 +606,10 @@ class AnthropicProvider implements LLMProvider {
             } else if (event.type === "message_stop") {
               yield { type: "done" };
             }
-          } catch {
-            // Skip parse errors
+          } catch (parseErr: any) {
+            console.warn(
+              `[Provider] Stream JSON parse error: ${parseErr.message?.slice(0, 80)} | data: ${data?.slice(0, 120)}`,
+            );
           }
         }
       }
@@ -1112,8 +1116,10 @@ NEVER skip step 2! If you skip, the message will be processed infinitely!`;
               toolCallBuffer.clear();
               yield { type: "done" };
             }
-          } catch {
-            // Skip parse errors
+          } catch (parseErr: any) {
+            console.warn(
+              `[Provider] Stream JSON parse error: ${parseErr.message?.slice(0, 80)} | data: ${data?.slice(0, 120)}`,
+            );
           }
         }
       }
