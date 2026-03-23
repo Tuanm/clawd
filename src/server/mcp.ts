@@ -3004,6 +3004,209 @@ export const spaceCompleteCallbacks = new Map<string, (result: string) => void>(
 export const spaceAuthTokens = new Map<string, string>();
 
 /**
+ * Handle MCP requests scoped to a main channel agent.
+ * Auto-injects channel and agent_id into every tool call so the agent
+ * doesn't need to pass them. Route: /mcp/agent/{channel}/{agentId}
+ */
+export async function handleAgentMcpRequest(req: Request, channel: string, agentId: string): Promise<Response> {
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  };
+
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  try {
+    const body = (await req.json()) as {
+      jsonrpc: string;
+      id: number | string;
+      method: string;
+      params?: Record<string, unknown>;
+    };
+    const { id, method, params = {} } = body;
+
+    if (method === "initialize") {
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            protocolVersion: "2024-11-05",
+            serverInfo: { name: "clawd-agent-mcp", version: "1.0.0" },
+            capabilities: { tools: {} },
+          },
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (method === "notifications/initialized") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    if (method === "tools/list") {
+      // Return all chat tools + agent management tools + browser tools
+      const { AGENT_MCP_TOOLS } = await import("../spaces/agent-mcp-tools");
+
+      // Get plugin tool definitions dynamically (browser, tunnel)
+      const pluginToolDefs: any[] = [];
+      const pluginToRegister = [
+        async () => {
+          const { BrowserPlugin } = await import("../agent/plugins/browser-plugin");
+          return new BrowserPlugin(channel, agentId).getTools();
+        },
+        async () => {
+          const { TunnelPlugin } = await import("../agent/plugins/tunnel-plugin");
+          return new TunnelPlugin().getTools();
+        },
+      ];
+      for (const getTools of pluginToRegister) {
+        try {
+          const tools = await getTools();
+          for (const t of tools) {
+            pluginToolDefs.push({
+              name: t.name,
+              description: t.description || t.name,
+              inputSchema: {
+                type: "object",
+                properties: Object.fromEntries(Object.entries(t.parameters || {}).map(([k, v]) => [k, v])),
+                required: t.required || [],
+              },
+            });
+          }
+        } catch {}
+      }
+
+      const allTools = [...MCP_TOOLS, ...AGENT_MCP_TOOLS, ...pluginToolDefs];
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { tools: allTools } }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (method === "tools/call") {
+      const { name, arguments: toolArgs } = params as {
+        name: string;
+        arguments: Record<string, unknown>;
+      };
+
+      // Check if this is an agent management or todo tool
+      const AGENT_TOOL_NAMES = [
+        "claude_code",
+        "list_agents",
+        "get_agent_report",
+        "stop_agent",
+        "todo_write",
+        "todo_read",
+        "todo_update",
+      ];
+      if (AGENT_TOOL_NAMES.includes(name)) {
+        const { executeAgentToolCall } = await import("../spaces/agent-mcp-tools");
+        const result = await executeAgentToolCall(name, toolArgs || {}, channel, agentId);
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Check if this is a tunnel tool
+      if (name.startsWith("tunnel_")) {
+        try {
+          const { TunnelPlugin } = await import("../agent/plugins/tunnel-plugin");
+          const tunnelPlugin = new TunnelPlugin();
+          const tools = tunnelPlugin.getTools();
+          const tool = tools.find((t) => t.name === name);
+          if (tool) {
+            const result = await tool.handler(toolArgs || {});
+            const text = result.success ? result.output : `Error: ${result.error || "Unknown error"}`;
+            return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+        } catch (err: any) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "text", text: `Tunnel error: ${err.message}` }] },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      }
+
+      // Check if this is a browser tool
+      if (name.startsWith("browser_")) {
+        try {
+          const { BrowserPlugin } = await import("../agent/plugins/browser-plugin");
+          const browserPlugin = new BrowserPlugin(channel, agentId);
+          const tools = browserPlugin.getTools();
+          const tool = tools.find((t) => t.name === name);
+          if (tool) {
+            const result = await tool.handler(toolArgs || {});
+            const text = result.success ? result.output : `Error: ${result.error || "Unknown error"}`;
+            return new Response(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id,
+                result: { content: [{ type: "text", text }] },
+              }),
+              { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+            );
+          }
+        } catch (err: any) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "text", text: `Browser error: ${err.message}` }] },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      }
+
+      // Auto-inject channel and agent_id into chat tool calls
+      const enrichedArgs = {
+        ...(toolArgs || {}),
+        channel: (toolArgs?.channel as string) || channel,
+        agent_id: (toolArgs?.agent_id as string) || agentId,
+      };
+
+      const result = await executeToolCall(name, enrichedArgs);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Unknown method: ${method}` }) }],
+        },
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32603, message: error instanceof Error ? error.message : "Internal error" },
+      }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+}
+
+/**
  * Handle MCP requests scoped to a specific space.
  * Only exposes `complete_task` — no other tools visible.
  * Route: /mcp/space/{spaceId}

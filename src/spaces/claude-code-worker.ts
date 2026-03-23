@@ -15,6 +15,8 @@
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { setAgentStreaming } from "../server/database";
+import { getSessionManager } from "../agent/session/manager";
 import { broadcastAgentStreaming, broadcastAgentToken, broadcastAgentToolCall } from "../server/websocket";
 import { timedFetch } from "../utils/timed-fetch";
 import type { Space } from "./db";
@@ -25,7 +27,7 @@ import type { SpaceManager } from "./manager";
 // ============================================================================
 
 /** Detect Claude Code CLI. Uses Bun.which for cross-platform support. */
-function findClaudeCodeCLI(configPath?: string): string | null {
+export function findClaudeCodeCLI(configPath?: string): string | null {
   if (configPath) {
     const resolved = resolve(configPath);
     if (existsSync(resolved)) return resolved;
@@ -39,7 +41,7 @@ function findClaudeCodeCLI(configPath?: string): string | null {
 // ============================================================================
 
 let _tmuxAvailable: boolean | null = null;
-function hasTmux(): boolean {
+export function hasTmux(): boolean {
   if (_tmuxAvailable === null) {
     try {
       _tmuxAvailable = Bun.spawnSync(["which", "tmux"]).exitCode === 0;
@@ -81,13 +83,23 @@ export class ClaudeCodeSpaceWorker {
   private retryCount = 0;
   private spaceToken: string;
   private hookScriptPath: string;
+  private preHookScriptPath: string;
   private logFilePath: string;
   private tmuxSession: string | null = null;
+  private memorySessionId: string | null = null;
 
   constructor(config: ClaudeCodeWorkerConfig) {
     this.config = config;
     this.spaceToken = crypto.randomUUID();
+    // Initialize memory session for Thoughts history
+    try {
+      const sessions = getSessionManager();
+      const sessionName = `${config.space.space_channel}-${config.agentId}`.replace(/[^a-zA-Z0-9-]/g, "_");
+      const session = sessions.getOrCreateSession(sessionName, "claude-code");
+      this.memorySessionId = session.id;
+    } catch {}
     this.hookScriptPath = `/tmp/clawd-claude-code-hook-${config.space.id}.js`;
+    this.preHookScriptPath = `/tmp/clawd-claude-code-prehook-${config.space.id}.js`;
     this.logFilePath = `/tmp/clawd-claude-code-log-${config.space.id}.jsonl`;
   }
 
@@ -147,6 +159,9 @@ export class ClaudeCodeSpaceWorker {
       unlinkSync(this.hookScriptPath);
     } catch {}
     try {
+      unlinkSync(this.preHookScriptPath);
+    } catch {}
+    try {
       unlinkSync(this.logFilePath);
     } catch {}
   }
@@ -155,7 +170,7 @@ export class ClaudeCodeSpaceWorker {
    * Called by PostToolUse hook API to broadcast tool completion.
    * Fires broadcastAgentToolCall with "completed" status.
    */
-  handleToolResult(toolName: string, toolInput: unknown, toolResponse: unknown): void {
+  handleToolResult(toolName: string, toolInput: unknown, toolResponse: unknown, toolUseId?: string): void {
     const { space, agentId } = this.config;
     const input = (toolInput || {}) as Record<string, any>;
     const response = toolResponse as any;
@@ -164,10 +179,11 @@ export class ClaudeCodeSpaceWorker {
     const description = formatToolDescription(toolName, input);
 
     console.log(`[claude-code] hook → ${status}: ${toolName} ${description.slice(0, 60)}`);
-    // Broadcast "started" then immediately "completed" so UI groups them as one tool_group.
-    // This avoids mismatch when multiple tools of the same type run in parallel.
     broadcastAgentToolCall(space.space_channel, agentId, toolName, input, "started");
     broadcastAgentToolCall(space.space_channel, agentId, toolName, input, status, `${description}\n${result}`);
+
+    // Save to memory.db — use actual tool_use_id for Thoughts history grouping
+    this.saveToMemory("tool", `${description}\n${result}`, undefined, toolUseId || `tool_${toolName}_${Date.now()}`);
   }
 
   // --------------------------------------------------------------------------
@@ -178,8 +194,9 @@ export class ClaudeCodeSpaceWorker {
     const { space, task, context, agentId } = this.config;
     const prompt = context ? `**Context:**\n${context.slice(0, 4000)}\n\n**Task:** ${task}` : task;
 
-    // Write hook script before spawning
+    // Write hook scripts before spawning
     this.writeHookScript();
+    this.writePreHookScript();
 
     this.proc = Bun.spawn([cliPath, ...this.buildArgs(prompt)], {
       stdin: "pipe",
@@ -190,11 +207,13 @@ export class ClaudeCodeSpaceWorker {
     this.proc.stdin.end();
 
     this.startTmuxMonitor();
+    setAgentStreaming(agentId, space.space_channel, true);
     broadcastAgentStreaming(space.space_channel, agentId, true);
 
     try {
       await this.parseStream();
     } finally {
+      setAgentStreaming(agentId, space.space_channel, false);
       broadcastAgentStreaming(space.space_channel, agentId, false);
     }
 
@@ -296,6 +315,7 @@ try {
     tool_name: d.tool_name,
     tool_input: d.tool_input,
     tool_response: d.tool_response,
+    tool_use_id: d.tool_use_id,
   });
   const r = h.request({
     hostname: "localhost", port: ${port},
@@ -315,13 +335,38 @@ console.log(JSON.stringify({ continue: true }));
     writeFileSync(this.hookScriptPath, script);
   }
 
+  private writePreHookScript(): void {
+    const script = `const f = require("fs");
+try {
+  const d = JSON.parse(f.readFileSync(0, "utf8"));
+  if (d.tool_name === "Bash" && d.tool_input && d.tool_input.run_in_background) {
+    console.log(JSON.stringify({
+      decision: "block",
+      reason: "run_in_background is not supported in this environment — background jobs are lost when the agent subprocess restarts. " +
+        "Instead, run the command synchronously, or for long-running tasks use the MCP tool mcp__clawd__job_submit(name, command) which persists via tmux. " +
+        "Check job status with mcp__clawd__job_status(job_id) and cancel with mcp__clawd__job_cancel(job_id)."
+    }));
+  } else {
+    console.log(JSON.stringify({ decision: "allow" }));
+  }
+} catch { console.log(JSON.stringify({ decision: "allow" })); }
+`;
+    writeFileSync(this.preHookScriptPath, script);
+  }
+
   private getHookSettings(): Record<string, unknown> {
     // Use absolute path — hook subprocesses may not inherit our PATH
     const nodePath = Bun.which("node") || Bun.which("bun") || "node";
-    const cmd = `${nodePath} ${this.hookScriptPath}`;
+    const postCmd = `${nodePath} ${this.hookScriptPath}`;
+    const preCmd = `${nodePath} ${this.preHookScriptPath}`;
     return {
+      env: {
+        // Auto-compact at 75% context usage
+        CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "75",
+      },
       hooks: {
-        PostToolUse: [{ matcher: "*", hooks: [{ type: "command", command: cmd }] }],
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: preCmd }] }],
+        PostToolUse: [{ matcher: "*", hooks: [{ type: "command", command: postCmd }] }],
       },
     };
   }
@@ -382,6 +427,27 @@ console.log(JSON.stringify({ continue: true }));
           if (parsed.type === "assistant") {
             const content = parsed.message?.content;
             if (Array.isArray(content)) {
+              // Save to memory.db for Thoughts history
+              const textParts: string[] = [];
+              const toolCalls: any[] = [];
+              for (const block of content) {
+                if (block.type === "text" && block.text) textParts.push(block.text);
+                if (block.type === "tool_use") {
+                  toolCalls.push({
+                    id: block.id,
+                    type: "function",
+                    function: { name: block.name, arguments: JSON.stringify(block.input || {}) },
+                  });
+                }
+              }
+              if (textParts.length > 0 || toolCalls.length > 0) {
+                this.saveToMemory(
+                  "assistant",
+                  textParts.join("\n") || "",
+                  toolCalls.length > 0 ? toolCalls : undefined,
+                );
+              }
+
               for (const block of content) {
                 // Post text as chat message
                 if (block.type === "text" && block.text) {
@@ -394,9 +460,9 @@ console.log(JSON.stringify({ continue: true }));
             }
           }
 
-          // Result event → save session_id
-          if (parsed.type === "result") {
-            this.sessionId = parsed.session_id || this.sessionId;
+          // Save session_id from system init (immediate) and result (final)
+          if ((parsed.type === "system" || parsed.type === "result") && parsed.session_id) {
+            this.sessionId = parsed.session_id;
           }
         }
       }
@@ -406,6 +472,19 @@ console.log(JSON.stringify({ continue: true }));
         logFile?.end();
       } catch {}
     }
+  }
+
+  private saveToMemory(
+    role: "user" | "assistant" | "tool",
+    content: string,
+    toolCalls?: any[],
+    toolCallId?: string,
+  ): void {
+    if (!this.memorySessionId) return;
+    try {
+      const sessions = getSessionManager();
+      sessions.addMessage(this.memorySessionId, { role, content, tool_calls: toolCalls, tool_call_id: toolCallId });
+    } catch {}
   }
 
   private async postAgentMessage(text: string): Promise<void> {
@@ -514,14 +593,14 @@ export function getClaudeCodeWorker(spaceId: string): ClaudeCodeSpaceWorker | un
 // Helpers
 // ============================================================================
 
-function truncateToolResult(response: any): string {
+export function truncateToolResult(response: any): string {
   if (!response) return "";
   const text =
     response?.file?.content || response?.stdout || (typeof response === "string" ? response : JSON.stringify(response));
   return typeof text === "string" ? text.slice(0, 2000) : "";
 }
 
-function formatToolDescription(tool: string, input: Record<string, any>): string {
+export function formatToolDescription(tool: string, input: Record<string, any>): string {
   if (!input) return tool;
   switch (tool) {
     case "Read":

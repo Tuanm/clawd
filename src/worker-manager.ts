@@ -29,7 +29,7 @@ import { getSpaceByChannel } from "./spaces/db";
 import type { SpaceManager } from "./spaces/manager";
 import type { SpaceWorkerManager } from "./spaces/worker";
 import { timedFetch } from "./utils/timed-fetch";
-import { type AgentHealthSnapshot, WorkerLoop, type WorkerLoopConfig } from "./worker-loop";
+import { type AgentHealthSnapshot, type AgentWorker, WorkerLoop, type WorkerLoopConfig } from "./worker-loop";
 
 /** Resolved heartbeat configuration (all fields required, defaults applied) */
 interface HeartbeatConfig {
@@ -67,7 +67,7 @@ export interface AgentConfig {
 }
 
 export class WorkerManager {
-  private loops: Map<string, WorkerLoop> = new Map();
+  private loops: Map<string, AgentWorker> = new Map();
   private config: AppConfig;
   private scheduler?: SchedulerManager;
   private spaceManager?: SpaceManager;
@@ -109,6 +109,11 @@ export class WorkerManager {
   setSpaceInfra(spaceManager: SpaceManager, spaceWorkerManager: SpaceWorkerManager): void {
     this.spaceManager = spaceManager;
     this.spaceWorkerManager = spaceWorkerManager;
+    // Register for agent MCP tools (claude_code, list_agents, etc.)
+    try {
+      const { setAgentMcpInfra } = require("./spaces/agent-mcp-tools");
+      setAgentMcpInfra(spaceManager, spaceWorkerManager, this.config.chatApiUrl);
+    } catch {}
   }
 
   /** Start the worker manager -- loads agents from DB and starts active loops */
@@ -279,16 +284,38 @@ export class WorkerManager {
       }
     }
 
-    const loop = new WorkerLoop(loopConfig);
-    this.loops.set(key, loop);
+    // Create the appropriate worker type
+    let worker: AgentWorker;
+
+    if ((agent.provider || "copilot") === "claude-code") {
+      // Claude Code main agent — subprocess-based, uses MCP for chat tools
+      const { ClaudeCodeMainWorker, registerMainWorker } = require("./claude-code-main-worker");
+      const ccWorker = new ClaudeCodeMainWorker({
+        channel: agent.channel,
+        agentId: agent.agentId,
+        model: agent.model,
+        projectRoot: effectiveProjectRoot,
+        chatApiUrl: this.config.chatApiUrl,
+        debug: this.config.debug,
+        agentFileConfig: loopConfig.agentFileConfig,
+        heartbeatInterval: agent.heartbeatInterval,
+      });
+      registerMainWorker(`${agent.channel}:${agent.agentId}`, ccWorker);
+      worker = ccWorker;
+    } else {
+      // Normal LLM-based agent
+      worker = new WorkerLoop(loopConfig);
+    }
+
+    this.loops.set(key, worker);
 
     // Set sleeping state before starting (if was sleeping before restart)
     if (agent.sleeping) {
-      loop.setSleeping(true);
+      worker.setSleeping(true);
       console.log(`[WorkerManager] Agent ${key} starting in sleep mode`);
     }
 
-    loop.start();
+    worker.start();
 
     console.log(
       `[WorkerManager] Started agent: ${key} (provider: ${agent.provider || "copilot"}, model: ${agent.model}${worktreeBranch ? `, worktree: ${worktreeBranch}` : ""}, sleeping: ${agent.sleeping || false})`,
@@ -308,6 +335,12 @@ export class WorkerManager {
 
     await loop.stop();
     this.loops.delete(key);
+
+    // Clean up Claude Code main worker registry if applicable
+    try {
+      const { unregisterMainWorker } = require("./claude-code-main-worker");
+      unregisterMainWorker(key);
+    } catch {}
 
     // Clean up worktree if one was created
     const wtInfo = this.worktreeInfo.get(key);

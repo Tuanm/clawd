@@ -108,6 +108,11 @@ export function createProvider(providerType?: string, modelOverride?: string): L
         return createOllamaProvider(effectiveModelOverride, providerName);
       case "minimax":
         return createMiniMaxProvider(effectiveModelOverride, providerName);
+      case "claude-code":
+        throw new Error(
+          "claude-code is not an LLM API provider — it uses ClaudeCodeMainWorker. " +
+            "This should be intercepted by WorkerManager before reaching createProvider().",
+        );
       default:
         return createCopilotProvider(effectiveModelOverride);
     }

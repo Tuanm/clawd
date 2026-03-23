@@ -254,6 +254,7 @@ export function getModelForProvider(providerName: string): string {
     copilot: "claude-sonnet-4.6",
     ollama: "glm-5:cloud",
     minimax: "MiniMax-M2.5",
+    "claude-code": "sonnet",
   };
 
   return defaultModels[providerName as ProviderType] ?? "default";

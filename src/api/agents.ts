@@ -366,6 +366,13 @@ export function initAgentsTable(db: Database): void {
     // Column already exists
   }
 
+  // Add claude_code_session_id for session persistence across restarts
+  try {
+    db.exec(`ALTER TABLE channel_agents ADD COLUMN claude_code_session_id TEXT DEFAULT NULL`);
+  } catch {
+    // Column already exists
+  }
+
   // Add agent_type column for agent file type reference
   try {
     db.exec(`ALTER TABLE channel_agents ADD COLUMN agent_type TEXT DEFAULT NULL`);
