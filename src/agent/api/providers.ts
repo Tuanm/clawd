@@ -114,10 +114,17 @@ export interface LLMProvider {
 // Provider Types
 // ============================================================================
 
-export type ProviderType = "openai" | "anthropic" | "copilot" | "ollama" | "minimax";
+export type ProviderType = "openai" | "anthropic" | "copilot" | "ollama" | "minimax" | "claude-code";
 
 /** Built-in provider names (recognized without a `type` field) */
-export const BUILTIN_PROVIDERS: readonly ProviderType[] = ["openai", "anthropic", "copilot", "ollama", "minimax"];
+export const BUILTIN_PROVIDERS: readonly ProviderType[] = [
+  "openai",
+  "anthropic",
+  "copilot",
+  "ollama",
+  "minimax",
+  "claude-code",
+];
 
 export interface ProviderConfig {
   /**

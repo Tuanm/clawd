@@ -1,0 +1,423 @@
+/**
+ * Agent MCP Tools — MCP tool definitions + handlers for claude_code, list_agents, etc.
+ * Used by handleAgentMcpRequest to expose agent management tools via MCP.
+ */
+
+import type { SpaceManager } from "./manager";
+import type { SpaceWorkerManager } from "./worker";
+
+// ============================================================================
+// Global references (set by WorkerManager during startup)
+// ============================================================================
+
+let _spaceManager: SpaceManager | null = null;
+let _spaceWorkerManager: SpaceWorkerManager | null = null;
+let _chatApiUrl: string = "http://localhost:3456";
+
+export function setAgentMcpInfra(
+  spaceManager: SpaceManager,
+  spaceWorkerManager: SpaceWorkerManager,
+  chatApiUrl: string,
+): void {
+  _spaceManager = spaceManager;
+  _spaceWorkerManager = spaceWorkerManager;
+  _chatApiUrl = chatApiUrl;
+}
+
+// ============================================================================
+// MCP Tool Definitions
+// ============================================================================
+
+export const AGENT_MCP_TOOLS = [
+  {
+    name: "claude_code",
+    description:
+      "Spawn a Claude Code sub-agent to handle a complex coding task autonomously. The sub-agent works independently with full tool access (file read/write/edit, bash, grep, etc.).\n\nModel guide: 'opus' (complex), 'sonnet' (default), 'haiku' (quick).\n\nThe sub-agent runs asynchronously. Use list_agents to check status and get_agent_report to read results.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "The task for the sub-agent to complete" },
+        name: { type: "string", description: "Optional friendly name" },
+        model: { type: "string", description: "Model: opus, sonnet (default), haiku" },
+        agent: {
+          type: "string",
+          description: "Agent type from .clawd/agents/ or .claude/agents/ — inherits system prompt and directives",
+        },
+        context: { type: "string", description: "Optional context to seed the sub-agent" },
+      },
+      required: ["task"],
+    },
+  },
+  {
+    name: "list_agents",
+    description: "List spawned sub-agents and their status.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "get_agent_report",
+    description: "Get a sub-agent's result or status by ID.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "The sub-agent ID" },
+      },
+      required: ["agent_id"],
+    },
+  },
+  {
+    name: "stop_agent",
+    description: "Stop a running sub-agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "The sub-agent ID to stop" },
+        reason: { type: "string", description: "Optional reason" },
+      },
+      required: ["agent_id"],
+    },
+  },
+  {
+    name: "todo_write",
+    description:
+      "Write your Todo list. Creates or replaces the list. Each item needs content and status (pending/in_progress/completed).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        todos: {
+          type: "array",
+          description: "Todo items",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              content: { type: "string" },
+              status: { type: "string" },
+            },
+            required: ["content"],
+          },
+        },
+      },
+      required: ["todos"],
+    },
+  },
+  {
+    name: "todo_read",
+    description: "Read your current Todo list.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "todo_update",
+    description: "Update a Todo item's status.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        item_id: { type: "string", description: "The item ID to update" },
+        status: { type: "string", description: "New status: pending, in_progress, completed" },
+      },
+      required: ["item_id", "status"],
+    },
+  },
+];
+
+// ============================================================================
+// Tool Execution
+// ============================================================================
+
+export async function executeAgentToolCall(
+  name: string,
+  args: Record<string, unknown>,
+  channel: string,
+  agentId: string,
+): Promise<{ content: Array<{ type: string; text: string }> }> {
+  const textResult = (text: string) => ({ content: [{ type: "text", text }] });
+
+  if (!_spaceManager) {
+    return textResult(JSON.stringify({ ok: false, error: "Space manager not initialized" }));
+  }
+
+  switch (name) {
+    case "claude_code": {
+      const task = args.task as string;
+      if (!task) return textResult(JSON.stringify({ ok: false, error: "Missing task" }));
+
+      // Dynamic import to avoid circular deps
+      const { ClaudeCodeSpaceWorker, registerClaudeCodeWorker, unregisterClaudeCodeWorker } = await import(
+        "./claude-code-worker"
+      );
+      const { spaceCompleteCallbacks, spaceAuthTokens } = await import("../server/mcp");
+      const { getOrRegisterAgent } = await import("../server/database");
+      const { timedFetch } = await import("../utils/timed-fetch");
+      const { loadAgentFile } = await import("../agent/agents/loader");
+
+      const model = (args.model as string) || "sonnet";
+      const context = (args.context as string) || "";
+      const agentType = args.agent as string | undefined;
+
+      // Load agent file if specified (for system prompt / directives)
+      let agentPrompt: string | undefined;
+      if (agentType) {
+        const agentFile = loadAgentFile(agentType, "");
+        if (!agentFile) {
+          return textResult(JSON.stringify({ ok: false, error: `Agent file "${agentType}" not found` }));
+        }
+        agentPrompt = agentFile.systemPrompt || undefined;
+      }
+
+      const taskName = (args.name as string) || agentType || `claude-code-${Date.now()}`;
+      const spaceId = crypto.randomUUID();
+      const safeName = taskName.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40);
+      const subAgentId = `${safeName}-${spaceId.slice(0, 6)}`;
+
+      const space = _spaceManager.createSpace({
+        id: spaceId,
+        channel,
+        title: taskName.slice(0, 100),
+        description: task.slice(0, 500),
+        agent_id: subAgentId,
+        agent_color: "#D97706",
+        source: "claude_code",
+        timeout_seconds: 1800,
+      });
+
+      getOrRegisterAgent(subAgentId, channel, false);
+
+      // Post preview card and save its timestamp (needed for status update on completion)
+      try {
+        const cardRes = await timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel,
+            text: `[Claude Code sub-agent spawned: "${taskName}" (model: ${model})] ${task.slice(0, 200)}`,
+            user: agentId,
+            agent_id: agentId,
+            subtype: "subspace",
+            subspace_json: JSON.stringify({
+              id: space.id,
+              title: space.title,
+              description: space.description,
+              agent_id: space.agent_id,
+              agent_color: space.agent_color,
+              status: space.status,
+              channel: space.channel,
+            }),
+          }),
+        });
+        if (cardRes.ok) {
+          const cardData = (await cardRes.json()) as any;
+          if (cardData.ts) _spaceManager.updateCardTs(space.id, cardData.ts);
+        }
+      } catch {}
+
+      // Post task to space channel
+      timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: space.space_channel,
+          text: context ? `**Context:**\n${context.slice(0, 4000)}\n\n**Task:** ${task}` : `**Task:** ${task}`,
+          user: "UBOT",
+          agent_id: agentId,
+        }),
+      }).catch(() => {});
+
+      // Create worker
+      let ccResolve: (v: string) => void;
+      let ccSettled = false;
+
+      const ccWorker = new ClaudeCodeSpaceWorker({
+        space,
+        task,
+        context,
+        model,
+        agentId: subAgentId,
+        apiUrl: _chatApiUrl,
+        spaceManager: _spaceManager!,
+        agentPrompt,
+        resolve: (summary: string) => {
+          if (ccSettled) return;
+          ccSettled = true;
+          ccResolve?.(summary);
+        },
+        onComplete: () => unregisterClaudeCodeWorker(space.id),
+      });
+      registerClaudeCodeWorker(space.id, ccWorker);
+      spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
+
+      spaceCompleteCallbacks.set(space.id, (result: string) => {
+        const won = _spaceManager!.completeSpace(space.id, result);
+        if (won) {
+          timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              channel,
+              text:
+                result.length > 10000
+                  ? result.slice(0, 10000) + "\n\n[Result truncated — full result in sub-space]"
+                  : result,
+              user: subAgentId,
+              agent_id: subAgentId,
+            }),
+          }).catch(() => {});
+          if (!ccSettled) {
+            ccSettled = true;
+            ccResolve?.(result);
+          }
+          ccWorker.stop();
+        }
+      });
+
+      // Start worker (fire and forget)
+      new Promise<string>((resolve, reject) => {
+        ccResolve = resolve;
+        ccWorker
+          .start()
+          .then(async () => {
+            if (!ccSettled) {
+              ccSettled = true;
+              let lastMsg = "";
+              try {
+                const { getPendingMessages } = await import("../server/routes/messages");
+                const res = getPendingMessages(space.space_channel, undefined, true, 3);
+                const msgs = ((res as any).messages || []).filter((m: any) => m.agent_id === subAgentId && m.text);
+                if (msgs.length > 0) lastMsg = msgs[msgs.length - 1].text.slice(0, 500);
+              } catch {}
+              const errorMsg = lastMsg
+                ? `Claude Code exited without calling complete_task. Last message: ${lastMsg}`
+                : "Claude Code exited without calling complete_task";
+              _spaceManager!.failSpace(space.id, errorMsg);
+              reject(new Error(errorMsg));
+            }
+          })
+          .catch((err) => {
+            if (!ccSettled) {
+              ccSettled = true;
+              _spaceManager!.failSpace(space.id, err.message);
+              reject(err);
+            }
+          })
+          .finally(() => {
+            spaceCompleteCallbacks.delete(space.id);
+            spaceAuthTokens.delete(space.id);
+            unregisterClaudeCodeWorker(space.id);
+            ccWorker.cleanup();
+          });
+      }).catch(() => {}); // Swallow — tracked via space status
+
+      return textResult(
+        JSON.stringify({
+          ok: true,
+          agent_id: spaceId,
+          name: taskName,
+          status: "spawned",
+          message: "Claude Code sub-agent started. Use list_agents to check status, get_agent_report to read results.",
+        }),
+      );
+    }
+
+    case "list_agents": {
+      const { getClaudeCodeWorker } = await import("./claude-code-worker");
+      const spaces = _spaceManager.listSpaces(channel);
+      const agents = spaces
+        .filter((s) => s.source === "claude_code")
+        .map((s) => ({
+          id: s.id,
+          name: s.title,
+          status: s.status,
+          result: s.result_summary?.slice(0, 200),
+        }));
+      return textResult(JSON.stringify({ ok: true, count: agents.length, agents }));
+    }
+
+    case "get_agent_report": {
+      const id = args.agent_id as string;
+      if (!id) return textResult(JSON.stringify({ ok: false, error: "Missing agent_id" }));
+      const space = _spaceManager.getSpace(id);
+      if (!space) return textResult(JSON.stringify({ ok: false, error: "Agent not found" }));
+      return textResult(
+        JSON.stringify({
+          ok: true,
+          id: space.id,
+          name: space.title,
+          status: space.status,
+          result: space.result_summary,
+        }),
+      );
+    }
+
+    case "stop_agent": {
+      const id = args.agent_id as string;
+      const reason = (args.reason as string) || "Stopped by parent agent";
+      if (!id) return textResult(JSON.stringify({ ok: false, error: "Missing agent_id" }));
+
+      const { getClaudeCodeWorker, unregisterClaudeCodeWorker } = await import("./claude-code-worker");
+      const { spaceCompleteCallbacks, spaceAuthTokens } = await import("../server/mcp");
+
+      const ccw = getClaudeCodeWorker(id);
+      if (ccw) {
+        ccw.stop();
+        unregisterClaudeCodeWorker(id);
+        spaceCompleteCallbacks.delete(id);
+        spaceAuthTokens.delete(id);
+      }
+      _spaceManager.failSpace(id, reason);
+
+      return textResult(JSON.stringify({ ok: true, status: "stopped", reason }));
+    }
+
+    case "todo_write": {
+      const { timedFetch } = await import("../utils/timed-fetch");
+      const todos = args.todos || args.items;
+      if (!todos) return textResult(JSON.stringify({ ok: false, error: "Missing todos" }));
+      try {
+        const res = await timedFetch(`${_chatApiUrl}/api/todos.write`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_id: agentId, channel, items: todos }),
+        });
+        const data = (await res.json()) as any;
+        return textResult(JSON.stringify(data));
+      } catch (err: any) {
+        return textResult(JSON.stringify({ ok: false, error: err.message }));
+      }
+    }
+
+    case "todo_read": {
+      const { timedFetch } = await import("../utils/timed-fetch");
+      try {
+        const res = await timedFetch(
+          `${_chatApiUrl}/api/todos.read?agent_id=${encodeURIComponent(agentId)}&channel=${encodeURIComponent(channel)}`,
+        );
+        const data = (await res.json()) as any;
+        return textResult(JSON.stringify(data));
+      } catch (err: any) {
+        return textResult(JSON.stringify({ ok: false, error: err.message }));
+      }
+    }
+
+    case "todo_update": {
+      const { timedFetch } = await import("../utils/timed-fetch");
+      const { item_id, status } = args as { item_id?: string; status?: string };
+      if (!item_id || !status) return textResult(JSON.stringify({ ok: false, error: "Missing item_id or status" }));
+      try {
+        const res = await timedFetch(`${_chatApiUrl}/api/todos.update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_id: agentId, channel, item_id, status }),
+        });
+        const data = (await res.json()) as any;
+        return textResult(JSON.stringify(data));
+      } catch (err: any) {
+        return textResult(JSON.stringify({ ok: false, error: err.message }));
+      }
+    }
+
+    default:
+      return textResult(JSON.stringify({ ok: false, error: `Unknown agent tool: ${name}` }));
+  }
+}

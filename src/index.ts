@@ -158,7 +158,7 @@ import {
   setAgentStreaming,
   toSlackMessage,
 } from "./server/database";
-import { handleMcpRequest, handleSpaceMcpRequest, setMcpScheduler } from "./server/mcp";
+import { handleAgentMcpRequest, handleMcpRequest, handleSpaceMcpRequest, setMcpScheduler } from "./server/mcp";
 // Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
 import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import { getArtifactActions, handleArtifactAction } from "./server/routes/artifact-actions";
@@ -998,6 +998,15 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     // ---- clawd-chat standard routes ----
 
     // Space-scoped MCP endpoint (Claude Code sub-agents — only complete_task)
+    // Agent-scoped MCP (main Claude Code agents — auto-injects channel/agent_id)
+    if (path.startsWith("/mcp/agent/")) {
+      const parts = path.slice("/mcp/agent/".length).split("/");
+      const [channel, agentId] = parts;
+      if (channel && agentId)
+        return handleAgentMcpRequest(req, decodeURIComponent(channel), decodeURIComponent(agentId));
+    }
+
+    // Space-scoped MCP (Claude Code sub-agents — only complete_task)
     if (path.startsWith("/mcp/space/")) {
       const spaceId = path.slice("/mcp/space/".length);
       if (spaceId) return handleSpaceMcpRequest(req, spaceId);
@@ -1011,13 +1020,38 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           tool_name?: string;
           tool_input?: unknown;
           tool_response?: unknown;
+          tool_use_id?: string;
         };
-        const { space_id, tool_name, tool_input, tool_response } = body;
+        const { space_id, tool_name, tool_input, tool_response, tool_use_id } = body;
         if (space_id && tool_name) {
           const { getClaudeCodeWorker } = await import("./spaces/claude-code-worker");
           const worker = getClaudeCodeWorker(space_id);
           if (worker) {
-            worker.handleToolResult(tool_name, tool_input, tool_response);
+            worker.handleToolResult(tool_name, tool_input, tool_response, tool_use_id);
+          }
+        }
+        return json({ ok: true });
+      } catch {
+        return json({ ok: false }, 400);
+      }
+    }
+
+    // Claude Code main agent PostToolUse hook callback
+    if (path === "/api/claude-code.mainToolResult" && req.method === "POST") {
+      try {
+        const body = (await req.json()) as {
+          worker_key?: string;
+          tool_name?: string;
+          tool_input?: unknown;
+          tool_response?: unknown;
+          tool_use_id?: string;
+        };
+        const { worker_key, tool_name, tool_input, tool_response, tool_use_id } = body;
+        if (worker_key && tool_name) {
+          const { getMainWorker } = await import("./claude-code-main-worker");
+          const worker = getMainWorker(worker_key);
+          if (worker) {
+            worker.handleToolResult(tool_name, tool_input, tool_response, tool_use_id);
           }
         }
         return json({ ok: true });

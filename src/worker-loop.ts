@@ -147,7 +147,29 @@ export interface WorkerLoopConfig {
   originalProjectRoot?: string;
 }
 
-export class WorkerLoop {
+/**
+ * Shared interface for agent workers in WorkerManager.
+ * Implemented by WorkerLoop (normal agents) and ClaudeCodeMainWorker (claude-code agents).
+ */
+export interface AgentWorker {
+  start(): void;
+  stop(): void;
+  readonly isSleeping: boolean;
+  readonly isRunning: boolean;
+  setSleeping(sleeping: boolean): void;
+  getHealthSnapshot(): AgentHealthSnapshot;
+  cancelProcessing(): void;
+  /** Project root for worktree info (optional — not all workers use worktrees) */
+  getProjectRoot?(): string;
+  /** Reset agent session (e.g., on channel clear). Returns promise for async cleanup. */
+  resetSession?(): Promise<void>;
+  /** Heartbeat interval in seconds (0 = disabled) */
+  readonly heartbeatInterval: number;
+  /** Inject a heartbeat signal to wake idle agents */
+  injectHeartbeat?(): void;
+}
+
+export class WorkerLoop implements AgentWorker {
   private config: WorkerLoopConfig;
   private running = false;
   private sleeping = false;
