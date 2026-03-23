@@ -613,6 +613,38 @@ class AnthropicProvider implements LLMProvider {
           }
         }
       }
+
+      // Stream ended — flush any incomplete tool calls from buffer
+      // This handles MiniMax/provider EOF mid-tool-call
+      if (toolCallBuffer.size > 0) {
+        console.warn(`[Provider] Stream ended with ${toolCallBuffer.size} incomplete tool call(s) in buffer — flushing`);
+        for (const [_idx, tc] of toolCallBuffer) {
+          if (tc.name) {
+            // Validate accumulated JSON args — use empty object if malformed
+            let args = tc.arguments;
+            try {
+              JSON.parse(args);
+            } catch {
+              console.warn(`[Provider] Incomplete tool args for ${tc.name}, using empty object`);
+              args = "{}";
+            }
+            yield {
+              type: "tool_call",
+              toolCall: {
+                id: tc.id,
+                type: "function",
+                function: { name: tc.name, arguments: args },
+              },
+            };
+          }
+        }
+        toolCallBuffer.clear();
+      }
+
+      // Yield done if we haven't already (premature EOF without [DONE] or message_stop)
+      if (currentContent || toolCallBuffer.size === 0) {
+        yield { type: "done" };
+      }
     } finally {
       reader.releaseLock();
     }
