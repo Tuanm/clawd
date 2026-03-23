@@ -2317,41 +2317,17 @@ SUMMARY:`;
             continue;
           }
 
-          // If we have partial tool calls, we must add tool_results for them
+          // If we have partial tool calls, add tool_results for them (in-memory only)
+          // Never persist stream-error tool calls to session — they corrupt the session
+          // store and cause infinite retry loops when the session is reloaded
           if (toolCalls.length > 0) {
-            // Only persist to session on first error — subsequent retries keep in-memory only
-            // to avoid poisoning the session store with dangling tool calls
-            const shouldPersist = consecutiveStreamErrors <= 1;
-            if (shouldPersist) {
-              try {
-                this.sessions.addMessage(session.id, {
-                  role: "assistant",
-                  content: content || null,
-                  tool_calls: toolCalls,
-                });
-              } catch {
-                /* ignore */
-              }
-            }
             messages.push({
               role: "assistant",
               content: content || null,
               tool_calls: toolCalls,
             });
 
-            // Add error tool_results for each
             for (const tc of toolCalls) {
-              if (shouldPersist) {
-                try {
-                  this.sessions.addMessage(session.id, {
-                    role: "tool",
-                    content: `[stream error before execution: ${errorMsg}]`,
-                    tool_call_id: tc.id,
-                  });
-                } catch {
-                  /* ignore */
-                }
-              }
               messages.push({
                 role: "tool",
                 content: `[stream error before execution: ${errorMsg}]`,
