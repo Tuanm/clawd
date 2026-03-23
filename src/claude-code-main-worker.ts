@@ -65,6 +65,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private pendingTimestamps: string[] = [];
   private forceMarkRetries = new Map<string, number>();
   private abortController: AbortController | null = null;
+  private wasCancelledByHeartbeat = false;
 
   constructor(config: ClaudeCodeMainConfig) {
     this.config = config;
@@ -121,6 +122,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   }
 
   cancelProcessing(): void {
+    this.wasCancelledByHeartbeat = true;
     try {
       this.abortController?.abort();
     } catch {}
@@ -136,6 +138,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   }
 
   injectHeartbeat(): void {
+    if (this.processing || this.sleeping) return;
     this.lastHeartbeatAt = Date.now();
     this.heartbeatPending = true;
   }
@@ -179,7 +182,21 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           continue;
         }
 
-        this.sleeping = false;
+        if (this.sleeping) {
+          this.sleeping = false;
+          const agent = getAgent(this.config.agentId, this.config.channel);
+          if (agent) {
+            broadcastUpdate(this.config.channel, {
+              type: "message",
+              ts: "",
+              user: this.config.agentId,
+              text: "",
+              agent_id: this.config.agentId,
+              avatar_color: agent.avatar_color || "#D97706",
+              is_sleeping: false,
+            } as any);
+          }
+        }
         this.processing = true;
         this.processingStartedAt = Date.now();
         this.lastActivityAt = Date.now();
@@ -218,7 +235,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         try {
           await this.processMessages(pending);
         } catch (err: any) {
-          if (!interrupted) {
+          if (!interrupted && !this.wasCancelledByHeartbeat) {
             console.error(`[claude-code-main] Error: ${err.message}`);
             // Clear stale session ID so next attempt starts fresh
             if (err.message?.includes("No conversation found")) {
@@ -297,6 +314,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   }
 
   private async processMessages(messages: any[]): Promise<void> {
+    this.wasCancelledByHeartbeat = false;
     const prompt = this.formatPrompt(messages);
     saveToMemory(this.memorySessionId, "user", prompt);
 
