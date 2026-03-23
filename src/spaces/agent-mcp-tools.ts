@@ -225,6 +225,18 @@ export async function executeAgentToolCall(
         }),
       }).catch(() => {});
 
+      // Resolve parent agent's project root for sub-agent CWD
+      let projectRoot: string | undefined;
+      try {
+        const { db } = await import("../server/database");
+        const row = db
+          .query<{ project: string | null }, [string, string]>(
+            `SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?`,
+          )
+          .get(channel, agentId);
+        if (row?.project) projectRoot = row.project;
+      } catch {}
+
       // Create worker
       let ccResolve: (v: string) => void;
       let ccSettled = false;
@@ -236,6 +248,7 @@ export async function executeAgentToolCall(
         model,
         agentId: subAgentId,
         apiUrl: _chatApiUrl,
+        projectRoot,
         spaceManager: _spaceManager!,
         agentPrompt,
         resolve: (summary: string) => {
