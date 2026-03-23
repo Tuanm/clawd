@@ -172,6 +172,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
         if (pending.length === 0) {
           if (!this.sleeping) this.sleeping = true;
+          // Keep agent_seen.updated_at fresh so listAgents() doesn't
+          // mark us as sleeping while we're still polling for sub-agent results
+          this.touchActivity();
           await Bun.sleep(SLEEP_BACKOFF_MS);
           continue;
         }
@@ -432,6 +435,27 @@ CRITICAL RULES:
     } catch {}
 
     return mcpServers;
+  }
+
+  // --------------------------------------------------------------------------
+  // Activity tracking
+  // --------------------------------------------------------------------------
+
+  private lastTouchAt = 0;
+
+  /** Throttled update to agent_seen.updated_at — keeps the agent "alive" in listAgents() */
+  private touchActivity(): void {
+    const now = Date.now();
+    if (now - this.lastTouchAt < 30_000) return; // Throttle: once per 30s
+    this.lastTouchAt = now;
+    try {
+      db.run(
+        `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, updated_at)
+         VALUES (?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
+         ON CONFLICT(agent_id, channel) DO UPDATE SET updated_at = strftime('%s', 'now')`,
+        [this.config.agentId, this.config.channel],
+      );
+    } catch {}
   }
 
   // --------------------------------------------------------------------------

@@ -619,6 +619,7 @@ export function createSpawnAgentPlugin(
         model,
         agentId: subAgentId,
         apiUrl: config.apiUrl,
+        projectRoot: _cachedProjectRoot || agentConfig.project || undefined,
         spaceManager,
         resolve: wrappedResolve,
         onComplete: () => unregisterClaudeCodeWorker(space.id),
