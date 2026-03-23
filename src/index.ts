@@ -158,7 +158,7 @@ import {
   setAgentStreaming,
   toSlackMessage,
 } from "./server/database";
-import { handleMcpRequest, setMcpScheduler } from "./server/mcp";
+import { handleMcpRequest, handleSpaceMcpRequest, setMcpScheduler } from "./server/mcp";
 // Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
 import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import { getArtifactActions, handleArtifactAction } from "./server/routes/artifact-actions";
@@ -757,7 +757,7 @@ const server = Bun.serve({
     }
 
     // API routes
-    if (path.startsWith("/api/") || path === "/mcp" || path === "/health") {
+    if (path.startsWith("/api/") || path.startsWith("/mcp") || path === "/health") {
       // Auth check for /api/ routes (not /mcp or /health which are internal/monitoring)
       if (path.startsWith("/api/")) {
         const authToken = getAuthToken();
@@ -997,6 +997,35 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     // ---- clawd-chat standard routes ----
 
+    // Space-scoped MCP endpoint (Claude Code sub-agents — only complete_task)
+    if (path.startsWith("/mcp/space/")) {
+      const spaceId = path.slice("/mcp/space/".length);
+      if (spaceId) return handleSpaceMcpRequest(req, spaceId);
+    }
+
+    // Claude Code PostToolUse hook callback
+    if (path === "/api/claude-code.toolResult" && req.method === "POST") {
+      try {
+        const body = (await req.json()) as {
+          space_id?: string;
+          tool_name?: string;
+          tool_input?: unknown;
+          tool_response?: unknown;
+        };
+        const { space_id, tool_name, tool_input, tool_response } = body;
+        if (space_id && tool_name) {
+          const { getClaudeCodeWorker } = await import("./spaces/claude-code-worker");
+          const worker = getClaudeCodeWorker(space_id);
+          if (worker) {
+            worker.handleToolResult(tool_name, tool_input, tool_response);
+          }
+        }
+        return json({ ok: true });
+      } catch {
+        return json({ ok: false }, 400);
+      }
+    }
+
     // MCP endpoint
     if (path === "/mcp" || path === "/api/mcp") {
       return handleMcpRequest(req);
@@ -1234,6 +1263,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         article_json: body.article_json,
         subspace_json: body.subspace_json,
         workspace_json: body.workspace_json,
+        tool_result_json: body.tool_result_json,
         interactive_json: body.interactive_json,
       });
       if ((result as any).cleared) {
