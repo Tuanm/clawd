@@ -25,7 +25,7 @@ Claw'd is an open-source platform where AI agents operate autonomously through a
 ### Install & Build
 
 ```sh
-git clone https://github.com/clawd-pilot/clawd.git
+git clone https://github.com/Tuanm/clawd.git
 cd clawd
 bun install
 bun run build    # Builds UI → embeds assets → compiles binary
@@ -668,7 +668,7 @@ The multi-stage Dockerfile:
 
 GitHub workflow publishes Docker images to **ghcr.io** on tag push:
 - **Trigger**: Push tag (e.g., `v1.2.3`)
-- **Registry**: `ghcr.io/clawd-pilot/clawd`
+- **Registry**: `ghcr.io/Tuanm/clawd`
 - **Tags**: Version-specific (e.g., `v1.2.3`) and `latest`
 
 ### Run with Docker Compose
@@ -678,7 +678,7 @@ GitHub workflow publishes Docker images to **ghcr.io** on tag push:
 services:
   clawd:
     build: .
-    image: ghcr.io/clawd-pilot/clawd:latest
+    image: ghcr.io/Tuanm/clawd:latest
     ports:
       - "3456:3456"
     volumes:

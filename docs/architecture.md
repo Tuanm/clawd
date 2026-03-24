@@ -1771,7 +1771,7 @@ The Dockerfile uses a two-stage build for minimal image size:
 # compose.yaml
 services:
   clawd:
-    image: ghcr.io/clawd-pilot/clawd:latest
+    image: ghcr.io/Tuanm/clawd:latest
     build: .
     restart: unless-stopped
     ports:
@@ -1924,4 +1924,3 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
 | `data/attachments/` | File storage for uploads and generated images |
 | `memory.db` | LLM session history, knowledge base, long-term agent memories |
 | `mcp-oauth-tokens.json` | Cached OAuth tokens for authenticated MCP server connections |
-

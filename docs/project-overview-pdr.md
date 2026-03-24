@@ -604,7 +604,7 @@
 
 ## Support & Community
 
-- **Repository**: https://github.com/clawd-pilot/clawd
+- **Repository**: https://github.com/Tuanm/clawd
 - **Documentation**: `docs/` directory
 - **Issues**: GitHub Issues for bugs and feature requests
 - **Contributing**: PRs welcome; follow `docs/code-standards.md`
