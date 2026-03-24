@@ -14,6 +14,18 @@ import { smartTruncate } from "../utils/smart-truncation";
 // ============================================================================
 
 /**
+ * Normalize tool call IDs to a provider-agnostic format ("call_<unique>").
+ * Providers use different prefixes: Anthropic "toolu_", MiniMax "call_function_",
+ * Ollama numeric indices. Normalizing ensures sessions are portable across providers.
+ */
+function normalizeToolCallId(id: string): string {
+  if (!id) return `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  if (id.startsWith("call_")) return id;
+  const unique = id.replace(/^(toolu_|tooluse_|tool_use_)/, "");
+  return `call_${unique}`;
+}
+
+/**
  * Safe JSON parse that returns undefined on failure
  */
 function safeJsonParse<T>(text: string | null | undefined): T | undefined {
@@ -185,15 +197,24 @@ export class SessionManager {
   addMessage(sessionId: string, message: Message): number {
     const now = Date.now();
 
+    // Normalize tool call IDs to standard "call_" prefix for cross-provider compatibility.
+    // Different providers use different prefixes (Anthropic: "toolu_", MiniMax: "call_function_",
+    // Ollama: numeric), but the session store should be provider-agnostic.
+    const normalizedToolCalls = message.tool_calls?.map((tc) => ({
+      ...tc,
+      id: normalizeToolCallId(tc.id),
+    }));
+    const normalizedToolCallId = message.tool_call_id ? normalizeToolCallId(message.tool_call_id) : null;
+
     const result = this.db.run(
-      `INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, created_at) 
+      `INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [
         sessionId,
         message.role,
         message.content,
-        message.tool_calls ? JSON.stringify(message.tool_calls) : null,
-        message.tool_call_id || null,
+        normalizedToolCalls ? JSON.stringify(normalizedToolCalls) : null,
+        normalizedToolCallId,
         now,
       ],
     );
