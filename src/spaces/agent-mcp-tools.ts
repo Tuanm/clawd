@@ -1,5 +1,5 @@
 /**
- * Agent MCP Tools — MCP tool definitions + handlers for claude_code, list_agents, etc.
+ * Agent MCP Tools — MCP tool definitions + handlers for spawn_agent, list_agents, etc.
  * Used by handleAgentMcpRequest to expose agent management tools via MCP.
  */
 
@@ -42,9 +42,9 @@ function surrogateSlice(s: string, maxLen: number): string {
 
 export const AGENT_MCP_TOOLS = [
   {
-    name: "claude_code",
+    name: "spawn_agent",
     description:
-      "Spawn a Claude Code sub-agent to handle a complex coding task autonomously. The sub-agent works independently with full tool access (file read/write/edit, bash, grep, etc.).\n\nModel guide: 'opus' (complex), 'sonnet' (default), 'haiku' (quick).\n\nThe sub-agent runs asynchronously. Use list_agents to check status and get_agent_report to read results.",
+      "Spawn a sub-agent to handle a task autonomously. The sub-agent works independently with full tool access (file read/write/edit, bash, grep, etc.).\n\nModel guide: 'opus' (complex), 'sonnet' (default), 'haiku' (quick).\n\nThe sub-agent runs asynchronously. Use list_agents to check status and get_agent_report to read results.",
     inputSchema: {
       type: "object",
       properties: {
@@ -152,7 +152,7 @@ export async function executeAgentToolCall(
   }
 
   switch (name) {
-    case "claude_code": {
+    case "spawn_agent": {
       const task = args.task as string;
       if (!task) return textResult(JSON.stringify({ ok: false, error: "Missing task" }));
 

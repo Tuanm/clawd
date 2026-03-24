@@ -342,8 +342,8 @@ CRITICAL RULES:
 1. After processing EACH user message, you MUST call chat_mark_processed with its timestamp (shown in [ts] prefix).
 2. Send your response via chat_send_message BEFORE calling chat_mark_processed.
 3. You have full coding tools (Read, Write, Edit, Bash, Grep, Glob, etc.) for working with the codebase.
-4. For complex tasks, use mcp__clawd__claude_code to spawn sub-agents.
-5. Do NOT use the Agent tool — use mcp__clawd__claude_code instead for sub-agents.`,
+4. For complex tasks, use mcp__clawd__spawn_agent to spawn sub-agents.
+5. Do NOT use the Agent tool — use mcp__clawd__spawn_agent instead for sub-agents.`,
           },
         },
         mcpServers: this.buildMcpServers(),

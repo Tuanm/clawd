@@ -3055,24 +3055,6 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       // Return all chat tools + agent management tools + browser tools
       const { AGENT_MCP_TOOLS } = await import("../spaces/agent-mcp-tools");
 
-      // Determine agent provider to filter tools appropriately
-      let agentProvider = "copilot";
-      try {
-        const agent = db
-          .query<{ provider: string | null }, [string, string]>(
-            `SELECT provider FROM channel_agents WHERE agent_id = ? AND channel = ?`,
-          )
-          .get(agentId, channel);
-        if (agent?.provider) agentProvider = agent.provider;
-      } catch {}
-
-      // Filter agent tools by provider:
-      // - claude-code agents: show claude_code, hide spawn_agent (uses SDK directly)
-      // - other providers: show spawn_agent, hide claude_code (uses WorkerLoop)
-      const isClaudeCode = agentProvider === "claude-code";
-      const hiddenTools = isClaudeCode ? new Set(["spawn_agent"]) : new Set(["claude_code"]);
-      const filteredAgentTools = AGENT_MCP_TOOLS.filter((t: any) => !hiddenTools.has(t.name));
-
       // Get plugin tool definitions dynamically (browser, tunnel)
       const pluginToolDefs: any[] = [];
       const pluginToRegister = [
@@ -3371,7 +3353,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
 
       const allTools = [
         ...MCP_TOOLS,
-        ...filteredAgentTools,
+        ...AGENT_MCP_TOOLS,
         ...pluginToolDefs,
         ...jobToolDefs,
         ...memoToolDefs,
@@ -3744,7 +3726,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
 
       // Check if this is an agent management or todo tool
       const AGENT_TOOL_NAMES = [
-        "claude_code",
+        "spawn_agent",
         "list_agents",
         "get_agent_report",
         "stop_agent",
