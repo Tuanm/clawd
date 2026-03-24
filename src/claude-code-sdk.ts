@@ -194,7 +194,12 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     if (opts.resume && (msg.includes("exited with code") || msg.includes("No conversation found"))) {
       console.warn(`[claude-code-sdk] Clearing stale session ${opts.resume?.slice(0, 8)}... — retrying fresh`);
       callbacks.onSessionId(""); // Signal session cleared
-      await runStream(baseOptions);
+      try {
+        await runStream(baseOptions);
+      } catch (retryErr: any) {
+        console.error(`[claude-code-sdk] Retry also failed: ${retryErr.message?.slice(0, 200)}`);
+        throw retryErr;
+      }
     } else {
       throw err;
     }
