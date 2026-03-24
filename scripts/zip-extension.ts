@@ -5,23 +5,45 @@
  * 1. Creates dist/browser-extension.zip from packages/browser-extension/
  * 2. Generates src/embedded-extension.ts with the zip as base64
  *
+ * Uses JSZip (no system `zip` command needed — works on Windows/Linux/macOS)
+ *
  * Usage: bun run scripts/zip-extension.ts
  */
 
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { $ } from "bun";
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import JSZip from "jszip";
 
 const EXT_DIR = join(import.meta.dir, "..", "packages", "browser-extension");
 const ZIP_OUTPUT = join(import.meta.dir, "..", "dist", "browser-extension.zip");
 const TS_OUTPUT = join(import.meta.dir, "..", "src", "embedded-extension.ts");
 
+const EXCLUDE = new Set(["README.md", ".DS_Store"]);
+const EXCLUDE_DIRS = new Set([".git", "node_modules"]);
+
 mkdirSync(join(import.meta.dir, "..", "dist"), { recursive: true });
 
-// Create zip using system zip command
-await $`cd ${EXT_DIR} && zip -r ${ZIP_OUTPUT} . -x "README.md" -x ".git/*" -x "node_modules/*" -x ".DS_Store"`.quiet();
+// Recursively add files to zip
+function addDir(zip: JSZip, dirPath: string, baseDir: string): void {
+  for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+    const fullPath = join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      if (EXCLUDE_DIRS.has(entry.name)) continue;
+      addDir(zip, fullPath, baseDir);
+    } else {
+      if (EXCLUDE.has(entry.name)) continue;
+      const relPath = relative(baseDir, fullPath);
+      zip.file(relPath, readFileSync(fullPath));
+    }
+  }
+}
 
-const zipBuffer = readFileSync(ZIP_OUTPUT);
+const zip = new JSZip();
+addDir(zip, EXT_DIR, EXT_DIR);
+
+const zipBuffer = Buffer.from(await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" }));
+writeFileSync(ZIP_OUTPUT, zipBuffer);
+
 const base64 = zipBuffer.toString("base64");
 const size = zipBuffer.length;
 
