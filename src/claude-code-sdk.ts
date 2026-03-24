@@ -18,10 +18,10 @@ import type {
   McpServerConfig,
   SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 // ============================================================================
 // Types
@@ -114,28 +114,44 @@ function buildEnv(extra?: Record<string, string | undefined>): Record<string, st
 // ============================================================================
 
 /**
- * Resolve the SDK's cli.js path. In dev mode (bun run src/...), the SDK finds
- * it relative to import.meta.url. In compiled binaries, import.meta.url points
- * to the binary itself, so we resolve it manually.
+ * Resolve the SDK's cli.js path. Search order:
+ * 1. node_modules (dev mode)
+ * 2. Extracted from embedded binary (~/.clawd/bin/cli.js)
+ * 3. Next to the compiled binary
+ * 4. Let SDK try its default resolution
  */
 function resolveSDKCliPath(): { pathToClaudeCodeExecutable: string } | {} {
-  // Try require.resolve first — works in both dev and compiled if node_modules exists
+  // 1. Try require.resolve — works in dev mode
   try {
     const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
     const cliJs = join(dirname(sdkEntry), "cli.js");
     if (existsSync(cliJs)) return { pathToClaudeCodeExecutable: cliJs };
   } catch {}
 
-  // Fallback: search common locations
+  // 2. Check extracted location (~/.clawd/bin/cli.js) — cross-platform
+  const clawdBinDir = join(homedir(), ".clawd", "bin");
+  const extractedPath = join(clawdBinDir, "cli.js");
+  if (existsSync(extractedPath)) return { pathToClaudeCodeExecutable: extractedPath };
+
+  // 3. Extract from embedded binary
+  try {
+    const { CLI_JS_GZIP_BASE64 } = require("./embedded-cli");
+    if (CLI_JS_GZIP_BASE64) {
+      mkdirSync(clawdBinDir, { recursive: true });
+      const compressed = Buffer.from(CLI_JS_GZIP_BASE64, "base64");
+      const raw = gunzipSync(compressed);
+      writeFileSync(extractedPath, raw, { mode: 0o755 });
+      console.log(
+        `[claude-code-sdk] Extracted cli.js to ${extractedPath} (${(raw.length / 1024 / 1024).toFixed(1)}MB)`,
+      );
+      return { pathToClaudeCodeExecutable: extractedPath };
+    }
+  } catch {}
+
+  // 4. Next to compiled binary
   const binDir = dirname(process.execPath);
-  const candidates = [
-    join(binDir, "cli.js"), // Next to compiled binary
-    join(process.cwd(), "node_modules", "@anthropic-ai", "claude-agent-sdk", "cli.js"),
-    join(homedir(), ".clawd", "node_modules", "@anthropic-ai", "claude-agent-sdk", "cli.js"),
-  ];
-  for (const c of candidates) {
-    if (existsSync(c)) return { pathToClaudeCodeExecutable: c };
-  }
+  const nextToBinary = join(binDir, "cli.js");
+  if (existsSync(nextToBinary)) return { pathToClaudeCodeExecutable: nextToBinary };
 
   // Let SDK try its default resolution
   return {};
