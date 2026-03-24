@@ -62,9 +62,8 @@ function createPreToolUseHook(): HookCallbackMatcher {
       return {
         decision: "block" as const,
         reason:
-          "run_in_background is not supported in this environment — background jobs are lost when the agent subprocess restarts. " +
-          "Instead, run the command synchronously, or for long-running tasks use the MCP tool mcp__clawd__job_submit(name, command) which persists via tmux. " +
-          "Check job status with mcp__clawd__job_status(job_id) and cancel with mcp__clawd__job_cancel(job_id).",
+          "run_in_background is not supported — background jobs are lost when the subprocess restarts. " +
+          "Run the command synchronously instead, or break long-running tasks into shorter sequential commands.",
       };
     }
     return {};
