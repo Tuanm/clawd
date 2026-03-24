@@ -3102,7 +3102,78 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         } catch {}
       }
 
-      const allTools = [...MCP_TOOLS, ...filteredAgentTools, ...pluginToolDefs];
+      // Add job tools if tmux is available
+      const jobToolDefs: any[] = [];
+      try {
+        const { hasTmux } = await import("../claude-code-utils");
+        if (hasTmux()) {
+          jobToolDefs.push(
+            {
+              name: "job_submit",
+              description:
+                "Submit a background command that persists via tmux (survives agent restarts). Returns a job ID.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  name: { type: "string", description: "Short name for the job" },
+                  command: { type: "string", description: "Bash command to execute" },
+                },
+                required: ["name", "command"],
+              },
+            },
+            {
+              name: "job_status",
+              description: "Get status of background jobs. Omit job_id to list all jobs.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  job_id: { type: "string", description: "Specific job ID (optional)" },
+                  status_filter: {
+                    type: "string",
+                    enum: ["pending", "running", "completed", "failed", "cancelled"],
+                    description: "Filter by status",
+                  },
+                },
+              },
+            },
+            {
+              name: "job_cancel",
+              description: "Cancel a background job.",
+              inputSchema: {
+                type: "object",
+                properties: { job_id: { type: "string", description: "Job ID to cancel" } },
+                required: ["job_id"],
+              },
+            },
+            {
+              name: "job_wait",
+              description: "Wait for a background job to complete and return its output.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  job_id: { type: "string", description: "Job ID to wait for" },
+                  timeout_ms: { type: "number", description: "Max wait time in ms (default: 60000)" },
+                },
+                required: ["job_id"],
+              },
+            },
+            {
+              name: "job_logs",
+              description: "Get output logs of a background job.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  job_id: { type: "string", description: "Job ID" },
+                  tail: { type: "number", description: "Only get last N lines" },
+                },
+                required: ["job_id"],
+              },
+            },
+          );
+        }
+      } catch {}
+
+      const allTools = [...MCP_TOOLS, ...filteredAgentTools, ...pluginToolDefs, ...jobToolDefs];
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { tools: allTools } }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -3113,6 +3184,76 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         name: string;
         arguments: Record<string, unknown>;
       };
+
+      // Handle job tools (tmux-based background jobs)
+      if (name.startsWith("job_")) {
+        try {
+          const { tmuxJobManager } = await import("../agent/jobs/tmux-manager");
+          const args = toolArgs || {};
+          let text = "";
+
+          switch (name) {
+            case "job_submit": {
+              const jobId = tmuxJobManager.submit(args.name as string, args.command as string);
+              text = JSON.stringify({
+                ok: true,
+                job_id: jobId,
+                message: `Job submitted. Use job_status("${jobId}") to check progress.`,
+              });
+              break;
+            }
+            case "job_status": {
+              if (args.job_id) {
+                const job = tmuxJobManager.get(args.job_id as string);
+                if (!job) {
+                  text = JSON.stringify({ ok: false, error: "Job not found" });
+                  break;
+                }
+                const logs = tmuxJobManager.getLogs(args.job_id as string, 50);
+                text = JSON.stringify(job, null, 2) + "\n--- Last 50 lines ---\n" + (logs || "(no output)");
+              } else {
+                const jobs = tmuxJobManager.list({ status: args.status_filter as any, limit: 20 });
+                text =
+                  jobs.length === 0
+                    ? "No jobs found."
+                    : jobs.map((j: any) => `[${j.status.toUpperCase()}] ${j.id.slice(0, 8)} - ${j.name}`).join("\n");
+              }
+              break;
+            }
+            case "job_cancel": {
+              const ok = tmuxJobManager.cancel(args.job_id as string);
+              text = ok ? `Job ${args.job_id} cancelled.` : `Could not cancel job ${args.job_id}`;
+              break;
+            }
+            case "job_wait": {
+              const job = await tmuxJobManager.waitFor(args.job_id as string, (args.timeout_ms as number) || 60000);
+              const logs = tmuxJobManager.getLogs(args.job_id as string);
+              text = `Job ${job.status} (exit: ${job.exitCode}):\n${logs || "(no output)"}`;
+              break;
+            }
+            case "job_logs": {
+              const logs = tmuxJobManager.getLogs(args.job_id as string, args.tail as number);
+              text = logs || "(no output)";
+              break;
+            }
+            default:
+              text = JSON.stringify({ ok: false, error: `Unknown job tool: ${name}` });
+          }
+
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        } catch (err: any) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "text", text: `Job error: ${err.message}` }] },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      }
 
       // Check if this is an agent management or todo tool
       const AGENT_TOOL_NAMES = [

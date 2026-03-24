@@ -63,7 +63,8 @@ function createPreToolUseHook(): HookCallbackMatcher {
         decision: "block" as const,
         reason:
           "run_in_background is not supported — background jobs are lost when the subprocess restarts. " +
-          "Run the command synchronously instead, or break long-running tasks into shorter sequential commands.",
+          "Run the command synchronously, or use mcp__clawd__job_submit(name, command) for persistent background jobs. " +
+          "Check with mcp__clawd__job_status(job_id), wait with mcp__clawd__job_wait(job_id), cancel with mcp__clawd__job_cancel(job_id).",
       };
     }
     return {};
