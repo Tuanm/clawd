@@ -3173,7 +3173,210 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         }
       } catch {}
 
-      const allTools = [...MCP_TOOLS, ...filteredAgentTools, ...pluginToolDefs, ...jobToolDefs];
+      // Memo tools (agent long-term memory)
+      const memoToolDefs = [
+        {
+          name: "memo_save",
+          description:
+            "Save important information to your long-term memory. Memories persist across sessions and are scoped to you. Use categories: fact, preference, decision, lesson, correction.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              content: { type: "string", description: "The information to remember (one fact per save)" },
+              category: {
+                type: "string",
+                enum: ["fact", "preference", "decision", "lesson", "correction"],
+                description: "Memory category (default: fact)",
+              },
+              scope: {
+                type: "string",
+                enum: ["channel", "agent"],
+                description: '"channel" (default) = this channel only, "agent" = across all channels',
+              },
+            },
+            required: ["content"],
+          },
+        },
+        {
+          name: "memo_recall",
+          description: "Search your long-term memories. Without a query, returns recent memories.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: { type: "string", description: "Search keywords (optional)" },
+              category: {
+                type: "string",
+                enum: ["fact", "preference", "decision", "lesson", "correction"],
+                description: "Filter by category",
+              },
+              limit: { type: "number", description: "Max results (default: 20)" },
+              offset: { type: "number", description: "Offset for pagination (default: 0)" },
+            },
+            required: [],
+          },
+        },
+        {
+          name: "memo_delete",
+          description: "Delete a memory by its ID. Use memo_recall to find IDs.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "number", description: "Memory ID to delete" },
+            },
+            required: ["id"],
+          },
+        },
+        {
+          name: "memo_pin",
+          description: "Pin a memory so it is ALWAYS loaded into your context.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "number", description: "Memory ID to pin" },
+            },
+            required: ["id"],
+          },
+        },
+        {
+          name: "memo_unpin",
+          description: "Unpin a previously pinned memory.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "number", description: "Memory ID to unpin" },
+            },
+            required: ["id"],
+          },
+        },
+      ];
+
+      // Task tools (channel kanban board)
+      const taskToolDefs = [
+        {
+          name: "task_add",
+          description: "Add a new task to the channel kanban board.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              title: { type: "string", description: "Task title (brief, actionable)" },
+              description: { type: "string", description: "Detailed description (optional)" },
+              priority: { type: "string", description: "P0 (critical), P1 (high), P2 (medium), P3 (low). Default: P2" },
+              tags: { type: "array", items: { type: "string" }, description: "Tags for categorization" },
+              due_at: { type: "number", description: "Due date as Unix timestamp (optional)" },
+            },
+            required: ["title"],
+          },
+        },
+        {
+          name: "task_batch_add",
+          description: "Create multiple tasks at once (max 20). Preferred for 3+ related tasks.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              tasks: {
+                type: "array",
+                description: "Array of task objects with title (required), description, priority (P0-P3), tags",
+                items: {
+                  type: "object",
+                  properties: {
+                    title: { type: "string" },
+                    description: { type: "string" },
+                    priority: { type: "string" },
+                    tags: { type: "array", items: { type: "string" } },
+                  },
+                  required: ["title"],
+                },
+              },
+            },
+            required: ["tasks"],
+          },
+        },
+        {
+          name: "task_list",
+          description: "View the kanban board. Shows all tasks organized by status.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              status: { type: "string", description: "Filter by status: todo, doing, done, blocked" },
+              limit: { type: "number", description: "Max tasks to return" },
+            },
+            required: [],
+          },
+        },
+        {
+          name: "task_get",
+          description: "Get detailed view of a task including attachments and comments.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task_id: { type: "string", description: "Task ID (or partial ID)" },
+            },
+            required: ["task_id"],
+          },
+        },
+        {
+          name: "task_update",
+          description:
+            "Update a task (status, priority, title). Use claimer when setting status to 'doing' for atomic claim protection.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task_id: { type: "string", description: "Task ID" },
+              status: { type: "string", description: "New status: todo, doing, done, blocked" },
+              priority: { type: "string", description: "New priority: P0, P1, P2, P3" },
+              title: { type: "string", description: "New title" },
+              claimer: {
+                type: "string",
+                description: "Agent ID claiming the task (required when setting status to 'doing')",
+              },
+            },
+            required: ["task_id"],
+          },
+        },
+        {
+          name: "task_complete",
+          description: "Mark a task as done.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task_id: { type: "string", description: "Task ID" },
+            },
+            required: ["task_id"],
+          },
+        },
+        {
+          name: "task_delete",
+          description: "Delete a task from the board.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task_id: { type: "string", description: "Task ID" },
+            },
+            required: ["task_id"],
+          },
+        },
+        {
+          name: "task_comment",
+          description: "Add a comment to a task.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task_id: { type: "string", description: "Task ID" },
+              text: { type: "string", description: "Comment text" },
+            },
+            required: ["task_id", "text"],
+          },
+        },
+      ];
+
+      const allTools = [
+        ...MCP_TOOLS,
+        ...filteredAgentTools,
+        ...pluginToolDefs,
+        ...jobToolDefs,
+        ...memoToolDefs,
+        ...taskToolDefs,
+      ];
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { tools: allTools } }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -3249,6 +3452,290 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               jsonrpc: "2.0",
               id,
               result: { content: [{ type: "text", text: `Job error: ${err.message}` }] },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      }
+
+      // Handle memo tools (agent long-term memory)
+      if (name.startsWith("memo_")) {
+        try {
+          const { getAgentMemoryStore } = await import("../agent/memory/agent-memory");
+          const store = getAgentMemoryStore();
+          const args = toolArgs || {};
+          const VALID_CATEGORIES = ["fact", "preference", "decision", "lesson", "correction"] as const;
+          let text = "";
+
+          switch (name) {
+            case "memo_save": {
+              const content = args.content as string;
+              if (!content || !content.trim()) {
+                text = "Error: content is required";
+                break;
+              }
+              const category = args.category as string | undefined;
+              if (category && !VALID_CATEGORIES.includes(category as any)) {
+                text = `Error: Invalid category "${category}". Valid: ${VALID_CATEGORIES.join(", ")}`;
+                break;
+              }
+              const memChannel = args.scope === "agent" ? null : channel;
+              const result = store.save({
+                agentId,
+                channel: memChannel,
+                content: content.trim(),
+                category: category as any,
+                source: "explicit",
+              });
+              text =
+                result.id === null
+                  ? `Error: ${result.warning || "Failed to save memory"}`
+                  : result.warning
+                    ? `Memory #${result.id} saved (${result.warning})`
+                    : `Memory #${result.id} saved successfully`;
+              break;
+            }
+            case "memo_recall": {
+              const results = store.recall({
+                agentId,
+                channel,
+                query: args.query as string | undefined,
+                category: args.category as any,
+                limit: args.limit as number | undefined,
+                offset: args.offset as number | undefined,
+                includeGlobal: true,
+              });
+              if (results.length === 0) {
+                text = args.query ? `No memories found matching "${args.query}"` : "No memories saved yet";
+              } else {
+                const now = Math.floor(Date.now() / 1000);
+                const lines = results.map((m: any) => {
+                  const diff = now - m.createdAt;
+                  const age =
+                    diff < 60
+                      ? "just now"
+                      : diff < 3600
+                        ? `${Math.floor(diff / 60)}m ago`
+                        : diff < 86400
+                          ? `${Math.floor(diff / 3600)}h ago`
+                          : `${Math.floor(diff / 86400)}d ago`;
+                  const scope = m.channel ? "" : " [agent-wide]";
+                  const pin = m.priority >= 80 ? " [pinned]" : "";
+                  return `#${m.id} [${m.category}] (${age}${scope}${pin}): ${m.content}`;
+                });
+                const header = args.query
+                  ? `Found ${results.length} memories matching "${args.query}":`
+                  : `Recent ${results.length} memories:`;
+                text = `${header}\n${lines.join("\n")}`;
+              }
+              break;
+            }
+            case "memo_delete": {
+              const memId = Number(args.id);
+              if (!memId || isNaN(memId)) {
+                text = "Error: Valid memory ID required";
+                break;
+              }
+              const deleted = store.delete(memId, agentId);
+              text = deleted ? `Memory #${memId} deleted` : `Error: Memory #${memId} not found or not owned by you`;
+              break;
+            }
+            case "memo_pin": {
+              const memId = Number(args.id);
+              if (!memId || isNaN(memId)) {
+                text = "Error: Valid memory ID required";
+                break;
+              }
+              const result = store.pin(memId, agentId);
+              text = result.success
+                ? `Memory #${memId} pinned — it will always be loaded into your context.`
+                : `Error: ${result.error || "Failed to pin"}`;
+              break;
+            }
+            case "memo_unpin": {
+              const memId = Number(args.id);
+              if (!memId || isNaN(memId)) {
+                text = "Error: Valid memory ID required";
+                break;
+              }
+              const result = store.unpin(memId, agentId);
+              text = result.success
+                ? `Memory #${memId} unpinned — it will only be loaded when relevant.`
+                : `Error: ${result.error || "Failed to unpin"}`;
+              break;
+            }
+            default:
+              text = `Error: Unknown memo tool: ${name}`;
+          }
+
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        } catch (err: any) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "text", text: `Memo error: ${err.message}` }] },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      }
+
+      // Handle task tools (channel kanban board)
+      if (name.startsWith("task_")) {
+        try {
+          const { listTasks, getTask, createTask, createTasksBatch, updateTask, deleteTask, addTaskComment } =
+            await import("./routes/tasks");
+          const args = toolArgs || {};
+          let text = "";
+
+          switch (name) {
+            case "task_add": {
+              const title = args.title as string;
+              if (!title) {
+                text = "Error: title is required";
+                break;
+              }
+              const task = createTask({
+                title,
+                description: args.description as string | undefined,
+                priority: args.priority as string | undefined,
+                tags: args.tags as string[] | undefined,
+                due_at: args.due_at as number | undefined,
+                agent_id: agentId,
+                channel,
+              });
+              text = `Created: [${task.priority}] ${task.title} (${task.id})`;
+              break;
+            }
+            case "task_batch_add": {
+              const tasks = args.tasks as Array<{
+                title: string;
+                description?: string;
+                priority?: string;
+                tags?: string[];
+              }>;
+              if (!Array.isArray(tasks) || tasks.length === 0) {
+                text = "Error: tasks must be a non-empty array";
+                break;
+              }
+              const created = createTasksBatch(tasks, agentId, channel);
+              text =
+                `Created ${created.length} task(s):\n` +
+                created.map((t) => `- [${t.priority}] ${t.title} (${t.id})`).join("\n");
+              break;
+            }
+            case "task_list": {
+              const tasks = listTasks({
+                status: args.status as string | undefined,
+                limit: args.limit as number | undefined,
+                channel,
+              });
+              if (!tasks.length) {
+                text = "Kanban board is empty. Add tasks with task_add.";
+                break;
+              }
+              const byStatus: Record<string, any[]> = { todo: [], doing: [], blocked: [], done: [] };
+              for (const t of tasks) (byStatus[t.status] || []).push(t);
+              text = "KANBAN BOARD\n" + "=".repeat(50) + "\n";
+              for (const [s, list] of Object.entries(byStatus)) {
+                if (list.length === 0) continue;
+                text += `\n## ${s.toUpperCase()} (${list.length})\n`;
+                for (const t of list) text += `- [${t.priority}] ${t.title} (${t.id.slice(-8)})\n`;
+              }
+              break;
+            }
+            case "task_get": {
+              const task = getTask(args.task_id as string);
+              if (!task) {
+                text = `Error: Task not found: ${args.task_id}`;
+                break;
+              }
+              text = `${task.title}\n${"=".repeat(50)}\n`;
+              text += `ID: ${task.id} | Status: ${task.status} | Priority: ${task.priority}\n`;
+              if (task.tags?.length) text += `Tags: #${task.tags.join(" #")}\n`;
+              if (task.description) text += `\nDescription:\n${task.description}\n`;
+              if (task.attachments?.length) {
+                text += `\nAttachments (${task.attachments.length}):\n`;
+                for (const a of task.attachments) text += `  ${a.name}${a.url ? ` - ${a.url}` : ""}\n`;
+              }
+              if (task.comments?.length) {
+                text += `\nComments (${task.comments.length}):\n`;
+                for (const c of task.comments) text += `  [${c.author}] ${c.text}\n`;
+              }
+              break;
+            }
+            case "task_update": {
+              const task_id = args.task_id as string;
+              if (!task_id) {
+                text = "Error: task_id is required";
+                break;
+              }
+              const result = updateTask(task_id, {
+                status: args.status as any,
+                priority: args.priority as any,
+                title: args.title as string | undefined,
+                claimer: args.claimer as string | undefined,
+              });
+              if (!result.success) {
+                const failResult = result as { success: false; error: string; claimed_by?: string };
+                text =
+                  failResult.error === "already_claimed"
+                    ? `Error: Task already claimed by ${failResult.claimed_by}. Pick another task.`
+                    : `Error: Task not found: ${task_id}`;
+              } else {
+                const t = result.task;
+                text = `Updated: [${t.status}] [${t.priority}] ${t.title}`;
+                if (t.claimed_by) text += ` (claimed by: ${t.claimed_by})`;
+              }
+              break;
+            }
+            case "task_complete": {
+              const task_id = args.task_id as string;
+              if (!task_id) {
+                text = "Error: task_id is required";
+                break;
+              }
+              const result = updateTask(task_id, { status: "done" });
+              text = result.success ? `Completed: ${result.task.title}` : `Error: Task not found: ${task_id}`;
+              break;
+            }
+            case "task_delete": {
+              const task_id = args.task_id as string;
+              if (!task_id) {
+                text = "Error: task_id is required";
+                break;
+              }
+              const deleted = deleteTask(task_id);
+              text = deleted ? "Task deleted" : `Error: Task not found: ${task_id}`;
+              break;
+            }
+            case "task_comment": {
+              const task_id = args.task_id as string;
+              const commentText = args.text as string;
+              if (!task_id || !commentText) {
+                text = "Error: task_id and text are required";
+                break;
+              }
+              const task = addTaskComment(task_id, agentId, commentText);
+              text = task ? "Comment added" : `Error: Task not found: ${task_id}`;
+              break;
+            }
+            default:
+              text = `Error: Unknown task tool: ${name}`;
+          }
+
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        } catch (err: any) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "text", text: `Task error: ${err.message}` }] },
             }),
             { headers: { ...corsHeaders, "Content-Type": "application/json" } },
           );
