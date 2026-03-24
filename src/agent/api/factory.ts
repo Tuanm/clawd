@@ -106,8 +106,6 @@ export function createProvider(providerType?: string, modelOverride?: string): L
         return createCopilotProvider(effectiveModelOverride);
       case "ollama":
         return createOllamaProvider(effectiveModelOverride, providerName);
-      case "minimax":
-        return createMiniMaxProvider(effectiveModelOverride, providerName);
       case "claude-code":
         throw new Error(
           "claude-code is not an LLM API provider — it uses ClaudeCodeMainWorker. " +
@@ -182,25 +180,6 @@ function createOllamaProvider(modelOverride?: string, customProviderName?: strin
   const model = modelOverride || getModelForProvider(name);
 
   return new OllamaProvider({ baseUrl, apiKey: apiKey || "", model, providerType: name });
-}
-
-/**
- * Create MiniMax provider (uses Anthropic-compatible API for chat completions)
- * Image generation uses a separate endpoint handled in multimodal.ts
- * @param customProviderName if set, config is read from this custom provider entry
- */
-function createMiniMaxProvider(modelOverride?: string, customProviderName?: string): LLMProvider {
-  const name = customProviderName ?? "minimax";
-  const baseUrl = getBaseUrlForProvider(name) || "https://api.minimax.io/anthropic";
-  const apiKey = getApiKeyForProvider(name);
-  const model = modelOverride || getModelForProvider(name);
-
-  return new AnthropicProvider({
-    baseUrl,
-    apiKey: apiKey || "",
-    model,
-    providerType: name,
-  });
 }
 
 // ============================================================================
