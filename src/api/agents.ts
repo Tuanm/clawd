@@ -659,6 +659,21 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "agent_not_found" }, 404);
         }
 
+        // Reset session when provider changes — old session may contain
+        // messages in incompatible format (e.g. Anthropic tool IDs vs OpenAI)
+        if (provider !== undefined && provider !== agent.provider) {
+          try {
+            const { getSessionManager } = await import("../agent/session/manager");
+            const sm = getSessionManager();
+            const sessionName = `${channel}-${agent_id.replace(/[^a-zA-Z0-9]/g, "_")}`;
+            if (sm.resetSession(sessionName)) {
+              console.log(
+                `[agents] Provider changed (${agent.provider} → ${provider}), reset session "${sessionName}"`,
+              );
+            }
+          } catch {}
+        }
+
         // Restart worker if model, provider, project, worker_token, heartbeat_interval, or agent_type changed, or active state changed
         if (
           model !== undefined ||
