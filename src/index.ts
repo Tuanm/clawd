@@ -2531,3 +2531,16 @@ const gracefulShutdown = async (signal: string) => {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// Prevent unhandled rejections from crashing the process
+// (Claude Code SDK subprocess errors can surface as unhandled rejections)
+process.on("unhandledRejection", (reason: any) => {
+  console.error(`[clawd-app] Unhandled rejection: ${reason?.message || reason}`);
+  if (reason?.stack) console.error(`[clawd-app] Stack: ${reason.stack.slice(0, 500)}`);
+});
+
+process.on("uncaughtException", (err: Error) => {
+  console.error(`[clawd-app] Uncaught exception: ${err.message}`);
+  if (err.stack) console.error(`[clawd-app] Stack: ${err.stack.slice(0, 500)}`);
+  // Don't exit — let the process continue serving other agents
+});
