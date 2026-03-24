@@ -862,12 +862,11 @@ class OllamaProvider implements LLMProvider {
         return true;
       })
       .map((msg) => {
-        // Handle tool results - Ollama uses "tool_name" not "tool_call_id"
+        // Handle tool results
         if (msg.role === "tool") {
           return {
             role: "tool",
-            tool_name: msg.tool_call_id || "unknown", // Extract tool name from tool_call_id
-            content: msg.content,
+            content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content || ""),
           };
         }
 
@@ -878,28 +877,24 @@ class OllamaProvider implements LLMProvider {
             role: "assistant",
             content: msg.content,
             tool_calls: msg.tool_calls.map((tc, idx) => ({
-              id: String(idx), // Convert index to string id for matching tool results
+              id: String(idx),
               index: idx,
               function: {
                 name: tc.function.name,
+                // Ollama Cloud expects arguments as an object, not a string
                 arguments: (() => {
                   const args = tc.function.arguments;
-                  // Always ensure arguments is a valid JSON string
                   if (args === null || args === undefined) {
-                    return "{}";
+                    return {};
                   }
                   if (typeof args === "string") {
-                    // Try to parse and re-stringify to ensure valid JSON
                     try {
-                      const parsed = JSON.parse(args);
-                      return JSON.stringify(parsed);
+                      return JSON.parse(args);
                     } catch {
-                      // If not valid JSON, wrap it as a string value
-                      return JSON.stringify({ _raw: args });
+                      return { _raw: args };
                     }
                   }
-                  // It's an object - stringify it
-                  return JSON.stringify(args);
+                  return args;
                 })(),
               },
             })),

@@ -1041,7 +1041,7 @@ Documented in docs/brainstorm-* files:
 ### Install & Build
 
 ```sh
-git clone https://github.com/clawd-pilot/clawd.git
+git clone https://github.com/Tuanm/clawd.git
 cd clawd
 bun install
 bun run build

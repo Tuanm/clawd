@@ -83,7 +83,7 @@ function getDefaultConfig(): Config {
     providers: {
       ollama: {
         base_url: "https://ollama.com",
-        models: { default: "glm-5:cloud" },
+        models: { default: "minimax-m2.7:cloud" },
       },
     },
   };
@@ -247,7 +247,7 @@ export function getModelForProvider(providerName: string): string {
     anthropic: "claude-sonnet-4-6",
     openai: "gpt-4o",
     copilot: "claude-sonnet-4.6",
-    ollama: "glm-5:cloud",
+    ollama: "minimax-m2.7:cloud",
     "claude-code": "sonnet",
   };
 
