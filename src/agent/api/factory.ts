@@ -16,7 +16,7 @@ import {
   mapModelName,
   resolveProviderBaseType,
 } from "./provider-config";
-import type { CompletionRequest, CompletionResponse, LLMProvider, ProviderType, StreamEvent } from "./providers";
+import type { CompletionRequest, CompletionResponse, LLMProvider, Message, ProviderType, StreamEvent } from "./providers";
 
 type ReadableStreamReadResult<T> = ReadableStreamDefaultReadDoneResult | ReadableStreamDefaultReadValueResult<T>;
 
@@ -214,6 +214,39 @@ class OpenAIProvider implements LLMProvider {
     return this.apiKey;
   }
 
+  /**
+   * Sanitize request for OpenAI-compatible providers that may have stricter
+   * validation than standard OpenAI (e.g. MiniMax rejects system role
+   * mid-conversation and Anthropic-format tool IDs).
+   */
+  private sanitizeRequest(request: CompletionRequest, stream: boolean): Record<string, any> {
+    // Merge system messages: extract all system messages and prepend as first message
+    const systemParts: string[] = [];
+    const nonSystemMessages: Message[] = [];
+    for (const m of request.messages) {
+      if (m.role === "system") {
+        if (m.content) systemParts.push(m.content);
+      } else {
+        nonSystemMessages.push(m);
+      }
+    }
+    const messages: Message[] = [];
+    if (systemParts.length > 0) {
+      messages.push({ role: "system", content: systemParts.join("\n\n") });
+    }
+    messages.push(...nonSystemMessages);
+
+    return {
+      model: request.model,
+      messages,
+      stream,
+      ...(request.tools?.length ? { tools: request.tools } : {}),
+      ...(request.tool_choice ? { tool_choice: request.tool_choice } : {}),
+      ...(request.temperature != null ? { temperature: request.temperature } : {}),
+      ...(request.max_tokens != null ? { max_tokens: request.max_tokens } : {}),
+    };
+  }
+
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     const activeKey = this.getActiveApiKey();
     const ctrl = new AbortController();
@@ -226,10 +259,7 @@ class OpenAIProvider implements LLMProvider {
           "Content-Type": "application/json",
           Authorization: `Bearer ${activeKey}`,
         },
-        body: JSON.stringify({
-          ...request,
-          stream: false,
-        }),
+        body: JSON.stringify(this.sanitizeRequest(request, false)),
         signal: ctrl.signal,
       });
     } finally {
@@ -256,10 +286,7 @@ class OpenAIProvider implements LLMProvider {
         "Content-Type": "application/json",
         Authorization: `Bearer ${activeKey}`,
       },
-      body: JSON.stringify({
-        ...request,
-        stream: true,
-      }),
+      body: JSON.stringify(this.sanitizeRequest(request, true)),
       signal,
     });
 
