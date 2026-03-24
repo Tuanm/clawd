@@ -44,18 +44,6 @@ switch (cmd) {
     }
     break;
 
-  case "copy-cli": {
-    const src = resolve("node_modules/@anthropic-ai/claude-agent-sdk/cli.js");
-    const dest = resolve("dist/server/cli.js");
-    if (existsSync(src)) {
-      cpSync(src, dest);
-      console.log("[build-helper] Copied cli.js to dist/server/");
-    } else {
-      console.warn("[build-helper] cli.js not found — Claude Code SDK not installed?");
-    }
-    break;
-  }
-
   default:
     console.error(`Unknown command: ${cmd}`);
     process.exit(1);
