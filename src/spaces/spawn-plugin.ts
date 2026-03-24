@@ -394,15 +394,103 @@ export function createSpawnAgentPlugin(
         : agentConfig.model;
 
       let completionPromise: Promise<string>;
-      try {
-        completionPromise = spaceWorkerManager.startSpaceWorker(
+
+      // Route claude-code provider to ClaudeCodeSpaceWorker (can't use WorkerLoop)
+      if (effectiveProvider === "claude-code") {
+        let ccResolve: (v: string) => void;
+        let ccSettled = false;
+
+        const wrappedResolve = (summary: string) => {
+          if (ccSettled) return;
+          ccSettled = true;
+          ccResolve?.(summary);
+        };
+
+        const ccWorker = new ClaudeCodeSpaceWorker({
           space,
-          { ...agentConfig, agentId: subAgentId, provider: effectiveProvider, model: effectiveModel },
-          agentFileConfig || undefined,
-        );
-      } catch (workerErr: any) {
-        spaceManager.failSpace(space.id, workerErr.message);
-        return { success: false, output: "", error: `Failed to start worker: ${workerErr.message}` };
+          task,
+          context,
+          model: effectiveModel,
+          agentId: subAgentId,
+          apiUrl: config.apiUrl,
+          projectRoot: _cachedProjectRoot || agentConfig.project || undefined,
+          spaceManager,
+          resolve: wrappedResolve,
+          onComplete: () => unregisterClaudeCodeWorker(space.id),
+          agentPrompt: agentFileConfig?.systemPrompt || undefined,
+        });
+        registerClaudeCodeWorker(space.id, ccWorker);
+        spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
+
+        spaceCompleteCallbacks.set(space.id, (result: string) => {
+          const won = spaceManager.completeSpace(space.id, result);
+          if (won) {
+            timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                channel: config.channel,
+                text:
+                  result.length > 10000
+                    ? result.slice(0, 10000) + "\n\n[Result truncated — full result in sub-space]"
+                    : result,
+                user: subAgentId,
+                agent_id: subAgentId,
+              }),
+            }).catch(() => {});
+            wrappedResolve(result);
+            ccWorker.stop();
+          }
+        });
+
+        const timeoutMs = (space.timeout_seconds || 600) * 1000;
+        const timeoutTimer = setTimeout(() => {
+          if (!ccSettled) {
+            ccSettled = true;
+            spaceManager.timeoutSpace(space.id);
+            ccWorker.stop();
+          }
+        }, timeoutMs);
+        if (typeof timeoutTimer === "object" && "unref" in timeoutTimer) (timeoutTimer as any).unref();
+
+        completionPromise = new Promise<string>((resolve, reject) => {
+          ccResolve = resolve;
+          ccWorker
+            .start()
+            .then(() => {
+              if (!ccSettled) {
+                ccSettled = true;
+                spaceManager.failSpace(space.id, "Claude Code exited without calling complete_task");
+                reject(new Error("Claude Code exited without calling complete_task"));
+              }
+            })
+            .catch((err) => {
+              if (!ccSettled) {
+                ccSettled = true;
+                spaceManager.failSpace(space.id, err.message);
+                reject(err);
+              }
+            })
+            .finally(() => {
+              clearTimeout(timeoutTimer);
+              spaceCompleteCallbacks.delete(space.id);
+              spaceAuthTokens.delete(space.id);
+              unregisterClaudeCodeWorker(space.id);
+              ccWorker.cleanup();
+            });
+        });
+      } else {
+        // Normal LLM provider — use WorkerLoop via spaceWorkerManager
+        try {
+          completionPromise = spaceWorkerManager.startSpaceWorker(
+            space,
+            { ...agentConfig, agentId: subAgentId, provider: effectiveProvider, model: effectiveModel },
+            agentFileConfig || undefined,
+          );
+        } catch (workerErr: any) {
+          spaceManager.failSpace(space.id, workerErr.message);
+          return { success: false, output: "", error: `Failed to start worker: ${workerErr.message}` };
+        }
       }
 
       // 5. Set up timeout controller
