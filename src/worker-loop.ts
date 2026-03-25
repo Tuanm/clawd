@@ -48,6 +48,8 @@ const MAX_MESSAGE_LENGTH = 10000;
 // MAX_COMBINED_PROMPT_LENGTH: total prompt size cap (chars) — prevents context overflow for batched messages.
 // ~40k chars ≈ ~10k tokens, well within model limits even with system prompt overhead.
 const MAX_COMBINED_PROMPT_LENGTH = 40000;
+// MAX_WAKEUP_MESSAGES: on wakeup from sleep, only process this many recent messages.
+const MAX_WAKEUP_MESSAGES = 3;
 // MAX_SYSTEM_INSTRUCTIONS_LENGTH: CLAWD.md + agent identity truncation limit (chars).
 // Keeps system instructions bounded so they don't consume too much of the context window.
 const MAX_SYSTEM_INSTRUCTIONS_LENGTH = 4000;
@@ -173,6 +175,7 @@ export class WorkerLoop implements AgentWorker {
   private config: WorkerLoopConfig;
   private running = false;
   private sleeping = false;
+  private wasSleeping = false;
   private isProcessing = false;
   private abortController: AbortController | null = null;
   private activeAgent: import("./agent/agent").Agent | null = null;
@@ -243,8 +246,8 @@ export class WorkerLoop implements AgentWorker {
 
   /** Set sleeping state */
   setSleeping(sleeping: boolean): void {
-    this.sleeping = sleeping;
     if (sleeping) {
+      this.sleeping = true;
       // Clear any pending heartbeat so it doesn't fire on wake
       this.heartbeatPending = false;
       // Cancel in-flight processing so the agent stops immediately
@@ -254,6 +257,8 @@ export class WorkerLoop implements AgentWorker {
         } catch {}
       }
     } else {
+      if (this.sleeping) this.wasSleeping = true;
+      this.sleeping = false;
       // Reset idle backoff when waking so the agent polls immediately at full speed
       this.idlePollMs = POLL_INTERVAL;
     }
@@ -579,6 +584,57 @@ export class WorkerLoop implements AgentWorker {
             // Reset continuation counter when we exit continuation mode (new messages arrived or success)
             this.continuationRetryCount = 0;
             this.lastContinuationBatchHash = null;
+          }
+
+          // Wakeup handling: if agent just woke from sleep with many pending messages,
+          // skip old ones and only process recent messages with conversation summary
+          if (this.wasSleeping && !isContinuation && result.pending.length > MAX_WAKEUP_MESSAGES) {
+            this.wasSleeping = false;
+            const skipped = result.pending.length - MAX_WAKEUP_MESSAGES;
+            const skippedMessages = result.pending.slice(0, skipped);
+            result.pending = result.pending.slice(skipped);
+
+            // Mark skipped messages as processed
+            const lastSkippedTs = skippedMessages[skippedMessages.length - 1].ts;
+            if (this.config.directDb !== false) {
+              try {
+                db.run(
+                  `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+                   VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+                   ON CONFLICT(agent_id, channel) DO UPDATE SET
+                     last_processed_ts = MAX(last_processed_ts, ?),
+                     updated_at = strftime('%s', 'now')`,
+                  [this.config.agentId, this.config.channel, lastSkippedTs, lastSkippedTs, lastSkippedTs],
+                );
+              } catch {}
+            }
+
+            // Build conversation summary
+            const convoLines = skippedMessages.map((m: any) => {
+              const user = m.user === "UHUMAN" ? "Human" : m.agent_id || m.user || "unknown";
+              return `${user}: ${(m.text || "").slice(0, 200).replace(/\n/g, " ")}`;
+            });
+
+            result.pending.unshift({
+              ts: "0",
+              user: "UHUMAN",
+              text: [
+                `[WAKEUP] You've just woken up from sleep.`,
+                ``,
+                `While you were sleeping, ${skipped} message(s) were exchanged on this channel.`,
+                `Here is a summary of the conversation you missed (already processed — do NOT call chat_mark_processed for any of these):`,
+                ``,
+                `--- Missed conversation ---`,
+                convoLines.join("\n"),
+                `--- End of missed conversation ---`,
+                ``,
+                `Now focus ONLY on the new message(s) below. Use the missed conversation as context to understand what happened, but only respond to the new messages.`,
+              ].join("\n"),
+            } as any);
+
+            this.log(`Wakeup: skipped ${skipped} old messages, processing ${result.pending.length - 1} recent`);
+          } else {
+            this.wasSleeping = false;
           }
 
           this.isProcessing = true;

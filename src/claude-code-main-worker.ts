@@ -218,17 +218,30 @@ export class ClaudeCodeMainWorker implements AgentWorker {
               );
             } catch {}
 
-            // Prepend wakeup context to the first message
-            const skippedSummary = skippedMessages
-              .map((m: any) => {
-                const user = m.user === "UHUMAN" ? "human" : m.agent_id || m.user || "unknown";
-                return `- ${user}: ${(m.text || "").slice(0, 100)}`;
-              })
-              .join("\n");
+            // Build a conversation summary of skipped messages
+            const convoLines: string[] = [];
+            for (const m of skippedMessages) {
+              const user = m.user === "UHUMAN" ? "Human" : m.agent_id || m.user || "unknown";
+              const text = (m.text || "").slice(0, 200).replace(/\n/g, " ");
+              convoLines.push(`${user}: ${text}`);
+            }
+            const summary = convoLines.join("\n");
+
             pending.unshift({
               ts: "0",
               user: "UHUMAN",
-              text: `[WAKEUP] You've just woken up from sleep. ${skipped} older message(s) arrived while you were sleeping (already marked as processed — do NOT call chat_mark_processed for them):\n${skippedSummary}\n\nFocus on the most recent message(s) below. If the older messages need attention, the user will re-ask.`,
+              text: [
+                `[WAKEUP] You've just woken up from sleep.`,
+                ``,
+                `While you were sleeping, ${skipped} message(s) were exchanged on this channel.`,
+                `Here is a summary of the conversation you missed (already processed — do NOT call chat_mark_processed for any of these):`,
+                ``,
+                `--- Missed conversation ---`,
+                summary,
+                `--- End of missed conversation ---`,
+                ``,
+                `Now focus ONLY on the new message(s) below. Use the missed conversation as context to understand what happened, but only respond to the new messages. If something from the missed conversation still needs your attention, the user will ask again.`,
+              ].join("\n"),
             });
 
             console.log(

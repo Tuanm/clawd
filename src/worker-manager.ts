@@ -488,8 +488,13 @@ export class WorkerManager {
 
   /** Restart an agent (e.g., after model change) */
   async restartAgent(agent: AgentConfig): Promise<boolean> {
+    // Preserve sleeping state across restart
+    const key = `${agent.channel}:${agent.agentId}`;
+    const existingLoop = this.loops.get(key);
+    const wasSleeping = agent.sleeping ?? existingLoop?.isSleeping ?? false;
+
     await this.stopAgent(agent.channel, agent.agentId);
-    return await this.startAgent(agent);
+    return await this.startAgent({ ...agent, sleeping: wasSleeping });
   }
 
   /**
