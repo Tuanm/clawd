@@ -17,7 +17,7 @@ import {
 } from "./server/websocket";
 import { db, getAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
 import { getPendingMessages } from "./server/routes/messages";
-import { truncateToolResult, formatToolDescription, findClaudeCodeCLI } from "./claude-code-utils";
+import { truncateToolResult, formatToolDescription } from "./claude-code-utils";
 import { initMemorySession, saveToMemory } from "./claude-code-memory";
 import { runSDKQuery } from "./claude-code-sdk";
 import type { AgentHealthSnapshot, AgentWorker } from "./worker-loop";
@@ -150,11 +150,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   // --------------------------------------------------------------------------
 
   async start(): Promise<void> {
-    if (!findClaudeCodeCLI()) {
-      console.error(`[claude-code-main] CLI not found for ${this.config.channel}:${this.config.agentId}`);
-      return;
-    }
-
     this.running = true;
     this.restoreSessionId();
     const sessionName = `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
