@@ -9,7 +9,7 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { setAgentStreaming } from "../server/database";
 import { broadcastAgentStreaming, broadcastAgentToken, broadcastAgentToolCall } from "../server/websocket";
 import { timedFetch } from "../utils/timed-fetch";
-import { truncateToolResult, formatToolDescription, findClaudeCodeCLI, hasTmux } from "../claude-code-utils";
+import { truncateToolResult, formatToolDescription, hasTmux } from "../claude-code-utils";
 import { initMemorySession, saveToMemory } from "../claude-code-memory";
 import { startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "../claude-code-tmux";
 import { runSDKQuery } from "../claude-code-sdk";
@@ -17,7 +17,7 @@ import type { Space } from "./db";
 import type { SpaceManager } from "./manager";
 
 // Re-export utils for backward compatibility (main-worker, spawn-plugin import from here)
-export { findClaudeCodeCLI, hasTmux, truncateToolResult, formatToolDescription };
+export { hasTmux, truncateToolResult, formatToolDescription };
 
 // ============================================================================
 // Types
@@ -60,13 +60,6 @@ export class ClaudeCodeSpaceWorker {
   }
 
   async start(): Promise<void> {
-    // Verify CLI is installed (SDK bundles its own, but check user's for compatibility)
-    if (!findClaudeCodeCLI()) {
-      throw new Error(
-        "Claude Code CLI not installed. Install: npm install -g @anthropic-ai/claude-code, then run: claude /login",
-      );
-    }
-
     while (this.retryCount <= this.maxRetries && !this.stopped) {
       try {
         await this.runOnce();

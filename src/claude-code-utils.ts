@@ -4,23 +4,6 @@
  * Pure helpers used by both main-worker and space-worker.
  */
 
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-
-// ============================================================================
-// CLI Detection
-// ============================================================================
-
-/** Detect Claude Code CLI. Uses Bun.which for cross-platform support. */
-export function findClaudeCodeCLI(configPath?: string): string | null {
-  if (configPath) {
-    const resolved = resolve(configPath);
-    if (existsSync(resolved)) return resolved;
-    return null;
-  }
-  return Bun.which("claude") || null;
-}
-
 // ============================================================================
 // Tmux Detection
 // ============================================================================
