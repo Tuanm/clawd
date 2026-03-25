@@ -3351,6 +3351,31 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         },
       ];
 
+      // Add remote worker tools if agent has a connected remote worker
+      const remoteToolDefs: any[] = [];
+      try {
+        const agentRow = db
+          .query<{ worker_token: string | null }, [string, string]>(
+            `SELECT worker_token FROM channel_agents WHERE agent_id = ? AND channel = ?`,
+          )
+          .get(agentId, channel);
+        if (agentRow?.worker_token) {
+          const { createHash } = await import("crypto");
+          const tokenHash = createHash("sha256").update(agentRow.worker_token).digest("hex");
+          const { getConnectedWorker } = await import("./remote-worker");
+          const worker = getConnectedWorker(tokenHash);
+          if (worker && worker.status === "connected" && worker.tools.length > 0) {
+            for (const t of worker.tools) {
+              remoteToolDefs.push({
+                name: `remote_${t.name}`,
+                description: `[Remote: ${worker.name}] ${t.description}`,
+                inputSchema: t.inputSchema,
+              });
+            }
+          }
+        }
+      } catch {}
+
       const allTools = [
         ...MCP_TOOLS,
         ...AGENT_MCP_TOOLS,
@@ -3358,6 +3383,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         ...jobToolDefs,
         ...memoToolDefs,
         ...taskToolDefs,
+        ...remoteToolDefs,
       ];
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { tools: allTools } }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -3369,6 +3395,45 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         name: string;
         arguments: Record<string, unknown>;
       };
+
+      // Handle remote worker tools
+      if (name.startsWith("remote_")) {
+        try {
+          const agentRow = db
+            .query<{ worker_token: string | null }, [string, string]>(
+              `SELECT worker_token FROM channel_agents WHERE agent_id = ? AND channel = ?`,
+            )
+            .get(agentId, channel);
+          if (!agentRow?.worker_token) {
+            return new Response(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id,
+                result: { content: [{ type: "text", text: "No remote worker connected" }] },
+              }),
+              { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+            );
+          }
+          const { createHash } = await import("crypto");
+          const tokenHash = createHash("sha256").update(agentRow.worker_token).digest("hex");
+          const { callRemoteWorkerTool } = await import("./remote-worker");
+          const toolName = name.replace(/^remote_/, "");
+          const result = await callRemoteWorkerTool(tokenHash, toolName, (toolArgs || {}) as Record<string, any>);
+          return new Response(
+            JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: result }] } }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        } catch (err: any) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "text", text: `Remote tool error: ${err.message}` }] },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      }
 
       // Handle job tools (tmux-based background jobs)
       if (name.startsWith("job_")) {
