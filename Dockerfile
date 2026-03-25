@@ -76,8 +76,10 @@ RUN curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/b
     ln -s /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 ENV MAVEN_HOME=/opt/apache-maven-${MAVEN_VERSION}
 
-# Node.js 22 LTS (direct tarball — avoids GPG key setup)
-RUN curl -fsSL "https://nodejs.org/download/release/latest-v22.x/node-v22.22.1-linux-x64.tar.xz" \
+# Node.js 22 LTS (resolve latest version dynamically — avoids GPG key setup)
+RUN NODE_VERSION=$(curl -fsSL https://nodejs.org/download/release/latest-v22.x/ \
+      | grep -oP 'node-v22\.\d+\.\d+' | head -1) && \
+    curl -fsSL "https://nodejs.org/download/release/latest-v22.x/${NODE_VERSION}-linux-x64.tar.xz" \
       | tar xJ -C /usr/local --strip-components=1 && \
     npm install -g npm@latest
 
