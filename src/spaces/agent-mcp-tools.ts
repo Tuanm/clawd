@@ -288,6 +288,16 @@ export async function executeAgentToolCall(
         if (!ccSettled) {
           ccSettled = true;
           _spaceManager!.failSpace(space.id, "Timeout: sub-agent exceeded 30 minute limit");
+          timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              channel,
+              text: `Sub-agent timed out: ${taskName} (30 min limit)`,
+              user: subAgentId,
+              agent_id: subAgentId,
+            }),
+          }).catch(() => {});
         }
       }, timeoutMs);
 
@@ -316,11 +326,29 @@ export async function executeAgentToolCall(
         }
       });
 
-      // Start worker (fire and forget)
+      // Start worker with retry on 500 errors
+      const MAX_RETRIES = 2;
+      const startWithRetry = async (): Promise<void> => {
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            await ccWorker.start();
+            return;
+          } catch (err: any) {
+            const is500 = err.message?.includes("500") || err.message?.includes("Internal server error");
+            if (is500 && attempt < MAX_RETRIES) {
+              const delay = 5000 * (attempt + 1);
+              console.log(`[spawn_agent] 500 error on attempt ${attempt + 1}, retrying in ${delay / 1000}s...`);
+              await new Promise((r) => setTimeout(r, delay));
+              continue;
+            }
+            throw err;
+          }
+        }
+      };
+
       new Promise<string>((resolve, reject) => {
         ccResolve = resolve;
-        ccWorker
-          .start()
+        startWithRetry()
           .then(async () => {
             if (!ccSettled) {
               ccSettled = true;
@@ -332,9 +360,19 @@ export async function executeAgentToolCall(
                 if (msgs.length > 0) lastMsg = msgs[msgs.length - 1].text.slice(0, 500);
               } catch {}
               const errorMsg = lastMsg
-                ? `Claude Code exited without calling complete_task. Last message: ${lastMsg}`
-                : "Claude Code exited without calling complete_task";
+                ? `Sub-agent exited without completing. Last message: ${lastMsg}`
+                : "Sub-agent exited without completing";
               _spaceManager!.failSpace(space.id, errorMsg);
+              timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  channel,
+                  text: `Sub-agent failed: ${taskName} — ${errorMsg.slice(0, 200)}`,
+                  user: subAgentId,
+                  agent_id: subAgentId,
+                }),
+              }).catch(() => {});
               reject(new Error(errorMsg));
             }
           })
@@ -342,6 +380,16 @@ export async function executeAgentToolCall(
             if (!ccSettled) {
               ccSettled = true;
               _spaceManager!.failSpace(space.id, err.message);
+              timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  channel,
+                  text: `Sub-agent error: ${taskName} — ${(err.message || "").slice(0, 200)}`,
+                  user: subAgentId,
+                  agent_id: subAgentId,
+                }),
+              }).catch(() => {});
               reject(err);
             }
           })
