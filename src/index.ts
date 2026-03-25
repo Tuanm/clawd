@@ -1268,6 +1268,11 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       if (result.ok) {
         const msg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(result.ts);
         if (msg) broadcastMessage(body.channel || "general", msg);
+        // Wake deferred agents for this channel (inactive >1 day, not started on boot)
+        const ch = body.channel || "general";
+        if (body.user === "UHUMAN" && workerManager.hasDeferredAgents(ch)) {
+          workerManager.startDeferredAgents(ch).catch(() => {});
+        }
       }
       return json(result);
     }
