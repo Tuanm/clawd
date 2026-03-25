@@ -117,6 +117,8 @@ export class WorkerManager {
   }
 
   /** Start the worker manager -- loads agents from DB and starts active loops */
+  private _bulkStarting = false;
+
   async start(): Promise<void> {
     console.log("[WorkerManager] Starting...");
 
@@ -124,14 +126,20 @@ export class WorkerManager {
     const agents = await this.loadAgentsFromDb();
     console.log(`[WorkerManager] Found ${agents.length} configured agent(s)`);
 
-    // Start active agents
+    // Start active agents (bulk start defers inactive channels)
+    this._bulkStarting = true;
     for (const agent of agents) {
       if (agent.active) {
         await this.startAgent(agent);
       }
     }
+    this._bulkStarting = false;
 
-    console.log(`[WorkerManager] ${this.loops.size} worker loop(s) running`);
+    const deferredCount = this.deferredAgents.size;
+    console.log(
+      `[WorkerManager] ${this.loops.size} worker loop(s) running` +
+        (deferredCount > 0 ? `, ${deferredCount} deferred (inactive channels)` : ""),
+    );
 
     // Start heartbeat monitor after all agents are running
     this.startHeartbeatMonitor();
@@ -167,12 +175,62 @@ export class WorkerManager {
     console.log("[WorkerManager] All worker loops stopped");
   }
 
+  /** Deferred agents: channels inactive >1 day are not started until a message arrives */
+  private deferredAgents = new Map<string, AgentConfig>();
+
+  /** Check if a channel has been inactive for more than the threshold */
+  private isChannelInactive(channel: string, thresholdMs = 24 * 60 * 60 * 1000): boolean {
+    try {
+      const row = db
+        .query<{ updated_at: number | null }, [string]>(
+          `SELECT MAX(updated_at) as updated_at FROM agent_seen WHERE channel = ?`,
+        )
+        .get(channel);
+      if (!row?.updated_at) return true; // No activity record — treat as inactive
+      const lastActivityMs = row.updated_at * 1000;
+      return Date.now() - lastActivityMs > thresholdMs;
+    } catch {
+      return false; // On error, don't defer
+    }
+  }
+
+  /** Start a deferred agent for a channel (called when a new message arrives) */
+  async startDeferredAgents(channel: string): Promise<void> {
+    const deferred: AgentConfig[] = [];
+    for (const [key, agent] of this.deferredAgents) {
+      if (agent.channel === channel) {
+        deferred.push(agent);
+        this.deferredAgents.delete(key);
+      }
+    }
+    for (const agent of deferred) {
+      console.log(`[WorkerManager] Starting deferred agent: ${agent.channel}:${agent.agentId}`);
+      await this.startAgent(agent);
+    }
+  }
+
+  /** Check if a channel has deferred agents waiting */
+  hasDeferredAgents(channel: string): boolean {
+    for (const agent of this.deferredAgents.values()) {
+      if (agent.channel === channel) return true;
+    }
+    return false;
+  }
+
   /** Add and start a new agent */
   async startAgent(agent: AgentConfig): Promise<boolean> {
     const key = `${agent.channel}:${agent.agentId}`;
 
     if (this.loops.has(key)) {
       console.log(`[WorkerManager] Agent ${key} already running`);
+      return false;
+    }
+
+    // Defer startup for channels inactive >1 day (saves resources on startup)
+    // Only applies during initial bulk start, not explicit startAgent calls from API
+    if (this._bulkStarting && this.isChannelInactive(agent.channel)) {
+      this.deferredAgents.set(key, agent);
+      console.log(`[WorkerManager] Deferred agent ${key} (channel inactive >1 day)`);
       return false;
     }
 
