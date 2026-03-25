@@ -239,32 +239,43 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     }
   };
 
-  try {
-    await runStream(options);
-  } catch (err: any) {
-    const msg = err.message || "";
-    console.error(`[claude-code-sdk] Query failed: ${msg.slice(0, 200)}`);
+  const MAX_500_RETRIES = 2;
+  let lastErr: any;
 
-    // Stale/corrupted session — retry without resume
-    const isSessionError =
-      msg.includes("exited with code") ||
-      msg.includes("No conversation found") ||
-      msg.includes("Invalid `signature` in `thinking` block");
-    if (opts.resume && isSessionError) {
-      console.warn(`[claude-code-sdk] Clearing stale session ${opts.resume?.slice(0, 8)}... — retrying fresh`);
-      callbacks.onSessionId(""); // Signal session cleared
-      try {
-        await runStream(baseOptions);
-      } catch (retryErr: any) {
-        console.error(`[claude-code-sdk] Retry also failed: ${retryErr.message?.slice(0, 200)}`);
-        throw retryErr;
+  for (let attempt = 0; attempt <= MAX_500_RETRIES; attempt++) {
+    try {
+      await runStream(attempt === 0 ? options : baseOptions);
+      return sessionId; // Success — exit early
+    } catch (err: any) {
+      lastErr = err;
+      const msg = err.message || "";
+      console.error(`[claude-code-sdk] Query failed (attempt ${attempt + 1}): ${msg.slice(0, 200)}`);
+
+      // Stale/corrupted session — retry without resume
+      const isSessionError =
+        msg.includes("exited with code") ||
+        msg.includes("No conversation found") ||
+        msg.includes("Invalid `signature` in `thinking` block");
+      if (opts.resume && isSessionError && attempt === 0) {
+        console.warn(`[claude-code-sdk] Clearing stale session ${opts.resume?.slice(0, 8)}... — retrying fresh`);
+        callbacks.onSessionId(""); // Signal session cleared
+        continue; // Next iteration uses baseOptions (no resume)
       }
-    } else {
+
+      // 500/server error — retry with backoff
+      const is500 = msg.includes("500") || msg.includes("Internal server error") || msg.includes("api_error");
+      if (is500 && attempt < MAX_500_RETRIES) {
+        const delay = 5000 * (attempt + 1);
+        console.warn(`[claude-code-sdk] Server error, retrying in ${delay / 1000}s...`);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+
       throw err;
     }
   }
 
-  return sessionId;
+  throw lastErr;
 }
 
 // ============================================================================
