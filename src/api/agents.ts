@@ -659,19 +659,33 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "agent_not_found" }, 404);
         }
 
-        // Reset session when provider changes — old session may contain
-        // messages in incompatible format (e.g. Anthropic tool IDs vs OpenAI)
-        if (provider !== undefined && provider !== agent.provider) {
+        // Reset session when provider or model changes:
+        // - Provider change: old session has incompatible message format
+        // - Model change: new model may have smaller context window (e.g. opus[1m] → sonnet)
+        const providerChanged = provider !== undefined && provider !== agent.provider;
+        const modelChanged = model !== undefined && model !== agent.model;
+        if (providerChanged || modelChanged) {
           try {
             const { getSessionManager } = await import("../agent/session/manager");
             const sm = getSessionManager();
             const sessionName = `${channel}-${agent_id.replace(/[^a-zA-Z0-9]/g, "_")}`;
             if (sm.resetSession(sessionName)) {
-              console.log(
-                `[agents] Provider changed (${agent.provider} → ${provider}), reset session "${sessionName}"`,
-              );
+              const reason = providerChanged
+                ? `provider changed (${agent.provider} → ${provider})`
+                : `model changed (${agent.model} → ${model})`;
+              console.log(`[agents] ${reason}, reset session "${sessionName}"`);
             }
           } catch {}
+          // Also clear Claude Code session ID if present
+          if (providerChanged || modelChanged) {
+            try {
+              const { db: chatDb } = await import("../server/database");
+              chatDb.run(`UPDATE channel_agents SET claude_code_session_id = NULL WHERE channel = ? AND agent_id = ?`, [
+                channel,
+                agent_id,
+              ]);
+            } catch {}
+          }
         }
 
         // Restart worker if model, provider, project, worker_token, heartbeat_interval, or agent_type changed, or active state changed

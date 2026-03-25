@@ -595,7 +595,11 @@ export function createSpawnAgentPlugin(
   async function handleClaudeCode(args: Record<string, any>): Promise<ToolResult> {
     const task = args.task as string;
     const context = (args.context as string) || "";
-    const model = (args.model as string) || "sonnet";
+    let model = (args.model as string) || "sonnet";
+    if (/opus/i.test(model)) {
+      console.warn(`[claude_code] Downgrading model from "${model}" to "sonnet" — opus not allowed for sub-agents`);
+      model = "sonnet";
+    }
 
     if (!task) {
       return { success: false, output: "", error: "Missing required parameter: task" };
