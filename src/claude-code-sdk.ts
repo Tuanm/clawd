@@ -39,6 +39,8 @@ export interface SDKQueryOptions {
   env?: Record<string, string | undefined>;
   abortController?: AbortController;
   disallowedTools?: string[];
+  /** Provider name for config lookup (e.g. "claude-code", "claude-code-2") */
+  providerName?: string;
 }
 
 export interface SDKStreamCallbacks {
@@ -90,11 +92,12 @@ function createPostToolUseHook(onToolResult: SDKStreamCallbacks["onToolResult"])
  * Read claude-code provider config from ~/.clawd/config.json and map to
  * environment variables that the Claude Code CLI/SDK understands.
  */
-function getClaudeCodeProviderEnv(): Record<string, string> {
+function getClaudeCodeProviderEnv(providerName = "claude-code"): Record<string, string> {
   const env: Record<string, string> = {};
   try {
     const { getProviderConfig } = require("./agent/api/provider-config");
-    const config = getProviderConfig("claude-code");
+    // Look up the specific provider name first, fall back to "claude-code"
+    const config = getProviderConfig(providerName) || getProviderConfig("claude-code");
     if (!config) return env;
 
     if (config.base_url) env.ANTHROPIC_BASE_URL = config.base_url;
@@ -112,7 +115,10 @@ function getClaudeCodeProviderEnv(): Record<string, string> {
   return env;
 }
 
-function buildEnv(extra?: Record<string, string | undefined>): Record<string, string | undefined> {
+function buildEnv(
+  providerName?: string,
+  extra?: Record<string, string | undefined>,
+): Record<string, string | undefined> {
   const home = homedir();
   const extraPaths = (process.env.PATH || "")
     .split(":")
@@ -131,7 +137,7 @@ function buildEnv(extra?: Record<string, string | undefined>): Record<string, st
     USER: process.env.USER || "clawd",
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "75",
     CLAUDE_AGENT_SDK_CLIENT_APP: "Claw'd/1.0",
-    ...getClaudeCodeProviderEnv(),
+    ...getClaudeCodeProviderEnv(providerName),
     ...extra,
   };
 }
@@ -205,7 +211,7 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     agents: opts.agentDef,
     mcpServers: opts.mcpServers,
     abortController: opts.abortController,
-    env: buildEnv(opts.env),
+    env: buildEnv(opts.providerName, opts.env),
     includePartialMessages: true,
     // Resolve cli.js explicitly — compiled binaries can't use import.meta.url
     ...resolveSDKCliPath(),

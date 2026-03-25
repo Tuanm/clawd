@@ -10,7 +10,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadAgentFile } from "./agent/agents/loader";
-import { getChannelMCPServers } from "./agent/api/provider-config";
+import { getChannelMCPServers, resolveProviderBaseType } from "./agent/api/provider-config";
 import { MCPManager } from "./agent/mcp/client";
 import {
   createWorktree,
@@ -287,13 +287,15 @@ export class WorkerManager {
     // Create the appropriate worker type
     let worker: AgentWorker;
 
-    if ((agent.provider || "copilot") === "claude-code") {
+    const resolvedProvider = resolveProviderBaseType(agent.provider || "copilot");
+    if (resolvedProvider === "claude-code") {
       // Claude Code main agent — subprocess-based, uses MCP for chat tools
       const { ClaudeCodeMainWorker, registerMainWorker } = require("./claude-code-main-worker");
       const ccWorker = new ClaudeCodeMainWorker({
         channel: agent.channel,
         agentId: agent.agentId,
         model: agent.model,
+        provider: agent.provider || "claude-code",
         projectRoot: effectiveProjectRoot,
         chatApiUrl: this.config.chatApiUrl,
         debug: this.config.debug,
