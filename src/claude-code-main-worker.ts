@@ -40,6 +40,7 @@ export interface ClaudeCodeMainConfig {
   channel: string;
   agentId: string;
   model: string;
+  provider?: string;
   projectRoot: string;
   chatApiUrl: string;
   debug: boolean;
@@ -379,6 +380,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         prompt,
         model: model || "sonnet",
         cwd: this.config.projectRoot,
+        providerName: this.config.provider,
         systemPrompt: basePrompt,
         agentName: "clawd-main",
         agentDef: {
