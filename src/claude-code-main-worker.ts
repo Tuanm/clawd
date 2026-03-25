@@ -297,9 +297,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         } catch (err: any) {
           if (!interrupted && !this.wasCancelledByHeartbeat) {
             console.error(`[claude-code-main] Error: ${err.message}`);
-            // Clear stale session ID so next attempt starts fresh
-            if (err.message?.includes("No conversation found")) {
-              console.warn(`[claude-code-main] Stale session — resetting for fresh start`);
+            // Clear stale/corrupted session so next attempt starts fresh
+            const msg = err.message || "";
+            if (msg.includes("No conversation found") || msg.includes("Invalid `signature` in `thinking` block")) {
+              console.warn(`[claude-code-main] Corrupted session — resetting for fresh start`);
               this.sessionId = null;
               this.persistSessionId(null);
             }
