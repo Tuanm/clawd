@@ -49,6 +49,8 @@ export interface SDKStreamCallbacks {
   onAssistantMessage: (content: any[]) => void;
   onToolResult: (toolName: string, toolInput: unknown, toolResponse: unknown, toolUseId: string) => void;
   onSessionId: (sessionId: string) => void;
+  /** Called on each tool completion to refresh activity timestamp */
+  onActivity?: () => void;
 }
 
 // ============================================================================
@@ -74,11 +76,15 @@ function createPreToolUseHook(): HookCallbackMatcher {
   return { matcher: "Bash", hooks: [hook] };
 }
 
-/** PostToolUse: forward tool results to callback */
-function createPostToolUseHook(onToolResult: SDKStreamCallbacks["onToolResult"]): HookCallbackMatcher {
+/** PostToolUse: forward tool results to callback + refresh activity */
+function createPostToolUseHook(
+  onToolResult: SDKStreamCallbacks["onToolResult"],
+  onActivity?: SDKStreamCallbacks["onActivity"],
+): HookCallbackMatcher {
   const hook: HookCallback = async (input: HookInput) => {
     if (input.hook_event_name !== "PostToolUse") return {};
     onToolResult(input.tool_name, input.tool_input, input.tool_response, input.tool_use_id);
+    onActivity?.();
     return { continue: true };
   };
   return { matcher: "*", hooks: [hook] };
@@ -217,7 +223,7 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     ...resolveSDKCliPath(),
     hooks: {
       PreToolUse: [createPreToolUseHook()],
-      PostToolUse: [createPostToolUseHook(callbacks.onToolResult)],
+      PostToolUse: [createPostToolUseHook(callbacks.onToolResult, callbacks.onActivity)],
     },
   };
 
@@ -284,7 +290,8 @@ function processMessage(message: SDKMessage, callbacks: SDKStreamCallbacks, onSe
   }
 
   // Handle error results — do NOT save session_id from errors
-  if (message.type === "result" && (message as any).is_error) {
+  // Check subtype (not is_error) — is_error can be true even for successful completions
+  if (message.type === "result" && (message as any).subtype?.startsWith("error_")) {
     const r = message as any;
     const errors = r.errors?.join("; ") || r.subtype || "unknown";
     console.error(`[claude-code-sdk] Result error: ${errors}`);

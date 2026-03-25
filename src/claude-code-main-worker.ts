@@ -416,6 +416,10 @@ CRITICAL RULES:
         onThinkingDelta: (text) => broadcastAgentToken(channel, agentId, text, "thinking"),
         onAssistantMessage: (content) => this.handleAssistantMessage(content),
         onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
+        onActivity: () => {
+          // Refresh streaming_started_at to prevent stale streaming cleanup
+          setAgentStreaming(agentId, channel, true);
+        },
         onSessionId: (sid) => {
           if (sid) {
             this.sessionId = sid;
