@@ -57,6 +57,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private sessionId: string | null = null;
   private running = false;
   private sleeping = false;
+  private userSleeping = false; // Explicitly put to sleep by user — don't auto-wake
   private processing = false;
   private lastActivityAt = Date.now();
   private processingStartedAt: number | null = null;
@@ -91,7 +92,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   setSleeping(sleeping: boolean): void {
     this.sleeping = sleeping;
+    this.userSleeping = sleeping;
     if (sleeping) {
+      // Cancel in-flight processing
+      try {
+        this.abortController?.abort();
+      } catch {}
       const agent = getAgent(this.config.agentId, this.config.channel);
       if (agent) {
         broadcastUpdate(this.config.channel, {
@@ -162,6 +168,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     while (this.running) {
       try {
+        // Skip polling entirely when user has put the agent to sleep
+        if (this.userSleeping) {
+          await Bun.sleep(5000);
+          continue;
+        }
+
         let pending = this.pollForMessages();
 
         if (pending.length === 0 && this.heartbeatPending) {
