@@ -418,8 +418,10 @@ CRITICAL RULES:
         onAssistantMessage: (content) => this.handleAssistantMessage(content),
         onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
         onActivity: () => {
-          // Refresh streaming_started_at to prevent stale streaming cleanup
+          // Refresh timestamps to prevent stale streaming cleanup AND heartbeat timeout
           setAgentStreaming(agentId, channel, true);
+          this.processingStartedAt = Date.now();
+          this.lastActivityAt = Date.now();
         },
         onSessionId: (sid) => {
           if (sid) {
