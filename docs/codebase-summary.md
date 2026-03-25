@@ -1,6 +1,6 @@
 # Claw'd Codebase Summary
 
-> Generated: 2026-03-21 | Total Files: ~260 | Total Tokens: ~1.2M | Codebase size: 4.8M chars
+> Updated: 2026-03-25 | Total Files: ~260 | Total Tokens: ~1.2M | Codebase size: 4.8M chars
 
 ---
 
@@ -380,7 +380,28 @@ Job scheduling and execution history:
 
 ---
 
-## Sub-Agent System (Spaces)
+## Sub-Agent System (Spaces & Claude Agent SDK)
+
+### Claude Agent SDK Migration
+
+Sub-agents now use `@anthropic-ai/claude-agent-sdk` instead of raw Bun.spawn CLI subprocess:
+
+**Key changes:**
+- SDK embedded in compiled binary (gzip-compressed), auto-extracted to `~/.clawd/bin/cli.js` on first use
+- No separate `claude` binary installation required — only `bun` on PATH
+- Programmatic hooks (PreToolUse, PostToolUse) replace temp `/tmp` script files
+- AbortController-based interrupts replace `proc.kill()`
+- Auto-retry on stale sessions
+- Smart wakeup: skips old messages when >3 accumulated, creates conversation summary
+- Sleep state preserved across agent restarts
+- Sub-agents capped at sonnet model (opus not allowed)
+- Session auto-resets on provider or model change
+- Tool call IDs normalized to "call_" prefix for cross-provider compatibility
+
+**Provider Configuration:**
+- Sub-agents inherit parent's provider by default
+- Optional per-sub-agent overrides via `spawn_agent(task, provider="openai", model="gpt-4")`
+- Supported: Copilot, OpenAI, Anthropic, Ollama, custom claude-code providers
 
 ### Space Lifecycle
 
@@ -703,12 +724,34 @@ Config format:
 
 | Provider | Type | Notes |
 |----------|------|-------|
-| `copilot` | GitHub Copilot API | Recommended; uses GitHub token |
-| `openai` | OpenAI API | GPT-4o, o1, o3 |
+| `copilot` | GitHub Copilot API | Recommended; uses GitHub token; normalizes tool call IDs |
+| `openai` | OpenAI API | GPT-4o, o1, o3; sanitizes requests (merges system messages) |
 | `anthropic` | Anthropic API | Claude (Opus, Sonnet, Haiku) |
-| `ollama` | Local Ollama | Self-hosted LLMs |
-| `minimax` | MiniMax API | Vision + text models |
-| Custom | OpenAI-compatible | groq, together.ai, etc. |
+| `ollama` | Local Ollama | Self-hosted LLMs; default model `minimax-m2.7:cloud`; tool args sent as object |
+| `claude-code` | Custom Claude Code | Configurable endpoint + API key; multiple instances supported |
+| Custom | OpenAI-compatible | groq, together.ai, etc.; MiniMax configured as OpenAI-compatible |
+
+### Provider-Specific Behaviors
+
+**Copilot:**
+- Header-based authentication (no API key)
+- Normalizes tool call IDs to "call_" prefix for compatibility
+- Auto-resets session on provider/model change
+
+**OpenAI:**
+- Sanitizes requests (explicit field list)
+- Merges system messages before sending
+- Stream error recovery
+
+**Ollama:**
+- Tool arguments sent as object (not string)
+- Flushes incomplete tool calls on stream EOF
+- Log parse errors gracefully
+
+**Claude Code (Custom):**
+- Configurable in `~/.clawd/config.json` under `providers`
+- Supports multiple instances (e.g., "claude-code", "claude-code-2")
+- Can override base_url and api_key per provider
 
 ### Key Pool & Rotation
 
@@ -741,16 +784,20 @@ Anthropic beta header for cache hits:
 1. **Vite build** — React SPA → `packages/ui/dist/`
 2. **embed-ui.ts** — Base64 embeds UI into `src/embedded-ui.ts`
 3. **zip-extension.ts** — Packs extension → `src/embedded-extension.ts`
-4. **bun build --compile** — Produces single binary `dist/server/clawd-app`
+4. **build-helper.ts** — Cross-platform build utilities (JSZip replaces system zip, handles file operations)
+5. **bun build --compile** — Produces single binary `dist/server/clawd-app`
 
 ### Single Binary
 
 Compiled executable includes:
 - Embedded React SPA
 - Embedded Chrome MV3 extension (zipped, base64)
+- Embedded Claude Agent SDK CLI (gzip-compressed, auto-extracted to `~/.clawd/bin/cli.js`)
 - All TypeScript code (AOT compiled)
 - SQLite runtime
 - Node.js compatibility layer
+
+**Note:** The Claude Agent SDK cli.js is automatically extracted on first use when sub-agents are spawned. No separate installation required.
 
 ### Docker Deployment
 
