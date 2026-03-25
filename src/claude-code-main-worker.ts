@@ -396,6 +396,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             description: "Main channel agent for Claw'd",
             prompt: `${basePrompt}You are a main channel agent. Respond to user messages and complete tasks.
 
+PROJECT ROOT: ${this.config.projectRoot}
+Your working directory is set to the project root above. All file paths are relative to this directory.
+
 COMMUNICATION — Use these MCP tools (channel and agent_id are auto-injected):
 - mcp__clawd__chat_send_message(text="...") — respond to users
 - mcp__clawd__chat_mark_processed(timestamp="...") — acknowledge each message
