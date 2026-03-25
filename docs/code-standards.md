@@ -1,6 +1,6 @@
 # Claw'd Code Standards & Development Guide
 
-> Last updated: 2026-03-20
+> Last updated: 2026-03-25
 
 ---
 
@@ -14,12 +14,13 @@
 6. [Error Handling](#6-error-handling)
 7. [Memory Architecture](#7-memory-architecture)
 8. [Plugin System](#8-plugin-system)
-9. [Database Patterns](#9-database-patterns)
-10. [API Design](#10-api-design)
-11. [Testing Standards](#11-testing-standards)
-12. [Performance Guidelines](#12-performance-guidelines)
-13. [Security Best Practices](#13-security-best-practices)
-14. [Git & Worktree Integration](#14-git--worktree-integration)
+9. [Sub-Agent SDK (Claude Agent)](#9-sub-agent-sdk)
+10. [Database Patterns](#10-database-patterns)
+11. [API Design](#11-api-design)
+12. [Testing Standards](#12-testing-standards)
+13. [Performance Guidelines](#13-performance-guidelines)
+14. [Security Best Practices](#14-security-best-practices)
+15. [Git & Worktree Integration](#15-git--worktree-integration)
 
 ---
 
@@ -495,9 +496,97 @@ agent.registerPlugins(plugins);
 
 ---
 
-## 9. Database Patterns
+## 9. Sub-Agent SDK (Claude Agent)
 
-### 9.1 Schema Definition
+### 9.1 Overview
+
+Sub-agents spawn via `@anthropic-ai/claude-agent-sdk`. The SDK is embedded in the compiled binary (gzip-compressed) and auto-extracted to `~/.clawd/bin/cli.js` on first use.
+
+**Key differences from raw subprocess:**
+- No need to install `claude` binary separately — only `bun` required on PATH
+- Programmatic hooks replace temp `/tmp` script files
+- Session management via SDK (auto-retry on stale sessions)
+- AbortController-based interrupts replace `proc.kill()`
+- Smart wakeup: skips old messages when agent wakes with >3 accumulated
+- Sleep state preserved across agent restarts
+- Sub-agents capped at sonnet model (opus not allowed)
+- Session auto-reset on provider or model change
+
+### 9.2 Provider Configuration
+
+#### Built-in Providers
+
+| Provider | Type | Config |
+|----------|------|--------|
+| Copilot | `copilot` | Headers only (no API key) |
+| OpenAI | `openai` | `api_key`, `base_url`, `model` |
+| Anthropic | `anthropic` | `api_key`, `model` |
+| Ollama | `ollama` | `base_url` (default: `http://localhost:11434`), `model` |
+| Custom | `openai` | MiniMax configured as OpenAI-compatible |
+
+#### Custom Claude Code Provider
+
+Configure in `~/.clawd/config.json`:
+
+```json
+{
+  "providers": [
+    {
+      "name": "claude-code",
+      "type": "claude-code",
+      "base_url": "https://custom-endpoint.com",
+      "api_key": "sk-..."
+    },
+    {
+      "name": "claude-code-2",
+      "type": "claude-code",
+      "base_url": "https://another-endpoint.com",
+      "api_key": "sk-..."
+    }
+  ]
+}
+```
+
+### 9.3 Provider-Specific Behaviors
+
+**Copilot:**
+- Normalizes tool call IDs to "call_" prefix for cross-provider compatibility
+- Auto-resets session on provider or model change
+
+**OpenAI:**
+- Sanitizes requests (merges system messages, explicit field list)
+- Handles stream errors gracefully
+
+**Ollama:**
+- Default model: `minimax-m2.7:cloud`
+- Tool arguments sent as object (not string)
+- Flushes incomplete tool calls on stream EOF
+
+**MCP Tools (Feature Parity):**
+- Job tools: `job_submit`, `job_status`, `job_cancel`, `job_wait`, `job_logs`
+- Memo tools: `memo_save`, `memo_recall`, `memo_delete`, `memo_pin`, `memo_unpin`
+- Task tools: `task_add`, `task_batch_add`, `task_list`, `task_get`, `task_update`, `task_complete`, `task_delete`, `task_comment`
+- Both sub-agent types see unified `spawn_agent` tool
+
+### 9.4 Session Management
+
+Session IDs are normalized on write for cross-provider compatibility:
+
+```typescript
+// Tool call IDs always written with "call_" prefix
+const toolCallId = response.content.id || `call_${Date.now()}`;
+```
+
+**Session auto-reset triggers:**
+- Provider changed
+- Model changed
+- Stream error that would corrupt session
+
+---
+
+## 10. Database Patterns
+
+### 10.1 Schema Definition
 
 Use typed migrations:
 
@@ -521,7 +610,7 @@ for (const m of migrations) {
 }
 ```
 
-### 9.2 Prepared Statements
+### 10.2 Prepared Statements
 
 Always use parameterized queries:
 
@@ -534,7 +623,7 @@ const agent = stmt.get(channel, agentId);
 const agent = db.query(`SELECT * FROM agents WHERE channel = '${channel}'`);
 ```
 
-### 9.3 Transactions
+### 10.3 Transactions
 
 Explicit transactions for multi-step operations:
 
@@ -545,7 +634,7 @@ db.transaction(() => {
 })();
 ```
 
-### 9.4 WAL Mode
+### 10.4 WAL Mode
 
 Ensure WAL mode for concurrent access:
 
@@ -556,9 +645,9 @@ db.pragma("journal_mode = wal");  // Enable WAL
 
 ---
 
-## 10. API Design
+## 11. API Design
 
-### 10.1 REST Endpoint Structure
+### 11.1 REST Endpoint Structure
 
 Organize endpoints by resource:
 
@@ -572,7 +661,7 @@ POST /api/app.worktree.commit
 
 **Pattern**: `/{resource}.{action}` where `resource` is domain (app, chat, agent) and `action` is operation.
 
-### 10.2 Request/Response Format
+### 11.2 Request/Response Format
 
 All responses return JSON:
 
@@ -584,7 +673,7 @@ All responses return JSON:
 { "ok": false, "error": "error_code", "message": "Human-readable message" }
 ```
 
-### 10.3 Status Codes
+### 11.3 Status Codes
 
 - **200**: Success
 - **400**: Bad request (missing/invalid parameters)
@@ -594,9 +683,9 @@ All responses return JSON:
 
 ---
 
-## 11. Testing Standards
+## 12. Testing Standards
 
-### 8.1 Unit Tests
+### 12.1 Unit Tests
 
 Test individual functions in isolation:
 
@@ -612,7 +701,7 @@ test("stageFile validates path traversal", () => {
 });
 ```
 
-### 8.2 Integration Tests
+### 12.2 Integration Tests
 
 Test across components:
 
@@ -625,7 +714,7 @@ test("worktree creation and status flow", () => {
 });
 ```
 
-### 8.3 No Mocking
+### 12.3 No Mocking
 
 Avoid mocking for database/file operations when possible:
 
@@ -640,16 +729,16 @@ const mockGit = { commit: () => ({ ok: true }) };
 
 ---
 
-## 12. Performance Guidelines
+## 13. Performance Guidelines
 
-### 8.1 Token Management
+### 13.1 Token Management
 
 - **Context compaction**: Aggressive at 75% token limit, critical reset at 95%
 - **Tool filtering**: Prune unused tools after 5-iteration warmup
 - **Model tiering**: Auto-downgrade to Haiku for tool routing decisions
 - **Prompt caching**: Use Anthropic's prompt-caching beta header
 
-### 8.2 Database Query Optimization
+### 13.2 Database Query Optimization
 
 - Use indexes on frequently queried columns (channel, agent_id, ts)
 - Composite indexes: `(channel, ts DESC)` for message history
@@ -664,20 +753,20 @@ const mockGit = { commit: () => ({ ok: true }) };
 - Prune `copilot_calls` table for entries >30 days old
 - Clean up orphaned sessions with no agent references
 
-### 8.3 WebSocket Efficiency
+### 13.3 WebSocket Efficiency
 
 - Broadcast events to subscribed clients only
 - Coalesce token emissions in 50ms batches (reduces frame overhead)
 - Merge multiple agent_poll messages into single broadcast
 - Use fixed-size buffers for SSE to prevent mid-frame chunking
 
-### 8.4 Streaming Optimizations
+### 13.4 Streaming Optimizations
 
 - Remove JSON pretty-printing in API responses (MCP)
 - Guard JSON.parse with try-catch for robustness
 - Use state-based stream timeouts (CONNECTING, PROCESSING, STREAMING)
 
-### 8.5 Agent Loop Optimizations
+### 13.5 Agent Loop Optimizations
 
 - Cache `loadClawdInstructions()` with file-change invalidation
 - Cache `listAgentFiles()` with 60-second TTL
@@ -687,14 +776,14 @@ const mockGit = { commit: () => ({ ok: true }) };
 - Mark browser bridge heartbeat with `.unref()` for graceful shutdown
 - Use async file operations to prevent blocking message loop
 
-### 8.6 Worktree Performance
+### 13.6 Worktree Performance
 
 - Lazy-load worktree diffs (only fetch when user opens dialog)
 - Cache worktree status for 5 seconds (avoid repeated git calls)
 - Use `git worktree list --porcelain` for efficient listing
 - Identify hunks by SHA1 content hash (not index-based)
 
-### 8.7 Memory Optimization
+### 13.7 Memory Optimization
 
 - Cap context tracker maps to prevent unbounded growth
 - Use atomic grouping for tool calls + results
@@ -702,9 +791,9 @@ const mockGit = { commit: () => ({ ok: true }) };
 
 ---
 
-## 13. Security Best Practices
+## 14. Security Best Practices
 
-### 8.1 Path Validation
+### 14.1 Path Validation
 
 Always validate paths before use:
 
@@ -718,7 +807,7 @@ function validateWorktreePath(filePath: string, worktreeRoot: string): string | 
 }
 ```
 
-### 8.2 Sandboxing
+### 14.2 Sandboxing
 
 All tool execution runs in isolated namespace:
 
@@ -729,7 +818,7 @@ const result = runInSandbox(command, args, {
 });
 ```
 
-### 8.3 Input Sanitization
+### 14.3 Input Sanitization
 
 Sanitize all user inputs before using in commands:
 
@@ -741,14 +830,14 @@ execFileSync("git", ["commit", "-m", message], { cwd: path });
 execFileSync("bash", ["-c", `git commit -m "${message}"`]);
 ```
 
-### 8.4 Token Handling
+### 14.4 Token Handling
 
 - Hash tokens with SHA256 before storing
 - Compare with constant-time functions
 - Never log or expose tokens in errors
 - Rotate keys periodically via key pool
 
-### 8.5 Database Security
+### 14.5 Database Security
 
 - Use parameterized queries (prevents SQL injection)
 - Validate schema changes at startup
@@ -757,9 +846,9 @@ execFileSync("bash", ["-c", `git commit -m "${message}"`]);
 
 ---
 
-## 14. Git & Worktree Integration
+## 15. Git & Worktree Integration
 
-### 8.1 Worktree Lifecycle
+### 15.1 Worktree Lifecycle
 
 Always use `execFileSync` with array arguments (prevents shell injection):
 
@@ -781,7 +870,7 @@ execFileSync(`git worktree add -b ${branchName} ${worktreePath}`, { shell: true 
 - Reuse on server restart if path/branch still valid
 - Safe-delete checks for uncommitted changes before removal
 
-### 8.2 Branch Naming
+### 15.2 Branch Naming
 
 Use the `clawd/{randomId}` convention (6-char hex):
 
@@ -791,7 +880,7 @@ export function generateBranchName(): string {
 }
 ```
 
-### 8.3 Commit Author Handling
+### 15.3 Commit Author Handling
 
 Respect git local config first, then fallback to config.author:
 
@@ -818,7 +907,7 @@ if (hasLocal && author) {
 }
 ```
 
-### 8.4 Hunk Staging (SHA1 Content Hash)
+### 15.4 Hunk Staging (SHA1 Content Hash)
 
 Identify hunks by SHA1 content hash (not index-based) for stability:
 
@@ -846,7 +935,7 @@ execFileSync("git", ["apply", "--cached", "--unidiff-zero"], {
 });
 ```
 
-### 8.5 Sandbox & Worktree Integration
+### 15.5 Sandbox & Worktree Integration
 
 When a worktree is active:
 - **sandbox projectRoot** = worktree path (agent sees worktree as root)
@@ -863,7 +952,7 @@ const context: AgentContext = {
 };
 ```
 
-### 8.6 Git Tool Guards
+### 15.6 Git Tool Guards
 
 Tools like `git_commit` have guards that apply to worktrees:
 - Detect protected branches (main/master/develop) — block commit/push/merge

@@ -1,6 +1,6 @@
 # Claw'd Architecture Reference
 
-> Last updated: 2026-03-21
+> Last updated: 2026-03-25
 
 ---
 
@@ -35,9 +35,10 @@
    - [Anti-Detection Shield](#74-anti-detection-shield)
    - [Distribution](#75-distribution)
    - [Artifact Rendering Pipeline](#76-artifact-rendering-pipeline)
-9. [Sub-Agent System (Spaces)](#9-sub-agent-system-spaces)
+9. [Sub-Agent System (Spaces & Claude Agent SDK)](#9-sub-agent-system-spaces)
    - [Space Lifecycle](#91-space-lifecycle)
-   - [Scheduler Integration](#92-scheduler-integration)
+   - [Claude Agent SDK](#92-claude-agent-sdk)
+   - [Scheduler Integration](#93-scheduler-integration)
 10. [Sandbox Security](#10-sandbox-security)
    - [Linux (bubblewrap)](#101-linux-bubblewrap)
    - [macOS (sandbox-exec)](#102-macos-sandbox-exec)
@@ -1021,7 +1022,51 @@ sequenceDiagram
 
 **Space statuses**: `active` → `completed` | `failed` | `timed_out`
 
-### 9.2 Scheduler Integration
+### 9.2 Claude Agent SDK
+
+**Files**: `src/spaces/worker.ts`, `src/spaces/manager.ts`
+
+Sub-agents are spawned via `@anthropic-ai/claude-agent-sdk`. The SDK is embedded in the compiled binary (gzip-compressed) and auto-extracted to `~/.clawd/bin/cli.js` on first use.
+
+#### Key Architectural Changes
+
+| Aspect | Previous (Raw Bun.spawn) | Current (SDK) |
+|--------|--------------------------|---------------|
+| **Binary** | `claude` CLI installed separately | Embedded in clawd binary, auto-extracted |
+| **Dependencies** | `claude` + Node.js on PATH | Only `bun` required on PATH |
+| **Hooks** | Temp scripts in `/tmp` | Programmatic hooks (PreToolUse, PostToolUse) |
+| **Interrupts** | `proc.kill()` signal | AbortController-based cancellation |
+| **Session Management** | Manual retry logic | SDK auto-retry on stale sessions |
+| **Model Caps** | No restrictions | Sonnet max; opus prohibited |
+| **Session Resets** | Manual on provider change | Auto-reset on provider or model change |
+
+#### Smart Wakeup Behavior
+
+When a sub-agent wakes from sleep with >3 accumulated messages, the SDK:
+1. Skips old messages and creates a conversation summary
+2. Injects summary + recent messages into context
+3. Preserves sleep state across agent restarts
+
+#### Session Persistence
+
+- Sleep state maintained across agent lifecycle events
+- Tool call IDs normalized to "call_" prefix for cross-provider compatibility
+- Stream-error tool calls never persisted (prevents corruption loops)
+
+#### Provider Configuration for Sub-agents
+
+Sub-agents respect the parent's provider configuration but can be overridden per sub-agent:
+
+```typescript
+// Parent uses OpenAI
+const subAgent = await spawnAgent({
+  agent: "code-reviewer",
+  provider: "openai",  // Optional override
+  model: "gpt-4"       // Optional override
+});
+```
+
+### 9.3 Scheduler Integration
 
 **Files**: `src/scheduler/manager.ts`, `src/scheduler/runner.ts`, `src/scheduler/parse-schedule.ts`
 
@@ -1045,7 +1090,7 @@ The scheduler creates and manages recurring or one-time jobs:
 
 ---
 
-## 10. Sandbox Security
+## 10. Sandbox Security (Section numbering below adjusted for new 9.2 SDK section)
 
 Tool execution is sandboxed to prevent agents from accessing sensitive host resources.
 The sandbox implementation differs by platform.
