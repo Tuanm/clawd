@@ -245,8 +245,12 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     const msg = err.message || "";
     console.error(`[claude-code-sdk] Query failed: ${msg.slice(0, 200)}`);
 
-    // Stale session — retry without resume
-    if (opts.resume && (msg.includes("exited with code") || msg.includes("No conversation found"))) {
+    // Stale/corrupted session — retry without resume
+    const isSessionError =
+      msg.includes("exited with code") ||
+      msg.includes("No conversation found") ||
+      msg.includes("Invalid `signature` in `thinking` block");
+    if (opts.resume && isSessionError) {
       console.warn(`[claude-code-sdk] Clearing stale session ${opts.resume?.slice(0, 8)}... — retrying fresh`);
       callbacks.onSessionId(""); // Signal session cleared
       try {
