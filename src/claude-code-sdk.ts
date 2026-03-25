@@ -86,6 +86,32 @@ function createPostToolUseHook(onToolResult: SDKStreamCallbacks["onToolResult"])
 // Environment
 // ============================================================================
 
+/**
+ * Read claude-code provider config from ~/.clawd/config.json and map to
+ * environment variables that the Claude Code CLI/SDK understands.
+ */
+function getClaudeCodeProviderEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  try {
+    const { getProviderConfig } = require("./agent/api/provider-config");
+    const config = getProviderConfig("claude-code");
+    if (!config) return env;
+
+    if (config.base_url) env.ANTHROPIC_BASE_URL = config.base_url;
+    if (config.api_key) env.ANTHROPIC_AUTH_TOKEN = config.api_key;
+
+    // Model aliases — Claude Code CLI resolves "sonnet", "opus", "haiku" via these
+    const models = (config as any).models as Record<string, string> | undefined;
+    if (models) {
+      if (models.sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = models.sonnet;
+      if (models.opus) env.ANTHROPIC_DEFAULT_OPUS_MODEL = models.opus;
+      if (models.haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = models.haiku;
+      if (models.default) env.ANTHROPIC_MODEL = models.default;
+    }
+  } catch {}
+  return env;
+}
+
 function buildEnv(extra?: Record<string, string | undefined>): Record<string, string | undefined> {
   const home = homedir();
   const extraPaths = (process.env.PATH || "")
@@ -94,7 +120,7 @@ function buildEnv(extra?: Record<string, string | undefined>): Record<string, st
     .join(":");
   const basePath = `${home}/.local/bin:${home}/.bun/bin:/usr/local/bin:/usr/bin:/bin`;
   // Inherit process.env so the CLI subprocess gets auth credentials, XDG paths, etc.
-  // Then override with our specifics
+  // Then override with our specifics + claude-code provider config
   return {
     ...process.env,
     HOME: home,
@@ -105,6 +131,7 @@ function buildEnv(extra?: Record<string, string | undefined>): Record<string, st
     USER: process.env.USER || "clawd",
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "75",
     CLAUDE_AGENT_SDK_CLIENT_APP: "Claw'd/1.0",
+    ...getClaudeCodeProviderEnv(),
     ...extra,
   };
 }
