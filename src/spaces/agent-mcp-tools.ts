@@ -44,13 +44,13 @@ export const AGENT_MCP_TOOLS = [
   {
     name: "spawn_agent",
     description:
-      "Spawn a sub-agent to handle a task autonomously. The sub-agent works independently with full tool access (file read/write/edit, bash, grep, etc.).\n\nModel guide: 'opus' (complex), 'sonnet' (default), 'haiku' (quick).\n\nThe sub-agent runs asynchronously. Use list_agents to check status and get_agent_report to read results.",
+      "Spawn a sub-agent to handle a task autonomously. The sub-agent works independently with full tool access (file read/write/edit, bash, grep, etc.).\n\nModel guide: 'sonnet' (default, general tasks), 'haiku' (quick/simple). Do NOT use opus for sub-agents — it's too expensive.\n\nThe sub-agent runs asynchronously. Use list_agents to check status and get_agent_report to read results.",
     inputSchema: {
       type: "object",
       properties: {
         task: { type: "string", description: "The task for the sub-agent to complete" },
         name: { type: "string", description: "Optional friendly name" },
-        model: { type: "string", description: "Model: opus, sonnet (default), haiku" },
+        model: { type: "string", description: "Model: sonnet (default), haiku (quick). Do not use opus." },
         agent: {
           type: "string",
           description: "Agent type from .clawd/agents/ or .claude/agents/ — inherits system prompt and directives",
@@ -165,7 +165,12 @@ export async function executeAgentToolCall(
       const { timedFetch } = await import("../utils/timed-fetch");
       const { loadAgentFile } = await import("../agent/agents/loader");
 
-      const model = (args.model as string) || "sonnet";
+      let model = (args.model as string) || "sonnet";
+      // Cap sub-agent model — opus is too expensive for sub-agents
+      if (/opus/i.test(model)) {
+        console.warn(`[spawn_agent] Downgrading model from "${model}" to "sonnet" — opus not allowed for sub-agents`);
+        model = "sonnet";
+      }
       const context = (args.context as string) || "";
       const agentType = args.agent as string | undefined;
 
