@@ -172,6 +172,9 @@ RULES:
           onThinkingDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text, "thinking"),
           onAssistantMessage: (content) => this.handleAssistantMessage(content),
           onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
+          onActivity: () => {
+            setAgentStreaming(agentId, space.space_channel, true);
+          },
           onSessionId: (sid) => {
             this.sessionId = sid;
           },
