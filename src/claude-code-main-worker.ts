@@ -30,6 +30,7 @@ const SLEEP_BACKOFF_MS = 3000;
 const MAX_FORCE_MARK_RETRIES = 3;
 const MAX_MESSAGE_LENGTH = 10000;
 const MAX_COMBINED_PROMPT_LENGTH = 40000;
+const MAX_WAKEUP_MESSAGES = 3; // On wakeup, only process this many recent messages
 
 // ============================================================================
 // Types
@@ -195,6 +196,44 @@ export class ClaudeCodeMainWorker implements AgentWorker {
               avatar_color: agent.avatar_color || "#D97706",
               is_sleeping: false,
             } as any);
+          }
+
+          // Wakeup handling: if many messages accumulated during sleep,
+          // skip old ones and only process recent messages with context
+          if (pending.length > MAX_WAKEUP_MESSAGES) {
+            const skipped = pending.length - MAX_WAKEUP_MESSAGES;
+            const skippedMessages = pending.slice(0, skipped);
+            pending = pending.slice(skipped);
+
+            // Mark skipped messages as processed so they don't reappear
+            const lastSkippedTs = skippedMessages[skippedMessages.length - 1].ts;
+            try {
+              db.run(
+                `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+                 VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+                 ON CONFLICT(agent_id, channel) DO UPDATE SET
+                   last_processed_ts = MAX(last_processed_ts, ?),
+                   updated_at = strftime('%s', 'now')`,
+                [this.config.agentId, this.config.channel, lastSkippedTs, lastSkippedTs, lastSkippedTs],
+              );
+            } catch {}
+
+            // Prepend wakeup context to the first message
+            const skippedSummary = skippedMessages
+              .map((m: any) => {
+                const user = m.user === "UHUMAN" ? "human" : m.agent_id || m.user || "unknown";
+                return `- ${user}: ${(m.text || "").slice(0, 100)}`;
+              })
+              .join("\n");
+            pending.unshift({
+              ts: "0",
+              user: "UHUMAN",
+              text: `[WAKEUP] You've just woken up from sleep. ${skipped} older message(s) arrived while you were sleeping (already marked as processed — do NOT call chat_mark_processed for them):\n${skippedSummary}\n\nFocus on the most recent message(s) below. If the older messages need attention, the user will re-ask.`,
+            });
+
+            console.log(
+              `[claude-code-main] Wakeup: skipped ${skipped} old messages, processing ${pending.length - 1} recent`,
+            );
           }
         }
         this.processing = true;
