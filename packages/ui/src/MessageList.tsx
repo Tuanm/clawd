@@ -1762,6 +1762,14 @@ export default function MessageList({
     src: string;
     alt: string;
   } | null>(null);
+  // Image lightbox pan state (drag-to-pan when zoomed)
+  const [imgPan, setImgPan] = useState({ x: 0, y: 0 });
+  const [imgDragging, setImgDragging] = useState(false);
+  const imgDragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
+  // Pinch-to-zoom state
+  const pinchStartDist = useRef(0);
+  const pinchStartZoom = useRef(1);
+  const lastTapTime = useRef(0);
 
   // Mermaid zoom modal state
   const [mermaidZoom, setMermaidZoom] = useState<string | null>(null); // stores rendered SVG content
@@ -3006,29 +3014,116 @@ export default function MessageList({
           </button>,
           document.querySelector(".messages-wrapper") || document.body,
         )}
-      {/* Image lightbox modal */}
+      {/* Image lightbox modal — supports pinch-zoom, pan, double-tap */}
       {lightboxImage &&
         createPortal(
           <div
             className="lightbox-overlay"
             onClick={() => {
-              setLightboxImage(null);
-              setLightboxZoom(1);
+              if (!imgDragging) {
+                setLightboxImage(null);
+                setLightboxZoom(1);
+                setImgPan({ x: 0, y: 0 });
+              }
             }}
-            onKeyDown={(e) => e.key === "Escape" && (setLightboxImage(null), setLightboxZoom(1))}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setLightboxImage(null);
+                setLightboxZoom(1);
+                setImgPan({ x: 0, y: 0 });
+              }
+            }}
             onWheel={(e) => {
               e.preventDefault();
-              setLightboxZoom((z) => Math.min(4, Math.max(0.25, z + (e.deltaY > 0 ? -0.1 : 0.1))));
+              setLightboxZoom((z) => {
+                const next = Math.min(6, Math.max(0.25, z + (e.deltaY > 0 ? -0.15 : 0.15)));
+                if (next <= 1) setImgPan({ x: 0, y: 0 });
+                return next;
+              });
             }}
+            // Mouse drag-to-pan
+            onMouseDown={(e) => {
+              if (lightboxZoom > 1 && e.button === 0) {
+                setImgDragging(true);
+                imgDragStart.current = { x: e.clientX, y: e.clientY, ox: imgPan.x, oy: imgPan.y };
+              }
+            }}
+            onMouseMove={(e) => {
+              if (imgDragging) {
+                setImgPan({
+                  x: imgDragStart.current.ox + (e.clientX - imgDragStart.current.x),
+                  y: imgDragStart.current.oy + (e.clientY - imgDragStart.current.y),
+                });
+              }
+            }}
+            onMouseUp={() => setImgDragging(false)}
+            // Touch: pinch-zoom + pan + double-tap
+            onTouchStart={(e) => {
+              if (e.touches.length === 2) {
+                // Pinch start
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                pinchStartDist.current = Math.hypot(dx, dy);
+                pinchStartZoom.current = lightboxZoom;
+              } else if (e.touches.length === 1) {
+                // Double-tap detection
+                const now = Date.now();
+                if (now - lastTapTime.current < 300) {
+                  // Double tap — toggle zoom
+                  if (lightboxZoom > 1) {
+                    setLightboxZoom(1);
+                    setImgPan({ x: 0, y: 0 });
+                  } else {
+                    setLightboxZoom(2.5);
+                  }
+                  lastTapTime.current = 0;
+                } else {
+                  lastTapTime.current = now;
+                }
+                // Pan start (single finger when zoomed)
+                if (lightboxZoom > 1) {
+                  setImgDragging(true);
+                  imgDragStart.current = {
+                    x: e.touches[0].clientX,
+                    y: e.touches[0].clientY,
+                    ox: imgPan.x,
+                    oy: imgPan.y,
+                  };
+                }
+              }
+            }}
+            onTouchMove={(e) => {
+              if (e.touches.length === 2) {
+                // Pinch zoom
+                e.preventDefault();
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                const dist = Math.hypot(dx, dy);
+                const scale = dist / (pinchStartDist.current || 1);
+                const next = Math.min(6, Math.max(0.5, pinchStartZoom.current * scale));
+                setLightboxZoom(next);
+                if (next <= 1) setImgPan({ x: 0, y: 0 });
+              } else if (e.touches.length === 1 && imgDragging) {
+                // Pan
+                setImgPan({
+                  x: imgDragStart.current.ox + (e.touches[0].clientX - imgDragStart.current.x),
+                  y: imgDragStart.current.oy + (e.touches[0].clientY - imgDragStart.current.y),
+                });
+              }
+            }}
+            onTouchEnd={() => setImgDragging(false)}
             role="dialog"
             aria-modal="true"
             tabIndex={-1}
+            style={{ touchAction: "none" }}
           >
             <button
               className="lightbox-close"
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 setLightboxImage(null);
                 setLightboxZoom(1);
+                setImgPan({ x: 0, y: 0 });
               }}
               aria-label="Close"
             >
@@ -3036,9 +3131,10 @@ export default function MessageList({
             </button>
             <div
               style={{
-                transform: `scale(${lightboxZoom})`,
+                transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${lightboxZoom})`,
                 transformOrigin: "center center",
-                transition: "transform 0.2s",
+                transition: imgDragging ? "none" : "transform 0.2s",
+                cursor: lightboxZoom > 1 ? (imgDragging ? "grabbing" : "grab") : "default",
               }}
             >
               <img
@@ -3046,6 +3142,7 @@ export default function MessageList({
                 alt={lightboxImage.alt}
                 className="lightbox-image"
                 onClick={(e) => e.stopPropagation()}
+                draggable={false}
               />
             </div>
             <div className="lightbox-toolbar" onClick={(e) => e.stopPropagation()}>
@@ -3063,7 +3160,7 @@ export default function MessageList({
               <span className="lightbox-zoom-level">{Math.round(lightboxZoom * 100)}%</span>
               <button
                 className="lightbox-btn"
-                onClick={() => setLightboxZoom((z) => Math.min(4, z + 0.25))}
+                onClick={() => setLightboxZoom((z) => Math.min(6, z + 0.25))}
                 title="Zoom in"
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -3073,7 +3170,14 @@ export default function MessageList({
                   <line x1="21" y1="21" x2="16.65" y2="16.65" />
                 </svg>
               </button>
-              <button className="lightbox-btn" onClick={() => setLightboxZoom(1)} title="Reset zoom">
+              <button
+                className="lightbox-btn"
+                onClick={() => {
+                  setLightboxZoom(1);
+                  setImgPan({ x: 0, y: 0 });
+                }}
+                title="Reset zoom"
+              >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M1 4v6h6M23 20v-6h-6" />
                   <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
