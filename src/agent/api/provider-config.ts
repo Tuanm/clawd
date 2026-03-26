@@ -170,12 +170,24 @@ export function listConfiguredProviders(): Array<{
     result.push({ name, type: name, is_custom: false });
   }
 
-  // Add custom providers (entries with a `type` field that's a built-in)
+  // Add custom providers from config
   for (const [name, entry] of Object.entries(config.providers || {})) {
     if ((BUILTIN_PROVIDERS as readonly string[]).includes(name)) continue; // skip built-ins (already added)
-    const baseType = (entry as ProviderConfig)?.type as ProviderType | undefined;
-    if (!baseType || !(BUILTIN_PROVIDERS as readonly string[]).includes(baseType)) continue;
-    result.push({ name, type: baseType, is_custom: true });
+    const cfg = entry as ProviderConfig;
+    if (!cfg || typeof cfg !== "object") continue;
+
+    // Explicit type field
+    let baseType = cfg.type as ProviderType | undefined;
+    if (baseType && (BUILTIN_PROVIDERS as readonly string[]).includes(baseType)) {
+      result.push({ name, type: baseType, is_custom: true });
+      continue;
+    }
+
+    // Infer type from config shape (no explicit type field)
+    if (cfg.api_key || (cfg as any).api_keys || cfg.base_url) {
+      // Default to "openai" for providers with api_key/base_url but no type
+      result.push({ name, type: "openai" as ProviderType, is_custom: true });
+    }
   }
 
   return result;
