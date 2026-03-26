@@ -1771,6 +1771,18 @@ body {
   overflow-x: auto;
   margin: 8px 0;
   position: relative;
+  white-space: pre;
+  tab-size: 4;
+  -moz-tab-size: 4;
+}
+
+.message-content pre code {
+  background: none;
+  padding: 0;
+  color: var(--text-primary);
+  white-space: pre;
+  word-break: normal;
+  word-wrap: normal;
 }
 
 /* Code block wrapper with copy button */
@@ -1822,12 +1834,6 @@ body {
 .code-copy-btn svg {
   width: 12px;
   height: 12px;
-}
-
-.message-content pre code {
-  background: none;
-  padding: 0;
-  color: var(--text-primary);
 }
 
 .message-content strong {
