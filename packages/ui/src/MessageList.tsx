@@ -1162,7 +1162,7 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
   // Position menu so it doesn't overflow viewport
   const adjustedPosition = useMemo(() => {
     const menuWidth = 180;
-    const menuHeight = menu.selectedText ? 160 : 120;
+    const menuHeight = menu.selectedText ? 200 : 160;
     let x = menu.x;
     let y = menu.y;
     if (x + menuWidth > window.innerWidth) {
@@ -1188,6 +1188,12 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
 
   const copyMessage = () => {
     navigator.clipboard.writeText(menu.text);
+    onClose();
+  };
+
+  const copyLink = () => {
+    const link = `${window.location.origin}/${menu.channel || ""}#${menu.ts}`;
+    navigator.clipboard.writeText(link);
     onClose();
   };
 
@@ -1238,6 +1244,10 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
       <button className="context-menu-item" onClick={copyMessage}>
         <CopyIcon />
         <span>Copy message</span>
+      </button>
+      <button className="context-menu-item" onClick={copyLink}>
+        <LinkIcon />
+        <span>Copy link</span>
       </button>
       <button className="context-menu-item" onClick={shareAsArticle}>
         <ShareIcon />
