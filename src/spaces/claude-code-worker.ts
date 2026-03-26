@@ -51,6 +51,7 @@ export class ClaudeCodeSpaceWorker {
   private tmuxMonitor: TmuxMonitor | null = null;
   private memorySessionId: string | null = null;
   private abortController: AbortController | null = null;
+  private lastHumanTs: string = "0";
 
   constructor(config: ClaudeCodeWorkerConfig) {
     this.config = config;
@@ -134,6 +135,28 @@ export class ClaudeCodeSpaceWorker {
 
     this.abortController = new AbortController();
 
+    // Interrupt poller — aborts SDK query if human sends a message to the space channel
+    let interrupted = false;
+    let interruptMessage = "";
+    const interruptPoller = setInterval(() => {
+      try {
+        const { getPendingMessages } = require("../server/routes/messages");
+        const result = getPendingMessages(space.space_channel, undefined, false, 10);
+        const humanMsgs = ((result as any).messages || []).filter(
+          (m: any) => m.user === "UHUMAN" && m.ts > (this.lastHumanTs || "0"),
+        );
+        if (humanMsgs.length > 0) {
+          interrupted = true;
+          interruptMessage = humanMsgs.map((m: any) => m.text).join("\n");
+          this.lastHumanTs = humanMsgs[humanMsgs.length - 1].ts;
+          console.log(`[claude-code] Sub-agent interrupted by human message in ${space.space_channel}`);
+          try {
+            this.abortController?.abort();
+          } catch {}
+        }
+      } catch {}
+    }, 2000);
+
     const basePrompt = agentPrompt
       ? `${agentPrompt}\n\n---\n\n`
       : "You are an autonomous coding agent. Complete the given task using your tools (Read, Write, Edit, Bash, Grep, Glob, etc.).\n\n";
@@ -180,7 +203,58 @@ RULES:
           },
         },
       );
+
+      // If interrupted by human, resume with the human's message
+      while (interrupted && !this.stopped) {
+        interrupted = false;
+        this.abortController = new AbortController();
+        const humanPrompt = `[HUMAN INTERRUPT] The user sent a new message while you were working:\n\n${interruptMessage}\n\nPlease address this message. If it changes your task, adjust accordingly. When done, call complete_task.`;
+        console.log(`[claude-code] Resuming sub-agent with human interrupt in ${space.space_channel}`);
+
+        this.sessionId = await runSDKQuery(
+          {
+            prompt: humanPrompt,
+            model: this.config.model || "sonnet",
+            cwd: this.config.projectRoot || process.cwd(),
+            systemPrompt: basePrompt,
+            agentName: "clawd-worker",
+            agentDef: {
+              "clawd-worker": {
+                description: "Sub-agent worker for Claw'd",
+                prompt: `${basePrompt}When your task is FULLY COMPLETE, you MUST call the MCP tool:
+  mcp__clawd__complete_task(space_id="${space.id}", result="your summary here")
+
+RULES:
+- Do your work using built-in tools (Read, Edit, Bash, etc.)
+- Call complete_task ONCE when done — this is the ONLY way to signal completion
+- If the task is unclear, do your best interpretation and complete
+- Do NOT stop without calling complete_task`,
+              },
+            },
+            mcpServers: this.buildMcpServers(),
+            resume: this.sessionId || undefined,
+            env: {
+              CLAWD_SPACE_ID: space.id,
+              CLAWD_SPACE_TOKEN: this.spaceToken,
+            },
+            abortController: this.abortController,
+          },
+          {
+            onTextDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text),
+            onThinkingDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text, "thinking"),
+            onAssistantMessage: (content) => this.handleAssistantMessage(content),
+            onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
+            onActivity: () => {
+              setAgentStreaming(agentId, space.space_channel, true);
+            },
+            onSessionId: (sid) => {
+              this.sessionId = sid;
+            },
+          },
+        );
+      }
     } finally {
+      clearInterval(interruptPoller);
       setAgentStreaming(agentId, space.space_channel, false);
       broadcastAgentStreaming(space.space_channel, agentId, false);
       if (this.tmuxMonitor) stopTmuxMonitor(this.tmuxMonitor);
