@@ -1134,6 +1134,7 @@ interface ContextMenuState {
   text: string;
   channel?: string; // Channel for sharing as article
   content?: string; // Message content for sharing as article
+  selectedText?: string; // Text selection at time of right-click
 }
 
 // Context menu component
@@ -1161,7 +1162,7 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
   // Position menu so it doesn't overflow viewport
   const adjustedPosition = useMemo(() => {
     const menuWidth = 180;
-    const menuHeight = 120;
+    const menuHeight = menu.selectedText ? 160 : 120;
     let x = menu.x;
     let y = menu.y;
     if (x + menuWidth > window.innerWidth) {
@@ -1175,6 +1176,13 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
 
   const copyReference = () => {
     navigator.clipboard.writeText(`@msg:${menu.ts}`);
+    onClose();
+  };
+
+  const copySelectedText = () => {
+    if (menu.selectedText) {
+      navigator.clipboard.writeText(menu.selectedText);
+    }
     onClose();
   };
 
@@ -1217,6 +1225,12 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
 
   return createPortal(
     <div ref={menuRef} className="message-context-menu" style={{ left: adjustedPosition.x, top: adjustedPosition.y }}>
+      {menu.selectedText && (
+        <button className="context-menu-item" onClick={copySelectedText}>
+          <CopyIcon />
+          <span>Copy text</span>
+        </button>
+      )}
       <button className="context-menu-item" onClick={copyReference}>
         <LinkIcon />
         <span>Copy reference</span>
@@ -1773,13 +1787,16 @@ export default function MessageList({
     (e: React.MouseEvent, msg: Message) => {
       e.preventDefault();
       e.stopPropagation();
+      const selection = window.getSelection();
+      const selectedText = selection && selection.toString().trim() ? selection.toString().trim() : undefined;
       setContextMenu({
         x: e.clientX,
         y: e.clientY,
         ts: msg.ts,
         text: msg.text,
-        channel, // Channel for sharing
-        content: msg.text, // Use text content for sharing
+        channel,
+        content: msg.text,
+        selectedText,
       });
     },
     [channel],
