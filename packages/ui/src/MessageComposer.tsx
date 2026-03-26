@@ -218,8 +218,15 @@ function IconButtonRow({ children }: { children: React.ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
 
-  // Detect overflow via ResizeObserver
+  // On mobile (<=480px), always collapse to three-dot dropdown
+  const isMobile = typeof window !== "undefined" && window.innerWidth <= 480;
+
+  // Detect overflow via ResizeObserver (desktop only)
   useEffect(() => {
+    if (isMobile) {
+      setOverflowing(true);
+      return;
+    }
     const el = containerRef.current;
     if (!el) return;
     const check = () => setOverflowing(el.scrollWidth > el.clientWidth + 4);
@@ -227,7 +234,7 @@ function IconButtonRow({ children }: { children: React.ReactNode }) {
     ro.observe(el);
     check();
     return () => ro.disconnect();
-  }, [children]);
+  }, [children, isMobile]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -271,7 +278,7 @@ function IconButtonRow({ children }: { children: React.ReactNode }) {
 
   return (
     <>
-      <div className="composer-icon-btns" ref={containerRef}>
+      <div className="composer-icon-btns" ref={containerRef} style={isMobile ? { display: "none" } : undefined}>
         {children}
       </div>
       {overflowing && (
