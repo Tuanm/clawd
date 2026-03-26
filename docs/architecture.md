@@ -1,6 +1,6 @@
 # Claw'd Architecture Reference
 
-> Last updated: 2026-03-25
+> Last updated: 2026-03-26
 
 ---
 
@@ -1088,6 +1088,56 @@ The scheduler creates and manages recurring or one-time jobs:
 4. Maximum **3 concurrent jobs** globally
 5. Natural language schedule parsing via `parse-schedule.ts` (e.g., "every weekday at 9am")
 
+### 9.4 Claude Code Agent System
+
+**Files**: `src/spaces/worker.ts`, `src/agent/agents/identity.ts`
+
+Claude Code agents integrate with `@anthropic-ai/claude-agent-sdk` for sub-agent spawning via Claw'd's main channel:
+
+#### Identity Injection (4-Layer System)
+
+Sub-agents receive full identity context matching Copilot agents:
+
+1. **Global** (`~/.claude/CLAUDE.md`) — Lowest priority
+2. **Project** (`{project}/.claude/CLAUDE.md`)
+3. **Agent type config** (`src/agent/agents/config/claude-code.yaml`)
+4. **Per-agent identity** (`~/.clawd/agents/{name}.md` or `{project}/.clawd/agents/{name}.md`) — Highest priority
+
+**Auto-refresh**: When any `CLAWD.md` file is modified (mtime check), identity automatically refreshes.
+
+**System prompt injection**: PROJECT ROOT path injected into sub-agent system prompt.
+
+#### Settings Passthrough
+
+SDK receives settings from Claw'd config:
+- `skip_co_author` — Don't append Co-Authored-By trailers
+- `attribution` — Include "Generated with [Claude Code](..." attribution
+- `permissions` — Tool access restrictions
+
+#### Custom Providers
+
+Support for custom claude-code providers (e.g., `"claude-code-2"` with type `"claude-code"`):
+- Explicit type field recognized
+- Custom providers without type auto-inferred
+- Listed in agents dialog
+
+#### Sub-Agent Capabilities
+
+- **Human interrupts**: Poll main channel space for human messages; abort + resume with human input
+- **Result delivery**: Result messages no longer truncated at 10K chars (full delivery)
+- **Error handling**: Timeout, crash, or exit-without-complete_task posted to main channel
+- **Retry strategy**: Auto-retry on 500/server errors (up to 2 retries with backoff)
+- **Thinking blocks**: Auto-recovery from corrupted thinking block signatures
+
+#### Bug Fixes (March 2026)
+
+| Issue | Fix | Impact |
+|-------|-----|--------|
+| False "error result: success" | Check subtype vs is_error flag | Proper error detection |
+| Stale streaming cleanup | onActivity refreshes streaming_started_at | No zombie streams |
+| Heartbeat timeout | onActivity refreshes processingStartedAt | Better responsiveness |
+| Sleeping agent polling | userSleeping flag stops polling | No wasted cycles |
+
 ---
 
 ## 10. Sandbox Security (Section numbering below adjusted for new 9.2 SDK section)
@@ -1435,6 +1485,36 @@ flowchart LR
 5. Tools from the remote worker appear **alongside local tools** in the agent's toolset
 6. Workers can be limited to **specific channels** for authorization
 
+### 11.1 Windows PowerShell Remote Worker
+
+**Files**: `packages/clawd-worker/typescript/remote-worker.ts`, `packages/clawd-worker/python/remote_worker.py`, `packages/clawd-worker/java/RemoteWorker.java`
+
+Remote worker scripts support cross-platform execution with special handling for Windows:
+
+#### PowerShell Base64 Encoding (Windows)
+
+Commands executed on Windows hosts use `-EncodedCommand` with Base64 UTF-16LE encoding to avoid quoting issues:
+
+- Command string encoded as UTF-16LE
+- Base64-encoded blob passed to `powershell.exe -EncodedCommand`
+- Prevents shell escaping issues with complex arguments
+- Applied consistently across TypeScript, Python, and Java workers
+
+#### Exit Code Wrapping
+
+PowerShell exit codes properly propagated via `$LASTEXITCODE`:
+
+- Worker captures exit code from executed command
+- Wraps in exit statement for parent shell
+- Ensures proper error detection and retry logic
+
+#### Platform Hints
+
+The `remote_bash` tool description includes platform hints for Windows hosts:
+- Clarifies PowerShell-specific behavior
+- Guides users on command compatibility
+- Notes UTF-16LE encoding requirements
+
 ---
 
 ## 12. WebSocket Events
@@ -1723,6 +1803,60 @@ Gemini → Minimax fallback chain for image generation.
 
 ---
 
+## 13.1 MCP Tools (Full Parity)
+
+The agent's tool ecosystem has been expanded to provide complete feature parity between local and remote workers. **28 new tools** are available across 5 categories:
+
+#### Scheduler Tools (4 tools)
+- `schedule.list` — List all scheduled jobs
+- `schedule.create` — Create a cron/interval/once job
+- `schedule.update` — Update an existing job
+- `schedule.delete` — Delete a scheduled job
+
+#### Tmux Tools (7 tools)
+- `tmux.list_sessions` — List active tmux sessions
+- `tmux.new_session` — Create a new tmux session
+- `tmux.send_keys` — Send keys to a session/pane
+- `tmux.capture_pane` — Capture pane output
+- `tmux.kill_session` — Terminate a session
+- `tmux.list_panes` — List panes in a session
+- `tmux.split_window` — Split a tmux window
+
+#### Skills Tools (5 tools)
+- `skills.list` — List available skills from 4 source directories
+- `skills.get` — Get a specific skill with full content
+- `skills.save` — Create or update a skill
+- `skills.delete` — Remove a custom skill
+- `skills.execute` — Execute a skill synchronously
+
+#### Articles Tools (6 tools)
+- `articles.list` — List all knowledge articles
+- `articles.create` — Create a new article
+- `articles.read` — Read an article's content
+- `articles.update` — Update an article
+- `articles.delete` — Delete an article
+- `articles.search` — Full-text search articles
+
+#### Memory Tools (2 tools)
+- `memory.recall` — Retrieve agent memories by keyword
+- `memory.store` — Save a new memory fact
+
+#### Utility Tools (4 tools)
+- `env.list` — List environment variables
+- `path.resolve` — Resolve file paths
+- `random.uuid` — Generate UUIDs
+- `time.now` — Get current timestamp
+
+#### Remote Worker Tool Exposure
+
+These tools are automatically exposed to Claude Code sub-agents and remote worker connections via the MCP endpoint (`/mcp`), enabling:
+- Distributed task execution across multiple machines
+- Parallel job scheduling
+- Unified skill/article management across Clawd instances
+- Remote memory persistence and recall
+
+---
+
 ## 14. Chat UI
 
 Built with React + Vite + TypeScript, the UI is embedded into the server binary at build
@@ -1747,6 +1881,38 @@ The UI connects to the server via WebSocket at `/ws` and handles:
 - **Read receipts**: `message_seen` events mark messages as read
 - **Reactions**: Emoji reactions with real-time add/remove
 - **Space cards**: Sub-agent spaces show as expandable cards with status indicators
+
+### Recent UI Improvements (March 2026)
+
+#### Text Selection & Copying
+- Text selection **enabled** on all messages
+- Right-click context menu on messages with options:
+  - Copy text (selected text only)
+  - Copy reference (message timestamp/link)
+  - Copy message (full message content)
+  - Copy link (shareable message URL)
+  - Share (external sharing options)
+- Right-click **blocked** globally except on message areas
+
+#### Code Block Indentation
+- Fixed `sanitizeText()` to preserve whitespace in code blocks
+- CSS `white-space: pre` ensures formatting retention
+- Code block content remains readable with proper indentation
+
+#### Home Page Branding
+- Branding area shifted slightly above center (top: 42%)
+- Improved visual balance
+
+#### Mobile UX Enhancements
+
+**Image Lightbox:**
+- Pinch-zoom support for image magnification
+- Pan/drag to reposition zoomed images
+- Double-tap to toggle between zoom levels
+
+**Composer Icons:**
+- On screens ≤480px width, all icons collapse to three-dot dropdown menu
+- Preserves functionality while optimizing space
 
 ---
 
@@ -1781,12 +1947,12 @@ flowchart TD
 
 ```
 clawd-app [options]
-  --host <host>     Bind address (default: 0.0.0.0)
-  -p, --port <n>    Port number (default: 3456)
-  --no-browser      Don't auto-open browser on start
-  --yolo            Disable sandbox restrictions for agent tools
-  --debug           Enable verbose debug logging
-  -h, --help        Show help
+  --host <host>           Bind address (default: 0.0.0.0)
+  -p, --port <n>          Port number (default: 3456)
+  --no-open-browser       Don't auto-open browser on start
+  --yolo                  Disable sandbox restrictions for agent tools
+  --debug                 Enable verbose debug logging
+  -h, --help              Show help
 ```
 
 ---
