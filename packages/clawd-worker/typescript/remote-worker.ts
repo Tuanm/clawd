@@ -421,10 +421,14 @@ function resolveShell(command: string): { exe: string; args: string[] } {
 
   // Use native Windows shell — no Git Bash conversion needed.
   // Agent should write OS-native commands (PowerShell/cmd syntax).
+  // Use -EncodedCommand (Base64 UTF-16LE) to avoid ALL quoting issues.
   for (const ps of ["pwsh.exe", "powershell.exe"]) {
     try {
       execSync(`where ${ps}`, { stdio: "ignore" });
-      return { exe: ps, args: ["-NoProfile", "-NonInteractive", "-Command", command] };
+      // Wrap command for proper exit code propagation, then encode
+      const wrapped = `$ErrorActionPreference='Continue'\ntry {\n${command}\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\n} catch { $Host.SetShouldExit(1); throw }`;
+      const encoded = Buffer.from(wrapped, "utf16le").toString("base64");
+      return { exe: ps, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded] };
     } catch {
       // try next
     }

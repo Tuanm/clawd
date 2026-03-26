@@ -484,10 +484,19 @@ def resolve_shell(command):  # type: (str) -> Tuple[str, List[str]]
         return ("bash", ["-c", command])
 
     # Use native Windows shell (PowerShell preferred, then cmd)
+    # Use -EncodedCommand (Base64 UTF-16LE) to avoid ALL quoting issues.
+    # Wrap command for proper exit code propagation.
     for ps in ("pwsh", "powershell"):
         found = shutil.which(ps)
         if found:
-            return (found, ["-NoProfile", "-NonInteractive", "-Command", command])
+            wrapped = (
+                "$ErrorActionPreference='Continue'\n"
+                "try {\n" + command + "\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+                "} catch { $Host.SetShouldExit(1); throw }"
+            )
+            import base64
+            encoded = base64.b64encode(wrapped.encode("utf-16-le")).decode("ascii")
+            return (found, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded])
 
     return (os.environ.get("ComSpec", "cmd.exe"), ["/c", command])
 

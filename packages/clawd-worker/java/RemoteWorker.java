@@ -596,12 +596,18 @@ public class RemoteWorker {
         }
         // Use native Windows shell — no Git Bash conversion.
         // Agent should write OS-native commands (PowerShell/cmd syntax).
+        // Use -EncodedCommand (Base64 UTF-16LE) to avoid ALL quoting issues.
+        // Wrap command for proper exit code propagation.
         for (String ps : List.of("pwsh.exe", "powershell.exe")) {
             try {
                 var which = new ProcessBuilder("where", ps).redirectErrorStream(true).start();
                 which.waitFor(5, TimeUnit.SECONDS);
                 if (which.exitValue() == 0) {
-                    return new ShellCmd(ps, List.of("-NoProfile", "-NonInteractive", "-Command", command));
+                    String wrapped = "$ErrorActionPreference='Continue'\ntry {\n" + command
+                        + "\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\n} catch { $Host.SetShouldExit(1); throw }";
+                    String encoded = java.util.Base64.getEncoder().encodeToString(
+                        wrapped.getBytes(java.nio.charset.StandardCharsets.UTF_16LE));
+                    return new ShellCmd(ps, List.of("-NoProfile", "-NonInteractive", "-EncodedCommand", encoded));
                 }
             } catch (Exception ignored) {}
         }
