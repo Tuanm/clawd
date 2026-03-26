@@ -43,7 +43,8 @@ export function loadConfig(): AppConfig {
   let values: {
     host?: string;
     port?: string;
-    "no-browser"?: boolean;
+    "no-open-browser"?: boolean;
+    restart?: boolean;
     help?: boolean;
     debug?: boolean;
     yolo?: boolean;
@@ -55,7 +56,8 @@ export function loadConfig(): AppConfig {
       options: {
         host: { type: "string" },
         port: { type: "string", short: "p" },
-        "no-browser": { type: "boolean" },
+        "no-open-browser": { type: "boolean" },
+        restart: { type: "boolean" },
         help: { type: "boolean", short: "h" },
         debug: { type: "boolean" },
         yolo: { type: "boolean" },
@@ -88,7 +90,7 @@ export function loadConfig(): AppConfig {
     host,
     port,
     chatApiUrl: `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`,
-    openBrowser: !values["no-browser"],
+    openBrowser: !values["no-open-browser"],
     projectRoot: process.cwd(),
     debug: values.debug || file.debug || false,
     yolo: values.yolo || file.yolo || false,
@@ -110,7 +112,8 @@ Usage: clawd-app [options]
 Options:
   --host <host>               Server host (default: 0.0.0.0)
   -p, --port <port>           Server port (default: 3456)
-  --no-browser                 Don't open browser on startup
+  --no-open-browser            Don't open browser on startup
+  --restart                    Auto-restart on crash or SIGTERM
   --yolo                       Disable sandbox restrictions for agents
   --debug                      Enable debug logging
   -h, --help                  Show this help message
@@ -122,6 +125,7 @@ Options:
 Examples:
   clawd-app
   clawd-app --host localhost --port 8080
-  clawd-app --no-browser --debug
+  clawd-app --no-open-browser --debug
+  clawd-app --restart
 `);
 }

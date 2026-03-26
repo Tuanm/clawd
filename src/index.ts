@@ -21,7 +21,7 @@ try {
     options: {
       host: { type: "string" },
       port: { type: "string", short: "p" },
-      "no-browser": { type: "boolean" },
+      "no-open-browser": { type: "boolean" },
       help: { type: "boolean", short: "h" },
       debug: { type: "boolean" },
       yolo: { type: "boolean" },
@@ -41,7 +41,7 @@ Usage: clawd-app [options]
 Options:
   --host <host>                Server host (default: 0.0.0.0)
   -p, --port <port>           Server port (default: 3456)
-  --no-browser                 Don't open browser on startup
+  --no-open-browser            Don't open browser on startup
   --yolo                      Disable sandbox restrictions for agents
   --debug                     Enable debug logging
   -h, --help                  Show this help message
@@ -52,7 +52,7 @@ Options:
 Examples:
   clawd-app
   clawd-app --host localhost --port 8080
-  clawd-app --no-browser --debug
+  clawd-app --no-open-browser --debug
 `);
     process.exit(1);
   }
@@ -67,7 +67,7 @@ Usage: clawd-app [options]
 Options:
   --host <host>                Server host (default: 0.0.0.0)
   -p, --port <port>           Server port (default: 3456)
-  --no-browser                 Don't open browser on startup
+  --no-open-browser            Don't open browser on startup
   --yolo                      Disable sandbox restrictions for agents
   --debug                     Enable debug logging
   -h, --help                  Show this help message
@@ -78,7 +78,7 @@ Options:
 Examples:
   clawd-app
   clawd-app --host localhost --port 8080
-  clawd-app --no-browser --debug
+  clawd-app --no-open-browser --debug
 `);
   process.exit(0);
 }
