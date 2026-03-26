@@ -7,7 +7,7 @@
  */
 
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "./agent/agents/loader";
@@ -496,18 +496,37 @@ CRITICAL RULES:
   // --------------------------------------------------------------------------
 
   private identityCache: string | null = null;
+  private identityMtimes: Record<string, number> = {};
+
+  /** Check if any identity source file has been modified since last cache */
+  private identityFilesChanged(): boolean {
+    for (const [path, mtime] of Object.entries(this.identityMtimes)) {
+      try {
+        const current = statSync(path).mtimeMs;
+        if (current !== mtime) return true;
+      } catch {
+        return true; // File removed
+      }
+    }
+    return false;
+  }
 
   private loadIdentity(): string {
-    if (this.identityCache !== null) return this.identityCache;
+    // Return cache if files haven't changed
+    if (this.identityCache !== null && !this.identityFilesChanged()) {
+      return this.identityCache;
+    }
 
     const { projectRoot, agentId, agentFileConfig } = this.config;
     const contexts: string[] = [];
+    const mtimes: Record<string, number> = {};
 
     // 1. Global CLAWD.md from ~/.clawd/CLAWD.md
     const globalPath = join(homedir(), ".clawd", "CLAWD.md");
     if (existsSync(globalPath)) {
       try {
         contexts.push(readFileSync(globalPath, "utf-8"));
+        mtimes[globalPath] = statSync(globalPath).mtimeMs;
       } catch {}
     }
 
@@ -516,6 +535,7 @@ CRITICAL RULES:
     if (existsSync(projectPath) && projectPath !== globalPath) {
       try {
         contexts.push(`## Project-Specific Instructions\n\n${readFileSync(projectPath, "utf-8")}`);
+        mtimes[projectPath] = statSync(projectPath).mtimeMs;
       } catch {}
     }
 
@@ -537,6 +557,7 @@ CRITICAL RULES:
       }
     }
 
+    this.identityMtimes = mtimes;
     this.identityCache = contexts.length > 0 ? contexts.join("\n\n---\n\n") + "\n\n---\n\n" : "";
     return this.identityCache;
   }
