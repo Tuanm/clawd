@@ -644,19 +644,14 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // Prevent right-click globally (messages and composer have their own context menu)
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
-      // Allow right-click on messages (they handle their own context menu)
       const target = e.target as HTMLElement;
+      // Allow right-click on message content (shows custom context menu)
       if (target.closest(".message")) {
-        return; // Let message handle it
+        // The message's onContextMenu handler will show the custom menu
+        // and call e.preventDefault() itself — we don't block here
+        return;
       }
-      // Allow right-click on composer textarea (it handles its own context menu)
-      if (target.closest(".composer-raw-textarea")) {
-        return; // Let composer handle it
-      }
-      // Allow right-click on article page context menu
-      if (target.closest(".message-context-menu")) {
-        return; // Let article context menu handle it
-      }
+      // Block right-click everywhere else
       e.preventDefault();
     };
     document.addEventListener("contextmenu", handleContextMenu);

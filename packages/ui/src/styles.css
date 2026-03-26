@@ -5404,13 +5404,20 @@ body {
   background: transparent;
 }
 
-/* Disable text selection globally - use copy buttons instead */
+/* Disable text selection on app chrome, allow in messages + composer */
 .app,
 .home-page,
 .modal-overlay {
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+}
+
+/* Allow text selection in messages (right-click → Copy text) */
+.message-content,
+.message-content * {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Allow text selection in the composer (user needs to edit their own text) */
