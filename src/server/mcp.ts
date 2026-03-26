@@ -3774,12 +3774,18 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
           const { getConnectedWorker } = await import("./remote-worker");
           const worker = getConnectedWorker(tokenHash);
           if (worker && worker.status === "connected" && worker.tools.length > 0) {
+            const platform = worker.platform || "unknown";
+            const isWindows = platform.toLowerCase().includes("win");
+            const tag = `[Remote: ${worker.name}, ${platform}]`;
             for (const t of worker.tools) {
-              remoteToolDefs.push({
-                name: `remote_${t.name}`,
-                description: `[Remote: ${worker.name}] ${t.description}`,
-                inputSchema: t.inputSchema,
-              });
+              let desc = `${tag} ${t.description}`;
+              if (t.name === "bash" && isWindows) {
+                desc +=
+                  "\n\nThis remote machine runs Windows. Use PowerShell syntax: " +
+                  "Get-ChildItem (not ls), Get-Content (not cat), $env:VAR (not $VAR), " +
+                  "backslash paths. For multi-line scripts, write to a .ps1 file first.";
+              }
+              remoteToolDefs.push({ name: `remote_${t.name}`, description: desc, inputSchema: t.inputSchema });
             }
           }
         }
