@@ -2283,6 +2283,12 @@ async function postToChannel(apiUrl: string, channel: string, text: string, agen
 // Start worker manager (loads agents from DB, starts polling loops)
 setTimeout(async () => {
   try {
+    // Clean up orphaned tmux sessions from previous runs
+    try {
+      const { cleanupStaleTmuxSessions } = await import("./claude-code-tmux");
+      cleanupStaleTmuxSessions();
+    } catch {}
+
     await workerManager.start();
     scheduler.start();
 

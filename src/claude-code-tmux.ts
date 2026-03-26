@@ -34,3 +34,24 @@ export function stopTmuxMonitor(monitor: TmuxMonitor): void {
     monitor.session = null;
   }
 }
+
+/** Kill orphaned clawd-cc-* tmux sessions from previous runs */
+export function cleanupStaleTmuxSessions(): void {
+  if (!hasTmux()) return;
+  try {
+    const result = Bun.spawnSync(["tmux", "list-sessions", "-F", "#{session_name}"]);
+    if (result.exitCode !== 0) return;
+    const sessions = result.stdout
+      .toString()
+      .split("\n")
+      .filter((s) => s.startsWith("clawd-cc-"));
+    for (const session of sessions) {
+      try {
+        Bun.spawnSync(["tmux", "kill-session", "-t", session]);
+      } catch {}
+    }
+    if (sessions.length > 0) {
+      console.log(`[claude-code] Cleaned up ${sessions.length} orphaned tmux session(s)`);
+    }
+  } catch {}
+}
