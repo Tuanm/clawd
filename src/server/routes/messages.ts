@@ -25,8 +25,18 @@ function sanitizeText(text: string): string {
   for (const marker of COPILOT_MARKERS) {
     result = result.replace(marker, "");
   }
-  // Clean up any resulting double spaces or leading/trailing spaces
-  return result.replace(/ {2,}/g, " ").trim();
+  // Clean up double spaces ONLY outside code blocks (preserve indentation)
+  // Split on fenced code blocks, sanitize non-code parts, rejoin
+  const parts = result.split(/(```[\s\S]*?```)/g);
+  const cleaned = parts
+    .map((part, i) => {
+      // Odd indices are code blocks (captured groups) — preserve as-is
+      if (i % 2 === 1) return part;
+      // Even indices are non-code text — collapse double spaces
+      return part.replace(/ {2,}/g, " ");
+    })
+    .join("");
+  return cleaned.trim();
 }
 
 import type { CodePreview } from "../database";
