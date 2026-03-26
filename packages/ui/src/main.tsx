@@ -1,8 +1,21 @@
-import React from "react";
+import React, { useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import HomePage from "./HomePage";
 import "./styles.css";
+
+/** Block browser right-click globally — only .message elements get custom context menu */
+function useBlockContextMenu() {
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest(".message")) return; // custom context menu handles this
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", handler);
+    return () => document.removeEventListener("contextmenu", handler);
+  }, []);
+}
 
 // Register Service Worker for PWA + desktop notifications
 function registerServiceWorker() {
@@ -32,6 +45,7 @@ registerServiceWorker();
 
 // Simple path-based routing
 function Router() {
+  useBlockContextMenu();
   const path = window.location.pathname;
 
   // Match article paths: /articles/{id} — render App in article mode

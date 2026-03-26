@@ -641,22 +641,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Prevent right-click globally (messages and composer have their own context menu)
-  useEffect(() => {
-    const handleContextMenu = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      // Allow right-click on message content (shows custom context menu)
-      if (target.closest(".message")) {
-        // The message's onContextMenu handler will show the custom menu
-        // and call e.preventDefault() itself — we don't block here
-        return;
-      }
-      // Block right-click everywhere else
-      e.preventDefault();
-    };
-    document.addEventListener("contextmenu", handleContextMenu);
-    return () => document.removeEventListener("contextmenu", handleContextMenu);
-  }, []);
+  // Right-click prevention is handled globally in main.tsx Router
 
   // Prevent DevTools keyboard shortcuts
   useEffect(() => {
