@@ -7,7 +7,10 @@
  */
 
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentFileConfig } from "./agent/agents/loader";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "./agent/agents/loader";
 import {
   broadcastAgentStreaming,
   broadcastAgentToken,
@@ -381,7 +384,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     this.abortController = new AbortController();
     const { channel, agentId, model, agentFileConfig } = this.config;
-    const basePrompt = agentFileConfig?.systemPrompt ? `${agentFileConfig.systemPrompt}\n\n---\n\n` : "";
+    const basePrompt = this.loadIdentity();
 
     const newSessionId = await runSDKQuery(
       {
@@ -487,6 +490,60 @@ CRITICAL RULES:
 
     return parts.join("\n");
   }
+
+  // --------------------------------------------------------------------------
+  // Identity (same 4 layers as WorkerLoop.loadClawdInstructions)
+  // --------------------------------------------------------------------------
+
+  private identityCache: string | null = null;
+
+  private loadIdentity(): string {
+    if (this.identityCache !== null) return this.identityCache;
+
+    const { projectRoot, agentId, agentFileConfig } = this.config;
+    const contexts: string[] = [];
+
+    // 1. Global CLAWD.md from ~/.clawd/CLAWD.md
+    const globalPath = join(homedir(), ".clawd", "CLAWD.md");
+    if (existsSync(globalPath)) {
+      try {
+        contexts.push(readFileSync(globalPath, "utf-8"));
+      } catch {}
+    }
+
+    // 2. Project CLAWD.md from {projectRoot}/CLAWD.md
+    const projectPath = join(projectRoot, "CLAWD.md");
+    if (existsSync(projectPath) && projectPath !== globalPath) {
+      try {
+        contexts.push(`## Project-Specific Instructions\n\n${readFileSync(projectPath, "utf-8")}`);
+      } catch {}
+    }
+
+    // 3. Agent type instructions (from agentFileConfig)
+    if (agentFileConfig) {
+      const typeIdentity = buildAgentSystemPrompt(agentFileConfig, []);
+      if (typeIdentity) {
+        contexts.push(`# Agent Type Configuration\n\n${typeIdentity}`);
+      }
+    }
+
+    // 4. Per-agent identity (from .clawd/agents/{agentId}.md)
+    const agent = loadAgentFile(agentId, projectRoot);
+    if (agent) {
+      const allAgents = listAgentFiles(projectRoot);
+      const diskIdentity = buildAgentSystemPrompt(agent, allAgents);
+      if (diskIdentity) {
+        contexts.push(`# Agent Identity & Configuration\n\n${diskIdentity}`);
+      }
+    }
+
+    this.identityCache = contexts.length > 0 ? contexts.join("\n\n---\n\n") + "\n\n---\n\n" : "";
+    return this.identityCache;
+  }
+
+  // --------------------------------------------------------------------------
+  // MCP config
+  // --------------------------------------------------------------------------
 
   private buildMcpServers(): Record<string, McpServerConfig> {
     let port = "3456";
