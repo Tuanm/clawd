@@ -7,7 +7,7 @@
  * Optimized with caching to avoid repeated file reads.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -28,16 +28,32 @@ export { BUILTIN_PROVIDERS };
 const DEFAULT_CONFIG_PATH = join(homedir(), ".clawd", "config.json");
 let cachedConfig: Config | null = null;
 let cachedConfigPath: string | null = null;
+let cachedConfigMtime: number | null = null;
+
+/** Invalidate cached config so next loadConfig() re-reads from disk */
+export function invalidateConfigCache(): void {
+  cachedConfig = null;
+  cachedConfigPath = null;
+  cachedConfigMtime = null;
+}
 
 /**
  * Load provider configuration from ~/.clawd/config.json (with caching)
+ * Cache auto-invalidates when the file's mtime changes.
  */
 export function loadConfig(configPath?: string): Config {
   const filePath = configPath || DEFAULT_CONFIG_PATH;
 
-  // Return cached config if available
+  // Check if cached config is still fresh (file hasn't been modified)
   if (cachedConfig && cachedConfigPath === filePath) {
-    return cachedConfig;
+    try {
+      const stat = statSync(filePath);
+      if (stat.mtimeMs === cachedConfigMtime) return cachedConfig;
+    } catch {
+      return cachedConfig; // File gone — return cached
+    }
+    // mtime changed — invalidate cache
+    cachedConfig = null;
   }
 
   if (!existsSync(filePath)) {
@@ -57,11 +73,15 @@ export function loadConfig(configPath?: string): Config {
       cachedConfig = parsed as Config;
     }
     cachedConfigPath = filePath;
+    try {
+      cachedConfigMtime = statSync(filePath).mtimeMs;
+    } catch {}
     return cachedConfig;
   } catch (err) {
     console.error(`[Provider Config] Failed to load config from ${filePath}:`, err);
     cachedConfig = getDefaultConfig();
     cachedConfigPath = filePath;
+    cachedConfigMtime = null;
     return cachedConfig;
   }
 }
