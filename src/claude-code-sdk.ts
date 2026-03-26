@@ -207,6 +207,21 @@ function resolveSDKCliPath(): { pathToClaudeCodeExecutable: string } | {} {
 export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCallbacks): Promise<string | null> {
   let sessionId: string | null = null;
 
+  // Build settings from provider config
+  const sdkSettings: Record<string, any> = {};
+  try {
+    const { getProviderConfig } = require("./agent/api/provider-config");
+    const providerCfg = getProviderConfig(opts.providerName || "claude-code") || {};
+    const settings = (providerCfg as any).settings;
+    if (settings && typeof settings === "object") {
+      Object.assign(sdkSettings, settings);
+    }
+    // Shorthand: skip_co_author at provider level
+    if ((providerCfg as any).skip_co_author === true) {
+      sdkSettings.attribution = { commit: "", pr: "" };
+    }
+  } catch {}
+
   const baseOptions: Options = {
     model: opts.model || "sonnet",
     cwd: opts.cwd,
@@ -221,6 +236,8 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     includePartialMessages: true,
     // Resolve cli.js explicitly — compiled binaries can't use import.meta.url
     ...resolveSDKCliPath(),
+    // Pass through settings (attribution, permissions, etc.)
+    ...(Object.keys(sdkSettings).length > 0 ? { settings: sdkSettings } : {}),
     hooks: {
       PreToolUse: [createPreToolUseHook()],
       PostToolUse: [createPostToolUseHook(callbacks.onToolResult, callbacks.onActivity)],
