@@ -1,6 +1,6 @@
 # Claw'd Code Standards & Development Guide
 
-> Last updated: 2026-03-25
+> Last updated: 2026-03-26
 
 ---
 
@@ -959,6 +959,133 @@ Tools like `git_commit` have guards that apply to worktrees:
 - Require author configuration (via local config or config.author)
 - Validate commit message not empty
 - Same guards apply to worktrees and normal repos (no special handling)
+
+---
+
+## 16. Claude Code Agent Integration
+
+Claude Code sub-agents are spawned via `@anthropic-ai/claude-agent-sdk` and receive full identity injection, tool restrictions, and streaming output handling.
+
+### 16.1 Identity Injection (4-Layer Priority)
+
+Sub-agents load identity from 4 directories with priority override:
+
+1. **Global lowest** — `~/.claude/CLAUDE.md`
+2. **Project** — `{project}/.claude/CLAUDE.md`
+3. **Agent type config** — `src/agent/agents/config/claude-code.yaml`
+4. **Per-agent highest** — `~/.clawd/agents/{name}.md` or `{project}/.clawd/agents/{name}.md`
+
+**Auto-refresh**: Modify any `CLAUDE.md` file; identity refreshes on mtime change.
+
+**System prompt injection**: PROJECT ROOT path automatically injected into sub-agent context.
+
+### 16.2 Settings Passthrough to SDK
+
+Forward Claw'd config settings to the Claude Agent SDK:
+
+```typescript
+const settings = {
+  skip_co_author: config.settings?.skip_co_author ?? false,
+  attribution: config.settings?.attribution ?? true,
+  permissions: config.settings?.permissions ?? {},
+};
+
+await sdk.spawn({
+  agent: "code-reviewer",
+  settings,
+  // ... other options
+});
+```
+
+### 16.3 Custom Provider Support
+
+Support custom claude-code providers without explicit type field:
+
+```typescript
+// providers in config.json
+"claude-code-2": {
+  "type": "claude-code",  // Optional; auto-inferred if omitted
+  "model": "claude-3-5-sonnet-20241022",
+  "api_key": "sk-..."
+}
+```
+
+Custom providers without type are auto-inferred and listed in agents dialog.
+
+### 16.4 Human Interrupt Handling
+
+Sub-agents poll the main channel space for user messages during execution:
+
+```typescript
+// In sub-agent loop
+while (agentRunning) {
+  // Poll space channel for new messages
+  const humanMessage = await getSpaceMessage(spaceId);
+  if (humanMessage && !isAgentMessage(humanMessage)) {
+    // Abort current task, inject human message, resume
+    abortController.abort();
+    await resumeWithMessage(humanMessage);
+  }
+  // Continue processing...
+}
+```
+
+### 16.5 Result Message Handling
+
+Sub-agent results no longer truncated at 10K chars:
+
+```typescript
+// Full result delivery to parent channel
+const result = await completeTask({ content });  // content can be any length
+// Result posted as full message, no truncation
+```
+
+### 16.6 Error Handling & Retry
+
+Timeout, crash, or exit-without-complete_task errors are posted to main channel:
+
+```typescript
+try {
+  await runSubAgent(task);
+} catch (err: any) {
+  if (err.code === "TIMEOUT" || err.code === "CRASH" || err.code === "NO_COMPLETE") {
+    // Post error to main channel via space
+    await postSpaceError(spaceId, err.message);
+  }
+}
+
+// Retry on 500/server errors (up to 2 retries with exponential backoff)
+const retryConfig = { maxRetries: 2, backoffMs: 1000 };
+```
+
+### 16.7 Thinking Block Recovery
+
+Auto-recovery from corrupted thinking block signatures:
+
+```typescript
+// Detect signature mismatch
+if (thinkingBlock && !isValidSignature(thinkingBlock)) {
+  // Auto-repair: regenerate signature or strip block
+  thinkingBlock = repairThinkingBlock(thinkingBlock);
+}
+```
+
+### 16.8 Sub-Agent Tool Restrictions
+
+Sub-agents have limited tool access for safety:
+
+**Allowed:**
+- `complete_task` — Report completion
+- `chat_mark_processed` — Mark messages seen
+- `get_environment` — Access sandbox env vars
+- `today` — Get current date/time
+
+**Blocked:**
+- `chat_send_message` — Cannot post to parent channel directly
+- File/git tools — Inherit from parent config
+- Browser/workspace tools — Inherit from parent config
+
+**Inheritance**: Sub-agents inherit parent's `disallowedTools` and can be further restricted via agent file.
 
 ---
 

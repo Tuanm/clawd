@@ -1,6 +1,6 @@
 # Claw'd Codebase Summary
 
-> Updated: 2026-03-25 | Total Files: ~260 | Total Tokens: ~1.2M | Codebase size: 4.8M chars
+> Updated: 2026-03-26 | Total Files: ~260 | Total Tokens: ~1.2M | Codebase size: 4.8M chars
 
 ---
 
@@ -820,12 +820,12 @@ security_opt:
 
 ```sh
 clawd-app [options]
-  --host <host>       Server bind address (default: 0.0.0.0)
-  -p, --port <port>   Server port (default: 3456)
-  --debug             Enable debug logging
-  --yolo              Disable sandbox restrictions for agents
-  --no-browser         Don't open browser on startup
-  -h, --help          Show help
+  --host <host>           Server bind address (default: 0.0.0.0)
+  -p, --port <port>       Server port (default: 3456)
+  --debug                 Enable debug logging
+  --yolo                  Disable sandbox restrictions for agents
+  --no-open-browser       Don't auto-open browser on startup
+  -h, --help              Show help
 ```
 
 ### config.json Schema
@@ -899,6 +899,77 @@ Main configuration file at `~/.clawd/config.json`:
 ├── memory.db                   # LLM sessions & memories
 └── mcp-oauth-tokens.json       # OAuth token cache
 ```
+
+---
+
+## LLM Provider System
+
+### Supported Providers
+
+| Provider | API | Default Model | Notes |
+|----------|-----|---------------|-------|
+| **copilot** | GitHub Copilot | claude-sonnet-4-5 | Recommended default |
+| **openai** | OpenAI | gpt-4o | GPT-4, o1, o3 support |
+| **anthropic** | Anthropic | claude-opus-4-5 | Direct Claude access |
+| **ollama** | Ollama | llama3 | Local models |
+| **minimax** | Minimax | image-01 | Image generation |
+
+### Config Caching
+
+Config cache auto-refreshes on file mtime change (`src/config-file.ts`):
+- No server restart needed for config updates
+- Atomic file I/O for consistency
+- Backward compatibility with legacy config formats
+
+### Custom Providers
+
+Support for custom providers without explicit type field:
+- Type auto-inferred from config structure
+- Listed in agents dialog
+- Full MCP compatibility
+
+### Vision Configuration
+
+Separate provider configs for image operations:
+- `read_image` — Analyze images (Copilot, Gemini)
+- `generate_image` — Create images (Minimax, Gemini)
+- `edit_image` — Modify images (Minimax)
+
+---
+
+## Recent Improvements (March 2026)
+
+### Claude Code Agent Enhancements
+
+- **4-layer identity injection** — Global, project, type, per-agent with priority override
+- **Identity auto-refresh** — CLAWD.md mtime check triggers reload
+- **Project ROOT injection** — Automatically added to system prompt
+- **Settings passthrough** — Attribution, skip_co_author, permissions forwarded to SDK
+- **Custom provider support** — Type auto-inference, explicit "claude-code" designation
+- **Human interrupt support** — Poll space channel, abort + resume with human input
+- **Full result delivery** — No 10K char truncation on sub-agent outputs
+- **Error posting** — Timeout/crash/no-complete errors posted to main channel
+- **Retry logic** — 500/server errors auto-retry up to 2x with exponential backoff
+- **Thinking block recovery** — Auto-repair corrupted thinking block signatures
+- **Sleeping agent fix** — userSleeping flag prevents unnecessary polling
+
+### UI/UX Improvements
+
+- **Text selection enabled** — Full message text selectable
+- **Context menu** — Copy text/reference/link/message options
+- **Right-click controls** — Enabled on messages only, blocked elsewhere
+- **Code indentation preserved** — sanitizeText + CSS white-space: pre
+- **Home page branding** — Shifted above center (top: 42%)
+- **Mobile image lightbox** — Pinch-zoom, pan, double-tap zoom
+- **Composer responsiveness** — Icons collapse to dropdown on ≤480px
+
+### Infrastructure & Tools
+
+- **28 new MCP tools** — Scheduler (4), tmux (7), skills (5), articles (6), memory (2), utility (4)
+- **Windows PowerShell** — Base64 UTF-16LE encoding, proper exit code handling
+- **Remote worker parity** — Full tool exposure via MCP endpoint
+- **Orphaned session cleanup** — Auto-cleanup of stale tmux sessions on startup
+- **Smart agent wakeup** — Skip old messages, create summary, preserve sleep state
 
 ---
 
