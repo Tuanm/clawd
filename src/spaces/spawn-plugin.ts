@@ -430,10 +430,7 @@ export function createSpawnAgentPlugin(
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 channel: config.channel,
-                text:
-                  result.length > 10000
-                    ? result.slice(0, 10000) + "\n\n[Result truncated — full result in sub-space]"
-                    : result,
+                text: result,
                 user: subAgentId,
                 agent_id: subAgentId,
               }),
@@ -729,10 +726,7 @@ export function createSpawnAgentPlugin(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               channel: config.channel,
-              text:
-                result.length > 10000
-                  ? result.slice(0, 10000) + "\n\n[Result truncated — full result in sub-space]"
-                  : result,
+              text: result,
               user: subAgentId,
               agent_id: subAgentId,
             }),
