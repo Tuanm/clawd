@@ -5,9 +5,11 @@
  * Safe to import at module level — uses synchronous file I/O.
  */
 
+import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, watch } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { matchesPattern } from "./utils/pattern";
 
 export interface ConfigFile {
   host?: string;
@@ -111,14 +113,15 @@ export interface ConfigFile {
   };
   /**
    * API authentication configuration.
-   * When set, all API requests must include `Authorization: Bearer <token>`.
-   * When omitted, auth is disabled (backward compatible).
    *
-   * Example: `"auth": { "token": "your-secret-token-here" }`
+   * Legacy:   `{ "token": "abc" }` — single global token (treated as `{ "*": ["abc"] }`)
+   * Channel:  `{ "chan-*": ["tok1", "tok2"], "other": ["tok3"] }`
+   *           Keys are glob patterns (* = any chars, ? treated as literal).
+   *           Use "*" as a catch-all.
+   *
+   * When omitted, auth is disabled.
    */
-  auth?: {
-    token?: string;
-  };
+  auth?: { token: string } | Record<string, string[]>;
   /**
    * Override token limits for specific models, organized by provider.
    * Merged with built-in defaults (overrides take precedence).
@@ -259,10 +262,10 @@ export function isBrowserEnabled(channel?: string): boolean {
     if (!channel) return br.length > 0;
     return br.includes(channel);
   }
-  // Record<string, string[]> — per-channel auth tokens
+  // Record<string, string[]> — per-channel auth tokens (wildcard-aware)
   if (typeof br === "object" && br !== null) {
     if (!channel) return Object.keys(br).length > 0;
-    return Object.hasOwn(br, channel);
+    return Object.keys(br as Record<string, unknown>).some((p) => matchesPattern(channel, p));
   }
   return false;
 }
@@ -296,41 +299,115 @@ export function getAllBrowserTokens(): Set<string> | null {
 }
 
 /**
- * Get the auth tokens valid for a specific channel.
+ * Get the auth tokens valid for a specific channel (wildcard-aware).
  * Returns null if no auth is required; empty array if channel has no tokens.
  */
 export function getBrowserTokensForChannel(channel: string): string[] | null {
   const config = loadConfigFile();
   const br = config.browser;
   if (typeof br !== "object" || br === null || Array.isArray(br)) return null;
-  const tokens = br[channel];
-  if (!Array.isArray(tokens)) return [];
-  return tokens.filter((t) => typeof t === "string" && t.length > 0);
+  const tokens: string[] = [];
+  for (const [pattern, toks] of Object.entries(br as Record<string, unknown>)) {
+    if (!Array.isArray(toks)) continue;
+    if (matchesPattern(channel, pattern)) {
+      tokens.push(...toks.filter((t): t is string => typeof t === "string" && t.length > 0));
+    }
+  }
+  return tokens;
+}
+
+// timing-safe token comparison — used across this module and remote-worker.ts
+/** Constant-time string equality check (prevents timing attacks on token validation). */
+export function safeTokenEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+function isLegacyAuth(auth: ConfigFile["auth"]): auth is { token: string } {
+  return (
+    typeof auth === "object" &&
+    auth !== null &&
+    "token" in auth &&
+    typeof (auth as { token: unknown }).token === "string"
+  );
+}
+
+function normaliseAuthConfig(auth: ConfigFile["auth"]): Record<string, string[]> | null {
+  if (!auth) return null;
+  if (isLegacyAuth(auth)) {
+    if (!auth.token.trim()) return null; // empty/whitespace → auth disabled
+    return { "*": [auth.token] };
+  }
+  const result: Record<string, string[]> = {};
+  for (const [pattern, tokens] of Object.entries(auth as Record<string, unknown>)) {
+    if (!Array.isArray(tokens)) continue; // skip malformed entries
+    const valid = tokens.filter((t): t is string => typeof t === "string" && t.length > 0);
+    if (valid.length > 0) result[pattern] = valid;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+export function isAuthEnabled(): boolean {
+  return normaliseAuthConfig(loadConfigFile().auth) !== null;
+}
+
+export function isChannelAuthRequired(channel: string): boolean {
+  const map = normaliseAuthConfig(loadConfigFile().auth);
+  if (!map) return false;
+  return Object.entries(map).some(([p]) => matchesPattern(channel, p));
 }
 
 /**
- * Get the API auth token from config, or null if auth is disabled.
+ * Validate a token for a channel (timing-safe, single config snapshot).
+ * Pass INTERNAL_SERVICE_TOKEN check BEFORE calling this (handled in middleware).
+ * - channel provided: validates against tokens for that channel's patterns only
+ * - no channel: validates against all tokens across all patterns (used by WS upgrade)
+ */
+export function validateApiToken(token: string | null | undefined, channel?: string): boolean {
+  if (!token) return false;
+  const map = normaliseAuthConfig(loadConfigFile().auth); // single config read
+  if (!map) return true; // auth not configured → allow
+  // Inline pattern filter — no second loadConfigFile() call (v4 fix)
+  const candidates = channel
+    ? Object.entries(map)
+        .filter(([p]) => matchesPattern(channel, p))
+        .flatMap(([, toks]) => toks)
+    : Object.values(map).flat();
+  return candidates.some((c) => safeTokenEqual(c, token));
+}
+
+/**
+ * @deprecated Use isAuthEnabled() + validateApiToken() for new code.
+ * Returns the single global token if legacy config is used, or null.
+ * Under channel-based config without a "*" key, returns null even if auth IS active.
  */
 export function getAuthToken(): string | null {
-  const config = loadConfigFile();
-  const token = config.auth?.token;
-  return typeof token === "string" && token.length > 0 ? token : null;
+  const map = normaliseAuthConfig(loadConfigFile().auth);
+  if (!map) return null;
+  const tok = map["*"]?.[0] ?? null;
+  if (tok === null && isAuthEnabled()) {
+    console.warn(
+      "[getAuthToken] @deprecated: channel-based auth is active but no '*' catch-all key exists." +
+        " Migrate this caller to isAuthEnabled() / validateApiToken().",
+    );
+  }
+  return tok;
 }
 
-/**
- * Find which channels a given auth token belongs to.
- */
+/** Returns matching glob patterns for a given browser token. Timing-safe (v4). */
 export function getChannelsForToken(token: string): string[] {
   const config = loadConfigFile();
   const br = config.browser;
   if (typeof br !== "object" || br === null || Array.isArray(br)) return [];
-  const channels: string[] = [];
-  for (const [channel, tokens] of Object.entries(br)) {
-    if (Array.isArray(tokens) && token.length > 0 && tokens.includes(token)) {
-      channels.push(channel);
-    }
-  }
-  return channels;
+  return Object.entries(br as Record<string, unknown>)
+    .filter(
+      ([, toks]) => Array.isArray(toks) && (toks as string[]).some((t) => safeTokenEqual(t, token)), // timing-safe (v4 fix)
+    )
+    .map(([pattern]) => pattern);
 }
 
 /**

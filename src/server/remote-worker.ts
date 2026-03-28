@@ -1,7 +1,8 @@
 import type { ServerWebSocket } from "bun";
 import { createHash, randomBytes } from "crypto";
 import { EventEmitter } from "events";
-import { loadConfigFile, reloadConfigFile } from "../config-file";
+import { loadConfigFile, reloadConfigFile, safeTokenEqual } from "../config-file";
+import { matchesPattern } from "../utils/pattern";
 
 export interface RemoteWorkerWsData {
   type: "remote-worker";
@@ -87,12 +88,24 @@ function isTokenAllowed(token: string, channel?: string): boolean {
   if (workerConfig === true) return true;
 
   if (workerConfig && typeof workerConfig === "object") {
+    const cfg = workerConfig as Record<string, unknown>;
     if (channel) {
-      const tokens = workerConfig[channel];
-      return Array.isArray(tokens) && tokens.includes(token);
+      for (const [pattern, tokens] of Object.entries(cfg)) {
+        if (!Array.isArray(tokens)) continue;
+        if (
+          matchesPattern(channel, pattern) &&
+          (tokens as string[]).some((t) => safeTokenEqual(t, token)) // timing-safe (v4 fix)
+        )
+          return true;
+      }
+      return false;
     }
-    for (const tokens of Object.values(workerConfig)) {
-      if (Array.isArray(tokens) && tokens.includes(token)) return true;
+    for (const tokens of Object.values(cfg)) {
+      if (
+        Array.isArray(tokens) &&
+        (tokens as string[]).some((t) => safeTokenEqual(t, token)) // timing-safe (v4 fix)
+      )
+        return true;
     }
   }
 
@@ -111,13 +124,12 @@ export function getTokenChannels(token: string): string[] | "all" {
   if (workerConfig === true) return "all";
 
   if (workerConfig && typeof workerConfig === "object") {
-    const channels: string[] = [];
-    for (const [ch, tokens] of Object.entries(workerConfig)) {
-      if (Array.isArray(tokens) && tokens.includes(token)) {
-        channels.push(ch);
-      }
-    }
-    return channels;
+    const cfg = workerConfig as Record<string, unknown>;
+    return Object.entries(cfg)
+      .filter(
+        ([, tokens]) => Array.isArray(tokens) && (tokens as string[]).some((t) => safeTokenEqual(t, token)), // timing-safe (v4 fix)
+      )
+      .map(([pattern]) => pattern);
   }
 
   return [];
