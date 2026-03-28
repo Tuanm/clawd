@@ -1,0 +1,135 @@
+/**
+ * Migrations for memory.db
+ *
+ * v1 — base tables from all 4 source files:
+ *       sessions + messages (session/manager.ts)
+ *       knowledge + FTS (knowledge-base.ts)
+ *       agent_memories + FTS (agent-memory.ts) — without the 3 extra columns
+ *
+ * v2 — add priority, tags, effectiveness columns to agent_memories
+ *       (previously applied via inline try/catch in agent-memory.ts)
+ */
+
+import type { Migration } from "../migrations";
+
+export const memoryMigrations: Migration[] = [
+  {
+    version: 1,
+    description: "base tables for sessions, knowledge, and agent_memories",
+    up: (db) => {
+      db.exec(`
+        -- session/manager.ts tables
+        CREATE TABLE IF NOT EXISTS sessions (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          model TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          role TEXT NOT NULL,
+          content TEXT,
+          tool_calls TEXT,
+          tool_call_id TEXT,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (session_id) REFERENCES sessions(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+
+        -- knowledge-base.ts tables
+        CREATE TABLE IF NOT EXISTS knowledge (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          source_id TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          chunk_index INTEGER NOT NULL DEFAULT 0,
+          content TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_session ON knowledge(session_id);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_source ON knowledge(source_id);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+          content,
+          content='knowledge',
+          content_rowid='id',
+          tokenize='porter unicode61'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS knowledge_ai AFTER INSERT ON knowledge BEGIN
+          INSERT INTO knowledge_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS knowledge_ad AFTER DELETE ON knowledge BEGIN
+          INSERT INTO knowledge_fts(knowledge_fts, rowid, content) VALUES('delete', old.id, old.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS knowledge_au AFTER UPDATE ON knowledge BEGIN
+          INSERT INTO knowledge_fts(knowledge_fts, rowid, content) VALUES('delete', old.id, old.content);
+          INSERT INTO knowledge_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        -- agent-memory.ts base table (without the 3 extra columns added in v2)
+        CREATE TABLE IF NOT EXISTS agent_memories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          agent_id TEXT NOT NULL,
+          channel TEXT,
+          category TEXT NOT NULL DEFAULT 'fact',
+          content TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT 'explicit',
+          access_count INTEGER NOT NULL DEFAULT 0,
+          last_accessed INTEGER NOT NULL DEFAULT (unixepoch()),
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_am_agent_channel ON agent_memories(agent_id, channel);
+        CREATE INDEX IF NOT EXISTS idx_am_agent_category ON agent_memories(agent_id, category);
+        CREATE INDEX IF NOT EXISTS idx_am_access ON agent_memories(agent_id, access_count, last_accessed);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS agent_memories_fts USING fts5(
+          content,
+          content='agent_memories',
+          content_rowid='id',
+          tokenize='porter unicode61'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS am_ai AFTER INSERT ON agent_memories BEGIN
+          INSERT INTO agent_memories_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS am_ad AFTER DELETE ON agent_memories BEGIN
+          INSERT INTO agent_memories_fts(agent_memories_fts, rowid, content) VALUES('delete', old.id, old.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS am_au AFTER UPDATE ON agent_memories BEGIN
+          INSERT INTO agent_memories_fts(agent_memories_fts, rowid, content) VALUES('delete', old.id, old.content);
+          INSERT INTO agent_memories_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+      `);
+    },
+  },
+  {
+    version: 2,
+    description: "add priority, tags, effectiveness columns to agent_memories",
+    up: (db) => {
+      // Add columns idempotently (try/catch for DBs that already have them)
+      for (const sql of [
+        "ALTER TABLE agent_memories ADD COLUMN priority INTEGER NOT NULL DEFAULT 50",
+        "ALTER TABLE agent_memories ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE agent_memories ADD COLUMN effectiveness REAL NOT NULL DEFAULT 0.5",
+      ]) {
+        try {
+          db.exec(sql);
+        } catch (e: any) {
+          if (!String(e?.message).includes("duplicate column")) throw e;
+        }
+      }
+      db.exec("CREATE INDEX IF NOT EXISTS idx_am_priority ON agent_memories(agent_id, priority DESC)");
+    },
+  },
+];

@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FileSessionManager } from "./file-manager";
+import { SessionManager } from "./manager";
 
 // ============================================================================
 // Types
@@ -97,8 +98,8 @@ export class SessionSummarizer {
    */
   async checkAndSummarize(): Promise<void> {
     try {
-      // Fetch current message count from DB
-      const messages = await this.fetchDbMessages();
+      // Fetch current message count from DB (direct SQLite, no network)
+      const messages = this.fetchDbMessages();
 
       if (messages.length < this.config.messageThreshold) {
         return; // Not enough messages to warrant summarization
@@ -131,36 +132,32 @@ export class SessionSummarizer {
   }
 
   /**
-   * Fetch messages from the database
+   * Fetch messages from the session database directly (no network hop).
+   *
+   * Uses the SessionManager keyed to `channel-agentId` and maps model-level
+   * messages to the Slack-style shape expected by checkAndSummarize /
+   * createSummary.
    */
-  private async fetchDbMessages(): Promise<any[]> {
+  private fetchDbMessages(): any[] {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 30000);
-      const response = await fetch(`${this.config.serverUrl}/api/conversations.history`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: this.config.channel,
-          limit: 500, // Fetch more for summarization
-        }),
-        signal: ctrl.signal,
-      }).finally(() => clearTimeout(timer));
+      const manager = new SessionManager();
+      const sessionName = `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
+      const session = manager.getSession(sessionName);
+      if (!session) return [];
 
-      if (response.ok) {
-        const data = (await response.json()) as {
-          ok: boolean;
-          messages: any[];
-        };
-        if (data.ok && data.messages) {
-          // Sort by timestamp (oldest first for summarization)
-          return data.messages.sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
-        }
-      }
+      const messages = manager.getMessages(session.id);
+
+      // Map model-level messages to a Slack-style shape for createSummary()
+      return messages.map((msg, idx) => ({
+        ts: String(idx), // ordinal index as ts for ordering / dedup
+        user: msg.role === "user" ? "UHUMAN" : "UBOT",
+        agent_id: msg.role === "assistant" ? this.config.agentId : null,
+        text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""),
+      }));
     } catch (err) {
       console.error("[Summarizer] Failed to fetch DB messages:", err);
+      return [];
     }
-    return [];
   }
 
   /**

@@ -71,11 +71,13 @@ function makeExecutor(result: string = "tool-result"): ToolExecutor {
         },
       },
     ]),
-    execute: mock(async (toolCall: ToolCall): Promise<ToolExecutionResult> => ({
-      tool_call_id: toolCall.id,
-      content: result,
-      success: true,
-    })),
+    execute: mock(
+      async (toolCall: ToolCall): Promise<ToolExecutionResult> => ({
+        tool_call_id: toolCall.id,
+        content: result,
+        success: true,
+      }),
+    ),
   };
 }
 

@@ -9,23 +9,9 @@
 // Types (imported from shared types module and re-exported for consumers)
 // ============================================================================
 
-import type {
-  CompletionRequest,
-  CompletionResponse,
-  Message,
-  StreamEvent,
-  ToolCall,
-  ToolDefinition,
-} from "./types";
+import type { CompletionRequest, CompletionResponse, Message, StreamEvent, ToolCall, ToolDefinition } from "./types";
 
-export type {
-  CompletionRequest,
-  CompletionResponse,
-  Message,
-  StreamEvent,
-  ToolCall,
-  ToolDefinition,
-};
+export type { CompletionRequest, CompletionResponse, Message, StreamEvent, ToolCall, ToolDefinition };
 
 // ============================================================================
 // Provider Interface

@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getDataDir } from "../config-file";
+import { runMigrations } from "../db/migrations";
+import { chatMigrations } from "../db/migrations/chat-migrations";
 
 const DATA_DIR = getDataDir();
 const DB_PATH = join(DATA_DIR, "chat.db");
@@ -176,9 +178,10 @@ export function getStatements(): PreparedStatements {
       ),
 
       // Get all actions for an artifact (for polls, tallies)
-      getArtifactActions: instance.prepare<{ action_id: string; value: string; user: string; created_at: number }, [string]>(
-        `SELECT action_id, value, user, created_at FROM artifact_actions WHERE message_ts = ? ORDER BY created_at ASC`,
-      ),
+      getArtifactActions: instance.prepare<
+        { action_id: string; value: string; user: string; created_at: number },
+        [string]
+      >(`SELECT action_id, value, user, created_at FROM artifact_actions WHERE message_ts = ? ORDER BY created_at ASC`),
     };
   }
   return _statements;
@@ -611,6 +614,9 @@ export function initDatabase() {
   } catch {
     /* Table already exists */
   }
+
+  // Run versioned migrations to track future schema changes
+  runMigrations(getDb(), chatMigrations);
 }
 
 // Migration: Normalize channel IDs to use channel name as ID

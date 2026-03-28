@@ -4,9 +4,11 @@
 
 import Database from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "../api/client";
+import { getDataDir } from "../../config-file";
+import { runMigrations } from "../../db/migrations";
+import { memoryMigrations } from "../../db/migrations/memory-migrations";
 import { smartTruncate } from "../utils/smart-truncation";
 
 // ============================================================================
@@ -72,7 +74,7 @@ export class SessionManager {
   private _sessionUpdateTimes = new Map<number, number>(); // per-session debounce
 
   constructor(dbPath?: string) {
-    const defaultPath = join(homedir(), ".clawd", "memory.db");
+    const defaultPath = join(getDataDir(), "memory.db");
     const path = dbPath || defaultPath;
 
     // Ensure directory exists
@@ -101,28 +103,7 @@ export class SessionManager {
   }
 
   private init() {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        model TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT,
-        tool_calls TEXT,
-        tool_call_id TEXT,
-        created_at INTEGER NOT NULL,
-        FOREIGN KEY (session_id) REFERENCES sessions(id)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-    `);
+    runMigrations(this.db, memoryMigrations);
   }
 
   // ============================================================================

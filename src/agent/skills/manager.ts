@@ -28,6 +28,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { runMigrations } from "../../db/migrations";
+import { skillsCacheMigrations } from "../../db/migrations/skills-cache-migrations";
 import { getContextProjectRoot } from "../utils/agent-context";
 
 // ============================================================================
@@ -139,6 +141,7 @@ export class SkillManager {
 
     this.db = new Database(join(cacheDir, "index.db"));
     this.setupConcurrency();
+    runMigrations(this.db, skillsCacheMigrations, "recreate-on-mismatch");
     this.initDb();
   }
 
