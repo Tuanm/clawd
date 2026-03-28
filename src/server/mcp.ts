@@ -2188,13 +2188,45 @@ async function executeToolCall(
       case "chat_upload_local_file": {
         const filePath = args.file_path as string;
         const _channel = args.channel as string;
+        const _agentId = (args.agent_id as string) || "default";
 
-        const { basename, extname, join } = await import("node:path");
-        const { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } = await import("node:fs");
+        const { basename, extname, join, resolve: resolvePath } = await import("node:path");
+        const { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, realpathSync } = await import("node:fs");
         const { ATTACHMENTS_DIR } = await import("./database");
 
+        // A-1: Path allowlist — only permit files under projectRoot, /tmp, or the
+        // server's current working directory.  Symlink-safe via realpathSync.
+        let resolvedFilePath: string;
+        {
+          // A-1c: Use agent's project root from DB, fall back to process.cwd()
+          const agentRow = db
+            .query<{ project: string | null }, [string, string]>(
+              "SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?",
+            )
+            .get(_channel, _agentId);
+          const projectRoot = resolvePath(agentRow?.project ?? process.cwd());
+          try {
+            resolvedFilePath = existsSync(filePath) ? realpathSync(filePath) : resolvePath(filePath);
+          } catch {
+            resolvedFilePath = resolvePath(filePath);
+          }
+          const isUnderProjectRoot =
+            resolvedFilePath === projectRoot || resolvedFilePath.startsWith(`${projectRoot}/`);
+          // A-1b: Resolve canonical /tmp path (handles macOS /tmp → /private/tmp symlink)
+          const canonicalTmp = (() => { try { return realpathSync("/tmp"); } catch { return "/tmp"; } })();
+          const isUnderTmp = resolvedFilePath === canonicalTmp || resolvedFilePath.startsWith(canonicalTmp + "/");
+          if (!isUnderProjectRoot && !isUnderTmp) {
+            resultText = JSON.stringify({
+              ok: false,
+              error: `Access denied: file path "${filePath}" is outside allowed directories (project root or /tmp).`,
+            });
+            break;
+          }
+        }
+
+        // A-1a: Use resolvedFilePath consistently to avoid TOCTOU races
         // Validate file exists
-        if (!existsSync(filePath)) {
+        if (!existsSync(resolvedFilePath)) {
           resultText = JSON.stringify({
             ok: false,
             error: `File not found: ${filePath}`,
@@ -2203,7 +2235,7 @@ async function executeToolCall(
         }
 
         // Check it's a file (not directory)
-        const stat = statSync(filePath);
+        const stat = statSync(resolvedFilePath);
         if (!stat.isFile()) {
           resultText = JSON.stringify({
             ok: false,
@@ -2212,13 +2244,20 @@ async function executeToolCall(
           break;
         }
 
-        // Read the file
-        const buffer = readFileSync(filePath);
+        // A-5: File size limit — reject files larger than 50 MB before reading
+        const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
+        if (stat.size > MAX_UPLOAD_BYTES) {
+          resultText = JSON.stringify({ ok: false, error: `File too large: ${stat.size} bytes (max ${MAX_UPLOAD_BYTES})` });
+          break;
+        }
 
-        // Determine filename
+        // Read the file
+        const buffer = readFileSync(resolvedFilePath);
+
+        // Determine filename — use original filePath for display name so symlink names are preserved
         const displayName = (args.filename as string) || basename(filePath);
 
-        // Auto-detect mimetype from extension
+        // Auto-detect mimetype from extension — use original filePath extension for same reason
         const MIME_MAP: Record<string, string> = {
           ".png": "image/png",
           ".jpg": "image/jpeg",
@@ -2364,7 +2403,7 @@ async function executeToolCall(
       case "chat_get_artifact_actions": {
         const messageTs = args.message_ts as string;
         const { getArtifactActions: getActions } = await import("./routes/artifact-actions");
-        const result = getActions(messageTs, channelId);
+        const result = getActions(messageTs, args.channel as string);
         resultText = JSON.stringify(result);
         break;
       }
@@ -2445,11 +2484,11 @@ async function executeToolCall(
 
         let messages = db.query<Message, (string | number)[]>(query).all(...params);
 
-        // Apply regex filter post-query
+        // Apply regex filter post-query (A-4: run in worker thread with 5s timeout to prevent ReDoS)
         if (searchRegex) {
+          // Validate the regex pattern is syntactically valid first (cheap, no risk)
           try {
-            const regex = new RegExp(searchRegex, "i");
-            messages = messages.filter((m) => regex.test(m.text || ""));
+            new RegExp(searchRegex, "i");
           } catch (e) {
             resultText = JSON.stringify({
               ok: false,
@@ -2457,6 +2496,51 @@ async function executeToolCall(
             });
             break;
           }
+
+          // Run the actual matching in a worker thread to isolate catastrophic backtracking
+          const { Worker } = await import("worker_threads");
+          const textsToMatch = messages.map((m) => m.text || "");
+          const workerCode = `
+            const { workerData, parentPort } = require('worker_threads');
+            try {
+              const regex = new RegExp(workerData.pattern, 'i');
+              const matched = workerData.texts.map((t) => regex.test(t));
+              parentPort.postMessage({ ok: true, matched });
+            } catch (e) {
+              parentPort.postMessage({ ok: false, error: e.message });
+            }
+          `;
+
+          const matchResult = await new Promise<{ ok: boolean; matched?: boolean[]; error?: string }>((resolve) => {
+            const worker = new Worker(workerCode, {
+              eval: true,
+              workerData: { pattern: searchRegex, texts: textsToMatch },
+            });
+            const timeoutId = setTimeout(() => {
+              worker.terminate();
+              resolve({ ok: false, error: "Regex timed out (possible ReDoS). Pattern took longer than 5 seconds." });
+            }, 5000);
+            worker.on("message", (msg) => {
+              clearTimeout(timeoutId);
+              worker.terminate();
+              resolve(msg);
+            });
+            worker.on("error", (err: Error) => {
+              clearTimeout(timeoutId);
+              worker.terminate();
+              resolve({ ok: false, error: err.message });
+            });
+          });
+
+          if (!matchResult.ok) {
+            resultText = JSON.stringify({
+              ok: false,
+              error: matchResult.error || "Regex evaluation failed",
+            });
+            break;
+          }
+
+          messages = messages.filter((_, i) => matchResult.matched![i]);
         }
 
         const hasMore = messages.length > limit;
@@ -4852,20 +4936,38 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
             }
             case "agent_logs": {
               const targetAgentId = args.agent_id as string;
+              // Validate targetAgentId to only allow safe characters (prevent path traversal)
+              if (!/^[a-zA-Z0-9_-]+$/.test(targetAgentId)) {
+                text = `Error: Invalid agent_id "${targetAgentId}": only alphanumeric, underscore, and hyphen characters are allowed.`;
+                break;
+              }
+              const channel = args.channel as string;
+              // Also validate the channel parameter to prevent path traversal
+              if (!/^[a-zA-Z0-9_-]+$/.test(channel)) {
+                text = JSON.stringify({ ok: false, error: "Invalid channel identifier" });
+                break;
+              }
               const tail = (args.tail as number) || 100;
               // Try to find agent log from ~/.clawd/projects/.../agents/ directory
               const { join } = await import("node:path");
               const { homedir } = await import("node:os");
-              const { readFileSync, existsSync } = await import("node:fs");
+              const { readFileSync, existsSync, statSync: fsStatSync } = await import("node:fs");
               // Check common agent log locations
               const clauwdDir = join(homedir(), ".clawd");
               const logCandidates = [
                 join(clauwdDir, "agents", targetAgentId, "output.log"),
                 join(clauwdDir, "projects", channel, "agents", targetAgentId, "output.log"),
               ];
+              const MAX_LOG_BYTES = 1 * 1024 * 1024; // 1 MB
               let found = false;
               for (const logFile of logCandidates) {
                 if (existsSync(logFile)) {
+                  const logStat = fsStatSync(logFile);
+                  if (logStat.size > MAX_LOG_BYTES) {
+                    text = `Agent: ${targetAgentId}\n(log file too large: ${logStat.size} bytes, max ${MAX_LOG_BYTES})`;
+                    found = true;
+                    break;
+                  }
                   const content = readFileSync(logFile, "utf-8");
                   const lines = content.split("\n");
                   const output = lines.slice(-tail).join("\n");

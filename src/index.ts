@@ -85,6 +85,8 @@ Examples:
 
 import { keyPool } from "./agent/api/key-pool";
 import { clearConfigCache as clearProviderConfigCache, ensureKeyPoolInitialized } from "./agent/api/provider-config";
+import { applyTokenLimitOverrides } from "./agent/constants/context-limits";
+import { getSessionManager } from "./agent/session/manager";
 import { setDebug } from "./agent/utils/debug";
 import {
   type CallsQueryOptions,
@@ -126,7 +128,6 @@ if (!validateConfig(config)) {
 {
   const fileConfig = loadConfigFile();
   if (fileConfig.model_token_limits) {
-    const { applyTokenLimitOverrides } = require("./agent/constants/context-limits");
     applyTokenLimitOverrides(fileConfig.model_token_limits);
   }
 }
@@ -661,7 +662,9 @@ const server = Bun.serve({
           });
         }
       }
-      const userId = url.searchParams.get("user") || "UHUMAN";
+      // When auth is active, always identify as the human user (ignore ?user= param).
+      // Without auth (dev/local mode), honour the ?user= param for flexibility.
+      const userId = authToken ? "UHUMAN" : (url.searchParams.get("user") || "UHUMAN");
       if (server.upgrade(req, { data: { userId } })) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
@@ -758,8 +761,8 @@ const server = Bun.serve({
 
     // API routes
     if (path.startsWith("/api/") || path.startsWith("/mcp") || path === "/health") {
-      // Auth check for /api/ routes (not /mcp or /health which are internal/monitoring)
-      if (path.startsWith("/api/")) {
+      // Auth check for /api/ and /mcp routes (not /health which is a monitoring endpoint)
+      if (path.startsWith("/api/") || path.startsWith("/mcp")) {
         const authToken = getAuthToken();
         if (authToken) {
           const authHeader = req.headers.get("authorization");
@@ -2491,7 +2494,6 @@ function runDbMaintenance() {
 
     // Purge old sessions from memory.db (>30 days)
     try {
-      const { getSessionManager } = require("./agent/session/manager");
       const sm = getSessionManager();
       if (sm) sm.purgeOldSessions(30);
     } catch {}
