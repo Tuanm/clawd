@@ -923,10 +923,24 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             }
           }
 
+          // Collect agent IDs that the server no longer considers streaming
+          const staleAgentIds = new Set(
+            current.streamingAgents
+              .map((a) => a.agentId)
+              .filter((id) => !serverStreaming.some((a: any) => a.agentId === id)),
+          );
+
           const newMap = new Map(prev);
           newMap.set(channelId, {
             ...current,
             streamingAgents: serverStreaming,
+            // Clear is_streaming on messages from agents that are no longer streaming
+            messages:
+              staleAgentIds.size > 0
+                ? current.messages.map((m) =>
+                    m.agent_id && staleAgentIds.has(m.agent_id) && m.is_streaming ? { ...m, is_streaming: false } : m,
+                  )
+                : current.messages,
           });
           return newMap;
         });
@@ -1562,10 +1576,14 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               msgChannel,
               (() => {
                 const current = channelStatesRef.current.get(msgChannel) || defaultChannelState;
+                const agentId = data.agent_id;
                 return {
-                  streamingAgents: current.streamingAgents.filter((a) => a.agentId !== data.agent_id),
-                  // Also remove legacy thinking messages
-                  messages: current.messages.filter((m) => m.ts !== `thinking_${data.agent_id}`),
+                  streamingAgents: current.streamingAgents.filter((a) => a.agentId !== agentId),
+                  // Remove legacy thinking placeholders and clear is_streaming on all messages
+                  // from this agent so they render as normal completed messages.
+                  messages: current.messages
+                    .filter((m) => m.ts !== `thinking_${agentId}`)
+                    .map((m) => (m.agent_id === agentId && m.is_streaming ? { ...m, is_streaming: false } : m)),
                 };
               })(),
             );
