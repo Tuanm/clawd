@@ -36,11 +36,33 @@ export function setStoredAuthToken(token: string): void {
 }
 
 /**
+ * Return any stored per-channel token — used as a last-resort fallback for
+ * global endpoints (e.g. user.getUnreadCounts) when auth is channel-scoped and
+ * no global token exists. The server validates channel-scoped tokens against all
+ * patterns when no specific channel is specified in the request.
+ */
+export function getAnyChannelToken(): string | null {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith("clawd-channel-token-")) {
+        const token = localStorage.getItem(key);
+        if (token) return token;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch wrapper that injects per-channel (or global) auth token.
  * Sends raw token without "Bearer" prefix — server accepts both formats.
+ * Token resolution order: channel-specific → global → any stored channel token.
  */
 export async function authFetch(input: RequestInfo | URL, init?: RequestInit, channel?: string): Promise<Response> {
-  const token = channel ? getChannelToken(channel) : getStoredAuthToken();
+  const token = channel ? getChannelToken(channel) : (getStoredAuthToken() ?? getAnyChannelToken());
   if (token) {
     const headers = new Headers(init?.headers);
     if (!headers.has("Authorization")) headers.set("Authorization", token);
