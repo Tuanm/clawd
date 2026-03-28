@@ -7,98 +7,205 @@ const DATA_DIR = getDataDir();
 const DB_PATH = join(DATA_DIR, "chat.db");
 const ATTACHMENTS_DIR = join(DATA_DIR, "attachments");
 
-// Ensure directories exist
-if (!existsSync(DATA_DIR)) {
-  mkdirSync(DATA_DIR, { recursive: true });
-}
-if (!existsSync(ATTACHMENTS_DIR)) {
-  mkdirSync(ATTACHMENTS_DIR, { recursive: true });
-}
-
-// High-performance SQLite configuration
-export const db = new Database(DB_PATH, { strict: true });
-
-// Set busy_timeout FIRST to avoid SQLITE_BUSY errors
-db.exec("PRAGMA busy_timeout = 5000"); // 5 second timeout
-
-// Enable WAL mode for better concurrent read/write performance
-db.exec("PRAGMA journal_mode = WAL");
-db.exec("PRAGMA synchronous = NORMAL");
-// Use conservative cache/mmap for container deployments (ENV=dev/prod uses 8MB cache, no mmap)
-const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
-db.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`); // 8MB (container) or 64MB (desktop)
-db.exec("PRAGMA temp_store = MEMORY");
-db.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`); // Disable mmap in containers
-
 export { ATTACHMENTS_DIR };
 
-// Initialize tables BEFORE preparing statements (tables must exist for db.prepare)
-initDatabase();
-
 // ============================================================================
-// Prepared Statements for Hot Paths (high-throughput optimization)
+// Lazy DB Singleton — prevents side effects at module import time
 // ============================================================================
 
-// Message queries - prepared once, reused for all requests
-export const preparedStatements = {
-  // Insert message
-  insertMessage: db.prepare(
-    `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json, subspace_json, workspace_json, tool_result_json, interactive_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ),
+let _db: Database | null = null;
 
-  // Get message by ts
-  getMessageByTs: db.prepare<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`),
+/**
+ * Returns the singleton Database instance, creating it on first call.
+ * All 6 PRAGMA calls and schema initialisation run exactly once here.
+ */
+export function getDb(): Database {
+  if (!_db) {
+    // Ensure directories exist (deferred to first use)
+    if (!existsSync(DATA_DIR)) {
+      mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (!existsSync(ATTACHMENTS_DIR)) {
+      mkdirSync(ATTACHMENTS_DIR, { recursive: true });
+    }
 
-  // Get messages for channel (history)
-  getChannelHistory: db.prepare<Message, [string, number]>(
-    `SELECT * FROM messages WHERE channel = ? AND thread_ts IS NULL ORDER BY ts DESC LIMIT ?`,
-  ),
+    // Stage in a local variable so _db is never set to a partially-initialised
+    // instance.  We commit to _db only after PRAGMAs succeed so that the Proxy
+    // resolves correctly when initDatabase() calls back through it, then roll
+    // back on any error so the next caller can retry cleanly.
+    const newDb = new Database(DB_PATH, { strict: true });
 
-  // Get messages older than ts (pagination)
-  getChannelHistoryOlder: db.prepare<Message, [string, string, number]>(
-    `SELECT * FROM messages WHERE channel = ? AND thread_ts IS NULL AND ts < ? ORDER BY ts DESC LIMIT ?`,
-  ),
+    // Set busy_timeout FIRST to avoid SQLITE_BUSY errors
+    newDb.exec("PRAGMA busy_timeout = 5000"); // 5 second timeout
 
-  // Get thread replies
-  getThreadReplies: db.prepare<Message, [string, string, number]>(
-    `SELECT * FROM messages WHERE channel = ? AND thread_ts = ? ORDER BY ts ASC LIMIT ?`,
-  ),
+    // Enable WAL mode for better concurrent read/write performance
+    newDb.exec("PRAGMA journal_mode = WAL");
+    newDb.exec("PRAGMA synchronous = NORMAL");
+    // Use conservative cache/mmap for container deployments
+    const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
+    newDb.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`); // 8MB (container) or 64MB (desktop)
+    newDb.exec("PRAGMA temp_store = MEMORY");
+    newDb.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`); // Disable mmap in containers
 
-  // Update message
-  updateMessage: db.prepare(`UPDATE messages SET text = ?, edited_at = ? WHERE ts = ? AND channel = ?`),
+    // Commit before initDatabase() so the Proxy resolves to newDb when
+    // initDatabase() calls back through db.exec() / db.prepare().
+    _db = newDb;
 
-  // Delete message
-  deleteMessage: db.prepare(`DELETE FROM messages WHERE ts = ? AND channel = ?`),
+    try {
+      // Initialize tables BEFORE preparing statements (tables must exist for db.prepare)
+      initDatabase();
+    } catch (err) {
+      // Roll back: reset _db so the next call can attempt init again.
+      _db = null;
+      newDb.close();
+      throw err;
+    }
+  }
+  return _db;
+}
 
-  // Agent seen
-  upsertAgentSeen: db.prepare(
-    `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_poll_ts, updated_at)
-     VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-     ON CONFLICT(agent_id, channel) DO UPDATE SET
-       last_seen_ts = excluded.last_seen_ts,
-       last_poll_ts = excluded.last_poll_ts,
-       updated_at = strftime('%s', 'now')`,
-  ),
+/**
+ * Backward-compatible proxy export.
+ * Existing consumers that do `import { db } from "./database"` continue to work
+ * unchanged — every property access transparently calls getDb() on first use.
+ */
+export const db = new Proxy({} as Database, {
+  get(_target, prop) {
+    // Bind methods to the real instance so native private fields resolve
+    // correctly.  Bun's Database is a native class — calling db.exec() with
+    // `this = Proxy` would throw a private-field TypeError without this bind.
+    const instance = getDb();
+    const val = (instance as any)[prop];
+    return typeof val === "function" ? val.bind(instance) : val;
+  },
+  set(_target, prop, value) {
+    (getDb() as any)[prop] = value;
+    return true;
+  },
+  has(_target, prop) {
+    return prop in (getDb() as any);
+  },
+  ownKeys(_target) {
+    return Reflect.ownKeys(getDb() as any);
+  },
+  getOwnPropertyDescriptor(_target, prop) {
+    return Object.getOwnPropertyDescriptor(getDb() as any, prop);
+  },
+});
 
-  // Get agent
-  getAgent: db.prepare<Agent, [string, string]>(`SELECT * FROM agents WHERE id = ? AND channel = ?`),
+// ============================================================================
+// Lazy Prepared-Statements Singleton
+// ============================================================================
 
-  // Get agent seen
-  getAgentSeen: db.prepare<{ last_seen_ts: string; last_poll_ts: number | null }, [string, string]>(
-    `SELECT last_seen_ts, last_poll_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
-  ),
-
-  // Get the first action taken on an interactive artifact (for reconnect state)
-  getArtifactAction: db.prepare<{ action_id: string; value: string; user: string }, [string]>(
-    `SELECT action_id, value, user FROM artifact_actions WHERE message_ts = ? ORDER BY created_at ASC LIMIT 1`,
-  ),
-
-  // Get all actions for an artifact (for polls, tallies)
-  getArtifactActions: db.prepare<{ action_id: string; value: string; user: string; created_at: number }, [string]>(
-    `SELECT action_id, value, user, created_at FROM artifact_actions WHERE message_ts = ? ORDER BY created_at ASC`,
-  ),
+type PreparedStatements = {
+  insertMessage: ReturnType<Database["prepare"]>;
+  getMessageByTs: ReturnType<Database["prepare"]>;
+  getChannelHistory: ReturnType<Database["prepare"]>;
+  getChannelHistoryOlder: ReturnType<Database["prepare"]>;
+  getThreadReplies: ReturnType<Database["prepare"]>;
+  updateMessage: ReturnType<Database["prepare"]>;
+  deleteMessage: ReturnType<Database["prepare"]>;
+  upsertAgentSeen: ReturnType<Database["prepare"]>;
+  getAgent: ReturnType<Database["prepare"]>;
+  getAgentSeen: ReturnType<Database["prepare"]>;
+  getArtifactAction: ReturnType<Database["prepare"]>;
+  getArtifactActions: ReturnType<Database["prepare"]>;
 };
+
+let _statements: PreparedStatements | null = null;
+
+/**
+ * Returns the singleton prepared-statements object, creating it on first call.
+ * Calling getDb() here ensures the schema exists before preparing.
+ */
+export function getStatements(): PreparedStatements {
+  if (!_statements) {
+    const instance = getDb();
+    _statements = {
+      // Insert message
+      insertMessage: instance.prepare(
+        `INSERT INTO messages (ts, channel, thread_ts, user, text, subtype, html_preview, code_preview_json, article_json, agent_id, mentions_json, subspace_json, workspace_json, tool_result_json, interactive_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ),
+
+      // Get message by ts
+      getMessageByTs: instance.prepare<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`),
+
+      // Get messages for channel (history)
+      getChannelHistory: instance.prepare<Message, [string, number]>(
+        `SELECT * FROM messages WHERE channel = ? AND thread_ts IS NULL ORDER BY ts DESC LIMIT ?`,
+      ),
+
+      // Get messages older than ts (pagination)
+      getChannelHistoryOlder: instance.prepare<Message, [string, string, number]>(
+        `SELECT * FROM messages WHERE channel = ? AND thread_ts IS NULL AND ts < ? ORDER BY ts DESC LIMIT ?`,
+      ),
+
+      // Get thread replies
+      getThreadReplies: instance.prepare<Message, [string, string, number]>(
+        `SELECT * FROM messages WHERE channel = ? AND thread_ts = ? ORDER BY ts ASC LIMIT ?`,
+      ),
+
+      // Update message
+      updateMessage: instance.prepare(`UPDATE messages SET text = ?, edited_at = ? WHERE ts = ? AND channel = ?`),
+
+      // Delete message
+      deleteMessage: instance.prepare(`DELETE FROM messages WHERE ts = ? AND channel = ?`),
+
+      // Agent seen
+      upsertAgentSeen: instance.prepare(
+        `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_poll_ts, updated_at)
+         VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+         ON CONFLICT(agent_id, channel) DO UPDATE SET
+           last_seen_ts = excluded.last_seen_ts,
+           last_poll_ts = excluded.last_poll_ts,
+           updated_at = strftime('%s', 'now')`,
+      ),
+
+      // Get agent
+      getAgent: instance.prepare<Agent, [string, string]>(`SELECT * FROM agents WHERE id = ? AND channel = ?`),
+
+      // Get agent seen
+      getAgentSeen: instance.prepare<{ last_seen_ts: string; last_poll_ts: number | null }, [string, string]>(
+        `SELECT last_seen_ts, last_poll_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
+      ),
+
+      // Get the first action taken on an interactive artifact (for reconnect state)
+      getArtifactAction: instance.prepare<{ action_id: string; value: string; user: string }, [string]>(
+        `SELECT action_id, value, user FROM artifact_actions WHERE message_ts = ? ORDER BY created_at ASC LIMIT 1`,
+      ),
+
+      // Get all actions for an artifact (for polls, tallies)
+      getArtifactActions: instance.prepare<{ action_id: string; value: string; user: string; created_at: number }, [string]>(
+        `SELECT action_id, value, user, created_at FROM artifact_actions WHERE message_ts = ? ORDER BY created_at ASC`,
+      ),
+    };
+  }
+  return _statements;
+}
+
+/**
+ * Backward-compatible proxy export.
+ * Existing consumers that do `import { preparedStatements } from "./database"` continue to work.
+ */
+export const preparedStatements = new Proxy({} as PreparedStatements, {
+  get(_target, prop) {
+    return (getStatements() as any)[prop];
+  },
+});
+
+/**
+ * Resets all lazy singletons for testing.
+ * Call this in `afterEach`/`afterAll` when tests open their own DB connections
+ * to prevent stale prepared statements from a closed DB being reused.
+ * @internal — not for production use.
+ */
+export function _resetForTesting(): void {
+  _db?.close();
+  _db = null;
+  _statements = null;
+  _markSeenStmt = null;
+}
 
 // ============================================================================
 // ID Generation
@@ -1091,9 +1198,16 @@ export function isAgentUser(userId: string, channel: string): boolean {
 
 // Mark messages as seen by an agent - batched for performance
 // Returns list of message timestamps that were NEWLY marked (not already seen)
-const markSeenStmt = db.prepare(
-  `INSERT OR IGNORE INTO message_seen (message_ts, channel, agent_id, seen_at) VALUES (?, ?, ?, ?)`,
-);
+// Lazily prepared on first use (avoids module-level DB side effect)
+let _markSeenStmt: ReturnType<Database["prepare"]> | null = null;
+function getMarkSeenStmt() {
+  if (!_markSeenStmt) {
+    _markSeenStmt = getDb().prepare(
+      `INSERT OR IGNORE INTO message_seen (message_ts, channel, agent_id, seen_at) VALUES (?, ?, ?, ?)`,
+    );
+  }
+  return _markSeenStmt;
+}
 
 export function markMessagesSeen(channel: string, agentId: string, messageTsList: string[]): string[] {
   if (messageTsList.length === 0) return [];
@@ -1104,7 +1218,7 @@ export function markMessagesSeen(channel: string, agentId: string, messageTsList
   // Use transaction for batch insert (much faster)
   db.transaction(() => {
     for (const ts of messageTsList) {
-      const runResult = markSeenStmt.run(ts, channel, agentId, now);
+      const runResult = getMarkSeenStmt().run(ts, channel, agentId, now);
       if (runResult.changes > 0) {
         newlySeen.push(ts);
       }
