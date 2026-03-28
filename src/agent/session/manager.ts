@@ -232,7 +232,7 @@ export class SessionManager {
 
   getMessages(sessionId: string): Message[] {
     const rows = this.db
-      .query("SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC")
+      .query("SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC")
       .all(sessionId) as StoredMessage[];
 
     return rows.map((row) => ({
@@ -247,8 +247,8 @@ export class SessionManager {
     const rows = this.db
       .query(
         `SELECT * FROM (
-        SELECT * FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?
-      ) ORDER BY id ASC`,
+        SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT ?
+      ) ORDER BY created_at ASC, id ASC`,
       )
       .all(sessionId, limit) as StoredMessage[];
 
@@ -273,7 +273,7 @@ export class SessionManager {
    */
   getMessagesWithIds(sessionId: string): Array<StoredMessage> {
     return this.db
-      .query("SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC")
+      .query("SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC")
       .all(sessionId) as StoredMessage[];
   }
 
@@ -294,12 +294,12 @@ export class SessionManager {
     const rows = this.db
       .query(
         `SELECT * FROM (
-        SELECT * FROM messages 
-        WHERE session_id = ? 
+        SELECT * FROM messages
+        WHERE session_id = ?
           AND role IN ('user', 'assistant')
           AND tool_call_id IS NULL
-        ORDER BY id DESC LIMIT ?
-      ) ORDER BY id ASC`,
+        ORDER BY created_at DESC, id DESC LIMIT ?
+      ) ORDER BY created_at ASC, id ASC`,
       )
       .all(sessionId, limit * 2) as StoredMessage[];
 
@@ -552,19 +552,14 @@ export class SessionManager {
 
     // If summary provided, insert it as the first message
     if (summaryPrefix && deletedCount > 0) {
-      // Insert summary as a system-like user message at the beginning
-      const oldestRemainingId = this.db
-        .query("SELECT MIN(id) as min_id FROM messages WHERE session_id = ?")
-        .get(sessionId) as { min_id: number } | null;
-
-      if (oldestRemainingId) {
-        // Insert with a lower ID to appear first (use negative to ensure it's first)
-        this.db.run(
-          `INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, created_at) 
-           VALUES (?, 'user', ?, NULL, NULL, ?)`,
-          [sessionId, `[CONTEXT SUMMARY - ${deletedCount} older messages compacted]\n\n${summaryPrefix}`, Date.now()],
-        );
-      }
+      // Insert summary as a system-like user message at the beginning.
+      // created_at = 0 (epoch) guarantees it sorts before all real messages
+      // when ORDER BY created_at ASC is used in getMessages().
+      this.db.run(
+        `INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, created_at)
+         VALUES (?, 'user', ?, NULL, NULL, 0)`,
+        [sessionId, `[CONTEXT SUMMARY - ${deletedCount} older messages compacted]\n\n${summaryPrefix}`],
+      );
     }
 
     console.log(`[SessionManager] Compacted session: deleted ${deletedCount} messages, kept ${keepCount}`);
