@@ -5,7 +5,7 @@
  * Safe to import at module level — uses synchronous file I/O.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, watch } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -157,6 +157,23 @@ export interface ConfigFile {
 const CONFIG_PATH = join(homedir(), ".clawd", "config.json");
 
 let _cached: ConfigFile | null = null;
+
+// Watch ~/.clawd/config.json for changes and auto-invalidate the cache.
+// Uses { persistent: false } so the watcher never prevents process exit.
+// Debounced 200 ms to coalesce rapid save events (editors often write twice).
+let _watchDebounce: ReturnType<typeof setTimeout> | null = null;
+try {
+  watch(CONFIG_PATH, { persistent: false }, () => {
+    if (_watchDebounce) clearTimeout(_watchDebounce);
+    _watchDebounce = setTimeout(() => {
+      _cached = null;
+      _watchDebounce = null;
+    }, 200);
+  });
+} catch {
+  // File may not exist yet — watcher will be absent until next restart.
+  // This is fine; the cache will still be invalidated via reloadConfigFile().
+}
 
 /** Load and cache ~/.clawd/config.json */
 export function loadConfigFile(): ConfigFile {
