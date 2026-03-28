@@ -2212,8 +2212,8 @@ export default function MessageList({
     if (msg.user !== prevMsg.user) return false;
     // Multi-agent support: different agents should not be combined
     if (msg.agent_id !== prevMsg.agent_id) return false;
-    // Streaming/thinking messages are never continuations
-    if (msg.is_streaming || msg.ts.startsWith("thinking_")) return false;
+    // Thinking placeholder messages are never continuations
+    if (msg.ts.startsWith("thinking_")) return false;
     const currentTime = parseFloat(msg.ts) * 1000;
     const prevTime = parseFloat(prevMsg.ts) * 1000;
     // Handle non-numeric timestamps gracefully
@@ -2360,9 +2360,8 @@ export default function MessageList({
           );
         }
 
-        // Check if this is a streaming message (agent is actively typing)
-        // Exclude article messages from streaming state
-        const isStreaming = isAgentMessage(msg) && msg.is_streaming === true && !msg.article && !msg.subspace;
+        // All messages render identically — no streaming/thinking animation on message bubbles
+        const isStreaming = false;
         const isThinkingPlaceholder = msg.ts.startsWith("thinking_");
 
         return (
@@ -2448,11 +2447,8 @@ export default function MessageList({
                   // Always parse blocks from FULL text — slicing before parsing breaks fenced blocks
                   // whose closing ``` falls outside the slice window.
                   const decodedText = processMessageText(msg.text || "");
-                  // Coarse memo: streaming messages re-parse every 500 chars to reduce parse frequency.
-                  // Non-streaming messages re-parse on every char change (exact key).
-                  const blockCacheKey = msg.is_streaming
-                    ? `${msg.ts}-${Math.floor(decodedText.length / 500)}`
-                    : `${msg.ts}-${decodedText.length}`;
+                  // Always use exact cache key — all messages render identically.
+                  const blockCacheKey = `${msg.ts}-${decodedText.length}`;
                   const cachedEntry = blockParseCacheRef.current.get(msg.ts);
                   const blocks: MessageBlock[] =
                     cachedEntry && cachedEntry.key === blockCacheKey
