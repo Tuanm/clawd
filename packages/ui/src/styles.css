@@ -1084,19 +1084,12 @@ body {
 
 .connection-indicator.clickable {
   cursor: pointer;
-  border-radius: 4px;
-  padding: 2px;
-  transition: background 0.15s;
+  opacity: 0.8;
+  transition: opacity 0.15s;
 }
 
 .connection-indicator.clickable:hover {
-  background: hsl(0 0% 95%);
-}
-
-@media (prefers-color-scheme: dark) {
-  .connection-indicator.clickable:hover {
-    background: hsl(0 0% 20%);
-  }
+  opacity: 1;
 }
 
 /* Modal Overlay */
@@ -1197,6 +1190,71 @@ body {
 
 .online-agent:hover {
   opacity: 1;
+}
+
+/* Sub-agents header indicator */
+.sub-agents-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sub-agents-indicator-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: hsl(0 0% 60%);
+  min-width: 14px;
+  text-align: center;
+  margin-right: -3px; /* pull count tight against the icon */
+}
+
+.sub-agents-indicator-sep {
+  font-size: 11px;
+  color: hsl(0 0% 65%);
+  line-height: 1;
+  user-select: none;
+}
+
+.sub-agents-indicator-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.8;
+  transition: opacity 0.15s;
+}
+
+.sub-agents-indicator-btn:hover {
+  opacity: 1;
+}
+
+/* Sub-agents dialog — reuses stream-dialog for header/close/overlay */
+.sub-agents-dialog {
+  width: min(90vw, 460px);
+  max-height: 70vh;
+}
+
+.sub-agents-dialog-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sub-agents-dialog-card {
+  margin-top: 0 !important;
+}
+
+.sub-agents-dialog-empty {
+  text-align: center;
+  color: hsl(0 0% 60%);
+  font-size: 14px;
+  padding: 24px 0;
 }
 
 /* Messages - Slack style with avatars */
