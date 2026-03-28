@@ -1,6 +1,6 @@
 # Claw'd Codebase Summary
 
-> Updated: 2026-03-28 | Total Files: ~275 | Total Tokens: ~1.3M | Codebase size: 5.0M chars
+> Updated: 2026-03-29 | Total Files: ~275 | Total Tokens: ~1.3M | Codebase size: 5.0M chars
 
 ---
 
@@ -58,18 +58,21 @@ Chrome Extension (packages/browser-extension/)
 ```
 clawd/
 ├── src/                              # Main application
-│   ├── index.ts                      # Server entry point (HTTP/WS, ~1905 lines; route handlers extracted to src/server/routes/)
+│   ├── index.ts                      # Server entry point (HTTP/WS, route handlers in src/server/routes/)
 │   ├── config.ts                     # CLI flag parser
-│   ├── config-file.ts                # ~/.clawd/config.json loader; fs.watch hot-reload (200ms debounce)
+│   ├── config-file.ts                # ~/.clawd/config.json loader; channel-scoped auth helpers; fs.watch hot-reload (200ms debounce)
+│   ├── internal-token.ts             # INTERNAL_SERVICE_TOKEN — ephemeral, generated at startup, never persisted
 │   ├── worker-loop.ts                # Per-agent polling loop (200ms)
 │   ├── worker-manager.ts             # Multi-agent orchestrator + heartbeat monitor
+│   ├── utils/
+│   │   └── pattern.ts                # matchesPattern() — glob matching (* wildcard, ? literal)
 │   ├── server/
 │   │   ├── database.ts               # chat.db lazy singleton (Proxy), schema/migrations; _resetForTesting()
 │   │   ├── websocket.ts              # WebSocket broadcasting
 │   │   ├── http-helpers.ts           # Shared HTTP utilities (json, requireAuth, etc.)
 │   │   ├── validate.ts               # validateBody<T>(schema, body) — Zod validation helper
 │   │   ├── browser-bridge.ts         # Browser extension WS bridge
-│   │   ├── remote-worker.ts          # Remote worker bridge
+│   │   ├── remote-worker.ts          # Remote worker bridge; timing-safe glob token validation
 │   │   └── routes/                   # API route modules (agents.ts, analytics.ts, messages.ts, …)
 │   ├── db/                           # Unified migration system
 │   │   ├── migrations.ts             # runMigrations(db, migrations, strategy) — PRAGMA user_version
@@ -132,7 +135,7 @@ clawd/
 │   │   │   ├── WorktreeDialog.tsx    # Git worktree diff/commit UI
 │   │   │   ├── worktree-diff-viewer.tsx # Unified diff renderer with per-hunk controls
 │   │   │   ├── worktree-file-list.tsx  # File tree for worktree status
-│   │   │   ├── auth-fetch.ts         # Token-based auth wrapper
+│   │   │   ├── auth-fetch.ts         # Per-channel token storage (localStorage) + authFetch() wrapper
 │   │   │   └── styles.css            # All styles
 │   │   └── public/                   # Static assets
 │   ├── browser-extension/            # Chrome MV3 extension
@@ -501,19 +504,32 @@ Server → Client real-time events:
 
 ### Authentication
 
-Optional token-based API auth (config.json):
+Optional per-channel token auth configured in `config.json`. Two formats:
+
 ```jsonc
+// Legacy — single global token (treated as { "*": ["abc"] })
+"auth": { "token": "your-secret-token" }
+
+// Channel-scoped — keys are glob patterns (* wildcard), values are token arrays
 "auth": {
-  "token": "your-secret-token"
+  "private-*": ["tok1", "tok2"],   // only channels matching "private-*"
+  "*": ["global-tok"]              // catch-all (also gates WS + global endpoints)
 }
 ```
 
-All API requests require header:
-```
-Authorization: Bearer <token>
-```
+**Server enforcement (`src/index.ts`):**
+- Token extracted from `Authorization` header (`Bearer <tok>` or raw).
+- Channel-scoped: when `?channel=` is present, only patterns matching that channel are checked; otherwise only enforced if a `"*"` catch-all exists.
+- `/mcp/agent/` and `/mcp/space/` are exempt (agent-internal).
+- An ephemeral `INTERNAL_SERVICE_TOKEN` (generated at startup, `src/internal-token.ts`) bypasses auth for in-process self-calls.
+- `GET/POST /api/auth.channel` is pre-auth (used by UI to probe/validate before storing token).
 
-Per-channel browser auth:
+**UI flow (`packages/ui/src/auth-fetch.ts` + `App.tsx`):**
+- `tryEnterChannel(ch)` probes `auth.channel`, prompts on demand, validates, stores via `setChannelToken(ch, token)`.
+- Token key: `clawd-channel-token-{channel}` in `localStorage`.
+- Cancel or 401 → navigate to home page (`window.location.replace("/")`).
+
+Per-channel browser auth (for extension connections):
 ```jsonc
 "browser": {
   "channel1": ["auth_token_1", "auth_token_2"]
@@ -894,10 +910,10 @@ Main configuration file at `~/.clawd/config.json`:
     "processingTimeoutMs": 300000
   },
 
-  // API authentication
-  "auth": {
-    "token": "your-secret-token"
-  }
+  // API authentication (optional)
+  // Legacy: { "token": "abc" }  →  treated as { "*": ["abc"] }
+  // Channel-scoped: { "private-*": ["tok1"], "*": ["global"] }
+  "auth": { "token": "your-secret-token" }
 }
 ```
 
