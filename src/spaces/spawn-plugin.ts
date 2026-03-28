@@ -6,6 +6,7 @@
  */
 
 import { type AgentFileConfig, listAgentFiles, loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
+import { resolveProviderBaseType } from "../agent/api/provider-config";
 import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
 import type { ToolResult } from "../agent/tools/tools";
 import { getOrRegisterAgent } from "../server/database";
@@ -396,7 +397,7 @@ export function createSpawnAgentPlugin(
       let completionPromise: Promise<string>;
 
       // Route claude-code provider to ClaudeCodeSpaceWorker (can't use WorkerLoop)
-      if (effectiveProvider === "claude-code") {
+      if (resolveProviderBaseType(effectiveProvider) === "claude-code" || effectiveProvider === "claude-code") {
         let ccResolve: (v: string) => void;
         let ccSettled = false;
 
@@ -418,6 +419,7 @@ export function createSpawnAgentPlugin(
           resolve: wrappedResolve,
           onComplete: () => unregisterClaudeCodeWorker(space.id),
           agentPrompt: agentFileConfig?.systemPrompt || undefined,
+          providerName: effectiveProvider,
         });
         registerClaudeCodeWorker(space.id, ccWorker);
         spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
@@ -713,6 +715,7 @@ export function createSpawnAgentPlugin(
         resolve: wrappedResolve,
         onComplete: () => unregisterClaudeCodeWorker(space.id),
         agentPrompt: agentFileConfig?.systemPrompt || undefined,
+        providerName: agentConfig.provider,
       });
       registerClaudeCodeWorker(space.id, ccWorker);
       spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());

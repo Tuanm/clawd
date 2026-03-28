@@ -35,6 +35,8 @@ export interface ClaudeCodeWorkerConfig {
   resolve: (summary: string) => void;
   onComplete?: () => void;
   agentPrompt?: string;
+  /** Provider name to use for auth/env injection (e.g. "my-claude"). Defaults to "claude-code". */
+  providerName?: string;
 }
 
 // ============================================================================
@@ -168,6 +170,7 @@ export class ClaudeCodeSpaceWorker {
           model: this.config.model || "sonnet",
           cwd: this.config.projectRoot || process.cwd(),
           systemPrompt: basePrompt,
+          providerName: this.config.providerName,
           agentName: "clawd-worker",
           agentDef: {
             "clawd-worker": {
@@ -217,6 +220,7 @@ RULES:
             model: this.config.model || "sonnet",
             cwd: this.config.projectRoot || process.cwd(),
             systemPrompt: basePrompt,
+            providerName: this.config.providerName,
             agentName: "clawd-worker",
             agentDef: {
               "clawd-worker": {
