@@ -3,32 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-
-// Re-export safeCut for testing (make it public for testing purposes)
-// Since safeCut is not exported, we need to test it through the module or make it public
-// For now, we'll copy the implementation for testing
-function surrogateAdjust(text: string, cp: number): number {
-  if (cp > 0 && cp < text.length) {
-    const code = text.charCodeAt(cp - 1);
-    if (code >= 0xd800 && code <= 0xdbff) return cp - 1;
-  }
-  return cp;
-}
-
-function safeCut(text: string, maxLength: number): string {
-  const fenceClose = "\n```";
-  let cp = Math.min(maxLength, text.length);
-  cp = surrogateAdjust(text, cp);
-  let result = text.slice(0, cp);
-  // Close open fences if room permits
-  const fenceCount = (result.match(/```/g) || []).length;
-  if (fenceCount % 2 !== 0 && cp > fenceClose.length) {
-    cp = Math.min(maxLength - fenceClose.length, text.length);
-    cp = surrogateAdjust(text, cp);
-    result = text.slice(0, cp) + fenceClose;
-  }
-  return result;
-}
+import { safeCut } from "./smart-truncation";
 
 describe("safeCut fence closure", () => {
   test("maxLength=30 with text starting with ``` → fences even, output ≤ 30", () => {
@@ -59,17 +34,17 @@ describe("safeCut fence closure", () => {
     console.log(`Test 2: maxLength=50, result.length=${result.length}, fences=${fenceCount}`);
   });
 
-  test("maxLength=3 (too small for fence closure) → just cut, output ≤ 3", () => {
+  test("maxLength=3 (too small for closure append) → backtrack to even fences", () => {
     const text = "```typescript\nconst x = 42;";
     const result = safeCut(text, 3);
 
     // Check output length - should be exactly 3 or less
     expect(result.length).toBeLessThanOrEqual(3);
 
-    // When maxLength is too small (≤ 4), fence closure shouldn't happen
-    // The condition is: cp > fenceClose.length (which is 4)
-    // So with maxLength=3, cp=3, and 3 is not > 4, so no fence closure
-    expect(result).toBe("```");
+    // With maxLength=3, appending "\n```" (4 chars) doesn't fit, so strategy 1 is
+    // skipped. Strategy 2 backtracks past the lone fence, yielding "" (0 fences, even).
+    const fenceCount = (result.match(/```/g) || []).length;
+    expect(fenceCount % 2).toBe(0);
 
     console.log(`Test 3: maxLength=3, result="${result}", length=${result.length}`);
   });

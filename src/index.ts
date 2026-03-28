@@ -88,16 +88,6 @@ import { clearConfigCache as clearProviderConfigCache, ensureKeyPoolInitialized 
 import { applyTokenLimitOverrides } from "./agent/constants/context-limits";
 import { getSessionManager } from "./agent/session/manager";
 import { setDebug } from "./agent/utils/debug";
-import {
-  type CallsQueryOptions,
-  queryCalls,
-  queryCallsCount,
-  queryKeyHistory,
-  queryKeyStats,
-  queryModelStats,
-  queryRecentStats,
-  querySummary,
-} from "./analytics";
 // Now import modules (database will initialize)
 import { registerAgentRoutes } from "./api/agents";
 import { registerArticleRoutes } from "./api/articles";
@@ -117,6 +107,7 @@ import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbedded
 import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./mcp-oauth";
 import { upgradeBrowserWs } from "./server/browser-bridge";
 import { validateBody } from "./server/validate";
+import { corsHeaders, json, numParam, parseBody } from "./server/http-helpers";
 import { WorkerManager } from "./worker-manager";
 import { z } from "zod";
 
@@ -157,20 +148,16 @@ import { initRunner } from "./scheduler/runner";
 import {
   clearStaleStreamingStates,
   db,
-  getAgent,
   getOrRegisterAgent,
-  listAgents,
   type Message,
-  markMessagesSeen,
   migrateChannelIds,
   renameChannel,
-  setAgentSleeping,
-  setAgentStreaming,
-  toSlackMessage,
 } from "./server/database";
 import { handleAgentMcpRequest, handleMcpRequest, handleSpaceMcpRequest, setMcpScheduler } from "./server/mcp";
 // Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
 import { upgradeRemoteWorkerWs } from "./server/remote-worker";
+import { handleAgentStatusRoutes } from "./server/routes/agents";
+import { handleAnalyticsRoutes } from "./server/routes/analytics";
 import { getArtifactActions, handleArtifactAction } from "./server/routes/artifact-actions";
 import { createChannel, getChannelInfo, listChannels } from "./server/routes/channels";
 import {
@@ -187,9 +174,9 @@ import {
   getConversationHistory,
   getConversationNewer,
   getConversationReplies,
-  getPendingMessages,
   postMessage,
   removeReaction,
+  searchMessages,
   updateMessage,
 } from "./server/routes/messages";
 import {
@@ -220,13 +207,9 @@ import {
   writeTodos,
 } from "./server/routes/tasks";
 import {
-  broadcastAgentStreaming,
-  broadcastAgentToken,
-  broadcastAgentToolCall,
   broadcastArtifactAction,
   broadcastChannelCleared,
   broadcastMessage,
-  broadcastMessageSeen,
   broadcastReaction,
   broadcastUpdate,
   getClientCount,
@@ -529,50 +512,10 @@ function serveStatic(urlPath: string): Response | null {
 }
 
 // ============================================================================
-// HTTP helpers
+// HTTP helpers (imported from server/http-helpers.ts)
 // ============================================================================
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
-
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
-  });
-}
-
-function numParam(url: URL, name: string): number | undefined {
-  const v = url.searchParams.get(name);
-  if (v == null) return undefined;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
-}
-
 const corsResponse = new Response(null, { headers: corsHeaders });
-
-async function parseBody(req: Request): Promise<Record<string, any>> {
-  const contentType = req.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    return (await req.json()) as Record<string, any>;
-  }
-  if (contentType.includes("application/x-www-form-urlencoded")) {
-    const text = await req.text();
-    return Object.fromEntries(new URLSearchParams(text));
-  }
-  if (contentType.includes("multipart/form-data")) {
-    const formData = await req.formData();
-    const result: Record<string, any> = {};
-    formData.forEach((value, key) => {
-      result[key] = value;
-    });
-    return result;
-  }
-  return {};
-}
 
 // ============================================================================
 // Browser File Transfer API
@@ -1086,95 +1029,8 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     }
 
     // ---- Copilot Analytics ----
-
-    // GET /api/analytics/copilot/calls
-    //   ?limit=100&offset=0&from=<ms>&to=<ms>&model=X&status=ok|429|403|error
-    //   &channel=X&agentId=X&keyFingerprint=X
-    if (path === "/api/analytics/copilot/calls" && req.method === "GET") {
-      const opts: CallsQueryOptions = {
-        limit: numParam(url, "limit"),
-        offset: numParam(url, "offset"),
-        from: numParam(url, "from"),
-        to: numParam(url, "to"),
-        model: url.searchParams.get("model") ?? undefined,
-        status: url.searchParams.get("status") ?? undefined,
-        channel: url.searchParams.get("channel") ?? undefined,
-        agentId: url.searchParams.get("agentId") ?? undefined,
-        keyFingerprint: url.searchParams.get("keyFingerprint") ?? undefined,
-      };
-      const calls = queryCalls(opts);
-      const total = queryCallsCount(opts);
-      return json({ ok: true, total, calls });
-    }
-
-    // GET /api/analytics/copilot/summary?granularity=day|hour|week&from=<ms>&to=<ms>&...
-    if (path === "/api/analytics/copilot/summary" && req.method === "GET") {
-      const granularity = (url.searchParams.get("granularity") ?? "day") as "day" | "hour" | "week";
-      const opts: CallsQueryOptions & {
-        granularity?: "day" | "hour" | "week";
-      } = {
-        from: numParam(url, "from"),
-        to: numParam(url, "to"),
-        model: url.searchParams.get("model") ?? undefined,
-        channel: url.searchParams.get("channel") ?? undefined,
-        agentId: url.searchParams.get("agentId") ?? undefined,
-        granularity,
-      };
-      return json({ ok: true, summary: querySummary(opts) });
-    }
-
-    // GET /api/analytics/copilot/keys?from=<ms>&to=<ms>
-    if (path === "/api/analytics/copilot/keys" && req.method === "GET") {
-      const opts: CallsQueryOptions = {
-        from: numParam(url, "from"),
-        to: numParam(url, "to"),
-      };
-      const stats = queryKeyStats(opts);
-      // Enrich with live KeyPool data (premium remaining from GitHub API)
-      const liveStatus = keyPool.getStatus();
-      const enriched = stats.map((s) => {
-        const live = liveStatus.find((l) => s.key_fingerprint === l.fingerprint);
-        return {
-          ...s,
-          premium_remaining: live?.premiumRemainingFromApi ?? null,
-          premium_used_cycle: live?.premiumUsedCycle ?? null,
-          user_initiator_sent_today: live?.userInitiatorSentToday ?? null,
-        };
-      });
-      return json({ ok: true, keys: enriched });
-    }
-
-    // GET /api/analytics/copilot/keys/history?granularity=day|hour|week&from=<ms>&to=<ms>&keyFingerprint=X
-    if (path === "/api/analytics/copilot/keys/history" && req.method === "GET") {
-      const granularity = (url.searchParams.get("granularity") ?? "day") as "day" | "hour" | "week";
-      const opts = {
-        from: numParam(url, "from"),
-        to: numParam(url, "to"),
-        keyFingerprint: url.searchParams.get("keyFingerprint") ?? undefined,
-        granularity,
-      };
-      return json({ ok: true, history: queryKeyHistory(opts) });
-    }
-
-    // GET /api/analytics/copilot/models?from=<ms>&to=<ms>&channel=X
-    if (path === "/api/analytics/copilot/models" && req.method === "GET") {
-      const opts: CallsQueryOptions = {
-        from: numParam(url, "from"),
-        to: numParam(url, "to"),
-        channel: url.searchParams.get("channel") ?? undefined,
-      };
-      return json({ ok: true, models: queryModelStats(opts) });
-    }
-
-    // GET /api/analytics/copilot/recent?window=60  (last N minutes rolling window)
-    if (path === "/api/analytics/copilot/recent" && req.method === "GET") {
-      const window = numParam(url, "window") ?? 60;
-      return json({
-        ok: true,
-        windowMinutes: window,
-        ...queryRecentStats(window),
-      });
-    }
+    const analyticsResponse = handleAnalyticsRoutes(req, url, path);
+    if (analyticsResponse) return analyticsResponse;
 
     if (path === "/api/conversations.create" && req.method === "POST") {
       const body = await parseBody(req);
@@ -1215,23 +1071,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const search = url.searchParams.get("search") || "";
       const beforeTs = url.searchParams.get("before_ts") || undefined;
       const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10), 200);
-
-      if (!search.trim()) return json({ ok: true, messages: [], has_more: false });
-
-      const conditions: string[] = ["channel = ?", "text LIKE ?"];
-      const params: (string | number)[] = [channel, `%${search}%`];
-      if (beforeTs) {
-        conditions.push("ts < ?");
-        params.push(beforeTs);
-      }
-
-      const query = `SELECT * FROM messages WHERE ${conditions.join(" AND ")} ORDER BY ts DESC LIMIT ?`;
-      params.push(limit + 1);
-
-      let messages = db.query<Message, (string | number)[]>(query).all(...params);
-      const hasMore = messages.length > limit;
-      if (hasMore) messages = messages.slice(0, limit);
-      return json({ ok: true, messages, has_more: hasMore });
+      return json(searchMessages(channel, search, beforeTs, limit));
     }
 
     // Around / newer
@@ -1470,483 +1310,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       });
     }
 
-    // Agent polling
-    if (path === "/api/messages.pending") {
-      const channel = url.searchParams.get("channel") || "general";
-      const lastTs = url.searchParams.get("last_ts");
-      const includeBot = url.searchParams.get("include_bot") === "true";
-      const limit = Math.min(parseInt(url.searchParams.get("limit") || "100", 10), 200);
-      return json(getPendingMessages(channel, lastTs || undefined, includeBot, limit));
-    }
-
-    // Agent mark seen
-    if (path === "/api/agent.markSeen" && req.method === "POST") {
-      const body = await parseBody(req);
-      const agentId = body.agent_id || "default";
-      const channel = body.channel || "general";
-      const lastSeenTs = body.last_seen_ts;
-      if (!lastSeenTs) return json({ ok: false, error: "last_seen_ts required" }, 400);
-
-      getOrRegisterAgent(agentId, channel);
-      const nowTs = Math.floor(Date.now() / 1000);
-      db.run(
-        `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_poll_ts, updated_at)
-         VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-         ON CONFLICT(agent_id, channel) DO UPDATE SET
-           last_seen_ts = excluded.last_seen_ts,
-           last_poll_ts = excluded.last_poll_ts,
-           updated_at = strftime('%s', 'now')`,
-        [agentId, channel, lastSeenTs, nowTs],
-      );
-
-      const messagesToMark = db
-        .query<{ ts: string }, [string, string, string, number]>(
-          `SELECT ts FROM messages WHERE channel = ? AND ts <= ? AND (agent_id IS NULL OR agent_id != ?) ORDER BY ts DESC LIMIT ?`,
-        )
-        .all(channel, lastSeenTs, agentId, 200);
-      if (messagesToMark.length > 0) {
-        markMessagesSeen(
-          channel,
-          agentId,
-          messagesToMark.map((m) => m.ts),
-        );
-      }
-
-      db.run(
-        `UPDATE agent_status SET status = 'ready', hibernate_until = NULL, updated_at = strftime('%s', 'now')
-         WHERE agent_id = ? AND channel = ? AND status = 'hibernate'`,
-        [agentId, channel],
-      );
-
-      broadcastUpdate(channel, {
-        type: "agent_seen",
-        agent_id: agentId,
-        last_seen_ts: lastSeenTs,
-      });
-      const lastNonSelfMsg = db
-        .query<{ ts: string }, [string, string, string]>(
-          `SELECT ts FROM messages WHERE channel = ? AND ts <= ? AND (agent_id IS NULL OR agent_id != ?) ORDER BY ts DESC LIMIT 1`,
-        )
-        .get(channel, lastSeenTs, agentId);
-      if (lastNonSelfMsg) broadcastMessageSeen(channel, lastNonSelfMsg.ts, agentId);
-      broadcastUpdate(channel, {
-        type: "agent_status",
-        agent_id: agentId,
-        status: "ready",
-        hibernate_until: null,
-      });
-
-      return json({
-        ok: true,
-        agent_id: agentId,
-        channel,
-        last_seen_ts: lastSeenTs,
-      });
-    }
-
-    // Get last seen
-    if (path === "/api/agent.getLastSeen") {
-      const agentId = url.searchParams.get("agent_id") || "default";
-      const channel = url.searchParams.get("channel") || "general";
-      const result = db
-        .query<{ last_seen_ts: string }, [string, string]>(
-          `SELECT last_seen_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
-        )
-        .get(agentId, channel);
-      return json({
-        ok: true,
-        agent_id: agentId,
-        channel,
-        last_seen_ts: result?.last_seen_ts || null,
-      });
-    }
-
-    // Mark processed
-    if (path === "/api/agent.markProcessed" && req.method === "POST") {
-      const body = await parseBody(req);
-      const agentId = body.agent_id || "default";
-      const channel = body.channel || "general";
-      const lastProcessedTs = body.last_processed_ts;
-      if (!lastProcessedTs) return json({ ok: false, error: "last_processed_ts required" }, 400);
-
-      db.run(
-        `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
-         VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-         ON CONFLICT(agent_id, channel) DO UPDATE SET
-         last_processed_ts = excluded.last_processed_ts, updated_at = excluded.updated_at`,
-        [agentId, channel, lastProcessedTs, lastProcessedTs],
-      );
-      broadcastUpdate(channel, {
-        type: "agent_processed",
-        agent_id: agentId,
-        last_processed_ts: lastProcessedTs,
-      });
-      return json({
-        ok: true,
-        agent_id: agentId,
-        channel,
-        last_processed_ts: lastProcessedTs,
-      });
-    }
-
-    // Set sleeping
-    if (path === "/api/agent.setSleeping" && req.method === "POST") {
-      const body = await parseBody(req);
-      const agentId = body.agent_id;
-      const channel = body.channel || "general";
-      const isSleeping = body.is_sleeping === true || body.is_sleeping === 1;
-      if (!agentId) return json({ ok: false, error: "agent_id required" }, 400);
-      const success = setAgentSleeping(agentId, channel, isSleeping);
-      if (success)
-        broadcastUpdate(channel, {
-          type: "agent_sleep",
-          agent_id: agentId,
-          is_sleeping: isSleeping,
-        });
-      return json({
-        ok: success,
-        agent_id: agentId,
-        channel,
-        is_sleeping: isSleeping,
-      });
-    }
-
-    // Set streaming
-    if (path === "/api/agent.setStreaming" && req.method === "POST") {
-      const body = await parseBody(req);
-      const agentId = body.agent_id;
-      const channel = body.channel || "general";
-      const isStreaming = body.is_streaming === true || body.is_streaming === 1;
-      if (!agentId) return json({ ok: false, error: "agent_id required" }, 400);
-      const success = setAgentStreaming(agentId, channel, isStreaming);
-      if (success) broadcastAgentStreaming(channel, agentId, isStreaming);
-      return json({
-        ok: success,
-        agent_id: agentId,
-        channel,
-        is_streaming: isStreaming,
-      });
-    }
-
-    // Stream token
-    if (path === "/api/agent.streamToken" && req.method === "POST") {
-      const body = await parseBody(req);
-      const agentId = body.agent_id;
-      const channel = body.channel || "general";
-      if (!agentId) return json({ ok: false, error: "agent_id required" }, 400);
-      broadcastAgentToken(channel, agentId, body.token || "", body.token_type || "content");
-      return json({ ok: true, agent_id: agentId, channel });
-    }
-
-    // Stream tool call
-    if (path === "/api/agent.streamToolCall" && req.method === "POST") {
-      const body = await parseBody(req);
-      const agentId = body.agent_id;
-      const channel = body.channel || "general";
-      if (!agentId || !body.tool_name) return json({ ok: false, error: "agent_id and tool_name required" }, 400);
-      broadcastAgentToolCall(
-        channel,
-        agentId,
-        body.tool_name,
-        body.tool_args || {},
-        body.status || "started",
-        body.result,
-      );
-      return json({
-        ok: true,
-        agent_id: agentId,
-        channel,
-        tool_name: body.tool_name,
-        status: body.status || "started",
-      });
-    }
-
-    // Get last processed
-    if (path === "/api/agent.getLastProcessed") {
-      const agentId = url.searchParams.get("agent_id") || "default";
-      const channel = url.searchParams.get("channel") || "general";
-      const result = db
-        .query<{ last_processed_ts: string | null }, [string, string]>(
-          `SELECT last_processed_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
-        )
-        .get(agentId, channel);
-      return json({
-        ok: true,
-        agent_id: agentId,
-        channel,
-        last_processed_ts: result?.last_processed_ts || null,
-      });
-    }
-
-    // Set last_processed_ts — used by continuation cap to force-mark messages as processed
-    if (path === "/api/agent.setLastProcessed" && req.method === "POST") {
-      const body = await parseBody(req);
-      const agentId = body.agent_id || "default";
-      const channel = body.channel || "general";
-      const lastProcessedTs = body.last_processed_ts ?? null;
-      if (!lastProcessedTs) return json({ ok: false, error: "last_processed_ts required" }, 400);
-
-      getOrRegisterAgent(agentId, channel);
-      db.run(
-        `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
-         VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-         ON CONFLICT(agent_id, channel) DO UPDATE SET
-           last_processed_ts = excluded.last_processed_ts,
-           updated_at = strftime('%s', 'now')`,
-        [agentId, channel, lastProcessedTs, lastProcessedTs],
-      );
-      broadcastUpdate(channel, {
-        type: "agent_processed",
-        agent_id: agentId,
-        last_processed_ts: lastProcessedTs,
-      });
-      return json({
-        ok: true,
-        agent_id: agentId,
-        channel,
-        last_processed_ts: lastProcessedTs,
-      });
-    }
-
-    // Agent status
-    if (path === "/api/agent.setStatus" && req.method === "POST") {
-      const body = await parseBody(req);
-      const agentId = body.agent_id || "default";
-      const channel = body.channel || "general";
-      const status = body.status || "ready";
-      const hibernateUntil = body.hibernate_until || null;
-      db.run(
-        `INSERT INTO agent_status (agent_id, channel, status, hibernate_until, updated_at)
-         VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-         ON CONFLICT(agent_id, channel) DO UPDATE SET
-           status = excluded.status, hibernate_until = excluded.hibernate_until, updated_at = strftime('%s', 'now')`,
-        [agentId, channel, status, hibernateUntil],
-      );
-      broadcastUpdate(channel, {
-        type: "agent_status",
-        agent_id: agentId,
-        status,
-        hibernate_until: hibernateUntil,
-      });
-      return json({
-        ok: true,
-        agent_id: agentId,
-        channel,
-        status,
-        hibernate_until: hibernateUntil,
-      });
-    }
-
-    if (path === "/api/agent.getStatus") {
-      const agentId = url.searchParams.get("agent_id") || "default";
-      const channel = url.searchParams.get("channel") || "general";
-      const statusResult = db
-        .query<{ status: string; hibernate_until: string | null }, [string, string]>(
-          `SELECT status, hibernate_until FROM agent_status WHERE agent_id = ? AND channel = ?`,
-        )
-        .get(agentId, channel);
-      const seenResult = db
-        .query<{ last_poll_ts: number | null }, [string, string]>(
-          `SELECT last_poll_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
-        )
-        .get(agentId, channel);
-
-      const HIBERNATE_TIMEOUT = 600;
-      const nowSeconds = Math.floor(Date.now() / 1000);
-      const lastPollTs = seenResult?.last_poll_ts;
-      const isAutoHibernate = lastPollTs ? nowSeconds - lastPollTs > HIBERNATE_TIMEOUT : true;
-      let finalStatus = statusResult?.status || "ready";
-      if (!lastPollTs || isAutoHibernate) finalStatus = "hibernate";
-
-      return json({
-        ok: true,
-        agent_id: agentId,
-        channel,
-        status: finalStatus,
-        hibernate_until: statusResult?.hibernate_until || null,
-        last_poll_ts: lastPollTs || null,
-        auto_hibernate: isAutoHibernate,
-      });
-    }
-
-    // List agents in channel
-    if (path === "/api/agents.list") {
-      const channel = url.searchParams.get("channel") || "general";
-      return json({ ok: true, channel, agents: listAgents(channel) });
-    }
-
-    if (path === "/api/agents.info") {
-      const agentId = url.searchParams.get("agent_id");
-      const channel = url.searchParams.get("channel") || "general";
-      if (!agentId) return json({ ok: false, error: "agent_id required" }, 400);
-      const agent = getAgent(agentId, channel);
-      if (!agent) return json({ ok: false, error: "agent_not_found" }, 404);
-      return json({ ok: true, agent });
-    }
-
-    if (path === "/api/agents.register" && req.method === "POST") {
-      const body = await parseBody(req);
-      const v = validateBody(
-        z.object({
-          agent_id: z.string().min(1),
-          channel: z.string().optional(),
-          model: z.string().optional(),
-          is_worker: z.boolean().optional(),
-        }),
-        body,
-      );
-      if (!v.ok) return v.error;
-      const channel = v.data.channel || "general";
-      const agent = getOrRegisterAgent(v.data.agent_id, channel, v.data.is_worker || false);
-      broadcastUpdate(channel, { type: "agent_joined", agent });
-      return json({ ok: true, agent });
-    }
-
-    // Agent thoughts — fetch historical stream entries from memory.db
-    if (path === "/api/agent.getThoughts") {
-      const agentId = url.searchParams.get("agent_id");
-      const channel = url.searchParams.get("channel") || "general";
-      const limit = Math.min(parseInt(url.searchParams.get("limit") || "200", 10) || 200, 500);
-      if (!agentId) return json({ ok: false, error: "agent_id required" }, 400);
-
-      try {
-        const mdb = getMemoryDb();
-        const sessionName = `${channel}-${agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
-        const session = mdb
-          .query<{ id: string }, [string]>("SELECT id FROM sessions WHERE name = ? ORDER BY updated_at DESC LIMIT 1")
-          .get(sessionName);
-        if (!session) return json({ ok: true, entries: [] });
-
-        // Fetch latest messages (ordered oldest-first for display)
-        const rows = mdb
-          .query<
-            {
-              id: number;
-              role: string;
-              content: string | null;
-              tool_calls: string | null;
-              tool_call_id: string | null;
-              created_at: number;
-            },
-            [string, number]
-          >(
-            `SELECT id, role, content, tool_calls, tool_call_id, created_at
-             FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?`,
-          )
-          .all(session.id, limit)
-          .reverse();
-
-        // Map to StreamEntry[] format
-        type Entry = {
-          type: string;
-          text: string;
-          timestamp: number;
-          toolName?: string;
-          toolArgs?: any;
-        };
-        const entries: Entry[] = [];
-
-        // Build tool_call_id → tool_name lookup from assistant messages
-        const toolCallNames = new Map<string, string>();
-        for (const row of rows) {
-          if (row.role === "assistant" && row.tool_calls) {
-            try {
-              for (const call of JSON.parse(row.tool_calls)) {
-                if (call.id && call.function?.name) toolCallNames.set(call.id, call.function.name);
-              }
-            } catch {}
-          }
-        }
-
-        for (const row of rows) {
-          if (row.role === "assistant") {
-            // Content text → thinking/content entry
-            if (row.content) {
-              entries.push({
-                type: "content",
-                text: row.content,
-                timestamp: row.created_at,
-              });
-            }
-            // Tool calls → tool_start entries
-            if (row.tool_calls) {
-              try {
-                const calls = JSON.parse(row.tool_calls);
-                for (const call of calls) {
-                  const fn = call.function || {};
-                  let args: any = {};
-                  try {
-                    args = typeof fn.arguments === "string" ? JSON.parse(fn.arguments) : fn.arguments || {};
-                  } catch {}
-                  entries.push({
-                    type: "tool_start",
-                    text: "",
-                    timestamp: row.created_at,
-                    toolName: fn.name || "unknown",
-                    toolArgs: args,
-                  });
-                }
-              } catch {}
-            }
-          } else if (row.role === "tool") {
-            entries.push({
-              type: "tool_end",
-              text: (row.content || "").slice(0, 2000),
-              timestamp: row.created_at,
-              toolName: toolCallNames.get(row.tool_call_id || "") || "result",
-            });
-          }
-          // Skip user/system messages — not agent "thoughts"
-        }
-
-        return json({ ok: true, entries });
-      } catch (err: any) {
-        return json({ ok: false, error: err.message || "Failed to read memory.db" }, 500);
-      }
-    }
-
-    // Channel status
-    if (path === "/api/channel.status") {
-      const channel = url.searchParams.get("channel") || "general";
-      const HIBERNATE_TIMEOUT = 600;
-      const nowSeconds = Math.floor(Date.now() / 1000);
-      const agents = listAgents(channel);
-      const agentStatuses = [];
-      let anyOnline = false;
-
-      for (const agent of agents) {
-        if ((agent as any).is_worker) continue;
-        const seenResult = db
-          .query<{ last_poll_ts: number | null }, [string, string]>(
-            `SELECT last_poll_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
-          )
-          .get((agent as any).id, channel);
-        const lastPollTs = seenResult?.last_poll_ts;
-        const isOnline = lastPollTs ? nowSeconds - lastPollTs <= HIBERNATE_TIMEOUT : false;
-        if (isOnline) anyOnline = true;
-        agentStatuses.push({
-          agent_id: (agent as any).id,
-          avatar_color: (agent as any).avatar_color,
-          status: isOnline ? "online" : "offline",
-          last_poll_ts: lastPollTs,
-        });
-      }
-      return json({
-        ok: true,
-        channel,
-        status: anyOnline ? "online" : "offline",
-        agents: agentStatuses,
-      });
-    }
-
-    // Get message by ts
-    if (path === "/api/messages.get") {
-      const ts = url.searchParams.get("ts");
-      if (!ts) return json({ ok: false, error: "ts required" }, 400);
-      const msg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(ts);
-      if (!msg) return json({ ok: false, error: "message_not_found" }, 404);
-      return json({ ok: true, message: toSlackMessage(msg) });
-    }
+    // Agent status routes (polling, seen, streaming, thoughts, user tracking)
+    const agentStatusResponse = await handleAgentStatusRoutes(req, url, path);
+    if (agentStatusResponse) return agentStatusResponse;
 
     // ========================================================================
     // Task APIs
@@ -2221,69 +1587,6 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const success = unlinkTaskFromPlan(body.plan_id, body.task_id);
       if (!success) return json({ ok: false, error: "unlinking_failed" }, 400);
       return json({ ok: true });
-    }
-
-    // ========================================================================
-    // Human User Read Tracking
-    // ========================================================================
-
-    if (path === "/api/user.markSeen" && req.method === "POST") {
-      const body = await parseBody(req);
-      const channel = body.channel || "general";
-      const ts = body.ts;
-      if (!ts) return json({ ok: false, error: "ts required" }, 400);
-
-      const HUMAN_USER_ID = "UHUMAN";
-      const nowTs = Math.floor(Date.now() / 1000);
-      db.run(
-        `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_poll_ts, updated_at)
-         VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-         ON CONFLICT(agent_id, channel) DO UPDATE SET
-           last_seen_ts = excluded.last_seen_ts,
-           last_poll_ts = excluded.last_poll_ts,
-           updated_at = strftime('%s', 'now')`,
-        [HUMAN_USER_ID, channel, ts, nowTs],
-      );
-      return json({ ok: true, channel, ts });
-    }
-
-    if (path === "/api/user.getUnreadCounts") {
-      const channelsParam = url.searchParams.get("channels") || "";
-      const channels = channelsParam ? channelsParam.split(",") : [];
-      if (channels.length === 0) return json({ ok: true, counts: {} });
-
-      const HUMAN_USER_ID = "UHUMAN";
-      const counts: Record<string, number> = {};
-      for (const channel of channels) {
-        const seenResult = db
-          .query<{ last_seen_ts: string }, [string, string]>(
-            `SELECT last_seen_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
-          )
-          .get(HUMAN_USER_ID, channel);
-        const lastSeenTs = seenResult?.last_seen_ts || "0";
-        const countResult = db
-          .query<{ count: number }, [string, string]>(
-            `SELECT COUNT(*) as count FROM messages WHERE channel = ? AND ts > ?`,
-          )
-          .get(channel, lastSeenTs);
-        counts[channel] = countResult?.count || 0;
-      }
-      return json({ ok: true, counts });
-    }
-
-    if (path === "/api/user.getLastSeen") {
-      const channel = url.searchParams.get("channel") || "general";
-      const HUMAN_USER_ID = "UHUMAN";
-      const result = db
-        .query<{ last_seen_ts: string }, [string, string]>(
-          `SELECT last_seen_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
-        )
-        .get(HUMAN_USER_ID, channel);
-      return json({
-        ok: true,
-        channel,
-        last_seen_ts: result?.last_seen_ts || null,
-      });
     }
 
     // Spaces API
