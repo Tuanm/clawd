@@ -1,6 +1,6 @@
 # Claw'd Architecture Reference
 
-> Last updated: 2026-03-28
+> Last updated: 2026-03-29
 
 ---
 
@@ -150,9 +150,12 @@ clawd/
 ├── src/                        # Main server + agent system
 │   ├── index.ts                # Server entry point (HTTP/WS/routes)
 │   ├── config.ts               # CLI config parser
-│   ├── config-file.ts          # ~/.clawd/config.json loader
+│   ├── config-file.ts          # ~/.clawd/config.json loader; auth helpers, hot-reload
+│   ├── internal-token.ts       # Ephemeral INTERNAL_SERVICE_TOKEN (generated at startup)
 │   ├── worker-loop.ts          # Per-agent polling loop
 │   ├── worker-manager.ts       # Multi-agent orchestrator
+│   ├── utils/
+│   │   └── pattern.ts          # matchesPattern() — glob matching (* wildcard, ? literal)
 │   ├── server/
 │   │   ├── database.ts         # chat.db lazy singleton + Proxy; _resetForTesting()
 │   │   ├── websocket.ts        # WebSocket broadcasting
@@ -199,8 +202,9 @@ clawd/
 ├── packages/
 │   ├── ui/                     # React SPA (Vite + TypeScript)
 │   │   └── src/
-│   │       ├── App.tsx         # Main app, WS handling, state
+│   │       ├── App.tsx         # Main app, WS, routing, per-channel auth gate
 │   │       ├── MessageList.tsx # Messages + StreamOutputDialog
+│   │       ├── auth-fetch.ts   # Per-channel token storage + authFetch() wrapper
 │   │       └── styles.css      # All styles
 │   └── browser-extension/      # Chrome MV3 extension
 │       ├── manifest.json       # Extension manifest
@@ -223,7 +227,9 @@ clawd/
 |------|---------|
 | `src/index.ts` | HTTP server, WebSocket handler, route registration |
 | `src/config.ts` | CLI argument parser (--port, --host, --yolo, --debug) |
-| `src/config-file.ts` | Loads and validates `~/.clawd/config.json` |
+| `src/config-file.ts` | Loads and validates `~/.clawd/config.json`; exposes `isChannelAuthRequired()`, `validateApiToken()`, `hasGlobalAuth()` |
+| `src/internal-token.ts` | Generates ephemeral `INTERNAL_SERVICE_TOKEN` at startup (never persisted, never exposed externally) |
+| `src/utils/pattern.ts` | `matchesPattern(value, pattern)` — glob matching with `*` wildcard (`?` treated as literal) |
 | `src/worker-loop.ts` | Per-agent polling loop (200ms interval) |
 | `src/worker-manager.ts` | Manages lifecycle of all agent WorkerLoop instances |
 | `src/server/database.ts` | chat.db lazy singleton (Proxy), schema, prepared statements; `_resetForTesting()` |
@@ -251,7 +257,7 @@ All API requests are routed through the HTTP handler. The server serves three pr
 functions:
 
 1. **REST API** (`/api/*`) — Chat, agent management, files, scheduler, analytics
-2. **MCP Endpoint** (`/mcp`) — Model Context Protocol SSE transport for external clients; requires auth check on all `/mcp` prefixed paths
+2. **MCP Endpoint** (`/mcp`) — Model Context Protocol SSE transport for external clients; auth enforced on all `/mcp` paths except `/mcp/agent/` (Claude Code sub-agents) and `/mcp/space/` (per-space token validation)
 3. **Static Assets** (`/*`) — Embedded React SPA served as fallback for all non-API routes
 
 ### WebSocket Connections
@@ -1211,8 +1217,8 @@ The sandbox implementation differs by platform.
 
 - **`sandboxRequired: true`** — Tools that set this flag in their `ToolDefinition` will refuse to execute if called outside the sandbox. The `executeTool` dispatcher checks this flag before invocation.
 - **`chat_upload_local_file`** — Uses `realpathSync` to resolve the full real path before checking it against a project-root allowlist. Prevents symlink-traversal uploads.
-- **MCP auth guard** — All `/mcp`-prefixed routes require the same `Authorization: Bearer` check as `/api/*` routes (when `auth.token` is configured).
-- **WebSocket auth guard** — WebSocket upgrade requests now require a valid auth token when `auth.token` is set; unauthenticated upgrades are rejected with HTTP 401.
+- **API/MCP auth guard** — `/api/*` and `/mcp` routes enforce channel-scoped auth. When a `?channel=` param is present, only its matching patterns are checked. Without `?channel=`, auth is only enforced if a global `"*"` catch-all pattern is configured. `/mcp/agent/` and `/mcp/space/` are exempt (agent-internal paths). The internal service token (`INTERNAL_SERVICE_TOKEN`, generated at startup) bypasses auth entirely for in-process self-calls.
+- **WebSocket auth guard** — On WS upgrade, auth is enforced only when: (a) a token is provided but fails validation, or (b) a global `"*"` catch-all is configured. Channel-scoped-only deployments allow WS without a token, since WS has no channel context at upgrade time.
 
 ### 10.1 Linux (bubblewrap)
 
@@ -1787,6 +1793,7 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `/browser/files/*` | GET | Serve files for browser extension |
 | `/worker/ws` | WS | Remote worker WebSocket bridge |
 | `auth.test` | POST | Validate authentication |
+| `auth.channel` | GET/POST | Pre-auth endpoint. GET: probe whether a channel requires a token. POST: validate a token for a channel. |
 | `channel.status` | GET | Get channel status summary |
 | `config/reload` | POST | Reload config.json without restart |
 | `keys/status` | GET | API key health status |
@@ -1935,9 +1942,10 @@ time and served as a single-page application.
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| `App.tsx` | `packages/ui/src/App.tsx` | Root: WebSocket connection, state management, channel routing |
+| `App.tsx` | `packages/ui/src/App.tsx` | Root: WebSocket connection, state management, channel routing, per-channel auth gate |
 | `MessageList.tsx` | `packages/ui/src/MessageList.tsx` | Message rendering, streaming output, space cards |
 | `StreamOutputDialog` | (in MessageList) | Real-time display of agent tool execution output |
+| `auth-fetch.ts` | `packages/ui/src/auth-fetch.ts` | Per-channel token storage and `authFetch()` wrapper |
 | `styles.css` | `packages/ui/src/styles.css` | All application styles |
 
 ### Real-Time Features
@@ -1950,6 +1958,19 @@ The UI connects to the server via WebSocket at `/ws` and handles:
 - **Read receipts**: `message_seen` events mark messages as read
 - **Reactions**: Emoji reactions with real-time add/remove
 - **Space cards**: Sub-agent spaces show as expandable cards with status indicators
+
+### Per-Channel Auth Flow
+
+When `auth` is configured in `config.json`, the UI enforces access per channel:
+
+1. **Probe** — Before loading a channel, `App.tsx` calls `GET /api/auth.channel?channel=<ch>` to check whether a token is required (unauthenticated endpoint).
+2. **Prompt** — If `requires_auth: true`, a token prompt is shown inline. The user enters their token; the UI validates it via `POST /api/auth.channel`.
+3. **Store** — On success the token is stored in `localStorage` under `clawd-channel-token-{channel}` via `setChannelToken()` in `auth-fetch.ts`.
+4. **Inject** — All subsequent `authFetch()` calls for that channel automatically attach the token as the `Authorization` header.
+5. **Cancel / 401** — If the user cancels the prompt or a stored token is rejected (HTTP 401 from `validateChannels`), the UI navigates back to the home page via `window.location.replace("/")`.
+6. **Token resolution order** (`getChannelToken`): channel-specific → global legacy key (`clawd-auth-token`) → any stored per-channel token (fallback for global endpoints).
+
+**Startup gate (`authGateCompleted`)** — On mount, `App.tsx` defers WebSocket connection and channel validation until the initial deep-link channel has been authenticated. If no initial channel is present, the gate completes immediately.
 
 ### Recent UI Improvements (March 2026)
 
@@ -2158,10 +2179,22 @@ settings, browser auth tokens, and all other browser-side settings apply on the 
   "memory": true,
 
   // API authentication (optional)
-  // When set, all API requests require: Authorization: Bearer <token>
-  "auth": {
-    "token": "your-secret-token"
-  },
+  //
+  // Legacy (global): { "token": "abc" } — treated as { "*": ["abc"] }
+  //   All channels and the WebSocket require this token.
+  //
+  // Channel-scoped: keys are glob patterns (* wildcard), values are token arrays.
+  //   Channels not matched by any pattern are openly accessible.
+  //   A "*" catch-all also gates the WebSocket and all global endpoints.
+  //
+  // Examples:
+  //   Single global token:    { "token": "secret" }
+  //   Per-channel:            { "private-*": ["tok1", "tok2"] }
+  //   Mixed:                  { "private-*": ["tok1"], "*": ["global-tok"] }
+  //
+  // The UI prompts for a token when navigating to a protected channel.
+  // Tokens are stored per-channel in localStorage (key: clawd-channel-token-{ch}).
+  "auth": { "token": "your-secret-token" },
 
   // Git isolated mode for multi-agent channels
   // Each agent gets an isolated worktree branch to prevent file conflicts
