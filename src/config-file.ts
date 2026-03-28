@@ -362,6 +362,17 @@ export function isChannelAuthRequired(channel: string): boolean {
 }
 
 /**
+ * Returns true if a catch-all "*" auth pattern is configured (global auth gate).
+ * When false, auth is channel-scoped only — unauthenticated channels and
+ * channel-agnostic endpoints (WebSocket, global API calls) should be allowed through.
+ */
+export function hasGlobalAuth(): boolean {
+  const map = normaliseAuthConfig(loadConfigFile().auth);
+  if (!map) return false;
+  return "*" in map;
+}
+
+/**
  * Validate a token for a channel (timing-safe, single config snapshot).
  * Pass INTERNAL_SERVICE_TOKEN check BEFORE calling this (handled in middleware).
  * - channel provided: validates against tokens for that channel's patterns only

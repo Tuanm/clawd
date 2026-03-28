@@ -96,6 +96,7 @@ import { registerWorktreeRoutes } from "./api/worktree";
 import { loadConfig, validateConfig } from "./config";
 import {
   getDataDir,
+  hasGlobalAuth,
   isAuthEnabled,
   isChannelAuthRequired,
   isBrowserEnabled,
@@ -669,11 +670,17 @@ const server = Bun.serve({
     if (path === "/ws") {
       if (isAuthEnabled()) {
         const wsToken = extractWsToken(url);
-        if (!isInternalToken(wsToken) && !validateApiToken(wsToken)) {
-          return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
-            status: 401,
-            headers: { "Content-Type": "application/json" },
-          });
+        if (!isInternalToken(wsToken)) {
+          // WS has no channel context. Only enforce auth if:
+          // - a token was provided but is invalid, OR
+          // - a global "*" catch-all auth is configured (applies to all channels/WS)
+          // Channel-scoped-only deployments (no "*" key) allow WS without a token.
+          if (wsToken ? !validateApiToken(wsToken) : hasGlobalAuth()) {
+            return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
+              status: 401,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
         }
       }
       // Always UHUMAN when auth active; honour ?user= in dev
@@ -785,7 +792,11 @@ const server = Bun.serve({
           const token = extractToken(req);
           if (!isInternalToken(token)) {
             const channel = url.searchParams.get("channel") ?? undefined;
-            if (!validateApiToken(token, channel)) {
+            // Channel-scoped auth: only enforce auth when the specific channel requires it.
+            // Global endpoints without a ?channel= param are gated only if a global "*"
+            // catch-all is configured; otherwise they are allowed through.
+            const authRequired = channel ? isChannelAuthRequired(channel) : hasGlobalAuth();
+            if (authRequired && !validateApiToken(token, channel)) {
               return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
                 status: 401,
                 headers: { "Content-Type": "application/json" },
