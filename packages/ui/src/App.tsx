@@ -687,7 +687,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // Fetch space info when in space mode
   useEffect(() => {
     if (!isSpaceChannel || !spaceId) return;
-    authFetch(`/api/spaces.get?id=${spaceId}`)
+    authFetch(`/api/spaces.get?id=${spaceId}`, undefined, activeChannel)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.space)
@@ -710,7 +710,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       setWorktreeEnabled(false);
       return;
     }
-    authFetch(`/api/app.worktree.enabled?channel=${encodeURIComponent(activeChannel)}`)
+    authFetch(`/api/app.worktree.enabled?channel=${encodeURIComponent(activeChannel)}`, undefined, activeChannel)
       .then((res) => res.json())
       .then((data) => setWorktreeEnabled(data.ok && data.enabled === true))
       .catch(() => setWorktreeEnabled(false));
@@ -921,7 +921,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const fetchAgentLastSeen = useCallback(
     async (channelId: string) => {
       try {
-        const res = await authFetch(`${API_URL}/api/agent.getLastSeen?agent_id=${channelId}&channel=${channelId}`);
+        const res = await authFetch(
+          `${API_URL}/api/agent.getLastSeen?agent_id=${channelId}&channel=${channelId}`,
+          undefined,
+          channelId,
+        );
         const data = await res.json();
         if (data.ok && data.last_seen_ts) {
           updateChannelState(channelId, { agentLastSeenTs: data.last_seen_ts });
@@ -936,7 +940,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const fetchAgentStatus = useCallback(
     async (channelId: string) => {
       try {
-        const res = await authFetch(`${API_URL}/api/channel.status?channel=${channelId}`);
+        const res = await authFetch(`${API_URL}/api/channel.status?channel=${channelId}`, undefined, channelId);
         const data = await res.json();
         if (data.ok) {
           const isOffline = data.status === "offline";
@@ -959,7 +963,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const fetchUserLastSeen = useCallback(
     async (channelId: string) => {
       try {
-        const res = await authFetch(`${API_URL}/api/user.getLastSeen?channel=${channelId}`);
+        const res = await authFetch(`${API_URL}/api/user.getLastSeen?channel=${channelId}`, undefined, channelId);
         const data = await res.json();
         if (data.ok) {
           updateChannelState(channelId, { userLastSeenTs: data.last_seen_ts });
@@ -975,7 +979,12 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const fetchUnreadCounts = useCallback(async () => {
     if (openChannels.length === 0) return;
     try {
-      const res = await authFetch(`${API_URL}/api/user.getUnreadCounts?channels=${openChannels.join(",")}`);
+      // Pass the first channel as the token source — server accepts any channel-scoped token for global endpoints
+      const res = await authFetch(
+        `${API_URL}/api/user.getUnreadCounts?channels=${openChannels.join(",")}`,
+        undefined,
+        openChannels[0],
+      );
       const data = await res.json();
       if (data.ok) {
         console.log("[UnreadCounts] Updated:", data.counts);
@@ -1247,7 +1256,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     updateChannelState(activeChannel, { loadingNewer: true });
     try {
       const newestTs = current.messages[current.messages.length - 1].ts;
-      const res = await authFetch(`${API_URL}/api/conversations.newer?channel=${activeChannel}&newest=${newestTs}`);
+      const res = await authFetch(
+        `${API_URL}/api/conversations.newer?channel=${activeChannel}&newest=${newestTs}`,
+        undefined,
+        activeChannel,
+      );
       const data = await res.json();
 
       if (data.ok && data.messages.length > 0) {
@@ -1288,7 +1301,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
       // Message not in DOM - fetch messages around this timestamp
       try {
-        const res = await authFetch(`${API_URL}/api/conversations.around?channel=${activeChannel}&ts=${ts}`);
+        const res = await authFetch(
+          `${API_URL}/api/conversations.around?channel=${activeChannel}&ts=${ts}`,
+          undefined,
+          activeChannel,
+        );
         const data = await res.json();
 
         if (data.ok && data.messages.length > 0) {
@@ -1784,7 +1801,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     if (!isArticleMode || !articleId) return;
     (async () => {
       try {
-        const res = await authFetch(`${API_URL}/api/articles.get?id=${encodeURIComponent(articleId)}`);
+        const res = await authFetch(
+          `${API_URL}/api/articles.get?id=${encodeURIComponent(articleId)}`,
+          undefined,
+          activeChannel,
+        );
         const data = await res.json();
         if (data.ok && data.article) {
           const art = data.article;
@@ -1883,10 +1904,14 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           formData.append("file", file);
           formData.append("channel", activeChannel);
 
-          const uploadRes = await authFetch(`${API_URL}/api/files.upload`, {
-            method: "POST",
-            body: formData,
-          });
+          const uploadRes = await authFetch(
+            `${API_URL}/api/files.upload`,
+            {
+              method: "POST",
+              body: formData,
+            },
+            activeChannel,
+          );
           const uploadData = await uploadRes.json();
           if (uploadData.ok && uploadData.file) {
             uploadedFiles.push(uploadData.file);
@@ -2053,6 +2078,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       try {
         const res = await authFetch(
           `/api/agent.getThoughts?agent_id=${encodeURIComponent(agentId)}&channel=${encodeURIComponent(activeChannel)}&limit=200`,
+          undefined,
+          activeChannel,
         );
         const data = await res.json();
         if (data.ok && data.entries.length > 0) {
