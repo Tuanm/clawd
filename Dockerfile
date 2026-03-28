@@ -77,11 +77,12 @@ RUN curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/b
 ENV MAVEN_HOME=/opt/apache-maven-${MAVEN_VERSION}
 
 # Node.js 22 LTS (resolve latest version dynamically — avoids GPG key setup)
+# Note: Node 22 ships with npm 10.x; skip "npm install -g npm@latest" — npm 11 has a
+# broken bundle (missing promise-retry) that causes MODULE_NOT_FOUND at install time.
 RUN NODE_VERSION=$(curl -fsSL https://nodejs.org/download/release/latest-v22.x/ \
       | grep -oP 'node-v22\.\d+\.\d+' | head -1) && \
     curl -fsSL "https://nodejs.org/download/release/latest-v22.x/${NODE_VERSION}-linux-x64.tar.xz" \
-      | tar xJ -C /usr/local --strip-components=1 && \
-    npm install -g npm@latest
+      | tar xJ -C /usr/local --strip-components=1
 
 # Bun runtime (agents spawn bun for sub-tasks)
 COPY --from=builder /usr/local/bin/bun /usr/local/bin/bun
