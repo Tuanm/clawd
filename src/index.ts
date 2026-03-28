@@ -776,7 +776,11 @@ const server = Bun.serve({
     if (path.startsWith("/api/") || path.startsWith("/mcp") || path === "/health") {
       // NOTE: /api/auth.channel is handled pre-auth above — see handleAuthChannel.
       // Auth check for /api/ and /mcp routes (not /health which is a monitoring endpoint)
-      if (path.startsWith("/api/") || path.startsWith("/mcp")) {
+      // IMPORTANT: /mcp/agent/ and /mcp/space/ are agent-internal endpoints — no auth required.
+      //   /mcp/agent/ is used by Claude Code agents running as subprocesses inside the channel.
+      //   /mcp/space/ has its own per-space token validation inside handleSpaceMcpRequest.
+      const isAgentMcpPath = path.startsWith("/mcp/agent/") || path.startsWith("/mcp/space/");
+      if (!isAgentMcpPath && (path.startsWith("/api/") || path.startsWith("/mcp"))) {
         if (isAuthEnabled()) {
           const token = extractToken(req);
           if (!isInternalToken(token)) {

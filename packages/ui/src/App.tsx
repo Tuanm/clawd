@@ -1,14 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AgentDialog from "./AgentDialog";
 import AgentFilesChannel from "./AgentFilesChannel";
-import {
-  authFetch,
-  clearChannelToken,
-  getChannelToken,
-  getStoredAuthToken,
-  setChannelToken,
-  setStoredAuthToken,
-} from "./auth-fetch";
+import { authFetch, clearChannelToken, getChannelToken, getStoredAuthToken, setChannelToken } from "./auth-fetch";
 import McpDialog, { McpIcon } from "./McpDialog";
 import MessageComposer from "./MessageComposer";
 import MessageList, { StreamOutputDialog } from "./MessageList";
@@ -427,34 +420,6 @@ function ChannelDialogSwipeRow({
   );
 }
 
-function LoginPrompt({ onLogin }: { onLogin: (token: string) => void }) {
-  const [value, setValue] = useState("");
-  const [error, setError] = useState("");
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const t = value.trim();
-    if (!t) {
-      setError("Please enter a token.");
-      return;
-    }
-    onLogin(t);
-  };
-
-  return (
-    <div className="login-prompt-overlay">
-      <form className="login-prompt" onSubmit={handleSubmit}>
-        <ClawdLogo />
-        <h2>Authentication Required</h2>
-        <p>Enter your Claw'd access token to continue.</p>
-        <input type="password" placeholder="Token" value={value} onChange={(e) => setValue(e.target.value)} autoFocus />
-        {error && <span className="login-error">{error}</span>}
-        <button type="submit">Connect</button>
-      </form>
-    </div>
-  );
-}
-
 export default function App({ channel: initialChannel, articleId }: Props) {
   const isArticleMode = !!articleId;
   // Active channel (can be switched without page reload)
@@ -477,7 +442,6 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   // Global state
   const [connected, setConnected] = useState(false);
-  const [authRequired, setAuthRequired] = useState(false);
   const [validProject, setValidProject] = useState<boolean | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
     "Notification" in window ? Notification.permission : "denied",
@@ -893,29 +857,29 @@ export default function App({ channel: initialChannel, articleId }: Props) {
         }
       }
 
-      // Prompt user
-      const token = window.prompt(`Enter token for channel "${channelName}":`);
-      if (!token || !token.trim()) return false; // cancelled
+      // Prompt user — retry loop until valid token or explicit cancel
+      while (true) {
+        const token = window.prompt(`Enter token for channel "${channelName}":`);
+        if (!token || !token.trim()) return false; // cancelled → caller navigates to home
 
-      try {
-        const validate = await fetch("/api/auth.channel", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ channel: channelName, token: token.trim() }),
-        });
-        const validateData = await validate.json();
-        if (!validateData.ok) {
-          alert(`Invalid token for channel "${channelName}".`);
+        try {
+          const validate = await fetch("/api/auth.channel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channel: channelName, token: token.trim() }),
+          });
+          const validateData = await validate.json();
+          if (validateData.ok) {
+            setChannelToken(channelName, token.trim());
+            switchToChannel(channelName, options);
+            return true;
+          }
+          // Invalid token — loop back and prompt again (no alert, prompt itself conveys the retry)
+        } catch {
+          alert(`Could not verify token — server unreachable.`);
           return false;
         }
-      } catch {
-        alert(`Could not verify token — server unreachable.`);
-        return false;
       }
-
-      setChannelToken(channelName, token.trim());
-      switchToChannel(channelName, options);
-      return true;
     },
     [switchToChannel],
   );
@@ -1093,7 +1057,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       try {
         const res = await authFetch(`${API_URL}/api/conversations.history?channel=${channelId}`, undefined, channelId);
         if (res.status === 401) {
-          setAuthRequired(true);
+          // Auth is handled via tryEnterChannel (browser prompt gate).
+          // A 401 here means the stored token expired — let the user retry next navigation.
           return;
         }
         const data = await res.json();
@@ -2111,20 +2076,6 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   // Redirect to home if project is invalid
   // (We no longer redirect -- channels with no messages still show the channel UI)
-
-  // Auth gate — show login prompt if server returned 401
-  if (authRequired) {
-    return (
-      <LoginPrompt
-        onLogin={(token) => {
-          setStoredAuthToken(token);
-          setAuthRequired(false);
-          // Re-trigger initial load
-          setValidProject(null);
-        }}
-      />
-    );
-  }
 
   // Loading state - Clawd running to header position
   if (validProject === null) {
