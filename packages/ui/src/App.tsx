@@ -18,6 +18,7 @@ import SearchModal from "./SearchModal";
 import SidebarPanel from "./SidebarPanel";
 import SkillFilesChannel from "./SkillFilesChannel";
 import SkillsDialog from "./SkillsDialog";
+import SubAgentsDialog, { type ActiveSubAgent } from "./SubAgentsDialog";
 import { UnreadBadge } from "./UnreadBadge";
 import WorktreeDialog from "./WorktreeDialog";
 
@@ -134,6 +135,23 @@ function AgentAvatarSmall({ color }: { color: string }) {
       <rect x="6" width="54" height="39" fill={color} />
       <rect x="12" y="13" width="6" height="6.5" fill="#000" />
       <rect x="48" y="13" width="6" height="6.5" fill="#000" />
+    </svg>
+  );
+}
+
+// Black Claw'd icon for sub-agents header button (black body, white eyes)
+function BlackClawdIcon() {
+  return (
+    <svg width="16" height="13" viewBox="0 0 66 52" fill="none">
+      <rect x="0" y="13" width="6" height="13" fill="#000" />
+      <rect x="60" y="13" width="6" height="13" fill="#000" />
+      <rect x="6" y="39" width="6" height="13" fill="#000" />
+      <rect x="18" y="39" width="6" height="13" fill="#000" />
+      <rect x="42" y="39" width="6" height="13" fill="#000" />
+      <rect x="54" y="39" width="6" height="13" fill="#000" />
+      <rect x="6" width="54" height="39" fill="#000" />
+      <rect x="12" y="13" width="6" height="6.5" fill="#fff" />
+      <rect x="48" y="13" width="6" height="6.5" fill="#fff" />
     </svg>
   );
 }
@@ -502,6 +520,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const [worktreeEnabled, setWorktreeEnabled] = useState(false);
   const [showSkillsDialog, setShowSkillsDialog] = useState(false);
   const [jumpToMessageTs, setJumpToMessageTs] = useState<string | null>(null);
+  const [activeSubAgents, setActiveSubAgents] = useState<ActiveSubAgent[]>([]);
+  const [showSubAgentsDialog, setShowSubAgentsDialog] = useState(false);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [isActiveChannelAtBottom, setIsActiveChannelAtBottom] = useState(true);
   const [streamDialogOpen, setStreamDialogOpen] = useState(false);
@@ -991,7 +1011,43 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     [updateChannelState],
   );
 
-  // Fetch unread counts for all open channels
+  // Fetch active (running) sub-agents for the current channel.
+  // Reads activeChannelRef so the callback is stable (no deps).
+  const fetchActiveSubAgents = useCallback(async () => {
+    const ch = activeChannelRef.current;
+    // Sub-agent list only makes sense on regular channels
+    if (!ch || ch.includes(":") || ch === "agents" || ch === "skills") {
+      setActiveSubAgents([]);
+      return;
+    }
+    try {
+      const res = await authFetch(
+        `${API_URL}/api/spaces.list?channel=${encodeURIComponent(ch)}&status=active`,
+        undefined,
+        ch,
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setActiveSubAgents(data.spaces || []);
+      }
+    } catch {
+      // Network errors are non-critical; keep last known state
+    }
+  }, []); // stable — reads from activeChannelRef
+
+  // Stable ref so the WS message handler can call it without stale closure
+  const fetchActiveSubAgentsRef = useRef(fetchActiveSubAgents);
+  useEffect(() => {
+    fetchActiveSubAgentsRef.current = fetchActiveSubAgents;
+  });
+
+  // Refresh sub-agents when channel changes, and poll every 10 s as a fallback
+  useEffect(() => {
+    fetchActiveSubAgents();
+    const id = setInterval(fetchActiveSubAgents, 10_000);
+    return () => clearInterval(id);
+  }, [activeChannel, fetchActiveSubAgents]);
+
   const fetchUnreadCounts = useCallback(async () => {
     if (openChannels.length === 0) return;
     try {
@@ -1455,6 +1511,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           });
           // Refetch unread counts when new message arrives (slight delay to ensure DB commit)
           setTimeout(() => fetchUnreadCounts(), 200);
+          // Refresh sub-agents if this message introduces a new space card
+          if (data.message?.subspace) fetchActiveSubAgentsRef.current();
         } else if (data.type === "message_changed") {
           updateChannelState(msgChannel, {
             messages: (channelStatesRef.current.get(msgChannel)?.messages || []).map((m) =>
@@ -1466,6 +1524,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                 : m,
             ),
           });
+          // Space completions arrive as message_changed (status update on subspace card)
+          if (data.message?.subspace) fetchActiveSubAgentsRef.current();
         } else if (data.type === "artifact_action") {
           // Mark interactive artifact as submitted (one-shot cross-user disable)
           if (data.one_shot) {
@@ -2236,6 +2296,20 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                 </svg>
               </button>
             )}
+            {/* Sub-agents indicator: shown when there are running sub-agents in this channel */}
+            {!isSpaceChannel && !isManagementChannel && activeSubAgents.length > 0 && (
+              <div className="sub-agents-indicator">
+                <span className="sub-agents-indicator-count">{activeSubAgents.length}</span>
+                <button
+                  className="sub-agents-indicator-btn"
+                  title={`${activeSubAgents.length} running sub-agent${activeSubAgents.length !== 1 ? "s" : ""} — click to view`}
+                  onClick={() => setShowSubAgentsDialog(true)}
+                >
+                  <BlackClawdIcon />
+                </button>
+                <span className="sub-agents-indicator-sep">+</span>
+              </div>
+            )}
             <div className="online-agents">
               {/* Only show active (not sleeping) agents - sorted by agent_id */}
               {[...activeAgents]
@@ -2263,6 +2337,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           </div>
         )}
       </header>
+
+      {/* Sub-agents dialog */}
+      {showSubAgentsDialog && (
+        <SubAgentsDialog spaces={activeSubAgents} onClose={() => setShowSubAgentsDialog(false)} />
+      )}
 
       {/* Channel list dialog - triggered by logo click */}
       {showChannelDialog && (
