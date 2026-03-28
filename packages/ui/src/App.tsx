@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AgentDialog from "./AgentDialog";
 import AgentFilesChannel from "./AgentFilesChannel";
-import { authFetch, clearChannelToken, getChannelToken, getStoredAuthToken, setChannelToken } from "./auth-fetch";
+import {
+  authFetch,
+  clearChannelToken,
+  getAnyChannelToken,
+  getChannelToken,
+  getStoredAuthToken,
+  setChannelToken,
+} from "./auth-fetch";
 import McpDialog, { McpIcon } from "./McpDialog";
 import MessageComposer from "./MessageComposer";
 import MessageList, { StreamOutputDialog } from "./MessageList";
@@ -1377,9 +1384,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    // Use global token for WS (validates against all channels).
-    // Fall back to initial channel's per-channel token for channel-based auth deployments.
-    const token = getStoredAuthToken() ?? (initialChannel ? getChannelToken(initialChannel) : null);
+    // Use global token for WS; fall back to initial channel token, then any stored channel
+    // token (channel-scoped deployments). WS allows through without a token when no global
+    // auth is configured, so null is safe for non-auth channel deployments.
+    const token =
+      getStoredAuthToken() ?? (initialChannel ? getChannelToken(initialChannel) : null) ?? getAnyChannelToken();
     const wsToken = token ? `&token=${encodeURIComponent(token)}` : "";
     const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws?user=UHUMAN${wsToken}`;
     const ws = new WebSocket(wsUrl);
