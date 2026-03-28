@@ -246,16 +246,18 @@ export async function executeAgentToolCall(
         }),
       }).catch(() => {});
 
-      // Resolve parent agent's project root for sub-agent CWD
+      // Resolve parent agent's project root and provider for sub-agent CWD + auth
       let projectRoot: string | undefined;
+      let parentProviderName: string | undefined;
       try {
         const { db } = await import("../server/database");
         const row = db
-          .query<{ project: string | null }, [string, string]>(
-            `SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?`,
+          .query<{ project: string | null; provider: string | null }, [string, string]>(
+            `SELECT project, provider FROM channel_agents WHERE channel = ? AND agent_id = ?`,
           )
           .get(channel, agentId);
         if (row?.project) projectRoot = row.project;
+        if (row?.provider) parentProviderName = row.provider;
       } catch {}
 
       // Create worker
@@ -272,6 +274,7 @@ export async function executeAgentToolCall(
         projectRoot,
         spaceManager: _spaceManager!,
         agentPrompt,
+        providerName: parentProviderName,
         resolve: (summary: string) => {
           if (ccSettled) return;
           ccSettled = true;
