@@ -39,9 +39,7 @@ function getStableMachineId(): string {
     /* fall through */
   }
   // Deterministic fallback: hash homedir + hostname into UUID-shaped string
-  const raw = createHash("sha256")
-    .update(`${homedir()}:${hostname()}`)
-    .digest("hex");
+  const raw = createHash("sha256").update(`${homedir()}:${hostname()}`).digest("hex");
   return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20, 32)}`;
 }
 
@@ -63,23 +61,9 @@ function getCopilotUserAgent(): string {
 // Types (imported from shared types module and re-exported for consumers)
 // ============================================================================
 
-import type {
-  CompletionRequest,
-  CompletionResponse,
-  Message,
-  StreamEvent,
-  ToolCall,
-  ToolDefinition,
-} from "./types";
+import type { CompletionRequest, CompletionResponse, Message, StreamEvent, ToolCall, ToolDefinition } from "./types";
 
-export type {
-  CompletionRequest,
-  CompletionResponse,
-  Message,
-  StreamEvent,
-  ToolCall,
-  ToolDefinition,
-};
+export type { CompletionRequest, CompletionResponse, Message, StreamEvent, ToolCall, ToolDefinition };
 
 // ============================================================================
 // Configuration

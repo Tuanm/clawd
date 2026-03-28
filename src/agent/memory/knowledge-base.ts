@@ -8,6 +8,8 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getDataDir } from "../../config-file";
+import { runMigrations } from "../../db/migrations";
+import { memoryMigrations } from "../../db/migrations/memory-migrations";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -58,39 +60,8 @@ export class KnowledgeBase {
   private ensureInit(): void {
     if (this.initialized) return;
     try {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS knowledge (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_id TEXT NOT NULL,
-          source_id TEXT NOT NULL,
-          tool_name TEXT NOT NULL,
-          chunk_index INTEGER NOT NULL DEFAULT 0,
-          content TEXT NOT NULL,
-          created_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-        CREATE INDEX IF NOT EXISTS idx_knowledge_session ON knowledge(session_id);
-        CREATE INDEX IF NOT EXISTS idx_knowledge_source ON knowledge(source_id);
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
-          content,
-          content='knowledge',
-          content_rowid='id',
-          tokenize='porter unicode61'
-        );
-
-        CREATE TRIGGER IF NOT EXISTS knowledge_ai AFTER INSERT ON knowledge BEGIN
-          INSERT INTO knowledge_fts(rowid, content) VALUES (new.id, new.content);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS knowledge_ad AFTER DELETE ON knowledge BEGIN
-          INSERT INTO knowledge_fts(knowledge_fts, rowid, content) VALUES('delete', old.id, old.content);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS knowledge_au AFTER UPDATE ON knowledge BEGIN
-          INSERT INTO knowledge_fts(knowledge_fts, rowid, content) VALUES('delete', old.id, old.content);
-          INSERT INTO knowledge_fts(rowid, content) VALUES (new.id, new.content);
-        END;
-      `);
+      // Schema is fully managed by migrations — no inline DDL needed here.
+      runMigrations(this.db, memoryMigrations);
       this.initialized = true;
     } catch (err) {
       console.error("[KnowledgeBase] Init failed:", err);

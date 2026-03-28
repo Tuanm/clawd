@@ -10,6 +10,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getDataDir } from "../../config-file";
+import { runMigrations } from "../../db/migrations";
+import { kanbanMigrations } from "../../db/migrations/kanban-migrations";
 
 // Use same DATA_DIR as chat.db
 const DATA_DIR = getDataDir();
@@ -206,6 +208,9 @@ function getKanbanDb(): Database {
     )
   `);
   kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_todos_agent_channel ON todos(agent_id, channel)`);
+
+  // Run versioned migrations to track future schema changes
+  runMigrations(kanbanDb, kanbanMigrations);
 
   return kanbanDb;
 }

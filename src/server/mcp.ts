@@ -2210,10 +2210,15 @@ async function executeToolCall(
           } catch {
             resolvedFilePath = resolvePath(filePath);
           }
-          const isUnderProjectRoot =
-            resolvedFilePath === projectRoot || resolvedFilePath.startsWith(`${projectRoot}/`);
+          const isUnderProjectRoot = resolvedFilePath === projectRoot || resolvedFilePath.startsWith(`${projectRoot}/`);
           // A-1b: Resolve canonical /tmp path (handles macOS /tmp → /private/tmp symlink)
-          const canonicalTmp = (() => { try { return realpathSync("/tmp"); } catch { return "/tmp"; } })();
+          const canonicalTmp = (() => {
+            try {
+              return realpathSync("/tmp");
+            } catch {
+              return "/tmp";
+            }
+          })();
           const isUnderTmp = resolvedFilePath === canonicalTmp || resolvedFilePath.startsWith(canonicalTmp + "/");
           if (!isUnderProjectRoot && !isUnderTmp) {
             resultText = JSON.stringify({
@@ -2247,7 +2252,10 @@ async function executeToolCall(
         // A-5: File size limit — reject files larger than 50 MB before reading
         const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
         if (stat.size > MAX_UPLOAD_BYTES) {
-          resultText = JSON.stringify({ ok: false, error: `File too large: ${stat.size} bytes (max ${MAX_UPLOAD_BYTES})` });
+          resultText = JSON.stringify({
+            ok: false,
+            error: `File too large: ${stat.size} bytes (max ${MAX_UPLOAD_BYTES})`,
+          });
           break;
         }
 

@@ -11,6 +11,8 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getDataDir } from "../../config-file";
+import { runMigrations } from "../../db/migrations";
+import { memoryMigrations } from "../../db/migrations/memory-migrations";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -149,63 +151,8 @@ export class AgentMemoryStore {
   private ensureInit(): void {
     if (this.initialized) return;
     try {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS agent_memories (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          agent_id TEXT NOT NULL,
-          channel TEXT,
-          category TEXT NOT NULL DEFAULT 'fact',
-          content TEXT NOT NULL,
-          source TEXT NOT NULL DEFAULT 'explicit',
-          access_count INTEGER NOT NULL DEFAULT 0,
-          last_accessed INTEGER NOT NULL DEFAULT (unixepoch()),
-          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_am_agent_channel ON agent_memories(agent_id, channel);
-        CREATE INDEX IF NOT EXISTS idx_am_agent_category ON agent_memories(agent_id, category);
-        CREATE INDEX IF NOT EXISTS idx_am_access ON agent_memories(agent_id, access_count, last_accessed);
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS agent_memories_fts USING fts5(
-          content,
-          content='agent_memories',
-          content_rowid='id',
-          tokenize='porter unicode61'
-        );
-
-        CREATE TRIGGER IF NOT EXISTS am_ai AFTER INSERT ON agent_memories BEGIN
-          INSERT INTO agent_memories_fts(rowid, content) VALUES (new.id, new.content);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS am_ad AFTER DELETE ON agent_memories BEGIN
-          INSERT INTO agent_memories_fts(agent_memories_fts, rowid, content) VALUES('delete', old.id, old.content);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS am_au AFTER UPDATE ON agent_memories BEGIN
-          INSERT INTO agent_memories_fts(agent_memories_fts, rowid, content) VALUES('delete', old.id, old.content);
-          INSERT INTO agent_memories_fts(rowid, content) VALUES (new.id, new.content);
-        END;
-      `);
-
-      // Idempotent migrations: add priority and tags columns
-      try {
-        this.db.exec("ALTER TABLE agent_memories ADD COLUMN priority INTEGER NOT NULL DEFAULT 50");
-      } catch (e: any) {
-        if (!String(e?.message).includes("duplicate column")) throw e;
-      }
-      try {
-        this.db.exec("ALTER TABLE agent_memories ADD COLUMN tags TEXT NOT NULL DEFAULT ''");
-      } catch (e: any) {
-        if (!String(e?.message).includes("duplicate column")) throw e;
-      }
-      try {
-        this.db.exec("ALTER TABLE agent_memories ADD COLUMN effectiveness REAL NOT NULL DEFAULT 0.5");
-      } catch (e: any) {
-        if (!String(e?.message).includes("duplicate column")) throw e;
-      }
-      this.db.exec("CREATE INDEX IF NOT EXISTS idx_am_priority ON agent_memories(agent_id, priority DESC)");
-
+      // Schema is fully managed by migrations — no inline DDL needed here.
+      runMigrations(this.db, memoryMigrations);
       this.initialized = true;
     } catch (err) {
       console.error("[AgentMemory] Init failed:", err);

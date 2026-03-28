@@ -4,6 +4,8 @@
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { getDataDir } from "../config-file";
+import { runMigrations } from "../db/migrations";
+import { schedulerMigrations } from "../db/migrations/scheduler-migrations";
 
 const DB_PATH = join(getDataDir(), "scheduler.db");
 
@@ -17,6 +19,7 @@ function getDb(): Database {
     _db.exec("PRAGMA synchronous = NORMAL");
     _db.exec("PRAGMA cache_size = -8000"); // 8MB cache
     _db.exec("PRAGMA temp_store = MEMORY");
+    runMigrations(_db, schedulerMigrations);
     initSchema(_db);
   }
   return _db;
@@ -94,8 +97,7 @@ function migrateSchedulerSchema(db: Database): void {
     const currentColNames = currentCols.map((c) => c.name);
     const sharedCols = currentColNames.join(", ");
 
-    db.exec("BEGIN");
-    try {
+    db.transaction(() => {
       db.exec(`
         CREATE TABLE scheduled_jobs_new (
           id TEXT PRIMARY KEY,
@@ -127,11 +129,7 @@ function migrateSchedulerSchema(db: Database): void {
         CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON scheduled_jobs(next_run) WHERE status = 'active';
         CREATE INDEX IF NOT EXISTS idx_jobs_channel ON scheduled_jobs(channel);
       `);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
-    }
+    })();
   }
 }
 

@@ -104,12 +104,21 @@ import { registerArticleRoutes } from "./api/articles";
 import { getPublicOrigin, registerMcpServerRoutes } from "./api/mcp-servers";
 import { registerWorktreeRoutes } from "./api/worktree";
 import { loadConfig, validateConfig } from "./config";
-import { getAuthToken, isBrowserEnabled, isWorkspacesEnabled, loadConfigFile, reloadConfigFile } from "./config-file";
+import {
+  getAuthToken,
+  getDataDir,
+  isBrowserEnabled,
+  isWorkspacesEnabled,
+  loadConfigFile,
+  reloadConfigFile,
+} from "./config-file";
 import { extensionZipSize, getExtensionZip } from "./embedded-extension";
 import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbeddedUI } from "./embedded-ui";
 import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./mcp-oauth";
 import { upgradeBrowserWs } from "./server/browser-bridge";
+import { validateBody } from "./server/validate";
 import { WorkerManager } from "./worker-manager";
+import { z } from "zod";
 
 // Load configuration from CLI args + config file
 const config = loadConfig();
@@ -259,7 +268,7 @@ import { Database } from "bun:sqlite";
 let _memoryDb: InstanceType<typeof Database> | null = null;
 function getMemoryDb(): InstanceType<typeof Database> {
   if (!_memoryDb) {
-    const memPath = join(homedir(), ".clawd", "memory.db");
+    const memPath = join(getDataDir(), "memory.db");
     _memoryDb = new Database(memPath, { readonly: true });
     _memoryDb.exec("PRAGMA journal_mode = WAL");
     _memoryDb.exec("PRAGMA busy_timeout = 5000");
@@ -664,7 +673,7 @@ const server = Bun.serve({
       }
       // When auth is active, always identify as the human user (ignore ?user= param).
       // Without auth (dev/local mode), honour the ?user= param for flexibility.
-      const userId = authToken ? "UHUMAN" : (url.searchParams.get("user") || "UHUMAN");
+      const userId = authToken ? "UHUMAN" : url.searchParams.get("user") || "UHUMAN";
       if (server.upgrade(req, { data: { userId } })) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
@@ -1169,7 +1178,12 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     if (path === "/api/conversations.create" && req.method === "POST") {
       const body = await parseBody(req);
-      return json(createChannel(body.name, body.user));
+      const v = validateBody(
+        z.object({ name: z.string().min(1), description: z.string().optional(), user: z.string().optional() }),
+        body,
+      );
+      if (!v.ok) return v.error;
+      return json(createChannel(v.data.name, v.data.user));
     }
 
     if (path === "/api/conversations.info") {
@@ -1240,20 +1254,39 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     // Post message
     if (path === "/api/chat.postMessage" && req.method === "POST") {
       const body = await parseBody(req);
+      const v = validateBody(
+        z.object({
+          channel: z.string().optional(),
+          text: z.string().optional(),
+          thread_ts: z.string().optional(),
+          user: z.string().optional(),
+          agent_id: z.string().optional(),
+          subtype: z.string().optional(),
+          html_preview: z.string().optional(),
+          code_preview: z.unknown().optional(),
+          article_json: z.string().optional(),
+          subspace_json: z.string().optional(),
+          workspace_json: z.string().optional(),
+          tool_result_json: z.string().optional(),
+          interactive_json: z.string().optional(),
+        }),
+        body,
+      );
+      if (!v.ok) return v.error;
       const result = postMessage({
-        channel: body.channel || "general",
-        text: body.text,
-        thread_ts: body.thread_ts,
-        user: body.user,
-        agent_id: body.agent_id,
-        subtype: body.subtype,
-        html_preview: body.html_preview,
-        code_preview: body.code_preview,
-        article_json: body.article_json,
-        subspace_json: body.subspace_json,
-        workspace_json: body.workspace_json,
-        tool_result_json: body.tool_result_json,
-        interactive_json: body.interactive_json,
+        channel: v.data.channel || "general",
+        text: v.data.text,
+        thread_ts: v.data.thread_ts,
+        user: v.data.user,
+        agent_id: v.data.agent_id,
+        subtype: v.data.subtype,
+        html_preview: v.data.html_preview,
+        code_preview: v.data.code_preview,
+        article_json: v.data.article_json,
+        subspace_json: v.data.subspace_json,
+        workspace_json: v.data.workspace_json,
+        tool_result_json: v.data.tool_result_json,
+        interactive_json: v.data.interactive_json,
       });
       if ((result as any).cleared) {
         const clearedChannel = body.channel || "general";
@@ -1753,9 +1786,18 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     if (path === "/api/agents.register" && req.method === "POST") {
       const body = await parseBody(req);
-      if (!body.agent_id) return json({ ok: false, error: "agent_id required" }, 400);
-      const channel = body.channel || "general";
-      const agent = getOrRegisterAgent(body.agent_id, channel, body.is_worker || false);
+      const v = validateBody(
+        z.object({
+          agent_id: z.string().min(1),
+          channel: z.string().optional(),
+          model: z.string().optional(),
+          is_worker: z.boolean().optional(),
+        }),
+        body,
+      );
+      if (!v.ok) return v.error;
+      const channel = v.data.channel || "general";
+      const agent = getOrRegisterAgent(v.data.agent_id, channel, v.data.is_worker || false);
       broadcastUpdate(channel, { type: "agent_joined", agent });
       return json({ ok: true, agent });
     }
@@ -1931,10 +1973,23 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     if (path === "/api/tasks.create" && req.method === "POST") {
       const body = await parseBody(req);
-      if (!body.title) return json({ ok: false, error: "title required" }, 400);
+      const v = validateBody(
+        z.object({
+          title: z.string().min(1),
+          description: z.string().optional(),
+          status: z.enum(["todo", "doing", "done", "blocked"]).optional(),
+          priority: z.enum(["P0", "P1", "P2", "P3"]).optional(),
+          tags: z.array(z.string()).optional(),
+          agent_id: z.string().optional(),
+          due_at: z.number().optional(),
+          channel: z.string().optional(),
+        }),
+        body,
+      );
+      if (!v.ok) return v.error;
       return json({
         ok: true,
-        task: createTask(body as Parameters<typeof createTask>[0]),
+        task: createTask(v.data),
       });
     }
 
