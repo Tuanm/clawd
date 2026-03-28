@@ -1851,10 +1851,15 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialChannel]); // initialChannel is a mount-time prop — stable for component lifetime; listed for lint hygiene
 
-  // Initialize channel when it becomes active
+  // Initialize channel when it becomes active or when auth gate completes.
+  // authGateCompleted is included so that deep-link channels protected by auth
+  // re-attempt fetchMessages after the user successfully enters a token
+  // (the first attempt on mount gets a 401 before any token is stored).
   useEffect(() => {
     // Article mode skips normal channel initialization
     if (isArticleMode) return;
+    // Only initialize once auth is ready — avoids a guaranteed 401 on protected channels
+    if (!authGateCompleted) return;
     // Use ref to avoid re-running effect on every channelStates change
     const state = channelStatesRef.current.get(activeChannel);
     if (!state?.loaded) {
@@ -1872,7 +1877,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     // Subscribe to the channel if not already subscribed
     subscribeToChannel(activeChannel);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeChannel]); // Only trigger on channel change, not state changes
+  }, [activeChannel, authGateCompleted]); // authGateCompleted: re-init after startup auth on deep-link channels
 
   // Article mode: fetch article and inject as single message
   useEffect(() => {
