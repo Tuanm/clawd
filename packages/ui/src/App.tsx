@@ -730,8 +730,12 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       return;
     }
     // Always unblock after attempt — gate only defers validateChannels/WS until startup
-    // auth completes. .finally() covers resolve, reject, and user-cancel equally.
-    tryEnterChannel(initialChannel).finally(() => setAuthGateCompleted(true));
+    // auth completes. Navigate to home if the user cancels the auth prompt.
+    tryEnterChannel(initialChannel)
+      .then((ok) => {
+        if (!ok) window.location.replace("/");
+      })
+      .finally(() => setAuthGateCompleted(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // Intentionally runs once on mount only. tryEnterChannel is stable at mount time;
     // initialChannel is derived from location.pathname and never changes after mount.
@@ -751,8 +755,13 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           if (res.status === 401) {
             clearChannelToken(ch);
             if (ch === activeChannel) {
-              // Re-prompt rather than removing the active channel
-              tryEnterChannelRef.current(ch).catch(() => {}); // use ref (v4 fix)
+              // Re-prompt rather than removing the active channel; navigate home on cancel
+              tryEnterChannelRef
+                .current(ch)
+                .then((ok) => {
+                  if (!ok) window.location.replace("/");
+                })
+                .catch(() => window.location.replace("/")); // use ref (v4 fix)
             } else {
               setOpenChannels((prev) => prev.filter((c) => c !== ch));
             }
@@ -2296,7 +2305,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                     channel={ch}
                     agents={channelAgents[ch] || []}
                     unreadCount={unreadCounts[ch] || 0}
-                    onSwitch={() => tryEnterChannel(ch)}
+                    onSwitch={() =>
+                      tryEnterChannel(ch).then((ok) => {
+                        if (!ok) window.location.replace("/");
+                      })
+                    }
                     onRemove={() => {
                       const updated = removeStoredChannel(ch);
                       setOpenChannels(updated);
