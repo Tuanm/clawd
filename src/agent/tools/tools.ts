@@ -8,6 +8,7 @@ import { basename, resolve } from "node:path";
 import type { ToolCall, ToolDefinition } from "../api/client";
 import { getHookManager } from "../hooks/manager";
 import {
+  checkSandboxBeforeExec,
   enableSandbox,
   getSandboxProjectRoot,
   isSandboxEnabled,
@@ -3827,6 +3828,11 @@ export async function terminateAllSubAgents(): Promise<void> {
 // ============================================================================
 
 export async function executeTool(toolCall: ToolCall): Promise<ToolResult> {
+  const sandboxErr = checkSandboxBeforeExec();
+  if (sandboxErr) {
+    return { success: false, output: "", error: sandboxErr };
+  }
+
   const toolName = toolCall.function.name;
   const handler = tools.get(toolName);
 

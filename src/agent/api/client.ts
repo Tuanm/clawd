@@ -2,10 +2,11 @@
  * Copilot API Client with HTTP/2 and Streaming Support
  */
 
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import http2 from "node:http2";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { trackFailure, trackSuccess } from "../../analytics";
 import { callContext } from "./call-context";
@@ -38,9 +39,8 @@ function getStableMachineId(): string {
     /* fall through */
   }
   // Deterministic fallback: hash homedir + hostname into UUID-shaped string
-  const { createHash } = require("node:crypto");
   const raw = createHash("sha256")
-    .update(`${homedir()}:${require("node:os").hostname()}`)
+    .update(`${homedir()}:${hostname()}`)
     .digest("hex");
   return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20, 32)}`;
 }
@@ -60,71 +60,26 @@ function getCopilotUserAgent(): string {
 }
 
 // ============================================================================
-// Types
+// Types (imported from shared types module and re-exported for consumers)
 // ============================================================================
 
-export interface Message {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
-}
+import type {
+  CompletionRequest,
+  CompletionResponse,
+  Message,
+  StreamEvent,
+  ToolCall,
+  ToolDefinition,
+} from "./types";
 
-export interface ToolCall {
-  id: string;
-  type: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
-export interface ToolDefinition {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: {
-      type: "object";
-      properties: Record<string, unknown>;
-      required?: string[];
-    };
-  };
-}
-
-export interface CompletionRequest {
-  model: string;
-  messages: Message[];
-  tools?: ToolDefinition[];
-  tool_choice?: "auto" | "none" | { type: "function"; function: { name: string } };
-  stream?: boolean;
-  temperature?: number;
-  max_tokens?: number;
-}
-
-export interface CompletionResponse {
-  id: string;
-  created: number;
-  choices: Array<{
-    index: number;
-    finish_reason: string | null;
-    message?: Message;
-    delta?: Partial<Message>;
-  }>;
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-  };
-}
-
-export interface StreamEvent {
-  type: "content" | "thinking" | "tool_call" | "done" | "error";
-  content?: string;
-  toolCall?: ToolCall;
-  error?: string;
-  response?: CompletionResponse;
-}
+export type {
+  CompletionRequest,
+  CompletionResponse,
+  Message,
+  StreamEvent,
+  ToolCall,
+  ToolDefinition,
+};
 
 // ============================================================================
 // Configuration

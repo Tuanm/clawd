@@ -512,6 +512,11 @@ function getMacOSCommandPrefix(workDir: string): string {
  * @param yolo - If true, sandbox is disabled entirely
  */
 export async function initializeSandbox(projectRoot: string, yolo: boolean = false): Promise<void> {
+  // If CLAWD_REQUIRE_SANDBOX is set, --yolo is not allowed (fail-closed)
+  if ((process.env.CLAWD_REQUIRE_SANDBOX === "true" || (globalThis as any).__clawd_require_sandbox) && yolo) {
+    console.error(`[Sandbox] CLAWD_REQUIRE_SANDBOX is set but --yolo was passed. Refusing to run without sandbox.`);
+    process.exit(1);
+  }
   if (yolo) {
     sandboxIsEnabled = false;
     console.error(`[Sandbox] Disabled (--yolo mode)`);
@@ -535,6 +540,10 @@ export async function initializeSandbox(projectRoot: string, yolo: boolean = fal
   } else {
     console.error(`[Sandbox] No supported sandbox available (platform: ${plat}), running without sandbox`);
     sandboxIsEnabled = false;
+    if (process.env.CLAWD_REQUIRE_SANDBOX === "true" || (globalThis as any).__clawd_require_sandbox) {
+      console.error(`[Sandbox] CLAWD_REQUIRE_SANDBOX is set but no sandbox is available. Exiting.`);
+      process.exit(1);
+    }
   }
 }
 
@@ -808,6 +817,19 @@ export async function runInSandbox(
  */
 export async function resetSandbox(): Promise<void> {
   sandboxInitialized = false;
+}
+
+/**
+ * Check that the sandbox is ready before executing a tool.
+ * Returns an error message if the sandbox is enabled but failed to initialize
+ * (fail-closed: refuse to execute without isolation unless --yolo was passed).
+ * Returns null if everything is fine.
+ */
+export function checkSandboxBeforeExec(): string | null {
+  if (sandboxIsEnabled && !sandboxInitialized) {
+    return "Sandbox is enabled but kernel-level sandbox failed to initialize. Refusing to execute without isolation. Use --yolo to explicitly disable sandbox.";
+  }
+  return null;
 }
 
 // ============================================================================

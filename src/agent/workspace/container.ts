@@ -15,7 +15,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { createConnection } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { promisify } from "node:util";
 import {
   connectWorkspaceToGateway,
@@ -64,8 +64,7 @@ const allocatedPorts = new Set<number>();
 /** Check if a TCP port is actually available on the host by trying to bind it */
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const net = require("node:net");
-    const server = net.createServer();
+    const server = createServer();
     server.once("error", () => resolve(false));
     server.once("listening", () => {
       server.close();
