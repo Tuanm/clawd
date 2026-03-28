@@ -113,7 +113,7 @@ clawd-app [options]
 
 ### config.json Schema
 
-Settings are loaded from `~/.clawd/config.json`:
+Settings are loaded from `~/.clawd/config.json`. Changes are picked up automatically without restarting — the server watches the file and invalidates its config cache within 200ms of a save.
 
 ```jsonc
 {
