@@ -20,7 +20,8 @@ import {
   safeDeleteWorktree,
 } from "./agent/workspace/worktree";
 import type { AppConfig } from "./config";
-import { getAuthToken, isWorktreeEnabled } from "./config-file";
+import { isWorktreeEnabled } from "./config-file";
+import { INTERNAL_SERVICE_TOKEN } from "./internal-token";
 import { loadOAuthToken } from "./mcp-oauth";
 import type { SchedulerManager } from "./scheduler/manager";
 import { setAgentStreaming } from "./server/database";
@@ -323,7 +324,7 @@ export class WorkerManager {
       directDb: !agent.workerToken,
       heartbeatInterval: agent.heartbeatInterval,
       // Pass auth token so internal HTTP self-calls include Authorization header
-      authToken: getAuthToken() ?? undefined,
+      authToken: INTERNAL_SERVICE_TOKEN,
       worktreePath,
       worktreeBranch,
       originalProjectRoot: worktreePath ? originalProjectRoot : undefined,
@@ -512,12 +513,11 @@ export class WorkerManager {
   /** Persist worktree info to DB so it survives server restart */
   private persistWorktreeInfo(channel: string, agentId: string, path: string | null, branch: string | null): void {
     try {
-      const authToken = getAuthToken();
       timedFetch(`${this.config.chatApiUrl}/api/app.agents.update`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          Authorization: INTERNAL_SERVICE_TOKEN, // raw token, no "Bearer " prefix
         },
         body: JSON.stringify({
           channel,
@@ -847,10 +847,9 @@ export class WorkerManager {
   /** Load agent configs from the chat server database via API */
   private async loadAgentsFromDb(): Promise<AgentConfig[]> {
     try {
-      const authToken = getAuthToken();
       const res = await timedFetch(
         `${this.config.chatApiUrl}/api/app.agents.list?internal=1`,
-        authToken ? { headers: { Authorization: `Bearer ${authToken}` } } : {},
+        { headers: { Authorization: INTERNAL_SERVICE_TOKEN } }, // raw token, no "Bearer " prefix
       );
       const data = (await res.json()) as any;
 

@@ -95,13 +95,17 @@ import { getPublicOrigin, registerMcpServerRoutes } from "./api/mcp-servers";
 import { registerWorktreeRoutes } from "./api/worktree";
 import { loadConfig, validateConfig } from "./config";
 import {
-  getAuthToken,
   getDataDir,
+  isAuthEnabled,
+  isChannelAuthRequired,
   isBrowserEnabled,
   isWorkspacesEnabled,
   loadConfigFile,
   reloadConfigFile,
+  validateApiToken,
 } from "./config-file";
+import { INTERNAL_SERVICE_TOKEN } from "./internal-token";
+import { timingSafeEqual } from "node:crypto";
 import { extensionZipSize, getExtensionZip } from "./embedded-extension";
 import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbeddedUI } from "./embedded-ui";
 import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./mcp-oauth";
@@ -584,6 +588,59 @@ async function handleBrowserFileRequest(req: Request, url: URL, path: string): P
 }
 
 // ============================================================================
+// Auth helpers
+// ============================================================================
+
+/**
+ * Extract token from Authorization header (Bearer or raw) or null.
+ * IMPORTANT: Never log the raw Authorization header or returned token value.
+ * If debug logging is added, redact it: header.replace(/\S+$/, "[REDACTED]")
+ */
+function extractToken(req: Request): string | null {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader) return null;
+  // Case-insensitive "Bearer " prefix (HTTP spec allows any case)
+  if (authHeader.toLowerCase().startsWith("bearer ")) return authHeader.slice(7);
+  return authHeader; // raw token
+}
+
+/**
+ * Extract token from query param — only for WebSocket upgrades.
+ * IMPORTANT: Never log url.href or url.toString() — the token is visible in the query string.
+ * If debug logging is added, redact it: work on a copy with url.searchParams.delete("token").
+ */
+function extractWsToken(url: URL): string | null {
+  return url.searchParams.get("token");
+}
+
+function isInternalToken(token: string | null): boolean {
+  if (!token || token.length !== INTERNAL_SERVICE_TOKEN.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(token, "utf8"), Buffer.from(INTERNAL_SERVICE_TOKEN, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+async function handleAuthChannel(req: Request, url: URL): Promise<Response> {
+  if (req.method === "GET") {
+    const channel = url.searchParams.get("channel") || "";
+    return json({ ok: true, requires_auth: isChannelAuthRequired(channel) });
+  }
+  if (req.method === "POST") {
+    const body = await parseBody(req);
+    const { channel, token } = body;
+    if (!channel || !token) {
+      return json({ ok: false, error: "channel and token required" }, 400);
+    }
+    // Never accept the internal service token from external callers
+    if (isInternalToken(String(token))) return json({ ok: false });
+    return json({ ok: validateApiToken(String(token), String(channel)) });
+  }
+  return json({ ok: false, error: "Method not allowed" }, 405);
+}
+
+// ============================================================================
 // Server
 // ============================================================================
 
@@ -602,21 +659,25 @@ const server = Bun.serve({
     const url = new URL(req.url);
     const path = url.pathname;
 
+    // IMPORTANT: /api/auth.channel is intentionally pre-auth (no token required to probe
+    // whether a channel needs auth). Do NOT add this route inside handleRequest.
+    if (path === "/api/auth.channel") {
+      return handleAuthChannel(req, url);
+    }
+
     // WebSocket upgrade — chat (/ws) or workspace noVNC proxy (/workspace/:id/novnc/websockify)
     if (path === "/ws") {
-      const authToken = getAuthToken();
-      if (authToken) {
-        const wsToken = url.searchParams.get("token");
-        if (wsToken !== authToken) {
+      if (isAuthEnabled()) {
+        const wsToken = extractWsToken(url);
+        if (!isInternalToken(wsToken) && !validateApiToken(wsToken)) {
           return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
             status: 401,
             headers: { "Content-Type": "application/json" },
           });
         }
       }
-      // When auth is active, always identify as the human user (ignore ?user= param).
-      // Without auth (dev/local mode), honour the ?user= param for flexibility.
-      const userId = authToken ? "UHUMAN" : url.searchParams.get("user") || "UHUMAN";
+      // Always UHUMAN when auth active; honour ?user= in dev
+      const userId = isAuthEnabled() ? "UHUMAN" : url.searchParams.get("user") || "UHUMAN";
       if (server.upgrade(req, { data: { userId } })) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
@@ -713,17 +774,19 @@ const server = Bun.serve({
 
     // API routes
     if (path.startsWith("/api/") || path.startsWith("/mcp") || path === "/health") {
+      // NOTE: /api/auth.channel is handled pre-auth above — see handleAuthChannel.
       // Auth check for /api/ and /mcp routes (not /health which is a monitoring endpoint)
       if (path.startsWith("/api/") || path.startsWith("/mcp")) {
-        const authToken = getAuthToken();
-        if (authToken) {
-          const authHeader = req.headers.get("authorization");
-          const bearer = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-          if (bearer !== authToken) {
-            return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
-              status: 401,
-              headers: { "Content-Type": "application/json" },
-            });
+        if (isAuthEnabled()) {
+          const token = extractToken(req);
+          if (!isInternalToken(token)) {
+            const channel = url.searchParams.get("channel") ?? undefined;
+            if (!validateApiToken(token, channel)) {
+              return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
+                status: 401,
+                headers: { "Content-Type": "application/json" },
+              });
+            }
           }
         }
       }

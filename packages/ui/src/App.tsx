@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AgentDialog from "./AgentDialog";
 import AgentFilesChannel from "./AgentFilesChannel";
-import { authFetch, getStoredAuthToken, setStoredAuthToken } from "./auth-fetch";
+import {
+  authFetch,
+  clearChannelToken,
+  getChannelToken,
+  getStoredAuthToken,
+  setChannelToken,
+  setStoredAuthToken,
+} from "./auth-fetch";
 import McpDialog, { McpIcon } from "./McpDialog";
 import MessageComposer from "./MessageComposer";
 import MessageList, { StreamOutputDialog } from "./MessageList";
@@ -440,13 +447,7 @@ function LoginPrompt({ onLogin }: { onLogin: (token: string) => void }) {
         <ClawdLogo />
         <h2>Authentication Required</h2>
         <p>Enter your Claw'd access token to continue.</p>
-        <input
-          type="password"
-          placeholder="Bearer token"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          autoFocus
-        />
+        <input type="password" placeholder="Token" value={value} onChange={(e) => setValue(e.target.value)} autoFocus />
         {error && <span className="login-error">{error}</span>}
         <button type="submit">Connect</button>
       </form>
@@ -534,6 +535,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const [isActiveChannelAtBottom, setIsActiveChannelAtBottom] = useState(true);
   const [streamDialogOpen, setStreamDialogOpen] = useState(false);
   const [streamDialogAgentId, setStreamDialogAgentId] = useState<string | null>(null);
+  const [authGateCompleted, setAuthGateCompleted] = useState(
+    // Gate is only needed when there is a deep-link initial channel to authenticate.
+    // tryEnterChannel fast-paths for unprotected channels — no need to special-case "home".
+    !initialChannel,
+  );
 
   // Sidebar panel state
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -685,7 +691,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       await Promise.all(
         openChannels.map(async (ch) => {
           try {
-            const res = await authFetch(`${API_URL}/api/agents.list?channel=${ch}`);
+            const res = await authFetch(`${API_URL}/api/agents.list?channel=${ch}`, undefined, ch);
             const data = await res.json();
             if (data.ok && data.agents) {
               result[ch] = data.agents
@@ -746,27 +752,53 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       .catch(() => setWorktreeEnabled(false));
   }, [activeChannel, isSpaceChannel]);
 
+  // Startup auth gate — authenticate the deep-link initial channel before loading anything
+  useEffect(() => {
+    if (!initialChannel) {
+      setAuthGateCompleted(true);
+      return;
+    }
+    // Always unblock after attempt — gate only defers validateChannels/WS until startup
+    // auth completes. .finally() covers resolve, reject, and user-cancel equally.
+    tryEnterChannel(initialChannel).finally(() => setAuthGateCompleted(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Intentionally runs once on mount only. tryEnterChannel is stable at mount time;
+    // initialChannel is derived from location.pathname and never changes after mount.
+  }, []);
+
   // Validate stored channels and remove inaccessible ones
   useEffect(() => {
+    if (!authGateCompleted) return; // wait for startup auth gate
+
     const validateChannels = async () => {
       const storedChannels = getStoredChannels();
       const accessibleChannels: string[] = [];
 
-      for (const channel of storedChannels) {
+      for (const ch of storedChannels) {
         try {
-          const res = await authFetch(`${API_URL}/api/conversations.history?channel=${channel}`);
+          const res = await authFetch(`${API_URL}/api/conversations.history?channel=${ch}&limit=1`, undefined, ch);
+          if (res.status === 401) {
+            clearChannelToken(ch);
+            if (ch === activeChannel) {
+              // Re-prompt rather than removing the active channel
+              tryEnterChannelRef.current(ch).catch(() => {}); // use ref (v4 fix)
+            } else {
+              setOpenChannels((prev) => prev.filter((c) => c !== ch));
+            }
+            continue;
+          }
           const data = await res.json();
           // Channel is accessible if API returns ok with messages or ok without error
           if (data.ok && data.messages && data.messages.length > 0) {
-            accessibleChannels.push(channel);
-          } else if (channel === activeChannel) {
+            accessibleChannels.push(ch);
+          } else if (ch === activeChannel) {
             // Always keep current channel even if empty (might be new)
-            accessibleChannels.push(channel);
+            accessibleChannels.push(ch);
           }
         } catch {
           // Keep current channel on network errors
-          if (channel === activeChannel) {
-            accessibleChannels.push(channel);
+          if (ch === activeChannel) {
+            accessibleChannels.push(ch);
           }
         }
       }
@@ -779,11 +811,12 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     };
 
     validateChannels();
-  }, [activeChannel]); // Only run once on mount
+    // Note: tryEnterChannel is intentionally NOT in deps — accessed via tryEnterChannelRef
+  }, [authGateCompleted, activeChannel]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Channel switcher functions - NO PAGE RELOAD
   const switchToChannel = useCallback(
-    (targetChannel: string) => {
+    (targetChannel: string, options: { replace?: boolean } = {}) => {
       setShowChannelDialog(false);
       if (targetChannel !== activeChannel) {
         // Initialize channel state if not exists
@@ -796,13 +829,118 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           return prev;
         });
         // Update URL without reload
-        window.history.pushState({}, "", `/${targetChannel}`);
+        if (options.replace) {
+          window.history.replaceState({}, "", `/${targetChannel}`);
+        } else {
+          window.history.pushState({}, "", `/${targetChannel}`);
+        }
         setActiveChannel(targetChannel);
         setIsActiveChannelAtBottom(true); // Assume at bottom when switching channels
       }
     },
     [activeChannel],
   );
+
+  const tryEnterChannel = useCallback(
+    async (channelName: string, options: { replace?: boolean } = {}): Promise<boolean> => {
+      let requiresAuth = false;
+      try {
+        const res = await fetch(`/api/auth.channel?channel=${encodeURIComponent(channelName)}`);
+        if (res.ok) {
+          const data = await res.json();
+          requiresAuth = !!data.requires_auth;
+        } else {
+          const stored = getChannelToken(channelName);
+          if (stored) {
+            switchToChannel(channelName, options);
+            return true;
+          }
+          return false;
+        }
+      } catch {
+        const stored = getChannelToken(channelName);
+        if (stored) {
+          switchToChannel(channelName, options);
+          return true;
+        }
+        return false;
+      }
+
+      if (!requiresAuth) {
+        // switchToChannel is a no-op when channelName === activeChannel (startup gate case)
+        switchToChannel(channelName, options);
+        return true;
+      }
+
+      const stored = getChannelToken(channelName);
+      if (stored) {
+        try {
+          const check = await fetch("/api/auth.channel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channel: channelName, token: stored }),
+          });
+          const checkData = await check.json();
+          if (checkData.ok) {
+            switchToChannel(channelName, options);
+            return true;
+          }
+          clearChannelToken(channelName); // stale
+        } catch {
+          // Network error during validation — use stored token (fail-open with existing cred)
+          switchToChannel(channelName, options);
+          return true;
+        }
+      }
+
+      // Prompt user
+      const token = window.prompt(`Enter token for channel "${channelName}":`);
+      if (!token || !token.trim()) return false; // cancelled
+
+      try {
+        const validate = await fetch("/api/auth.channel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: channelName, token: token.trim() }),
+        });
+        const validateData = await validate.json();
+        if (!validateData.ok) {
+          alert(`Invalid token for channel "${channelName}".`);
+          return false;
+        }
+      } catch {
+        alert(`Could not verify token — server unreachable.`);
+        return false;
+      }
+
+      setChannelToken(channelName, token.trim());
+      switchToChannel(channelName, options);
+      return true;
+    },
+    [switchToChannel],
+  );
+
+  // Stable ref so effects can call the latest tryEnterChannel without listing it as a dep.
+  // This prevents validateChannels from re-firing every time activeChannel changes.
+  const tryEnterChannelRef = useRef(tryEnterChannel);
+  useEffect(() => {
+    tryEnterChannelRef.current = tryEnterChannel;
+  });
+
+  // popstate listener — handle browser back/forward navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      const ch = window.location.pathname.slice(1) || "home";
+      if (ch === activeChannel) return;
+      tryEnterChannel(ch, { replace: true }).then((ok) => {
+        if (!ok) {
+          window.history.replaceState({}, "", `/${activeChannel}`);
+        }
+      });
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [activeChannel, tryEnterChannel]);
 
   // Handle notification permission toggle
   const handleNotificationToggle = useCallback(async () => {
@@ -887,7 +1025,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // Fetch and sync agent streaming status from server
   const fetchAgentStreamingStatus = useCallback(async (channelId: string) => {
     try {
-      const res = await authFetch(`${API_URL}/api/agents.list?channel=${channelId}`);
+      const res = await authFetch(`${API_URL}/api/agents.list?channel=${channelId}`, undefined, channelId);
       const data = await res.json();
       if (data.ok && data.agents) {
         setChannelStates((prev) => {
@@ -953,7 +1091,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const fetchMessages = useCallback(
     async (channelId: string, background = false) => {
       try {
-        const res = await authFetch(`${API_URL}/api/conversations.history?channel=${channelId}`);
+        const res = await authFetch(`${API_URL}/api/conversations.history?channel=${channelId}`, undefined, channelId);
         if (res.status === 401) {
           setAuthRequired(true);
           return;
@@ -1105,7 +1243,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     updateChannelState(activeChannel, { loadingOlder: true });
     try {
       const oldestTs = current.messages[0].ts;
-      const res = await authFetch(`${API_URL}/api/conversations.history?channel=${activeChannel}&oldest=${oldestTs}`);
+      const res = await authFetch(
+        `${API_URL}/api/conversations.history?channel=${activeChannel}&oldest=${oldestTs}`,
+        undefined,
+        activeChannel,
+      );
       const data = await res.json();
 
       if (data.ok && data.messages.length > 0) {
@@ -1218,7 +1360,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // Jump to latest messages (scroll to bottom button)
   const jumpToLatest = useCallback(async () => {
     try {
-      const res = await authFetch(`${API_URL}/api/conversations.history?channel=${activeChannel}&limit=100`);
+      const res = await authFetch(
+        `${API_URL}/api/conversations.history?channel=${activeChannel}&limit=100`,
+        undefined,
+        activeChannel,
+      );
       const data = await res.json();
 
       if (data.ok) {
@@ -1249,7 +1395,9 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    const token = getStoredAuthToken();
+    // Use global token for WS (validates against all channels).
+    // Fall back to initial channel's per-channel token for channel-based auth deployments.
+    const token = getStoredAuthToken() ?? (initialChannel ? getChannelToken(initialChannel) : null);
     const wsToken = token ? `&token=${encodeURIComponent(token)}` : "";
     const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws?user=UHUMAN${wsToken}`;
     const ws = new WebSocket(wsUrl);
@@ -1641,7 +1789,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
     wsRef.current = ws;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchUnreadCounts]); // Minimal deps - uses refs for openChannels
+  }, [initialChannel]); // initialChannel is a mount-time prop — stable for component lifetime; listed for lint hygiene
 
   // Initialize channel when it becomes active
   useEffect(() => {
@@ -1707,16 +1855,18 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     fetchUnreadCounts();
   }, [fetchUnreadCounts]);
 
-  // Connect WebSocket on mount (skip in article mode — no real-time updates needed)
+  // Connect WebSocket and start background polling.
+  // Uses authGateCompleted as a one-way latch: fires at most twice
+  // (once on mount — returns early if gate is pending; once when gate flips true).
   useEffect(() => {
     if (isArticleMode) return;
+    if (!authGateCompleted) return; // wait until startup auth gate stores token
+
     connectWebSocket();
 
-    // Background polling for ALL open channels - 3 seconds (WebSocket handles real-time)
+    // Background polling for ALL open channels — 10s interval (WS handles real-time)
     pollIntervalRef.current = window.setInterval(() => {
-      // Use refs for stable access without causing effect re-runs
       const channelsToPoll = new Set(openChannelsRef.current);
-      // Also poll active channel if it's a space channel (not in openChannels)
       const active = activeChannelRef.current;
       if (active) channelsToPoll.add(active);
 
@@ -1728,9 +1878,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           fetchAgentStreamingStatus(ch);
         }
       });
-      // Fetch unread counts
       fetchUnreadCounts();
-    }, 10000); // Increased from 3s to 10s - WebSocket handles real-time updates
+    }, 10000);
 
     return () => {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
@@ -1738,7 +1887,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       wsRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty deps - run only on mount, uses refs for state access
+  }, [authGateCompleted]); // authGateCompleted: one-way latch, fires at most twice
 
   const sendMessage = async (text: string, files?: File[]) => {
     const pendingId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1780,16 +1929,20 @@ export default function App({ channel: initialChannel, articleId }: Props) {
         }
       }
 
-      const res = await authFetch(`${API_URL}/api/chat.postMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: activeChannel,
-          text: text || "",
-          user: "UHUMAN",
-          files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
-        }),
-      });
+      const res = await authFetch(
+        `${API_URL}/api/chat.postMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel: activeChannel,
+            text: text || "",
+            user: "UHUMAN",
+            files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
+          }),
+        },
+        activeChannel,
+      );
       const data = await res.json();
 
       if (data.ok) {
@@ -1888,11 +2041,15 @@ export default function App({ channel: initialChannel, articleId }: Props) {
         // Optimistically update state immediately
         updateChannelState(activeChannel, { userLastSeenTs: ts });
         // Then sync to server
-        authFetch(`${API_URL}/api/user.markSeen`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ channel: activeChannel, ts }),
-        })
+        authFetch(
+          `${API_URL}/api/user.markSeen`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channel: activeChannel, ts }),
+          },
+          activeChannel,
+        )
           .then(() => fetchUnreadCounts())
           .catch((err) => console.error("Failed to mark seen:", err));
       }
@@ -2152,7 +2309,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                     channel={ch}
                     agents={channelAgents[ch] || []}
                     unreadCount={unreadCounts[ch] || 0}
-                    onSwitch={() => switchToChannel(ch)}
+                    onSwitch={() => tryEnterChannel(ch)}
                     onRemove={() => {
                       const updated = removeStoredChannel(ch);
                       setOpenChannels(updated);
