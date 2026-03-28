@@ -84,22 +84,42 @@ export function smartTruncate(text: string, opts: SmartTruncateOptions = {}): st
 
 /**
  * Simple safe-cut that respects surrogate pairs and closes open fences.
+ *
+ * When the plain cut leaves an odd number of fences it tries three strategies
+ * in order:
+ *   1. Append "\n```" (if it fits and actually makes the count even).
+ *   2. Backtrack past the last fence so the remaining count is even.
+ *   3. Return the plain cut as a last resort.
  */
-function safeCut(text: string, maxLength: number): string {
+export function safeCut(text: string, maxLength: number): string {
   const fenceClose = "\n```";
   let cp = Math.min(maxLength, text.length);
   cp = surrogateAdjust(text, cp);
   const plainResult = text.slice(0, cp);
 
-  // Try to close open fences if room permits
+  // Fast path: already even fences.
   const fenceCount = (plainResult.match(/```/g) || []).length;
-  if (fenceCount % 2 !== 0 && maxLength > fenceClose.length) {
+  if (fenceCount % 2 === 0) return plainResult;
+
+  // Strategy 1: append a closing fence if there is room and it fixes parity.
+  // Note: simply appending may not help when the truncation point has already
+  // moved *past* the opening fence (the closer becomes its own orphan).
+  if (maxLength > fenceClose.length) {
     let closeCp = Math.min(maxLength - fenceClose.length, text.length);
     closeCp = surrogateAdjust(text, closeCp);
     const closedResult = text.slice(0, closeCp) + fenceClose;
-    // Only use if it actually fixed the parity (truncation may split a fence)
     const closedFenceCount = (closedResult.match(/```/g) || []).length;
     if (closedFenceCount % 2 === 0) return closedResult;
+  }
+
+  // Strategy 2: backtrack past the last fence to restore even parity.
+  // Removing one fence from an odd count always yields an even count.
+  const lastFenceIdx = plainResult.lastIndexOf("```");
+  if (lastFenceIdx >= 0) {
+    const backtracked = plainResult.slice(0, lastFenceIdx);
+    // Verify (should always be even, but guard for safety).
+    const backtrackedFenceCount = (backtracked.match(/```/g) || []).length;
+    if (backtrackedFenceCount % 2 === 0) return backtracked;
   }
 
   return plainResult;

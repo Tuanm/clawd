@@ -24,6 +24,8 @@ export interface ToolCall {
 
 export interface ToolDefinition {
   type: "function";
+  /** If true, this tool only reads state and can be executed in parallel with other read-only tools */
+  readOnly?: boolean;
   function: {
     name: string;
     description: string;

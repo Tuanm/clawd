@@ -29,6 +29,13 @@ export interface LoopConfig {
   systemPrompt: string;
   /** Enable verbose logging */
   verbose?: boolean;
+  /**
+   * Enable parallel execution of read-only tool calls within a single turn.
+   * Read-only tools (marked with readOnly: true) will be executed concurrently
+   * via Promise.all. Write/state-changing tools are always executed sequentially.
+   * Default: true
+   */
+  parallelTools?: boolean;
 }
 
 export interface LoopResult {
@@ -226,20 +233,74 @@ export class AgenticLoop extends EventEmitter {
           // Notify tool calls
           await this.hooks.onToolCalls?.(assistantMessage.tool_calls);
 
-          // Execute tools
-          for (const toolCall of assistantMessage.tool_calls) {
-            const result = await this.toolExecutor.execute(toolCall);
-            this.toolCallCount++;
+          // Execute tools — parallel for read-only, sequential for write tools
+          const parallelEnabled = this.config.parallelTools !== false;
+          if (parallelEnabled && assistantMessage.tool_calls.length > 1) {
+            // Split tool calls into read-only and write groups (preserving order)
+            const toolDefs = new Map(tools.map((t) => [t.function.name, t]));
+            const readOnlyCalls: typeof assistantMessage.tool_calls = [];
+            const writeCalls: typeof assistantMessage.tool_calls = [];
 
-            // Notify tool result
-            await this.hooks.onToolResult?.(toolCall.function.name, result);
+            for (const tc of assistantMessage.tool_calls) {
+              const def = toolDefs.get(tc.function.name);
+              if (def?.readOnly) {
+                readOnlyCalls.push(tc);
+              } else {
+                writeCalls.push(tc);
+              }
+            }
 
-            // Add tool result to messages
-            this.messages.push({
-              role: "tool",
-              content: result.content,
-              tool_call_id: result.tool_call_id,
-            });
+            // Execute read-only tools in parallel
+            const readOnlyResults = await Promise.all(
+              readOnlyCalls.map(async (toolCall) => {
+                const result = await this.toolExecutor.execute(toolCall);
+                this.toolCallCount++;
+                await this.hooks.onToolResult?.(toolCall.function.name, result);
+                return { toolCall, result };
+              }),
+            );
+
+            // Execute write tools sequentially
+            const writeResults: Array<{
+              toolCall: (typeof assistantMessage.tool_calls)[0];
+              result: ToolExecutionResult;
+            }> = [];
+            for (const toolCall of writeCalls) {
+              const result = await this.toolExecutor.execute(toolCall);
+              this.toolCallCount++;
+              await this.hooks.onToolResult?.(toolCall.function.name, result);
+              writeResults.push({ toolCall, result });
+            }
+
+            // Add results to messages in original call order (important for LLM context)
+            const allResults = new Map([
+              ...readOnlyResults.map(({ toolCall, result }) => [toolCall.id, result] as const),
+              ...writeResults.map(({ toolCall, result }) => [toolCall.id, result] as const),
+            ]);
+            for (const toolCall of assistantMessage.tool_calls) {
+              const result = allResults.get(toolCall.id)!;
+              this.messages.push({
+                role: "tool",
+                content: result.content,
+                tool_call_id: result.tool_call_id,
+              });
+            }
+          } else {
+            // Sequential execution (single tool or parallel disabled)
+            for (const toolCall of assistantMessage.tool_calls) {
+              const result = await this.toolExecutor.execute(toolCall);
+              this.toolCallCount++;
+
+              // Notify tool result
+              await this.hooks.onToolResult?.(toolCall.function.name, result);
+
+              // Add tool result to messages
+              this.messages.push({
+                role: "tool",
+                content: result.content,
+                tool_call_id: result.tool_call_id,
+              });
+            }
           }
 
           this.status = "running";

@@ -366,7 +366,11 @@ export class CopilotClient extends EventEmitter {
         ...BASE_HEADERS,
       };
 
-      const body = JSON.stringify({ ...request, stream: false });
+      // Strip readOnly metadata field before sending to API (it's internal-only)
+      const cleanedRequest = request.tools?.some((t) => t.readOnly !== undefined)
+        ? { ...request, tools: request.tools.map(({ readOnly: _r, ...t }) => t) }
+        : request;
+      const body = JSON.stringify({ ...cleanedRequest, stream: false });
       const req = client.request(headers);
 
       // Request timeout for non-streaming requests
@@ -537,7 +541,11 @@ export class CopilotClient extends EventEmitter {
       ...BASE_HEADERS,
     };
 
-    const body = JSON.stringify({ ...request, stream: true });
+    // Strip readOnly metadata field before sending to API (it's internal-only)
+    const cleanedRequest = request.tools?.some((t) => t.readOnly !== undefined)
+      ? { ...request, tools: request.tools.map(({ readOnly: _r, ...t }) => t) }
+      : request;
+    const body = JSON.stringify({ ...cleanedRequest, stream: true });
     const req = client.request(headers);
 
     // Create a queue for streaming events

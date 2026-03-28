@@ -647,3 +647,27 @@ export function deleteMessage(channel: string, ts: string) {
 
   return { ok: true, channel, ts };
 }
+
+export function searchMessages(
+  channel: string,
+  search: string,
+  beforeTs?: string,
+  limit = 50,
+): { ok: boolean; messages: Message[]; has_more: boolean } {
+  if (!search.trim()) return { ok: true, messages: [], has_more: false };
+
+  const conditions: string[] = ["channel = ?", "text LIKE ?"];
+  const params: (string | number)[] = [channel, `%${search}%`];
+  if (beforeTs) {
+    conditions.push("ts < ?");
+    params.push(beforeTs);
+  }
+
+  const query = `SELECT * FROM messages WHERE ${conditions.join(" AND ")} ORDER BY ts DESC LIMIT ?`;
+  params.push(limit + 1);
+
+  let messages = db.query<Message, (string | number)[]>(query).all(...params);
+  const hasMore = messages.length > limit;
+  if (hasMore) messages = messages.slice(0, limit);
+  return { ok: true, messages, has_more: hasMore };
+}
