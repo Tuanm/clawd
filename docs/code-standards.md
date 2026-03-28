@@ -1,6 +1,6 @@
 # Claw'd Code Standards & Development Guide
 
-> Last updated: 2026-03-26
+> Last updated: 2026-03-28
 
 ---
 
@@ -586,29 +586,41 @@ const toolCallId = response.content.id || `call_${Date.now()}`;
 
 ## 10. Database Patterns
 
-### 10.1 Schema Definition
+### 10.1 Schema Definition — Unified Migration Runner
 
-Use typed migrations:
+All databases use `runMigrations()` from `src/db/migrations.ts` (PRAGMA user_version):
 
 ```typescript
-const migrations = [
+import { runMigrations, type Migration } from "../db/migrations";
+
+const migrations: Migration[] = [
   {
     version: 1,
-    sql: `
-      CREATE TABLE worktree_info (
-        agent_id TEXT PRIMARY KEY,
-        worktree_path TEXT NOT NULL,
-        worktree_branch TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      )
-    `,
+    description: "initial schema",
+    up(db) {
+      db.exec(`
+        CREATE TABLE worktree_info (
+          agent_id TEXT PRIMARY KEY,
+          worktree_path TEXT NOT NULL,
+          worktree_branch TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      `);
+    },
   },
 ];
 
-for (const m of migrations) {
-  db.exec(m.sql);
-}
+runMigrations(db, migrations);          // default: "versioned" strategy
+// runMigrations(db, migrations, "recreate-on-mismatch");  // for cache DBs
 ```
+
+**Rules:**
+- Each migration must have a unique, monotonically increasing `version` number
+- Migrations run atomically inside `db.transaction()` — partial migrations are impossible
+- `"versioned"` (default): only runs migrations with version > current; safe for production data
+- `"recreate-on-mismatch"`: drops and recreates all tables when version is behind; use only for ephemeral/cache databases (e.g. `skills-cache.db`)
+
+**Lazy singleton pattern** (`src/server/database.ts`): the DB is not opened at import time. A `Proxy` object is returned; the real `Database` instance is created on first access. This allows tests to call `_resetForTesting()` to swap in a fresh in-memory DB without restarting the process.
 
 ### 10.2 Prepared Statements
 
@@ -681,6 +693,25 @@ All responses return JSON:
 - **409**: Conflict (e.g., hunk hash mismatch during staging)
 - **500**: Server error
 
+### 11.4 Request Body Validation
+
+Use `validateBody<T>()` from `src/server/validate.ts` to parse and type-check incoming JSON bodies via Zod:
+
+```typescript
+import { validateBody } from "../server/validate";
+import { z } from "zod";
+
+const Schema = z.object({ channel: z.string(), message: z.string() });
+
+const v = validateBody(Schema, await req.json());
+if (!v.ok) return v.error;  // 400 JSON with Zod issues
+// v.data is typed as { channel: string; message: string }
+```
+
+- Always returns `{ ok: true, data: T }` on success or `{ ok: false, error: Response }` on failure
+- The error response is a 400 JSON with `{ error: "validation failed", issues: [...] }`
+- Prefer this over ad-hoc `typeof` checks in route handlers
+
 ---
 
 ## 12. Testing Standards
@@ -725,6 +756,39 @@ const result = getWorktreeStatus(worktreePath);
 
 // Acceptable when unavoidable
 const mockGit = { commit: () => ({ ok: true }) };
+```
+
+### 12.4 Constructor-Injection for Unit Tests
+
+When testing classes that depend on external I/O (DB, LLM client, session manager), accept dependencies via constructor parameters. Tests pass lightweight mocks; production code passes real instances:
+
+```typescript
+// Production class
+class AgenticLoop {
+  constructor(
+    private readonly llm: LLMClient,
+    private readonly session: SessionManager,
+  ) {}
+}
+
+// Test (src/agent/core/loop.test.ts)
+const mockLLM = { stream: async () => [...tokens] };
+const mockSession = { getMessages: () => [], save: () => {} };
+const loop = new AgenticLoop(mockLLM, mockSession);
+```
+
+This pattern was used for `AgenticLoop` (loop.test.ts, 63 tests) and key-pool (key-pool.test.ts, 63 tests).
+
+### 12.5 Test Database Reset
+
+Use `_resetForTesting()` exported from `src/server/database.ts` to swap in a fresh in-memory SQLite database between test runs:
+
+```typescript
+import { _resetForTesting } from "../../server/database";
+
+beforeEach(() => {
+  _resetForTesting();  // Resets lazy singleton; next access opens a clean :memory: DB
+});
 ```
 
 ---

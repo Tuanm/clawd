@@ -1,6 +1,6 @@
 # Claw'd Codebase Summary
 
-> Updated: 2026-03-26 | Total Files: ~260 | Total Tokens: ~1.2M | Codebase size: 4.8M chars
+> Updated: 2026-03-28 | Total Files: ~275 | Total Tokens: ~1.3M | Codebase size: 5.0M chars
 
 ---
 
@@ -58,23 +58,45 @@ Chrome Extension (packages/browser-extension/)
 ```
 clawd/
 ├── src/                              # Main application
-│   ├── index.ts                      # Server entry point (HTTP/WS)
+│   ├── index.ts                      # Server entry point (HTTP/WS, ~1905 lines; route handlers extracted to src/server/routes/)
 │   ├── config.ts                     # CLI flag parser
-│   ├── config-file.ts                # ~/.clawd/config.json loader
+│   ├── config-file.ts                # ~/.clawd/config.json loader; fs.watch hot-reload (200ms debounce)
 │   ├── worker-loop.ts                # Per-agent polling loop (200ms)
 │   ├── worker-manager.ts             # Multi-agent orchestrator + heartbeat monitor
 │   ├── server/
-│   │   ├── database.ts               # chat.db SQLite schema/migrations
+│   │   ├── database.ts               # chat.db lazy singleton (Proxy), schema/migrations; _resetForTesting()
 │   │   ├── websocket.ts              # WebSocket broadcasting
+│   │   ├── http-helpers.ts           # Shared HTTP utilities (json, requireAuth, etc.)
+│   │   ├── validate.ts               # validateBody<T>(schema, body) — Zod validation helper
 │   │   ├── browser-bridge.ts         # Browser extension WS bridge
 │   │   ├── remote-worker.ts          # Remote worker bridge
-│   │   └── routes/                   # API endpoint handlers
+│   │   └── routes/                   # API route modules (agents.ts, analytics.ts, messages.ts, …)
+│   ├── db/                           # Unified migration system
+│   │   ├── migrations.ts             # runMigrations(db, migrations, strategy) — PRAGMA user_version
+│   │   └── migrations/               # Per-database migration files
+│   │       ├── chat-migrations.ts
+│   │       ├── memory-migrations.ts
+│   │       ├── scheduler-migrations.ts
+│   │       ├── kanban-migrations.ts
+│   │       └── skills-cache-migrations.ts
 │   ├── agent/                        # Agent system
 │   │   ├── agent.ts                  # Core Agent class, reasoning loop
 │   │   ├── api/                      # LLM provider factory, key pool, clients
-│   │   ├── tools/                    # Tool definitions, web search, document converter
+│   │   │   └── key-pool.test.ts      # 63-test unit suite for key pool
+│   │   ├── core/
+│   │   │   └── loop.test.ts          # AgenticLoop unit tests (constructor-injection mocks)
+│   │   ├── tools/                    # Tool barrel + domain modules
+│   │   │   ├── tools.ts              # 201-line barrel — re-exports full public API (17 consumers unchanged)
+│   │   │   ├── registry.ts           # ToolDefinition registry, executeTool, sandboxRequired enforcement
+│   │   │   ├── file-tools.ts         # File read/write/glob/grep tools (readOnly flagged)
+│   │   │   ├── shell-tools.ts        # Bash/exec tools
+│   │   │   ├── git-tools.ts          # Git operations
+│   │   │   ├── chat-tools.ts         # Chat send/upload (realpathSync allowlist for local uploads)
+│   │   │   ├── web-tools.ts          # Web fetch/search tools (readOnly)
+│   │   │   └── memory-tools.ts       # Memory recall/save tools
 │   │   ├── plugins/                  # All plugins (chat, browser, workspace, tunnel, etc.)
 │   │   ├── session/                  # Session manager, checkpoints, summarizer
+│   │   │   └── manager.test.ts       # Session compaction tests (ordering bug fix: created_at ASC, id ASC)
 │   │   ├── memory/                   # session.ts, knowledge-base.ts, agent-memory.ts
 │   │   ├── workspace/                # Git isolated mode for multi-agent channels
 │   │   │   ├── worktree.ts           # Worktree lifecycle, diff/commit/merge/hunk operations
@@ -1025,6 +1047,24 @@ All tool execution runs in isolated sandboxes:
 - **Input** — JSON via stdin
 - **Output** — Captured stdout/stderr
 - **Interrupts** — Handled gracefully
+- **Parallel execution** — 16 `readOnly: true` tools execute via `Promise.all` per LLM response; write tools remain sequential; results reassembled in original order
+- **sandboxRequired enforcement** — Tools with `sandboxRequired: true` in their `ToolDefinition` refuse to run outside the sandbox
+
+### Tool Module Structure
+
+`src/agent/tools/tools.ts` is a 201-line barrel that re-exports the full public API. Underlying logic lives in focused domain modules:
+
+| Module | Responsibility |
+|--------|---------------|
+| `registry.ts` | `ToolDefinition` registry, `executeTool()` dispatcher |
+| `file-tools.ts` | view, write, glob, grep (all `readOnly: true` for reads) |
+| `shell-tools.ts` | bash, exec |
+| `git-tools.ts` | git commit, push, status |
+| `chat-tools.ts` | chat_send_message, chat_upload_local_file (realpathSync allowlist) |
+| `web-tools.ts` | web_fetch, web_search (`readOnly: true`) |
+| `memory-tools.ts` | memo_save, memo_recall, memo_delete |
+
+All 17 tool consumers use the barrel import path — no import changes required.
 - **Retries** — Automatic with exponential backoff
 
 ---

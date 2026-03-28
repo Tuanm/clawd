@@ -1,6 +1,6 @@
 # Claw'd Architecture Reference
 
-> Last updated: 2026-03-26
+> Last updated: 2026-03-28
 
 ---
 
@@ -154,19 +154,37 @@ clawd/
 │   ├── worker-loop.ts          # Per-agent polling loop
 │   ├── worker-manager.ts       # Multi-agent orchestrator
 │   ├── server/
-│   │   ├── database.ts         # chat.db SQLite schema
+│   │   ├── database.ts         # chat.db lazy singleton + Proxy; _resetForTesting()
 │   │   ├── websocket.ts        # WebSocket broadcasting
-│   │   ├── routes/             # API route handlers
+│   │   ├── http-helpers.ts     # Shared HTTP helpers (json(), requireAuth(), etc.)
+│   │   ├── validate.ts         # validateBody<T>(schema, body) — Zod request validation
+│   │   ├── routes/             # API route handlers (agents.ts, analytics.ts, …)
 │   │   └── browser-bridge.ts   # Browser extension WS bridge
 │   ├── agent/
 │   │   ├── agent.ts            # Main Agent class + reasoning loop
 │   │   ├── api/                # LLM provider clients, key pool, factory
-│   │   ├── tools/              # Tool definitions, web search, document converter
+│   │   ├── tools/              # Tool barrel (tools.ts) + 7 domain modules
+│   │   │   ├── tools.ts        # 201-line barrel — re-exports full API
+│   │   │   ├── registry.ts     # ToolDefinition registry + executeTool
+│   │   │   ├── file-tools.ts   # File read/write/glob/grep
+│   │   │   ├── shell-tools.ts  # Bash/exec tools
+│   │   │   ├── git-tools.ts    # Git operations
+│   │   │   ├── chat-tools.ts   # Chat send/upload/list
+│   │   │   ├── web-tools.ts    # Web fetch/search
+│   │   │   └── memory-tools.ts # Memory recall/save
 │   │   ├── plugins/            # All plugins (chat, browser, workspace, tunnel, etc.)
 │   │   ├── session/            # Session manager, checkpoints, summarizer
 │   │   ├── memory/             # memory.ts, knowledge-base.ts, agent-memory.ts
 │   │   ├── mcp/                # MCP client connections
 │   │   └── utils/              # sandbox.ts, agent-context.ts
+│   ├── db/                     # Unified migration system
+│   │   ├── migrations.ts       # runMigrations(db, migrations, strategy)
+│   │   └── migrations/         # Per-DB migration files
+│   │       ├── chat-migrations.ts
+│   │       ├── memory-migrations.ts
+│   │       ├── scheduler-migrations.ts
+│   │       ├── kanban-migrations.ts
+│   │       └── skills-cache-migrations.ts
 │   ├── spaces/                 # Sub-agent system
 │   │   ├── manager.ts          # Space lifecycle management
 │   │   ├── worker.ts           # Space worker orchestrator
@@ -208,7 +226,10 @@ clawd/
 | `src/config-file.ts` | Loads and validates `~/.clawd/config.json` |
 | `src/worker-loop.ts` | Per-agent polling loop (200ms interval) |
 | `src/worker-manager.ts` | Manages lifecycle of all agent WorkerLoop instances |
-| `src/server/database.ts` | SQLite schema, migrations, prepared statements for chat.db |
+| `src/server/database.ts` | chat.db lazy singleton (Proxy), schema, prepared statements; `_resetForTesting()` |
+| `src/server/http-helpers.ts` | Shared HTTP utilities used across route handlers |
+| `src/server/validate.ts` | Zod-backed `validateBody<T>()` for HTTP request body validation |
+| `src/db/migrations.ts` | `runMigrations(db, migrations, strategy)` — unified migration runner (PRAGMA user_version) |
 | `src/server/websocket.ts` | WebSocket connection tracking, message broadcasting |
 | `src/server/browser-bridge.ts` | WebSocket bridge between agents and browser extension |
 | `src/agent/agent.ts` | Core Agent class — reasoning loop, tool dispatch |
@@ -219,7 +240,10 @@ clawd/
 
 ## 4. Server Entry Point
 
-`src/index.ts` runs a single Bun HTTP + WebSocket server (default: `0.0.0.0:3456`).
+`src/index.ts` runs a single Bun HTTP + WebSocket server (default: `0.0.0.0:3456`). The
+file was refactored from ~2557 → ~1905 lines by extracting route handlers into dedicated
+modules under `src/server/routes/` (e.g., `agents.ts`, `analytics.ts`) with shared helpers
+in `src/server/http-helpers.ts`.
 
 ### Request Routing
 
@@ -227,7 +251,7 @@ All API requests are routed through the HTTP handler. The server serves three pr
 functions:
 
 1. **REST API** (`/api/*`) — Chat, agent management, files, scheduler, analytics
-2. **MCP Endpoint** (`/mcp`) — Model Context Protocol SSE transport for external clients
+2. **MCP Endpoint** (`/mcp`) — Model Context Protocol SSE transport for external clients; requires auth check on all `/mcp` prefixed paths
 3. **Static Assets** (`/*`) — Embedded React SPA served as fallback for all non-API routes
 
 ### WebSocket Connections
@@ -441,6 +465,33 @@ FTS5 full-text search index on `agent_memories.content`.
 
 ---
 
+## 5.3 Migration System
+
+**File**: `src/db/migrations.ts` (and `src/db/migrations/`)
+
+All five databases use a unified migration runner based on `PRAGMA user_version`:
+
+```typescript
+runMigrations(db, migrations, strategy?)
+```
+
+- **`versioned`** (default) — runs only migrations with `version > PRAGMA user_version`, then bumps the version. Safe for production data.
+- **`recreate-on-mismatch`** — for cache-style DBs (e.g. `skills-cache.db`): if current version < target, drops all tables and re-runs from scratch.
+
+Each migration is a `{ version, description, up(db) }` object. Migrations run atomically inside `db.transaction()` so a partial migration never leaves the DB corrupt.
+
+**Per-DB migration files:**
+
+| File | Database |
+|------|---------|
+| `src/db/migrations/chat-migrations.ts` | chat.db |
+| `src/db/migrations/memory-migrations.ts` | memory.db |
+| `src/db/migrations/scheduler-migrations.ts` | scheduler.db |
+| `src/db/migrations/kanban-migrations.ts` | kanban.db |
+| `src/db/migrations/skills-cache-migrations.ts` | skills-cache.db |
+
+---
+
 ## 6. Agent System
 
 ### 6.1 Worker Loop
@@ -505,9 +556,20 @@ Each iteration:
 1. **Build messages array**: system prompt + conversation history + tool definitions
 2. **Stream LLM response**: tokens broadcast via WebSocket as `agent_token` events
 3. **Parse tool calls**: Extract function name + arguments from the response
-4. **Execute tools**: Run through plugin system with `beforeExecute` / `afterExecute` hooks
-5. **Inject results**: Tool outputs added as `tool` role messages
+4. **Execute tools**: Run through plugin system with `beforeExecute` / `afterExecute` hooks; read-only tools run in parallel via `Promise.all`; write tools run sequentially
+5. **Inject results**: Tool outputs added as `tool` role messages, reassembled in original LLM call order
 6. **Loop or terminate**: If tool calls present, repeat; otherwise, post final text
+
+#### Parallel Tool Execution
+
+`ToolDefinition` has an optional `readOnly?: boolean` flag. When set to `true`, the tool is safe to run concurrently. At execution time:
+
+- All `readOnly=true` tools from a single LLM response execute via `Promise.all` in one batch
+- Write tools (no flag or `readOnly=false`) execute sequentially after all read-only batches
+- Results are reassembled in the original order before injection into context
+- Configurable via `parallelTools` in config (default: `true`); set to `false` to force sequential
+
+**16 built-in tools** are marked `readOnly: true`: file view/glob/grep, web fetch/search, today, get_environment, list_agents, and several memory-read tools.
 
 #### Dynamic System Prompt Builder
 
@@ -1140,10 +1202,17 @@ Support for custom claude-code providers (e.g., `"claude-code-2"` with type `"cl
 
 ---
 
-## 10. Sandbox Security (Section numbering below adjusted for new 9.2 SDK section)
+## 10. Sandbox Security
 
 Tool execution is sandboxed to prevent agents from accessing sensitive host resources.
 The sandbox implementation differs by platform.
+
+**Enforcement rules (Wave 1–2 hardening):**
+
+- **`sandboxRequired: true`** — Tools that set this flag in their `ToolDefinition` will refuse to execute if called outside the sandbox. The `executeTool` dispatcher checks this flag before invocation.
+- **`chat_upload_local_file`** — Uses `realpathSync` to resolve the full real path before checking it against a project-root allowlist. Prevents symlink-traversal uploads.
+- **MCP auth guard** — All `/mcp`-prefixed routes require the same `Authorization: Bearer` check as `/api/*` routes (when `auth.token` is configured).
+- **WebSocket auth guard** — WebSocket upgrade requests now require a valid auth token when `auth.token` is set; unauthenticated upgrades are rejected with HTTP 401.
 
 ### 10.1 Linux (bubblewrap)
 
@@ -2005,6 +2074,13 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
 ---
 
 ## 17. Configuration Reference
+
+### 17.0 Hot-Reload
+
+`src/config-file.ts` watches `~/.clawd/config.json` via `fs.watch`. When the file is saved,
+the config cache is automatically invalidated (200ms debounce). Changes to providers, model
+settings, browser auth tokens, and all other browser-side settings apply on the next request
+**without a server restart**.
 
 ### 17.1 config.json Schema
 
