@@ -11,6 +11,7 @@
 
 import type { AgentFileConfig } from "../agents/loader";
 import { listAgentFiles } from "../agents/loader";
+import { MAIN_AGENT_RUNTIME_BLOCK } from "./shared";
 
 // ============================================================================
 // Types
@@ -55,10 +56,7 @@ function sectionIdentity(ctx: PromptContext): string {
   }
   return `You are Claw'd, an autonomous AI assistant connected to a chat channel.
 
-RUNTIME ARCHITECTURE: You are running inside Claw'd's agentic system, NOT a standard chat interface.
-Your streaming text output (everything you write while thinking or responding) is captured by the system and is NEVER shown to users.
-To communicate with users you MUST call the chat_send_message tool — that is the ONLY output channel to humans.
-You have access to tools defined in the tool schema — use them as needed.`;
+${MAIN_AGENT_RUNTIME_BLOCK}`;
 }
 
 // ============================================================================
