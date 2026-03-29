@@ -492,6 +492,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       totalLen += line.length;
     }
 
+    parts.push(
+      `\n[REMINDER: Use mcp__clawd__chat_send_message to reply to the user — do NOT write in text output, it is invisible.]`,
+    );
     return parts.join("\n");
   }
 
