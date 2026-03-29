@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { getSessionManager } from "../../session/manager";
+import { MAIN_AGENT_RUNTIME_BLOCK } from "../../prompt/shared";
 
 // Session size limits (in estimated tokens) - tuned for 128k context (claude-opus-4.6)
 const TOKEN_LIMIT_CRITICAL = 70000; // Emergency reset threshold
@@ -394,8 +395,7 @@ ${
   clawdInstructions ||
   `## Runtime Architecture
 
-You are running inside Claw'd's agentic system. Your streaming text output is NEVER shown to users — it is only captured in server logs.
-To communicate with users you MUST call chat_send_message. That is the ONLY output channel visible to humans.
+${MAIN_AGENT_RUNTIME_BLOCK}
 
 ## Core Responsibilities
 
