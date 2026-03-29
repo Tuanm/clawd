@@ -11,7 +11,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "./agent/agents/loader";
-import { CLAUDE_CODE_RUNTIME_BLOCK } from "./agent/prompt/shared";
+import { buildDynamicSystemPrompt, type PromptContext } from "./agent/prompt/builder";
 import {
   broadcastAgentStreaming,
   broadcastAgentToken,
@@ -387,6 +387,23 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const { channel, agentId, model, agentFileConfig } = this.config;
     const basePrompt = this.loadIdentity();
 
+    // Build the system prompt using the shared dynamic builder (same as clawd-chat path)
+    // with MCP prefix so all tool references use the full mcp__clawd__ namespace.
+    const ccCtx: PromptContext = {
+      agentId: this.config.agentId,
+      projectRoot: this.config.projectRoot,
+      isSpaceAgent: false,
+      availableTools: ["bash", "spawn_agent", "todo_write", "todo_read", "memory_search"],
+      platform: process.platform,
+      model: this.config.model || "sonnet",
+      gitRepo: false,
+      browserEnabled: false,
+      contextMode: false,
+      agentFileConfig: this.config.agentFileConfig,
+      mcpPrefix: "mcp__clawd__",
+    };
+    const systemPrompt = buildDynamicSystemPrompt(ccCtx);
+
     const newSessionId = await runSDKQuery(
       {
         prompt,
@@ -398,23 +415,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         agentDef: {
           "clawd-main": {
             description: "Main channel agent for Claw'd",
-            prompt: `${basePrompt}You are a main channel agent. Respond to user messages and complete tasks.
-
-PROJECT ROOT: ${this.config.projectRoot}
-Your working directory is set to the project root above. All file paths are relative to this directory.
-
-${CLAUDE_CODE_RUNTIME_BLOCK}
-
-COMMUNICATION — Use these MCP tools (channel and agent_id are auto-injected):
-- mcp__clawd__chat_send_message(text="...") — respond to users
-- mcp__clawd__chat_mark_processed(timestamp="...") — acknowledge each message
-
-CRITICAL RULES:
-1. After processing EACH user message, you MUST call chat_mark_processed with its timestamp (shown in [ts] prefix).
-2. Send your response via chat_send_message BEFORE calling chat_mark_processed.
-3. You have full coding tools (Read, Write, Edit, Bash, Grep, Glob, etc.) for working with the codebase.
-4. For complex tasks, use mcp__clawd__spawn_agent to spawn sub-agents.
-5. Do NOT use the Agent tool — use mcp__clawd__spawn_agent instead for sub-agents.`,
+            prompt: `${basePrompt}${systemPrompt}`,
           },
         },
         mcpServers: this.buildMcpServers(),

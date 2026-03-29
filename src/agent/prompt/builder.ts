@@ -11,7 +11,7 @@
 
 import type { AgentFileConfig } from "../agents/loader";
 import { listAgentFiles } from "../agents/loader";
-import { MAIN_AGENT_RUNTIME_BLOCK } from "./shared";
+import { CLAUDE_CODE_RUNTIME_BLOCK, MAIN_AGENT_RUNTIME_BLOCK } from "./shared";
 
 // ============================================================================
 // Types
@@ -32,6 +32,12 @@ export interface PromptContext {
   worktreeEnabled?: boolean;
   /** Worktree branch name, e.g., "clawd/a3f7b2" */
   worktreeBranch?: string;
+  /**
+   * MCP tool name prefix for Claude Code SDK agents where tools are exposed
+   * via MCP (e.g. "mcp__clawd__"). Leave undefined for clawd-chat agents
+   * where tools are injected directly without a prefix.
+   */
+  mcpPrefix?: string;
 }
 
 // ============================================================================
@@ -54,9 +60,11 @@ function sectionIdentity(ctx: PromptContext): string {
   if (ctx.isSpaceAgent) {
     return `You are a sub-agent. Focus on completing the assigned task efficiently.`;
   }
+  // Claude Code SDK agents use the MCP-prefixed tool name in the runtime block
+  const runtimeBlock = ctx.mcpPrefix ? CLAUDE_CODE_RUNTIME_BLOCK : MAIN_AGENT_RUNTIME_BLOCK;
   return `You are Claw'd, an autonomous AI assistant connected to a chat channel.
 
-${MAIN_AGENT_RUNTIME_BLOCK}`;
+${runtimeBlock}`;
 }
 
 // ============================================================================
@@ -147,14 +155,16 @@ function sectionSafety(ctx: PromptContext): string {
 // Section: Chat Communication (main agents only)
 // ============================================================================
 
-function sectionChat(): string {
+function sectionChat(ctx: PromptContext): string {
+  const p = ctx.mcpPrefix || "";
   return `# Communication
-- chat_send_message(text): the ONLY way humans see your responses — channel/agent_id/user auto-injected
-- chat_mark_processed(timestamp): mark messages as handled — channel/agent_id auto-injected
-- Do NOT reply in streaming text — your text output is never delivered to users; call chat_send_message instead
+- ${p}chat_send_message(text): the ONLY way humans see your responses — channel/agent_id/user auto-injected
+- ${p}chat_mark_processed(timestamp): mark messages as handled — channel/agent_id auto-injected
+- Process each message: call ${p}chat_send_message FIRST, then ${p}chat_mark_processed with its [ts] timestamp
+- Do NOT reply in streaming text — your text output is never delivered to users; call ${p}chat_send_message instead
 - Wrap copiable content (commands, code, URLs, paths) in markdown code blocks
 - On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, never mention heartbeats in chat
-- If chat_send_message fails, RETRY immediately`;
+- If ${p}chat_send_message fails, RETRY immediately`;
 }
 
 // ============================================================================
@@ -193,6 +203,8 @@ function sectionWorktree(_ctx: PromptContext): string {
 // ============================================================================
 
 function sectionSubAgents(ctx: PromptContext): string {
+  const p = ctx.mcpPrefix || "";
+
   // Build dynamic agent list
   let agentList = `Built-in agents:
 - explore: fast read-only codebase search (haiku) — file discovery, code search, pattern analysis
@@ -213,10 +225,20 @@ function sectionSubAgents(ctx: PromptContext): string {
     /* best-effort */
   }
 
+  const doNotDelegate = [
+    "Reading a specific file (use view directly — faster)",
+    "Simple grep/glob search (faster than spawning)",
+    "Quick targeted change where latency matters",
+    "Avoid duplicating work a sub-agent is already doing",
+  ];
+  if (ctx.mcpPrefix) {
+    doNotDelegate.push(`Do NOT use the Agent tool — use ${p}spawn_agent instead for sub-agents`);
+  }
+
   return `# Sub-Agents
-Use spawn_agent to delegate tasks. Default: 'explore' (fast, read-only, haiku).
-Use list_agents(type="available") to discover all agents.
-Use get_agent_report(agent_id) to read a completed sub-agent's result.
+Use ${p}spawn_agent to delegate tasks. Default: 'explore' (fast, read-only, haiku).
+Use ${p}list_agents(type="available") to discover all agents.
+Use ${p}get_agent_report(agent_id) to read a completed sub-agent's result.
 
 ${agentList}
 
@@ -227,34 +249,32 @@ Delegate when:
 - Self-contained work that returns a summary
 
 Do NOT delegate:
-- Reading a specific file (use view directly — faster)
-- Simple grep/glob search (faster than spawning)
-- Quick targeted change where latency matters
-- Avoid duplicating work a sub-agent is already doing`;
+${doNotDelegate.map((r) => `- ${r}`).join("\n")}`;
 }
 
 // ============================================================================
 // Section: Task Management (conditional)
 // ============================================================================
 
-function sectionTasks(): string {
+function sectionTasks(ctx: PromptContext): string {
+  const p = ctx.mcpPrefix || "";
   return `# Todo List
 You have a personal Todo list to track multi-step work. Skip for quick single-turn tasks.
 
 **When to use:**
 - Work requiring 3+ distinct steps → create a Todo list BEFORE starting
-- Write all items at once with todo_write (not one at a time)
+- Write all items at once with ${p}todo_write (not one at a time)
 
 **Workflow:**
-1. Plan: call todo_write([{content: "step 1"}, {content: "step 2"}, ...]) — creates your list
-2. Work: update items as you go with todo_update(item_id, "in_progress") then todo_update(item_id, "completed")
+1. Plan: call ${p}todo_write([{content: "step 1"}, {content: "step 2"}, ...]) — creates your list
+2. Work: update items as you go with ${p}todo_update(item_id, "in_progress") then ${p}todo_update(item_id, "completed")
 3. Report: after each completed item, tell the user: "Done: [item]. Next: [item]. (3/7)"
 4. Finish: when all items completed, the list auto-deletes. Send a final summary.
 
 **Rules:**
 - Only ONE active Todo list at a time — complete or clear before creating new
 - Keep items short and actionable (imperative: "Add validation", not "Adding validation")
-- Use todo_read to check your current list state`;
+- Use ${p}todo_read to check your current list state`;
 }
 
 // ============================================================================
@@ -326,7 +346,7 @@ export function buildDynamicSystemPrompt(ctx: PromptContext): string {
 
   if (!ctx.isSpaceAgent) {
     // Main agent sections
-    sections.push(sectionChat());
+    sections.push(sectionChat(ctx));
 
     if (hasGitTools(ctx)) {
       if (ctx.worktreeEnabled && ctx.worktreeBranch) {
@@ -339,7 +359,7 @@ export function buildDynamicSystemPrompt(ctx: PromptContext): string {
       sections.push(sectionSubAgents(ctx));
     }
     if (hasTaskTools(ctx)) {
-      sections.push(sectionTasks());
+      sections.push(sectionTasks(ctx));
     }
     sections.push(sectionArtifacts());
   }
