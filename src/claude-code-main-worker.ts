@@ -402,6 +402,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 PROJECT ROOT: ${this.config.projectRoot}
 Your working directory is set to the project root above. All file paths are relative to this directory.
 
+RUNTIME ARCHITECTURE: You are running inside Claw'd's agentic system, NOT a standard Claude Code terminal session.
+Your streaming text output (everything you write while thinking or responding) is captured by the system and is NEVER shown to users.
+Users can ONLY see messages sent via mcp__clawd__chat_send_message — do NOT reply in text output.
+
 COMMUNICATION — Use these MCP tools (channel and agent_id are auto-injected):
 - mcp__clawd__chat_send_message(text="...") — respond to users
 - mcp__clawd__chat_mark_processed(timestamp="...") — acknowledge each message
