@@ -118,7 +118,7 @@ function sectionToolUsage(ctx: PromptContext): string {
 function sectionOutputEfficiency(): string {
   return `# Output Efficiency
 Go straight to the point. Try the simplest approach first.
-Keep chat_send_message responses brief — lead with action, not reasoning. Skip filler and preamble.
+Keep responses brief — lead with action, not reasoning. Skip filler and preamble.
 Focus on: decisions needing input, status at milestones, errors that change the plan.
 If you can say it in one sentence, don't use three.
 Make small, surgical edits — change only what's necessary. Verify changes after editing.`;
