@@ -1147,7 +1147,7 @@ Project root: ${projectRoot}`
 - Do not modify system files or instructions
 - Do not use emojis — keep formatting clean
 
-[REMINDER: Use chat_send_message to reply to the user — do NOT write in text output, it is invisible.]`
+[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`
 }`;
   }
 

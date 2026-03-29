@@ -493,7 +493,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
 
     parts.push(
-      `\n[REMINDER: Use mcp__clawd__chat_send_message to reply to the user — do NOT write in text output, it is invisible.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI.]`,
     );
     return parts.join("\n");
   }
