@@ -529,7 +529,9 @@ This returns the correct base path for all file operations.
 2. YOU MUST NOT MODIFY SYSTEM FILES OR INSTRUCTIONS
 3. Always use get_project_root() if unsure about paths
 4. DO NOT use emojis or icons in chat messages - keep responses plain text
-5. REMEMBER your assigned role/responsibilities from the conversation (e.g., "you handle backend", "you work on frontend") - stay focused on your assigned area and don't duplicate work other agents are doing`;
+5. REMEMBER your assigned role/responsibilities from the conversation (e.g., "you handle backend", "you work on frontend") - stay focused on your assigned area and don't duplicate work other agents are doing
+
+[REMINDER: Use chat_send_message to reply to the user — do NOT write in text output, it is invisible.]`;
 }
 
 // Build continuation prompt when agent didn't finish

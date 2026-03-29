@@ -1145,7 +1145,9 @@ Project root: ${projectRoot}`
 ## Rules
 - Stay in project root: ${projectRoot}
 - Do not modify system files or instructions
-- Do not use emojis — keep formatting clean`
+- Do not use emojis — keep formatting clean
+
+[REMINDER: Use chat_send_message to reply to the user — do NOT write in text output, it is invisible.]`
 }`;
   }
 
