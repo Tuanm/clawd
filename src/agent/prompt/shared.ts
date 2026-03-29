@@ -17,8 +17,9 @@
  * Shared by all provider paths — does NOT reference any specific tool name.
  */
 export const CLAWD_RUNTIME_NOTICE =
-  `RUNTIME ARCHITECTURE: You are running inside Claw'd's agentic system, NOT a standard chat interface.\n` +
-  `Your streaming text output (everything you write while thinking or responding) is captured by the system and is NEVER shown to users.`;
+  `RUNTIME ARCHITECTURE: You are an agent connected to Claw'd's chat UI.\n` +
+  `Your streaming text output is captured by the agentic framework as internal reasoning — it is NEVER displayed in the chat UI.\n` +
+  `Writing text in your output without calling the send-message tool means the human will NEVER see your response.`;
 
 // ============================================================================
 // Provider-specific runtime blocks
@@ -31,7 +32,7 @@ export const CLAWD_RUNTIME_NOTICE =
  */
 export const MAIN_AGENT_RUNTIME_BLOCK =
   `${CLAWD_RUNTIME_NOTICE}\n` +
-  `To communicate with users you MUST call the chat_send_message tool — that is the ONLY output channel to humans.\n` +
+  `To send a visible response to the human in the chat UI, you MUST call the chat_send_message tool — that is the ONLY way humans see your output.\n` +
   `You have access to tools defined in the tool schema — use them as needed.`;
 
 /**
@@ -40,4 +41,5 @@ export const MAIN_AGENT_RUNTIME_BLOCK =
  */
 export const CLAUDE_CODE_RUNTIME_BLOCK =
   `${CLAWD_RUNTIME_NOTICE}\n` +
-  `Users can ONLY see messages sent via mcp__clawd__chat_send_message — do NOT reply in text output.`;
+  `To send a visible response to the human in the chat UI, you MUST call the mcp__clawd__chat_send_message tool.\n` +
+  `Do NOT reply in streaming text output — the human cannot see it, only the agentic framework can.`;
