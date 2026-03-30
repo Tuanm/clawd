@@ -18,10 +18,11 @@ import type {
   McpServerConfig,
   SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { getSafeEnvVars } from "./agent/utils/sandbox";
 
 // ============================================================================
 // Types
@@ -41,6 +42,13 @@ export interface SDKQueryOptions {
   disallowedTools?: string[];
   /** Provider name for config lookup (e.g. "claude-code", "claude-code-2") */
   providerName?: string;
+  /**
+   * When true (YOLO mode), bypass all sandboxing — no bwrap, permissionMode bypassPermissions.
+   * When false (default), enable bwrap OS-level sandbox. All domains are allowed (network
+   * filtering happens at the Docker/firewall level). Security comes from OS-level isolation,
+   * not permission prompts. Consistent across all CC agents (main + space workers).
+   */
+  yolo?: boolean;
 }
 
 export interface SDKStreamCallbacks {
@@ -57,23 +65,89 @@ export interface SDKStreamCallbacks {
 // Hooks
 // ============================================================================
 
-/** PreToolUse: block Bash run_in_background */
+/** PreToolUse: block run_in_background + protect ~/.clawd/config.json from all agents */
 function createPreToolUseHook(): HookCallbackMatcher {
+  const configPath = resolve(homedir(), ".clawd", "config.json");
+  // Pre-resolve real path of config.json (guard against symlinks pointing to it)
+  let configRealPath: string;
+  try {
+    configRealPath = realpathSync(configPath);
+  } catch {
+    configRealPath = configPath;
+  }
+
+  /** Resolve a path, following symlinks where possible */
+  function realpath(p: string): string {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  }
+
+  /** Return true if the resolved path equals the config file */
+  function isConfigPath(p: string): boolean {
+    const abs = realpath(p);
+    return abs === configPath || abs === configRealPath;
+  }
+
+  const CONFIG_BLOCK = {
+    decision: "block" as const,
+    reason: "Access to ~/.clawd/config.json is restricted for all agents.",
+  };
+
   const hook: HookCallback = async (input: HookInput) => {
     if (input.hook_event_name !== "PreToolUse") return {};
     const toolInput = input.tool_input as Record<string, any> | undefined;
-    if (toolInput?.run_in_background) {
-      return {
-        decision: "block" as const,
-        reason:
-          "run_in_background is not supported — background jobs are lost when the subprocess restarts. " +
-          "Run the command synchronously, or use mcp__clawd__job_submit(name, command) for persistent background jobs. " +
-          "Check with mcp__clawd__job_status(job_id), wait with mcp__clawd__job_wait(job_id), cancel with mcp__clawd__job_cancel(job_id).",
-      };
+
+    if (input.tool_name === "Bash") {
+      // Block run_in_background
+      if (toolInput?.run_in_background) {
+        return {
+          decision: "block" as const,
+          reason:
+            "run_in_background is not supported — background jobs are lost when the subprocess restarts. " +
+            "Run the command synchronously, or use mcp__clawd__job_submit(name, command) for persistent background jobs. " +
+            "Check with mcp__clawd__job_status(job_id), wait with mcp__clawd__job_wait(job_id), cancel with mcp__clawd__job_cancel(job_id).",
+        };
+      }
+      // Best-effort block of Bash commands referencing ~/.clawd/config.json.
+      // This is defence-in-depth only — shell variable indirection
+      // (e.g. `D=clawd; cat ~/.$D/config.json`) cannot be caught by static
+      // string matching. The authoritative protection is the file-tool hook above.
+      const cmd: string = toolInput?.command ?? "";
+      if (cmd.includes(".clawd/config.json")) {
+        return CONFIG_BLOCK;
+      }
+      return {};
     }
+
+    // Block direct file tool access to ~/.clawd/config.json (all modes)
+    const fileTools: Record<string, string | undefined> = {
+      Read: toolInput?.file_path,
+      Write: toolInput?.file_path,
+      Edit: toolInput?.file_path,
+      NotebookEdit: toolInput?.notebook_path,
+    };
+    const MultiEditPaths: string[] =
+      input.tool_name === "MultiEdit" && Array.isArray(toolInput?.edits)
+        ? (toolInput!.edits as any[]).map((e) => e?.file_path).filter(Boolean)
+        : [];
+
+    const targetPaths =
+      input.tool_name === "MultiEdit"
+        ? MultiEditPaths
+        : fileTools[input.tool_name]
+          ? [fileTools[input.tool_name]!]
+          : [];
+
+    for (const p of targetPaths) {
+      if (isConfigPath(p)) return CONFIG_BLOCK;
+    }
+
     return {};
   };
-  return { matcher: "Bash", hooks: [hook] };
+  return { matcher: "*", hooks: [hook] };
 }
 
 /** PostToolUse: forward tool results to callback + refresh activity */
@@ -124,15 +198,34 @@ function getClaudeCodeProviderEnv(providerName = "claude-code"): Record<string, 
 function buildEnv(
   providerName?: string,
   extra?: Record<string, string | undefined>,
+  sandbox?: boolean,
 ): Record<string, string | undefined> {
   const home = homedir();
+
+  if (sandbox) {
+    // Sandbox mode: start from a clean safe environment (same as other providers).
+    // Only safe vars + CC-specific vars — no process.env leakage.
+    // CLAUDE_TMPDIR=/tmp tells the CLI's internal sandbox to treat /tmp as writable tmpdir.
+    const safeBase = getSafeEnvVars();
+    const ccEnv = getClaudeCodeProviderEnv(providerName);
+    return {
+      ...safeBase,
+      TERM: "dumb",
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "75",
+      CLAUDE_AGENT_SDK_CLIENT_APP: "Claw'd/1.0",
+      CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
+      CLAUDE_TMPDIR: "/tmp",
+      ...ccEnv,
+      ...extra,
+    };
+  }
+
+  // YOLO mode: inherit full process.env so CLI gets all credentials, XDG paths, etc.
   const extraPaths = (process.env.PATH || "")
     .split(":")
     .filter((p) => /nvm|fnm|volta|nodejs/i.test(p))
     .join(":");
   const basePath = `${home}/.local/bin:${home}/.bun/bin:/usr/local/bin:/usr/bin:/bin`;
-  // Inherit process.env so the CLI subprocess gets auth credentials, XDG paths, etc.
-  // Then override with our specifics + claude-code provider config
   return {
     ...process.env,
     HOME: home,
@@ -143,6 +236,7 @@ function buildEnv(
     USER: process.env.USER || "clawd",
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "75",
     CLAUDE_AGENT_SDK_CLIENT_APP: "Claw'd/1.0",
+    CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
     ...getClaudeCodeProviderEnv(providerName),
     ...extra,
   };
@@ -225,17 +319,52 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     }
   } catch {}
 
+  // Sandbox control — mirrors other providers' YOLO/sandbox behaviour.
+  // Non-YOLO: enable bwrap isolation. autoAllowBashIfSandboxed prevents per-command
+  // permission prompts inside the sandbox. allowUnsandboxedCommands:false closes the
+  // dangerouslyDisableSandbox escape hatch. All network domains allowed (Docker handles
+  // network filtering).
+  // YOLO: explicitly disable sandbox — fully unrestricted, no bwrap at all.
+  const yolo = opts.yolo ?? false;
+  sdkSettings.sandbox = sdkSettings.sandbox || {};
+  if (!yolo) {
+    sdkSettings.sandbox.enabled = sdkSettings.sandbox.enabled ?? true;
+    sdkSettings.sandbox.autoAllowBashIfSandboxed = sdkSettings.sandbox.autoAllowBashIfSandboxed ?? true;
+    sdkSettings.sandbox.allowUnsandboxedCommands = sdkSettings.sandbox.allowUnsandboxedCommands ?? false;
+  } else {
+    // YOLO: force sandbox off regardless of provider config settings
+    sdkSettings.sandbox.enabled = false;
+  }
+
   const baseOptions: Options = {
     model: opts.model || "sonnet",
     cwd: opts.cwd,
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
-    disallowedTools: opts.disallowedTools ?? ["Agent", "TodoWrite", "claude_code"],
+    // Disable CC's built-in file and shell tools — CC agents must use Claw'd MCP tools instead:
+    // - File: mcp__clawd__file_view, file_edit, file_multi_edit, file_create, file_glob, file_grep
+    // - Shell: mcp__clawd__bash (runs on the host, survives CC sandbox network isolation)
+    // This ensures consistent project-root scoping and security across all providers.
+    disallowedTools: [
+      "Agent",
+      "Bash",
+      "TodoWrite",
+      "Read",
+      "Write",
+      "Edit",
+      "MultiEdit",
+      "Glob",
+      "Grep",
+      "LS",
+      "NotebookRead",
+      "NotebookEdit",
+      ...(opts.disallowedTools ?? []),
+    ],
     agent: opts.agentName,
     agents: opts.agentDef,
     mcpServers: opts.mcpServers,
     abortController: opts.abortController,
-    env: buildEnv(opts.providerName, opts.env),
+    env: buildEnv(opts.providerName, opts.env, !yolo),
     includePartialMessages: true,
     // Resolve cli.js explicitly — compiled binaries can't use import.meta.url
     ...resolveSDKCliPath(),

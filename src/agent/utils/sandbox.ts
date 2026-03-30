@@ -144,7 +144,19 @@ function isSandboxExecAvailable(): boolean {
 
 /**
  * Get static resolv.conf path for DNS in sandbox.
- * Creates a static file with public DNS servers to avoid symlink issues.
+ *
+ * bwrap mounts /etc read-only, but /etc/resolv.conf is often a symlink (WSL:
+ * /mnt/wsl/resolv.conf) whose target is outside the sandbox. We materialise
+ * the real nameserver content into a plain file so the symlink chain is not
+ * needed inside the sandbox.
+ *
+ * Strategy:
+ * 1. Read the actual content of /etc/resolv.conf (following symlinks).
+ * 2. If that succeeds and contains at least one nameserver, use it as-is —
+ *    this preserves the system's working resolver (e.g. 172.28.48.1 on WSL,
+ *    or a corporate DNS that blocks 1.1.1.1).
+ * 3. Fall back to public DNS (1.1.1.1 / 8.8.8.8) only if the system file is
+ *    missing or empty.
  */
 function getSandboxResolvConf(): string {
   const uid = process.getuid?.() ?? 1000;
@@ -152,9 +164,20 @@ function getSandboxResolvConf(): string {
   const resolvPath = `${runUserDir}/clawd-resolv.conf`;
   const actualPath = existsSync(runUserDir) ? resolvPath : "/tmp/clawd-sandbox-resolv.conf";
 
-  if (!existsSync(actualPath)) {
-    writeFileSync(actualPath, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n", { mode: 0o644 });
+  // Derive nameserver content from the live system resolv.conf
+  let content = "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"; // fallback
+  try {
+    const real = realpathSync("/etc/resolv.conf");
+    const raw = readFileSync(real, "utf8");
+    if (/^\s*nameserver\s+/m.test(raw)) {
+      content = raw; // system resolv.conf has valid nameservers — use it
+    }
+  } catch {
+    // /etc/resolv.conf unreadable or missing — fall back to public DNS
   }
+
+  // Always rewrite so the file reflects the current system state
+  writeFileSync(actualPath, content, { mode: 0o644 });
 
   return actualPath;
 }

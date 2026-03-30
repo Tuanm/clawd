@@ -50,6 +50,8 @@ export interface ClaudeCodeMainConfig {
   debug: boolean;
   agentFileConfig?: AgentFileConfig;
   heartbeatInterval?: number;
+  /** When false (default), sandbox restrictions apply. When true, bypasses all permission checks. */
+  yolo?: boolean;
 }
 
 // ============================================================================
@@ -401,7 +403,20 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       agentId: this.config.agentId,
       projectRoot: this.config.projectRoot,
       isSpaceAgent: false,
-      availableTools: ["bash", "spawn_agent", "todo_write", "todo_read", "memory_search"],
+      availableTools: [
+        "bash",
+        "spawn_agent",
+        "todo_write",
+        "todo_read",
+        "memory_search",
+        // MCP file tools (Phase 2) — project-root-scoped, sandboxed
+        "file_view",
+        "file_edit",
+        "file_multi_edit",
+        "file_create",
+        "file_glob",
+        "file_grep",
+      ],
       platform: process.platform,
       model: this.config.model || "sonnet",
       gitRepo: false,
@@ -435,6 +450,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       mcpServers: this.buildMcpServers(),
       resume: this.sessionId || undefined,
       abortController: this.abortController,
+      yolo: this.config.yolo ?? false,
     };
 
     const newSessionId = await runSDKQuery(sdkOpts, {

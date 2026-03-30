@@ -1358,6 +1358,7 @@ Please:
                   channel,
                   agentId,
                   apiUrl: chatApiUrl,
+                  yolo: this.config.yolo,
                 },
                 this.config.spaceManager,
                 this.config.spaceWorkerManager,

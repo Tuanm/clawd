@@ -87,22 +87,35 @@ function sectionEnvironment(ctx: PromptContext): string {
 
 function sectionToolUsage(ctx: PromptContext): string {
   const rules: string[] = [];
+  const p = ctx.mcpPrefix || "";
 
-  if (hasTool(ctx, "view")) {
-    rules.push("Use view to read files — NOT bash with cat/head/tail");
+  // MCP file tools (Phase 2) take precedence over legacy direct file tools.
+  // They are sandbox-scoped to the project root and should be used for all file operations.
+  if (hasTool(ctx, "file_view")) {
+    rules.push(`Use ${p}file_view to read files — NOT bash with cat/head/tail`);
+    rules.push(`Use ${p}file_edit or ${p}file_multi_edit to modify files — NOT bash with sed/awk`);
+    rules.push(`Use ${p}file_create to write new files — NOT bash with echo/cat heredoc`);
+    rules.push(`Use ${p}file_grep for content search — NOT bash with grep/rg`);
+    rules.push(`Use ${p}file_glob for file search — NOT bash with find/ls`);
+  } else {
+    // Legacy direct file tools (clawd-chat agent path)
+    if (hasTool(ctx, "view")) {
+      rules.push("Use view to read files — NOT bash with cat/head/tail");
+    }
+    if (hasTool(ctx, "edit")) {
+      rules.push("Use edit to modify files — NOT bash with sed/awk");
+    }
+    if (hasTool(ctx, "create")) {
+      rules.push("Use create to write new files — NOT bash with echo/cat heredoc");
+    }
+    if (hasTool(ctx, "grep")) {
+      rules.push("Use grep for content search — NOT bash with grep/rg");
+    }
+    if (hasTool(ctx, "glob")) {
+      rules.push("Use glob for file search — NOT bash with find/ls");
+    }
   }
-  if (hasTool(ctx, "edit")) {
-    rules.push("Use edit to modify files — NOT bash with sed/awk");
-  }
-  if (hasTool(ctx, "create")) {
-    rules.push("Use create to write new files — NOT bash with echo/cat heredoc");
-  }
-  if (hasTool(ctx, "grep")) {
-    rules.push("Use grep for content search — NOT bash with grep/rg");
-  }
-  if (hasTool(ctx, "glob")) {
-    rules.push("Use glob for file search — NOT bash with find/ls");
-  }
+
   if (hasTool(ctx, "bash")) {
     rules.push("Reserve bash for system commands and terminal operations only");
     rules.push("Commands timeout after 30s — use job_submit for long-running tasks");

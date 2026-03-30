@@ -2198,19 +2198,25 @@ async function executeToolCall(
         // server's current working directory.  Symlink-safe via realpathSync.
         let resolvedFilePath: string;
         {
-          // A-1c: Use agent's project root from DB, fall back to process.cwd()
+          // A-1c: Use agent's project root from DB.
+          // If the agent has no project configured, isUnderProjectRoot is always false —
+          // only /tmp uploads are permitted. Falling back to process.cwd() would allow
+          // uploading arbitrary server-side files for unconfigured agents.
           const agentRow = db
             .query<{ project: string | null }, [string, string]>(
               "SELECT project FROM channel_agents WHERE channel = ? AND agent_id = ?",
             )
             .get(_channel, _agentId);
-          const projectRoot = resolvePath(agentRow?.project ?? process.cwd());
           try {
             resolvedFilePath = existsSync(filePath) ? realpathSync(filePath) : resolvePath(filePath);
           } catch {
             resolvedFilePath = resolvePath(filePath);
           }
-          const isUnderProjectRoot = resolvedFilePath === projectRoot || resolvedFilePath.startsWith(`${projectRoot}/`);
+          const configuredProject = agentRow?.project;
+          const projectRoot = configuredProject ? resolvePath(configuredProject) : null;
+          const isUnderProjectRoot =
+            projectRoot !== null &&
+            (resolvedFilePath === projectRoot || resolvedFilePath.startsWith(`${projectRoot}/`));
           // A-1b: Resolve canonical /tmp path (handles macOS /tmp → /private/tmp symlink)
           const canonicalTmp = (() => {
             try {
@@ -3095,6 +3101,9 @@ export const spaceCompleteCallbacks = new Map<string, (result: string) => void>(
 /** Per-space auth tokens — validated on every MCP and hook API request */
 export const spaceAuthTokens = new Map<string, string>();
 
+/** Per-space project roots — populated by ClaudeCodeSpaceWorker before runSDKQuery */
+export const spaceProjectRoots = new Map<string, string>();
+
 /**
  * Handle MCP requests scoped to a main channel agent.
  * Auto-injects channel and agent_id into every tool call so the agent
@@ -3850,6 +3859,32 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
             required: ["agent_id"],
           },
         },
+        {
+          name: "bash",
+          description:
+            "Execute a shell command on the host machine. Runs outside the CC sandbox — use this instead of the built-in Bash tool. Use run_in_background=true for long-running commands (returns job ID). Prefer dedicated tools when available: use file_grep instead of grep/rg, file_glob instead of find, file_view instead of cat, file_edit instead of sed.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              command: { type: "string", description: "The shell command to execute" },
+              timeout: {
+                type: "number",
+                description: "Timeout in milliseconds (default: 30000, max: 600000)",
+              },
+              cwd: { type: "string", description: "Working directory for the command" },
+              description: {
+                type: "string",
+                description: "Brief description of what this command does (for logging/audit)",
+              },
+              run_in_background: {
+                type: "boolean",
+                description:
+                  "Run command in background (returns immediately with job ID). Use job_status to check output later.",
+              },
+            },
+            required: ["command"],
+          },
+        },
       ];
 
       // Add remote worker tools if agent has a connected remote worker
@@ -3883,6 +3918,13 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         }
       } catch {}
 
+      const { getMcpFileToolDefs } = await import("./mcp-file-tools");
+      const fileToolDefs = getMcpFileToolDefs().map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      }));
+
       const allTools = [
         ...MCP_TOOLS,
         ...AGENT_MCP_TOOLS,
@@ -3897,6 +3939,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         ...memoryToolDefs,
         ...utilityToolDefs,
         ...remoteToolDefs,
+        ...fileToolDefs,
       ];
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { tools: allTools } }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -3942,6 +3985,45 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               jsonrpc: "2.0",
               id,
               result: { content: [{ type: "text", text: `Remote tool error: ${err.message}` }] },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      }
+
+      // Handle file tools (MCP file operations — project-root scoped)
+      if (name.startsWith("file_")) {
+        try {
+          const { getAgentProjectRoot } = await import("../api/agents");
+          const projectRoot = getAgentProjectRoot(db, channel, agentId);
+          if (!projectRoot) {
+            return new Response(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id,
+                result: {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({ ok: false, error: "Agent not found or no project configured" }),
+                    },
+                  ],
+                },
+              }),
+              { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+            );
+          }
+          const { executeMcpFileTool } = await import("./mcp-file-tools");
+          const result = await executeMcpFileTool(name, (toolArgs || {}) as Record<string, unknown>, projectRoot);
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        } catch (err: any) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err.message }) }] },
             }),
             { headers: { ...corsHeaders, "Content-Type": "application/json" } },
           );
@@ -4881,7 +4963,13 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       }
 
       // Handle utility tools
-      if (name === "get_environment" || name === "today" || name === "convert_to_markdown" || name === "agent_logs") {
+      if (
+        name === "get_environment" ||
+        name === "today" ||
+        name === "convert_to_markdown" ||
+        name === "agent_logs" ||
+        name === "bash"
+      ) {
         try {
           const args = toolArgs || {};
           let text = "";
@@ -4987,6 +5075,126 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               if (!found) {
                 text = `Agent: ${targetAgentId}\n(no output log found — agent may not have started or log path differs)`;
               }
+              break;
+            }
+            case "bash": {
+              const { spawn: spawnBash } = await import("node:child_process");
+              const command = args.command as string;
+              if (!command) {
+                text = "Error: command is required";
+                break;
+              }
+              const timeoutMs = Math.min((args.timeout as number) || 30000, 600000);
+              const description = (args.description as string) || "";
+              const runInBackground = (args.run_in_background as boolean) || false;
+              const cwdArg = args.cwd as string | undefined;
+              const workDir = cwdArg || process.cwd();
+
+              // Background mode: delegate to tmux job manager
+              if (runInBackground) {
+                try {
+                  const { tmuxJobManager } = await import("../agent/jobs/tmux-manager");
+                  const jobName = description || command.slice(0, 40).replace(/[^a-zA-Z0-9-_]/g, "_");
+                  const jobId = tmuxJobManager.submit(jobName, command);
+                  text = `Background job started: ${jobId}\nUse job_status(job_id="${jobId}") to check output.`;
+                } catch (bgErr: any) {
+                  text = `Error: Failed to start background job: ${bgErr.message}`;
+                }
+                break;
+              }
+
+              // Foreground execution: SIGTERM → SIGKILL escalation, 100KB output limit
+              const MAX_MCP_BASH_OUTPUT = 100 * 1024; // 100KB
+
+              let finalCommand = command;
+
+              // Apply sandbox wrapping if Claw'd server itself is sandboxed
+              const {
+                isSandboxEnabled: isSbxEnabled,
+                isSandboxReady: isSbxReady,
+                wrapCommandForSandbox: wrapCmd,
+              } = await import("../agent/utils/sandbox");
+              if (isSbxEnabled() && isSbxReady()) {
+                try {
+                  finalCommand = await wrapCmd(command, workDir);
+                } catch (wrapErr: any) {
+                  text = `Error: Sandbox wrapping failed: ${wrapErr.message}`;
+                  break;
+                }
+              }
+
+              text = await new Promise<string>((resolve) => {
+                const proc = spawnBash("bash", ["-c", finalCommand], {
+                  cwd: workDir,
+                  env: {
+                    ...process.env,
+                    DEBIAN_FRONTEND: "noninteractive",
+                    GIT_TERMINAL_PROMPT: "0",
+                    HOMEBREW_NO_AUTO_UPDATE: "1",
+                    CONDA_YES: "1",
+                    PIP_NO_INPUT: "1",
+                  },
+                });
+
+                let timedOut = false;
+                let killed = false;
+
+                // Graceful shutdown: SIGTERM first, then SIGKILL after 3s grace period
+                const timeoutId = setTimeout(() => {
+                  timedOut = true;
+                  proc.kill("SIGTERM");
+                  setTimeout(() => {
+                    if (!killed) {
+                      killed = true;
+                      proc.kill("SIGKILL");
+                    }
+                  }, 3000);
+                }, timeoutMs);
+
+                let stdout = "";
+                let stderr = "";
+                let outputBytes = 0;
+                let outputTruncated = false;
+
+                proc.stdout?.on("data", (data: Buffer) => {
+                  if (outputBytes < MAX_MCP_BASH_OUTPUT) {
+                    stdout += data.toString();
+                    outputBytes += data.length;
+                    if (outputBytes >= MAX_MCP_BASH_OUTPUT) outputTruncated = true;
+                  }
+                });
+                proc.stderr?.on("data", (data: Buffer) => {
+                  if (outputBytes < MAX_MCP_BASH_OUTPUT) {
+                    stderr += data.toString();
+                    outputBytes += data.length;
+                    if (outputBytes >= MAX_MCP_BASH_OUTPUT) outputTruncated = true;
+                  }
+                });
+
+                proc.on("close", (code: number | null) => {
+                  clearTimeout(timeoutId);
+                  killed = true;
+                  const truncNote = outputTruncated ? "\n[OUTPUT TRUNCATED: exceeded 100KB limit]" : "";
+                  if (timedOut) {
+                    resolve(
+                      `TIMEOUT: Command exceeded ${timeoutMs / 1000}s. Partial output:\n${stdout.trim()}` +
+                        `${stderr.trim() ? `\nSTDERR:\n${stderr.trim()}` : ""}${truncNote}\n` +
+                        `Tip: Use run_in_background=true for long-running commands.`,
+                    );
+                    return;
+                  }
+                  const parts: string[] = [];
+                  if (stdout.trim()) parts.push(stdout.trimEnd());
+                  if (stderr.trim()) parts.push(`STDERR:\n${stderr.trim()}`);
+                  const output = parts.join("\n") + truncNote;
+                  resolve(code !== 0 ? `Exit code: ${code}\n${output || "(no output)"}` : output || "(no output)");
+                });
+
+                proc.on("error", (err: Error) => {
+                  clearTimeout(timeoutId);
+                  resolve(`Error: ${err.message}`);
+                });
+              });
               break;
             }
             default:
@@ -5143,7 +5351,7 @@ export async function handleSpaceMcpRequest(req: Request, spaceId: string): Prom
   const authHeader = req.headers.get("Authorization") || "";
   const reqToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
   const expectedToken = spaceAuthTokens.get(spaceId);
-  if (expectedToken && reqToken !== expectedToken) {
+  if (!expectedToken || reqToken !== expectedToken) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -5174,7 +5382,13 @@ export async function handleSpaceMcpRequest(req: Request, spaceId: string): Prom
         // Client acknowledgment — no response needed for notifications
         return new Response(null, { status: 204, headers: corsHeaders });
 
-      case "tools/list":
+      case "tools/list": {
+        const { getMcpFileToolDefs: getSpaceFileToolDefs } = await import("./mcp-file-tools");
+        const spaceFileToolDefs = getSpaceFileToolDefs().map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        }));
         result = {
           tools: [
             {
@@ -5191,15 +5405,57 @@ export async function handleSpaceMcpRequest(req: Request, spaceId: string): Prom
                 required: ["space_id", "result"],
               },
             },
+            ...spaceFileToolDefs,
           ],
         };
         break;
+      }
 
       case "tools/call": {
         const { name, arguments: toolArgs } = params as {
           name: string;
           arguments: Record<string, unknown>;
         };
+
+        if (name.startsWith("file_")) {
+          try {
+            const projectRoot = spaceProjectRoots.get(spaceId);
+            if (!projectRoot) {
+              return new Response(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id,
+                  result: {
+                    content: [
+                      {
+                        type: "text",
+                        text: JSON.stringify({
+                          ok: false,
+                          error: "Space project root not registered yet — the space may still be initializing",
+                        }),
+                      },
+                    ],
+                  },
+                }),
+                { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+              );
+            }
+            const { executeMcpFileTool } = await import("./mcp-file-tools");
+            const fileResult = await executeMcpFileTool(name, (toolArgs || {}) as Record<string, unknown>, projectRoot);
+            return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: fileResult }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          } catch (err: any) {
+            return new Response(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id,
+                result: { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err.message }) }] },
+              }),
+              { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+            );
+          }
+        }
 
         if (name !== "complete_task") {
           result = { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Unknown tool" }) }] };

@@ -113,7 +113,7 @@ export class WorkerManager {
     // Register for agent MCP tools (claude_code, list_agents, etc.)
     try {
       const { setAgentMcpInfra } = require("./spaces/agent-mcp-tools");
-      setAgentMcpInfra(spaceManager, spaceWorkerManager, this.config.chatApiUrl);
+      setAgentMcpInfra(spaceManager, spaceWorkerManager, this.config.chatApiUrl, this.config.yolo ?? false);
     } catch {}
   }
 
@@ -313,7 +313,7 @@ export class WorkerManager {
       chatApiUrl: this.config.chatApiUrl,
       wsUrl: this.config.chatApiUrl.replace(/^http(s?):\/\//, "ws$1://").replace(/\/?$/, "/ws"),
       debug: this.config.debug,
-      yolo: this.config.yolo,
+      yolo: this.config.yolo ?? false,
       contextMode: this.config.contextMode,
       scheduler: this.scheduler,
       spaceManager: this.spaceManager,
@@ -360,6 +360,7 @@ export class WorkerManager {
         debug: this.config.debug,
         agentFileConfig: loopConfig.agentFileConfig,
         heartbeatInterval: agent.heartbeatInterval,
+        yolo: this.config.yolo ?? false,
       });
       registerMainWorker(`${agent.channel}:${agent.agentId}`, ccWorker);
       worker = ccWorker;
