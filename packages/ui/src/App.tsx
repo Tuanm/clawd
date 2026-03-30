@@ -2303,17 +2303,14 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             )}
             {/* Sub-agents indicator: shown when there are running sub-agents in this channel */}
             {!isSpaceChannel && !isManagementChannel && activeSubAgents.length > 0 && (
-              <div className="sub-agents-indicator">
+              <button
+                className="sub-agents-indicator-btn"
+                title={`${activeSubAgents.length} running sub-agent${activeSubAgents.length !== 1 ? "s" : ""} — click to view`}
+                onClick={() => setShowSubAgentsDialog(true)}
+              >
+                <BlackClawdIcon />
                 <span className="sub-agents-indicator-count">{activeSubAgents.length}</span>
-                <button
-                  className="sub-agents-indicator-btn"
-                  title={`${activeSubAgents.length} running sub-agent${activeSubAgents.length !== 1 ? "s" : ""} — click to view`}
-                  onClick={() => setShowSubAgentsDialog(true)}
-                >
-                  <BlackClawdIcon />
-                </button>
-                <span className="sub-agents-indicator-sep">+</span>
-              </div>
+              </button>
             )}
             <div className="online-agents">
               {/* Only show active (not sleeping) agents - sorted by agent_id */}
