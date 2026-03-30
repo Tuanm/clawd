@@ -188,10 +188,10 @@ function getMiniMaxConfig(): MiniMaxConfig | null {
   const mm = config.providers?.minimax as Record<string, unknown> | undefined;
   if (!mm || typeof mm.api_key !== "string" || (mm.api_key as string).trim() === "") return null;
   const models = mm.models as Record<string, string> | undefined;
-  // Base URL: strip /anthropic suffix if present (image gen uses /v1/image_generation)
+  // Base URL: strip /anthropic and /v1 suffixes if present — paths add /v1/... themselves
   const rawUrl =
     typeof mm.base_url === "string" ? (mm.base_url as string).trim().replace(/\/+$/, "") : "https://api.minimax.io";
-  const baseUrl = rawUrl.replace(/\/anthropic\/?$/, "");
+  const baseUrl = rawUrl.replace(/\/anthropic\/?$/, "").replace(/\/v1\/?$/, "");
   return {
     baseUrl,
     apiKey: (mm.api_key as string).trim(),
