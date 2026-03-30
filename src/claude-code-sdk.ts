@@ -208,7 +208,10 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
   let sessionId: string | null = null;
 
   // Build settings from provider config
-  const sdkSettings: Record<string, any> = {};
+  // Default: always skip Co-Authored-By attribution in CC agent commits
+  const sdkSettings: Record<string, any> = {
+    attribution: { commit: "", pr: "" },
+  };
   try {
     const { getProviderConfig } = require("./agent/api/provider-config");
     const providerCfg = getProviderConfig(opts.providerName || "claude-code") || {};
@@ -216,7 +219,7 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     if (settings && typeof settings === "object") {
       Object.assign(sdkSettings, settings);
     }
-    // Shorthand: skip_co_author at provider level
+    // Shorthand: skip_co_author at provider level (now redundant but kept for clarity)
     if ((providerCfg as any).skip_co_author === true) {
       sdkSettings.attribution = { commit: "", pr: "" };
     }
