@@ -73,6 +73,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private forceMarkRetries = new Map<string, number>();
   private abortController: AbortController | null = null;
   private wasCancelledByHeartbeat = false;
+  // Re-injection state: track per-turn whether chat_send_message was called
+  private turnChatSent = false;
+  private turnStreamText = "";
 
   constructor(config: ClaudeCodeMainConfig) {
     this.config = config;
@@ -347,6 +350,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const result = truncateToolResult(response);
     const description = formatToolDescription(toolName, input);
 
+    // Track whether the agent successfully sent a message this turn (CC SDK uses mcp__ prefix)
+    if (toolName === "mcp__clawd__chat_send_message" && !response?.error) {
+      this.turnChatSent = true;
+    }
+
     broadcastAgentToolCall(channel, agentId, toolName, input, "started");
     broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`);
     saveToMemory(
@@ -404,51 +412,112 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     };
     const systemPrompt = buildDynamicSystemPrompt(ccCtx);
 
-    const newSessionId = await runSDKQuery(
-      {
-        prompt,
-        model: model || "sonnet",
-        cwd: this.config.projectRoot,
-        providerName: this.config.provider,
-        systemPrompt: basePrompt,
-        agentName: "clawd-main",
-        agentDef: {
-          "clawd-main": {
-            description: "Main channel agent for Claw'd",
-            prompt: `${basePrompt}${systemPrompt}`,
-          },
-        },
-        mcpServers: this.buildMcpServers(),
-        resume: this.sessionId || undefined,
-        abortController: this.abortController,
-      },
-      {
-        onTextDelta: (text) => broadcastAgentToken(channel, agentId, text),
-        onThinkingDelta: (text) => broadcastAgentToken(channel, agentId, text, "thinking"),
-        onAssistantMessage: (content) => this.handleAssistantMessage(content),
-        onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
-        onActivity: () => {
-          // Refresh timestamps to prevent stale streaming cleanup AND heartbeat timeout
-          setAgentStreaming(agentId, channel, true);
-          this.processingStartedAt = Date.now();
-          this.lastActivityAt = Date.now();
-        },
-        onSessionId: (sid) => {
-          if (sid) {
-            this.sessionId = sid;
-            this.persistSessionId(sid);
-          } else {
-            // SDK cleared stale session — reset
-            this.sessionId = null;
-            this.persistSessionId(null);
-          }
+    // Detect heartbeat-initiated turns — suppress re-injection for these
+    const isHeartbeatTurn = messages.length === 1 && messages[0]?.text === "[HEARTBEAT]";
+
+    // Reset per-turn re-injection state
+    this.turnChatSent = false;
+    this.turnStreamText = "";
+
+    const sdkOpts = {
+      prompt,
+      model: model || "sonnet",
+      cwd: this.config.projectRoot,
+      providerName: this.config.provider,
+      systemPrompt: basePrompt,
+      agentName: "clawd-main",
+      agentDef: {
+        "clawd-main": {
+          description: "Main channel agent for Claw'd",
+          prompt: `${basePrompt}${systemPrompt}`,
         },
       },
-    );
+      mcpServers: this.buildMcpServers(),
+      resume: this.sessionId || undefined,
+      abortController: this.abortController,
+    };
+
+    const newSessionId = await runSDKQuery(sdkOpts, {
+      onTextDelta: (text) => {
+        this.turnStreamText += text;
+        broadcastAgentToken(channel, agentId, text);
+      },
+      onThinkingDelta: (text) => broadcastAgentToken(channel, agentId, text, "thinking"),
+      onAssistantMessage: (content) => this.handleAssistantMessage(content),
+      onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
+      onActivity: () => {
+        // Refresh timestamps to prevent stale streaming cleanup AND heartbeat timeout
+        setAgentStreaming(agentId, channel, true);
+        this.processingStartedAt = Date.now();
+        this.lastActivityAt = Date.now();
+      },
+      onSessionId: (sid) => {
+        if (sid) {
+          this.sessionId = sid;
+          this.persistSessionId(sid);
+        } else {
+          // SDK cleared stale session — reset
+          this.sessionId = null;
+          this.persistSessionId(null);
+        }
+      },
+    });
 
     if (newSessionId) {
       this.sessionId = newSessionId;
       this.persistSessionId(newSessionId);
+    }
+
+    // Re-injection: if agent produced substantial text but never called chat_send_message,
+    // send one ephemeral follow-up prompt so it can deliver the response.
+    // Skip for: heartbeat turns, cancelled/aborted turns, or aborted signal.
+    if (
+      !this.turnChatSent &&
+      this.turnStreamText.trim().length > 100 &&
+      !this.wasCancelledByHeartbeat &&
+      !isHeartbeatTurn &&
+      !this.abortController?.signal.aborted
+    ) {
+      const reinjectionPrompt =
+        "[NOTICE: Your previous turn produced output but did not call `mcp__clawd__chat_send_message` to deliver it — the human cannot see what you wrote.\n\n" +
+        "If you intended to respond to the human, call `mcp__clawd__chat_send_message` with your response now.\n" +
+        "If you intentionally chose not to respond, produce only [SILENT] and do nothing else.]";
+
+      // Use a fresh AbortController for re-injection (the original may have been aborted).
+      // Update this.abortController so cancelProcessing()/setSleeping() can still cancel it.
+      const reinjAbort = new AbortController();
+      this.abortController = reinjAbort;
+      let reinjectionText = "";
+      try {
+        await runSDKQuery(
+          { ...sdkOpts, prompt: reinjectionPrompt, resume: this.sessionId || undefined, abortController: reinjAbort },
+          {
+            onTextDelta: (text) => {
+              reinjectionText += text;
+            },
+            onThinkingDelta: () => {},
+            onAssistantMessage: () => {},
+            onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
+            onActivity: () => {
+              this.lastActivityAt = Date.now();
+            },
+            onSessionId: (sid) => {
+              if (sid) {
+                this.sessionId = sid;
+                this.persistSessionId(sid);
+              }
+            },
+          },
+        );
+      } catch (err) {
+        // Re-injection is best-effort — ignore errors
+        console.error(`[cc-main-worker] Re-injection failed: ${err}`);
+      }
+
+      // If agent replied [SILENT], produced nothing, or already sent via chat_send_message, discard
+      if (reinjectionText.trim() && !reinjectionText.includes("[SILENT]") && !this.turnChatSent) {
+        broadcastAgentToken(channel, agentId, reinjectionText);
+      }
     }
   }
 

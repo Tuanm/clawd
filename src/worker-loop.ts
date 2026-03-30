@@ -1251,6 +1251,12 @@ Please:
             worktreeBranch: this.config.worktreeBranch,
           };
 
+          // Re-injection tracking: detect if chat_send_message was called this turn.
+          // Heartbeat prompts intentionally skip chat_send_message — suppress re-injection for them.
+          const isHeartbeatTurn = prompt === "[HEARTBEAT]";
+          let turnChatSent = false;
+          let turnStreamText = "";
+
           const agentConfig: AgentConfig = {
             provider,
             model,
@@ -1264,6 +1270,7 @@ Please:
             // Agent file edits on disk require agent restart to take effect (clawdInstructionsCache).
             promptContext,
             onToken: (token) => {
+              turnStreamText += token;
               process.stdout.write(token);
             },
             onToolCall: (name, args) => {
@@ -1273,6 +1280,10 @@ Please:
             onToolResult: (name, result) => {
               this.lastActivityAt = Date.now();
               this.log(`Tool result: ${name} ${result.success ? "ok" : "err: " + result.error}`);
+              // Track whether the agent successfully sent a message (non-prefixed name in this path)
+              if (name === "chat_send_message" && result.success) {
+                turnChatSent = true;
+              }
             },
           };
 
@@ -1397,6 +1408,37 @@ Please:
             const result = await callContext.run({ agentId, channel }, () => agent!.run(prompt, sessionName));
 
             this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
+
+            // Re-injection: if agent produced substantial text but never called chat_send_message,
+            // send one ephemeral follow-up prompt so it can deliver the response.
+            // Skip for heartbeat turns and cancelled turns.
+            if (
+              !turnChatSent &&
+              turnStreamText.trim().length > 100 &&
+              !isHeartbeatTurn &&
+              !this.wasCancelledByHeartbeat
+            ) {
+              const reinjectionPrompt =
+                "[NOTICE: Your previous turn produced output but did not call `chat_send_message` to deliver it — the human cannot see what you wrote.\n\n" +
+                "If you intended to respond to the human, call `chat_send_message` with your response now.\n" +
+                "If you intentionally chose not to respond, produce only [SILENT] and do nothing else.]";
+
+              try {
+                const reinjResult = await callContext.run({ agentId, channel }, () =>
+                  agent!.run(reinjectionPrompt, sessionName),
+                );
+                // If agent replied [SILENT] or produced nothing, discard silently
+                const reinjText = reinjResult.content?.trim() ?? "";
+                if (reinjText && reinjText.includes("[SILENT]")) {
+                  this.log("Re-injection: agent replied [SILENT], discarding");
+                } else {
+                  this.log(`Re-injection: agent responded (${reinjText.length} chars)`);
+                }
+              } catch (err) {
+                // Re-injection is best-effort — ignore errors
+                this.log(`Re-injection failed: ${err}`);
+              }
+            }
 
             await agent.close();
             if (remoteWorkerBridge) remoteWorkerBridge.destroy();
