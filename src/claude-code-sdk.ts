@@ -227,7 +227,7 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     cwd: opts.cwd,
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
-    disallowedTools: opts.disallowedTools ?? ["Agent", "TodoWrite"],
+    disallowedTools: opts.disallowedTools ?? ["Agent", "TodoWrite", "claude_code"],
     agent: opts.agentName,
     agents: opts.agentDef,
     mcpServers: opts.mcpServers,
