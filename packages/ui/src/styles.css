@@ -1193,29 +1193,8 @@ body {
 }
 
 /* Sub-agents header indicator */
-.sub-agents-indicator {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sub-agents-indicator-count {
-  font-size: 11px;
-  font-weight: 700;
-  color: hsl(0 0% 60%);
-  min-width: 14px;
-  text-align: center;
-  margin-right: -3px; /* pull count tight against the icon */
-}
-
-.sub-agents-indicator-sep {
-  font-size: 11px;
-  color: hsl(0 0% 65%);
-  line-height: 1;
-  user-select: none;
-}
-
 .sub-agents-indicator-btn {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1229,6 +1208,18 @@ body {
 
 .sub-agents-indicator-btn:hover {
   opacity: 1;
+}
+
+.sub-agents-indicator-count {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  font-size: 9px;
+  font-weight: 600;
+  color: hsl(0 0% 55%);
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* Sub-agents dialog — reuses stream-dialog for header/close/overlay */
