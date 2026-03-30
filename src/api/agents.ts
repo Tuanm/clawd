@@ -28,7 +28,16 @@
 
 import type { Database } from "bun:sqlite";
 import { execSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
@@ -40,7 +49,7 @@ import {
 } from "../agent/agents/loader";
 import type { AgentFileConfig } from "../agent/agents/loader";
 import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../agent/api/provider-config";
-import { isWorktreeEnabled } from "../config-file";
+import { isWorktreeEnabled, loadConfigFile } from "../config-file";
 import { getSkillManager } from "../agent/skills/manager";
 import type { WorkerManager } from "../worker-manager";
 
@@ -291,7 +300,7 @@ const AVAILABLE_MODELS = [
 ];
 
 /** Get the effective project root for an agent — prefers worktree_path if it exists on disk */
-function getAgentProjectRoot(db: Database, channel: string, agentId: string): string | null {
+export function getAgentProjectRoot(db: Database, channel: string, agentId: string): string | null {
   const agent = db
     .query("SELECT project, worktree_path FROM channel_agents WHERE channel = ? AND agent_id = ?")
     .get(channel, agentId) as { project: string; worktree_path: string | null } | null;
@@ -381,6 +390,37 @@ export function initAgentsTable(db: Database): void {
   }
 }
 
+/**
+ * Validate that `projectPath` is inside the configured `root` (if any).
+ * Returns an error string if the path violates the restriction, or null if OK.
+ * In YOLO mode or when no root is configured, always returns null.
+ */
+function validateProjectRoot(projectPath: string): string | null {
+  const cfg = loadConfigFile();
+  if (cfg.yolo || !cfg.root) return null;
+
+  let resolvedRoot: string;
+  try {
+    resolvedRoot = realpathSync(cfg.root);
+  } catch {
+    resolvedRoot = resolve(cfg.root);
+  }
+
+  let resolvedProject: string;
+  try {
+    // Project may not exist yet — walk up until we find an existing ancestor
+    resolvedProject = realpathSync(projectPath);
+  } catch {
+    resolvedProject = resolve(projectPath);
+  }
+
+  // Must be inside root (or equal to root)
+  if (!resolvedProject.startsWith(resolvedRoot + "/") && resolvedProject !== resolvedRoot) {
+    return `Project path must be inside the configured root: ${cfg.root}`;
+  }
+  return null;
+}
+
 /** Register agent management API routes */
 export function registerAgentRoutes(
   db: Database,
@@ -462,6 +502,9 @@ export function registerAgentRoutes(
         }
 
         const agentProject = project || join(homedir(), ".clawd", "projects", channel);
+        // Validate project path against configured root (sandbox mode) — always, not just for explicit paths
+        const rootErr = validateProjectRoot(agentProject);
+        if (rootErr) return json({ ok: false, error: rootErr }, 400);
         // Auto-create default project directory
         if (!project && agentProject) {
           try {
@@ -606,6 +649,10 @@ export function registerAgentRoutes(
           params.push(model);
         }
         if (project !== undefined) {
+          if (project) {
+            const rootErr = validateProjectRoot(project);
+            if (rootErr) return json({ ok: false, error: rootErr }, 400);
+          }
           updates.push("project = ?");
           params.push(project);
         }

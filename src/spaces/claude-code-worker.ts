@@ -13,6 +13,7 @@ import { truncateToolResult, formatToolDescription, hasTmux } from "../claude-co
 import { initMemorySession, saveToMemory } from "../claude-code-memory";
 import { startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "../claude-code-tmux";
 import { runSDKQuery } from "../claude-code-sdk";
+import { spaceProjectRoots } from "../server/mcp";
 import type { Space } from "./db";
 import type { SpaceManager } from "./manager";
 
@@ -37,6 +38,8 @@ export interface ClaudeCodeWorkerConfig {
   agentPrompt?: string;
   /** Provider name to use for auth/env injection (e.g. "my-claude"). Defaults to "claude-code". */
   providerName?: string;
+  /** When false (default), sandbox restrictions apply. When true, bypasses all permission checks. */
+  yolo?: boolean;
 }
 
 // ============================================================================
@@ -98,6 +101,10 @@ export class ClaudeCodeSpaceWorker {
 
   cleanup(): void {
     if (this.tmuxMonitor) stopTmuxMonitor(this.tmuxMonitor);
+    // Unregister project root from space MCP file tools (synchronous — uses static import).
+    // Callers (.finally() in spawn-plugin/agent-mcp-tools) also delete synchronously first,
+    // so this is belt-and-suspenders for any future callers that skip the synchronous delete.
+    spaceProjectRoots.delete(this.config.space.id);
   }
 
   handleToolResult(toolName: string, toolInput: unknown, toolResponse: unknown, toolUseId?: string): void {
@@ -161,14 +168,18 @@ export class ClaudeCodeSpaceWorker {
 
     const basePrompt = agentPrompt
       ? `${agentPrompt}\n\n---\n\n`
-      : "You are an autonomous coding agent. Complete the given task using your tools (Read, Write, Edit, Bash, Grep, Glob, etc.).\n\n";
+      : "You are an autonomous coding agent. Complete the given task using your tools.\n\nFor file operations within the project, prefer the MCP file tools (mcp__clawd__file_view, mcp__clawd__file_edit, mcp__clawd__file_multi_edit, mcp__clawd__file_create, mcp__clawd__file_glob, mcp__clawd__file_grep) — they are project-root-scoped and sandbox-safe. Use Bash only for system commands that cannot be done with file tools.\n\n";
+
+    // Register project root for space MCP file tools (before runSDKQuery)
+    const effectiveProjectRoot = this.config.projectRoot || process.cwd();
+    spaceProjectRoots.set(space.id, effectiveProjectRoot);
 
     try {
       this.sessionId = await runSDKQuery(
         {
           prompt,
           model: this.config.model || "sonnet",
-          cwd: this.config.projectRoot || process.cwd(),
+          cwd: effectiveProjectRoot,
           systemPrompt: basePrompt,
           providerName: this.config.providerName,
           agentName: "clawd-worker",
@@ -179,7 +190,7 @@ export class ClaudeCodeSpaceWorker {
   mcp__clawd__complete_task(space_id="${space.id}", result="your summary here")
 
 RULES:
-- Do your work using built-in tools (Read, Edit, Bash, etc.)
+- For file operations, use MCP file tools (mcp__clawd__file_view, mcp__clawd__file_edit, mcp__clawd__file_multi_edit, mcp__clawd__file_create, mcp__clawd__file_glob, mcp__clawd__file_grep); use Bash for system commands only
 - Call complete_task ONCE when done — this is the ONLY way to signal completion
 - If the task is unclear, do your best interpretation and complete
 - Do NOT stop without calling complete_task`,
@@ -192,6 +203,7 @@ RULES:
             CLAWD_SPACE_TOKEN: this.spaceToken,
           },
           abortController: this.abortController,
+          yolo: this.config.yolo ?? false,
         },
         {
           onTextDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text),
@@ -218,7 +230,7 @@ RULES:
           {
             prompt: humanPrompt,
             model: this.config.model || "sonnet",
-            cwd: this.config.projectRoot || process.cwd(),
+            cwd: effectiveProjectRoot,
             systemPrompt: basePrompt,
             providerName: this.config.providerName,
             agentName: "clawd-worker",
@@ -229,7 +241,7 @@ RULES:
   mcp__clawd__complete_task(space_id="${space.id}", result="your summary here")
 
 RULES:
-- Do your work using built-in tools (Read, Edit, Bash, etc.)
+- For file operations, use MCP file tools (mcp__clawd__file_view, mcp__clawd__file_edit, mcp__clawd__file_multi_edit, mcp__clawd__file_create, mcp__clawd__file_glob, mcp__clawd__file_grep); use Bash for system commands only
 - Call complete_task ONCE when done — this is the ONLY way to signal completion
 - If the task is unclear, do your best interpretation and complete
 - Do NOT stop without calling complete_task`,
@@ -242,6 +254,7 @@ RULES:
               CLAWD_SPACE_TOKEN: this.spaceToken,
             },
             abortController: this.abortController,
+            yolo: this.config.yolo ?? false,
           },
           {
             onTextDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text),

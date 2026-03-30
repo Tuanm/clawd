@@ -13,15 +13,18 @@ import type { SpaceWorkerManager } from "./worker";
 let _spaceManager: SpaceManager | null = null;
 let _spaceWorkerManager: SpaceWorkerManager | null = null;
 let _chatApiUrl: string = "http://localhost:3456";
+let _yolo: boolean = false;
 
 export function setAgentMcpInfra(
   spaceManager: SpaceManager,
   spaceWorkerManager: SpaceWorkerManager,
   chatApiUrl: string,
+  yolo: boolean = false,
 ): void {
   _spaceManager = spaceManager;
   _spaceWorkerManager = spaceWorkerManager;
   _chatApiUrl = chatApiUrl;
+  _yolo = yolo;
 }
 
 // ============================================================================
@@ -160,7 +163,7 @@ export async function executeAgentToolCall(
       const { ClaudeCodeSpaceWorker, registerClaudeCodeWorker, unregisterClaudeCodeWorker } = await import(
         "./claude-code-worker"
       );
-      const { spaceCompleteCallbacks, spaceAuthTokens } = await import("../server/mcp");
+      const { spaceCompleteCallbacks, spaceAuthTokens, spaceProjectRoots } = await import("../server/mcp");
       const { getOrRegisterAgent } = await import("../server/database");
       const { timedFetch } = await import("../utils/timed-fetch");
       const { loadAgentFile } = await import("../agent/agents/loader");
@@ -275,6 +278,7 @@ export async function executeAgentToolCall(
         spaceManager: _spaceManager!,
         agentPrompt,
         providerName: parentProviderName,
+        yolo: _yolo,
         resolve: (summary: string) => {
           if (ccSettled) return;
           ccSettled = true;
@@ -400,6 +404,7 @@ export async function executeAgentToolCall(
             clearTimeout(timeoutTimer);
             spaceCompleteCallbacks.delete(space.id);
             spaceAuthTokens.delete(space.id);
+            spaceProjectRoots.delete(space.id);
             unregisterClaudeCodeWorker(space.id);
             ccWorker.cleanup();
           });
@@ -452,7 +457,11 @@ export async function executeAgentToolCall(
       if (!id) return textResult(JSON.stringify({ ok: false, error: "Missing agent_id" }));
 
       const { getClaudeCodeWorker, unregisterClaudeCodeWorker } = await import("./claude-code-worker");
-      const { spaceCompleteCallbacks, spaceAuthTokens } = await import("../server/mcp");
+      const {
+        spaceCompleteCallbacks,
+        spaceAuthTokens,
+        spaceProjectRoots: stopSpaceRoots,
+      } = await import("../server/mcp");
 
       const ccw = getClaudeCodeWorker(id);
       if (ccw) {
@@ -460,6 +469,7 @@ export async function executeAgentToolCall(
         unregisterClaudeCodeWorker(id);
         spaceCompleteCallbacks.delete(id);
         spaceAuthTokens.delete(id);
+        stopSpaceRoots.delete(id);
       }
       _spaceManager.failSpace(id, reason);
 

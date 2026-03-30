@@ -4,7 +4,6 @@
  * Registers file read/write/search tools into the shared tool registry.
  */
 
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { isSandboxReady, registerTool, resolveSafePath, runInSandbox, validatePath } from "./registry";
 
@@ -229,12 +228,10 @@ registerTool(
           error: `old_str found ${count} times, must be unique. Use replace_all=true to replace all occurrences.`,
         };
 
-      // Apply replacement
-      if (replace_all) {
-        content = content.split(old_str).join(new_str);
-      } else {
-        content = content.replace(old_str, new_str);
-      }
+      // Apply replacement.
+      // Use split/join for both paths to avoid String.prototype.replace $ special character corruption.
+      // ($& = matched, $1 = group, etc. would silently corrupt new_str values containing $)
+      content = content.split(old_str).join(new_str);
 
       // Write file
       if (isSandboxReady()) {
@@ -325,9 +322,10 @@ registerTool(
           return { success: false, output: "", error: `Edit ${i + 1}: old_str found ${count} times, must be unique` };
       }
 
-      // Apply all edits sequentially
+      // Apply all edits sequentially.
+      // Use split/join (NOT String.prototype.replace) to avoid $ special character corruption (Bug 6).
       for (const { old_str, new_str } of edits) {
-        content = content.replace(old_str, new_str);
+        content = content.split(old_str).join(new_str);
       }
 
       // Write file
@@ -419,9 +417,92 @@ registerTool(
 // Tool: Grep
 // ============================================================================
 
+/** Maps rg-compatible type names to Bun.Glob patterns */
+const GREP_TYPE_GLOB: Record<string, string> = {
+  ts: "**/*.{ts,tsx}",
+  js: "**/*.{js,jsx,mjs,cjs}",
+  py: "**/*.py",
+  python: "**/*.py",
+  rust: "**/*.rs",
+  go: "**/*.go",
+  java: "**/*.java",
+  c: "**/*.{c,h}",
+  cpp: "**/*.{cpp,cc,cxx,hxx,hpp}",
+  cs: "**/*.cs",
+  sh: "**/*.{sh,bash,zsh,fish}",
+  json: "**/*.json",
+  yaml: "**/*.{yaml,yml}",
+  toml: "**/*.toml",
+  md: "**/*.{md,markdown}",
+  html: "**/*.{html,htm}",
+  css: "**/*.{css,scss,sass,less}",
+  sql: "**/*.sql",
+  rb: "**/*.rb",
+  php: "**/*.php",
+  swift: "**/*.swift",
+  kt: "**/*.{kt,kts}",
+  xml: "**/*.xml",
+  txt: "**/*.txt",
+};
+
+/** Known binary extensions — skipped without reading */
+const GREP_BINARY_EXTS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "bmp",
+  "ico",
+  "webp",
+  "tiff",
+  "avif",
+  "pdf",
+  "zip",
+  "tar",
+  "gz",
+  "bz2",
+  "xz",
+  "7z",
+  "rar",
+  "br",
+  "zst",
+  "bin",
+  "exe",
+  "dll",
+  "so",
+  "dylib",
+  "a",
+  "o",
+  "lib",
+  "wasm",
+  "woff",
+  "woff2",
+  "ttf",
+  "otf",
+  "eot",
+  "mp3",
+  "mp4",
+  "webm",
+  "avi",
+  "mov",
+  "mkv",
+  "wav",
+  "ogg",
+  "flac",
+  "opus",
+  "class",
+  "jar",
+  "pyc",
+  "pyo",
+  "pyd",
+  "db",
+  "sqlite",
+  "sqlite3",
+]);
+
 registerTool(
   "grep",
-  "Search for patterns in files using ripgrep. Output modes: 'content' shows matching lines, 'files_with_matches' shows file paths only (default), 'count' shows match counts.",
+  "Search for patterns in files. Pure TypeScript/Bun — no external binaries required. Output modes: 'content' shows matching lines, 'files_with_matches' shows file paths only (default), 'count' shows match counts.",
   {
     pattern: { type: "string", description: "Regex pattern to search for" },
     path: { type: "string", description: "Directory or file to search (default: project root)" },
@@ -434,129 +515,114 @@ registerTool(
     context: { type: "number", description: "Lines of context around matches (for content mode)" },
     head_limit: { type: "number", description: "Limit output to first N results (default: unlimited)" },
     case_insensitive: { type: "boolean", description: "Case-insensitive search" },
-    multiline: { type: "boolean", description: "Enable multiline matching (patterns can span lines)" },
+    multiline: { type: "boolean", description: "Enable dotAll mode — '.' matches newlines (for multiline patterns)" },
   },
   ["pattern"],
   async ({ pattern, path = ".", glob, type, output_mode, context, head_limit, case_insensitive, multiline }) => {
     const resolvedPath = resolveSafePath(path);
     const mode = output_mode || "files_with_matches";
+    const contextLines = Math.min(Math.max(0, context ?? 0), 20);
 
-    const args = ["--color=never"];
-    if (mode === "files_with_matches") args.push("-l");
-    else if (mode === "count") args.push("-c");
-    else args.push("--line-number");
-    if (glob) args.push("-g", glob);
-    if (type) args.push("-t", type);
-    if (context && mode === "content") args.push("-C", String(context));
-    if (case_insensitive) args.push("-i");
-    if (multiline) args.push("-U", "--multiline-dotall");
-    args.push(pattern, resolvedPath);
-
-    // Use sandbox for filesystem isolation
-    if (isSandboxReady()) {
-      const result = await runInSandbox("rg", args, { timeout: 30000 });
-
-      // Check if rg is not installed (sandbox returns code 1 + "execvp" in stderr)
-      if (result.stderr.includes("execvp") || result.stderr.includes("No such file")) {
-        // Fallback to grep inside sandbox
-        const grepArgs = ["-rn", "--color=never"];
-        if (glob) {
-          // Convert rg glob to grep --include (e.g., "*.ts" -> "--include=*.ts")
-          grepArgs.push(`--include=${glob}`);
-        }
-        if (context) grepArgs.push("-C", String(context));
-        grepArgs.push(pattern, resolvedPath);
-        const grepResult = await runInSandbox("grep", grepArgs, { timeout: 30000 });
-        return {
-          success: grepResult.code === 0 || grepResult.code === 1,
-          output: grepResult.stdout.trim() || "(no matches)",
-        };
-      }
-
-      // rg returns 1 for no matches, which is not an error
-      let output = result.stdout.trim() || "(no matches)";
-      if (head_limit && head_limit > 0 && output !== "(no matches)") {
-        const lines = output.split("\n");
-        if (lines.length > head_limit) {
-          output = lines.slice(0, head_limit).join("\n") + `\n... (${lines.length - head_limit} more)`;
-        }
-      }
-      return { success: result.code === 0 || result.code === 1, output };
-    }
-
-    // Fallback: path validation + direct execution
     const pathError = validatePath(resolvedPath, "grep");
-    if (pathError) {
-      return { success: false, output: "", error: pathError };
+    if (pathError) return { success: false, output: "", error: pathError };
+
+    // Build regex flags: m=multiline anchors, i=case-insensitive, s=dotAll
+    const flags = `m${case_insensitive ? "i" : ""}${multiline ? "s" : ""}`;
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern, flags);
+    } catch (e: any) {
+      return { success: false, output: "", error: `Invalid regex: ${e.message}` };
     }
 
-    return new Promise((resolve) => {
-      const proc = spawn("rg", args);
-      let timedOut = false;
+    // Collect files
+    const filesToSearch: string[] = [];
+    const pathStat = statSync(resolvedPath);
 
-      const timeoutId = setTimeout(() => {
-        timedOut = true;
-        proc.kill("SIGKILL");
-      }, 30000);
+    if (pathStat.isFile()) {
+      filesToSearch.push(resolvedPath);
+    } else if (pathStat.isDirectory()) {
+      let scanPattern = "**/*";
+      if (glob) {
+        scanPattern = glob.includes("/") ? glob : `**/${glob}`;
+      } else if (type) {
+        scanPattern = GREP_TYPE_GLOB[type] ?? `**/*.${type}`;
+      }
+      const bunGlob = new Bun.Glob(scanPattern);
+      for await (const file of bunGlob.scan({ cwd: resolvedPath, absolute: true, onlyFiles: true })) {
+        filesToSearch.push(file);
+        if (filesToSearch.length >= 100_000) break;
+      }
+    }
 
-      let output = "";
-      proc.stdout?.on("data", (data) => {
-        output += data.toString();
-      });
-      proc.stderr?.on("data", (data) => {
-        output += data.toString();
-      });
+    const output: string[] = [];
+    let totalHits = 0;
+    let limitReached = false;
 
-      proc.on("close", (code) => {
-        clearTimeout(timeoutId);
-        if (timedOut) {
-          resolve({
-            success: false,
-            output: output.trim(),
-            error: "TIMEOUT: Search exceeded 30s. Try a more specific pattern or smaller directory.",
-          });
-          return;
-        }
-        resolve({
-          success: code === 0 || code === 1, // 1 = no matches
-          output: output.trim() || "(no matches)",
-        });
-      });
+    outer: for (const filePath of filesToSearch) {
+      if (limitReached) break;
 
-      proc.on("error", () => {
-        clearTimeout(timeoutId);
-        // Fallback to grep if rg not available
-        const grepFallbackArgs = ["-rn", pattern, resolvedPath];
-        if (glob) grepFallbackArgs.splice(1, 0, `--include=${glob}`);
-        const grepProc = spawn("grep", grepFallbackArgs);
-        let grepTimedOut = false;
+      const dotIdx = filePath.lastIndexOf(".");
+      const ext = dotIdx >= 0 ? filePath.slice(dotIdx + 1).toLowerCase() : "";
+      if (GREP_BINARY_EXTS.has(ext)) continue;
 
-        const grepTimeoutId = setTimeout(() => {
-          grepTimedOut = true;
-          grepProc.kill("SIGKILL");
-        }, 30000);
+      let text: string;
+      try {
+        text = await Bun.file(filePath).text();
+      } catch {
+        continue;
+      }
 
-        let grepOutput = "";
-        grepProc.stdout?.on("data", (data) => {
-          grepOutput += data.toString();
-        });
-        grepProc.on("close", (code) => {
-          clearTimeout(grepTimeoutId);
-          if (grepTimedOut) {
-            resolve({
-              success: false,
-              output: grepOutput.trim(),
-              error: "TIMEOUT: Search exceeded 30s.",
-            });
-            return;
+      // Quick binary check: null bytes in first 512 chars
+      const sampleLen = Math.min(text.length, 512);
+      for (let i = 0; i < sampleLen; i++) {
+        if (text.charCodeAt(i) === 0) continue outer;
+      }
+
+      const lines = text.split("\n");
+      const matchIndices: number[] = [];
+      for (let i = 0; i < lines.length; i++) {
+        regex.lastIndex = 0;
+        if (regex.test(lines[i])) matchIndices.push(i);
+      }
+      if (matchIndices.length === 0) continue;
+
+      if (mode === "files_with_matches") {
+        output.push(filePath);
+        totalHits++;
+        if (head_limit && totalHits >= head_limit) limitReached = true;
+      } else if (mode === "count") {
+        output.push(`${filePath}:${matchIndices.length}`);
+        totalHits++;
+        if (head_limit && totalHits >= head_limit) limitReached = true;
+      } else {
+        const shown = new Set<number>();
+        for (const idx of matchIndices) {
+          for (let j = Math.max(0, idx - contextLines); j <= Math.min(lines.length - 1, idx + contextLines); j++) {
+            shown.add(j);
           }
-          resolve({
-            success: code === 0 || code === 1,
-            output: grepOutput.trim() || "(no matches)",
-          });
-        });
-      });
-    });
+        }
+        const sorted = [...shown].sort((a, b) => a - b);
+        let prev = -2;
+        for (const i of sorted) {
+          if (i > prev + 1 && prev >= 0) output.push("--");
+          const isMatch = matchIndices.includes(i);
+          const sep = isMatch ? ":" : "-";
+          output.push(`${filePath}${sep}${i + 1}${sep}${lines[i]}`);
+          prev = i;
+          totalHits++;
+          if (head_limit && totalHits >= head_limit) {
+            limitReached = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (output.length === 0) return { success: true, output: "(no matches)" };
+    let result = output.join("\n");
+    if (limitReached) result += `\n... (limited to ${head_limit} results)`;
+    return { success: true, output: result };
   },
 );
 
@@ -576,66 +642,32 @@ registerTool(
   async ({ pattern, path = ".", head_limit }) => {
     const resolvedPath = resolveSafePath(path);
 
-    // Use sandbox for filesystem isolation
-    if (isSandboxReady()) {
-      const result = await runInSandbox("find", [resolvedPath, "-name", pattern.replace("**/", "")], {
-        timeout: 30000,
-      });
-      let output = result.stdout.trim() || "(no files found)";
-      if (head_limit && head_limit > 0 && output !== "(no files found)") {
-        const lines = output.split("\n");
-        if (lines.length > head_limit) {
-          output = lines.slice(0, head_limit).join("\n") + `\n... (${lines.length - head_limit} more files)`;
-        }
-      }
-      return { success: true, output };
-    }
-
-    // Fallback: path validation + direct execution
+    // Validate path first (Bug 5: glob was skipping validatePath in sandbox mode, same as Bug 4/grep)
     const pathError = validatePath(resolvedPath, "glob");
     if (pathError) {
       return { success: false, output: "", error: pathError };
     }
 
-    return new Promise((resolve) => {
-      const proc = spawn("find", [resolvedPath, "-name", pattern.replace("**/", "")]);
-      let timedOut = false;
-
-      const timeoutId = setTimeout(() => {
-        timedOut = true;
-        proc.kill("SIGKILL");
-      }, 30000);
-
-      let output = "";
-      proc.stdout?.on("data", (data) => {
-        output += data.toString();
-      });
-
-      proc.on("close", () => {
-        clearTimeout(timeoutId);
-        if (timedOut) {
-          resolve({
-            success: false,
-            output: output.trim(),
-            error: "TIMEOUT: Search exceeded 30s. Try a smaller directory.",
-          });
-          return;
-        }
-        let result = output.trim() || "(no files found)";
-        if (head_limit && head_limit > 0 && result !== "(no files found)") {
-          const lines = result.split("\n");
-          if (lines.length > head_limit) {
-            result = lines.slice(0, head_limit).join("\n") + `\n... (${lines.length - head_limit} more files)`;
-          }
-        }
-        resolve({ success: true, output: result });
-      });
-
-      proc.on("error", (err) => {
-        clearTimeout(timeoutId);
-        resolve({ success: false, output: "", error: err.message });
-      });
-    });
+    // Use Bun.Glob for correct full-pattern glob support (Bug 1 fix).
+    // The old "find -name pattern.replace(**/, '')" approach was broken:
+    // "src/**/*.ts" → "find {root} -name *.ts" (dropped the src/ prefix constraint).
+    // Bun.Glob handles the full pattern correctly with zero external dependencies.
+    try {
+      const glob = new Bun.Glob(pattern);
+      const results: string[] = [];
+      for await (const file of glob.scan({ cwd: resolvedPath, absolute: true, onlyFiles: true })) {
+        results.push(file);
+        if (head_limit && head_limit > 0 && results.length >= head_limit) break;
+      }
+      if (results.length === 0) return { success: true, output: "(no files found)" };
+      let output = results.join("\n");
+      if (head_limit && head_limit > 0 && results.length >= head_limit) {
+        output += `\n... (limited to ${head_limit} results)`;
+      }
+      return { success: true, output };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
   },
 );
 

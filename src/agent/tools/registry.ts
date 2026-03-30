@@ -8,7 +8,7 @@
  * - Shared utilities (path safety, shell helpers, chat API state, etc.)
  */
 
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { ToolDefinition } from "../api/client";
 import {
   checkSandboxBeforeExec,
@@ -202,16 +202,30 @@ export function isPathAllowed(targetPath: string): boolean {
   const resolved = resolve(targetPath);
   const projectRoot = getSandboxProjectRoot();
   const { tmpdir } = require("node:os");
-  const allowedPrefixes = [projectRoot, "/tmp", tmpdir()];
-  return allowedPrefixes.some((prefix) => resolved === prefix || resolved.startsWith(`${prefix}/`));
+  const { sep } = require("node:path");
+  const tmp = tmpdir();
+  const allowedPrefixes = [projectRoot, tmp];
+  return allowedPrefixes.some(
+    (prefix) => resolved === prefix || resolved.startsWith(prefix + sep) || resolved.startsWith(prefix + "/"),
+  );
 }
 
 export function validatePath(targetPath: string, operation: string): string | null {
+  // Block ~/.clawd/config.json in all modes (protects Claw'd credentials and configuration)
+  const { homedir } = require("node:os");
+  const configFile = join(homedir(), ".clawd", "config.json");
+  if (resolve(targetPath) === configFile) {
+    return "Access to ~/.clawd/config.json is blocked. This file contains sensitive configuration and credentials.";
+  }
+
+  // Remaining restrictions only apply in sandbox mode (YOLO = fully unrestricted)
+  if (!isSandboxEnabled()) return null;
+
   if (!isPathAllowed(targetPath)) {
     const projectRoot = getSandboxProjectRoot();
     return (
       `SANDBOX RESTRICTION: You do not have permission to ${operation} "${targetPath}". ` +
-      `You can only access files within: ${projectRoot} or /tmp. ` +
+      `You can only access files within: ${projectRoot} or the system temp directory. ` +
       `This is a security restriction - do not attempt to bypass it.`
     );
   }

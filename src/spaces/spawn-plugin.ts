@@ -10,7 +10,7 @@ import { resolveProviderBaseType } from "../agent/api/provider-config";
 import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
 import type { ToolResult } from "../agent/tools/tools";
 import { getOrRegisterAgent } from "../server/database";
-import { spaceAuthTokens, spaceCompleteCallbacks } from "../server/mcp";
+import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots } from "../server/mcp";
 import { timedFetch } from "../utils/timed-fetch";
 import {
   ClaudeCodeSpaceWorker,
@@ -37,6 +37,8 @@ export interface SpawnPluginConfig {
   agentId: string;
   /** Chat API URL */
   apiUrl: string;
+  /** YOLO mode — bypass sandboxing for sub-agents (default: false) */
+  yolo?: boolean;
 }
 
 export interface TrackedSpace {
@@ -240,6 +242,7 @@ export function createSpawnAgentPlugin(
               unregisterClaudeCodeWorker(id);
               spaceCompleteCallbacks.delete(id);
               spaceAuthTokens.delete(id);
+              spaceProjectRoots.delete(id);
             } else {
               spaceWorkerManager.stopSpaceWorker(id);
             }
@@ -390,6 +393,7 @@ export function createSpawnAgentPlugin(
           onComplete: () => unregisterClaudeCodeWorker(space.id),
           agentPrompt: agentFileConfig?.systemPrompt || undefined,
           providerName: effectiveProvider,
+          yolo: config.yolo ?? false,
         });
         registerClaudeCodeWorker(space.id, ccWorker);
         spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
@@ -444,6 +448,7 @@ export function createSpawnAgentPlugin(
               clearTimeout(timeoutTimer);
               spaceCompleteCallbacks.delete(space.id);
               spaceAuthTokens.delete(space.id);
+              spaceProjectRoots.delete(space.id);
               unregisterClaudeCodeWorker(space.id);
               ccWorker.cleanup();
             });

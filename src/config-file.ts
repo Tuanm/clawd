@@ -16,6 +16,14 @@ export interface ConfigFile {
   port?: number;
   debug?: boolean;
   yolo?: boolean;
+  /**
+   * Restrict new agent project paths to subdirectories of this folder.
+   * When set, agents can only be created with a `project` path inside this root.
+   * Applies in non-YOLO (sandbox) mode only.
+   *
+   * Example: `"root": "/home/user/projects"`
+   */
+  root?: string;
   contextMode?: boolean;
   dataDir?: string;
   uiDir?: string;
