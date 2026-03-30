@@ -357,7 +357,7 @@ export async function executeAgentToolCall(
                 const { getPendingMessages } = await import("../server/routes/messages");
                 const res = getPendingMessages(space.space_channel, undefined, true, 3);
                 const msgs = ((res as any).messages || []).filter((m: any) => m.agent_id === subAgentId && m.text);
-                if (msgs.length > 0) lastMsg = msgs[msgs.length - 1].text.slice(0, 500);
+                if (msgs.length > 0) lastMsg = msgs[msgs.length - 1].text;
               } catch {}
               const errorMsg = lastMsg
                 ? `Sub-agent exited without completing. Last message: ${lastMsg}`
@@ -368,7 +368,7 @@ export async function executeAgentToolCall(
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   channel,
-                  text: `Sub-agent failed: ${taskName} — ${errorMsg.slice(0, 200)}`,
+                  text: `Sub-agent failed: ${taskName} — ${errorMsg}`,
                   user: subAgentId,
                   agent_id: subAgentId,
                 }),
@@ -385,7 +385,7 @@ export async function executeAgentToolCall(
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   channel,
-                  text: `Sub-agent error: ${taskName} — ${(err.message || "").slice(0, 200)}`,
+                  text: `Sub-agent error: ${taskName} — ${err.message || ""}`,
                   user: subAgentId,
                   agent_id: subAgentId,
                 }),
