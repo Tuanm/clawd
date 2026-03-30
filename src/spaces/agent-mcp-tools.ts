@@ -363,12 +363,15 @@ export async function executeAgentToolCall(
                 ? `Sub-agent exited without completing. Last message: ${lastMsg}`
                 : "Sub-agent exited without completing";
               _spaceManager!.failSpace(space.id, errorMsg);
+              const chatText = lastMsg
+                ? `Sub-agent failed: ${taskName}\n\nLast message:\n${lastMsg}`
+                : `Sub-agent failed: ${taskName} — exited without completing`;
               timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   channel,
-                  text: `Sub-agent failed: ${taskName} — ${errorMsg}`,
+                  text: chatText,
                   user: subAgentId,
                   agent_id: subAgentId,
                 }),
