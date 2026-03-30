@@ -348,6 +348,18 @@ async function pollPending(): Promise<PollResult> {
   }
 }
 
+// Check if this agent sent any messages to the channel after `sinceTs`
+async function didAgentSendMessage(sinceTs: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${CHAT_API_URL}/api/messages.pending?channel=${CHANNEL}&include_bot=true&limit=50`);
+    const data = (await res.json()) as any;
+    if (!data.ok || !Array.isArray(data.messages)) return true; // Default true to avoid false re-injections
+    return data.messages.some((m: Message) => m.agent_id === AGENT_ID && m.ts > sinceTs);
+  } catch {
+    return true; // Default true to avoid false re-injections
+  }
+}
+
 // Send a message to the channel (for error reporting)
 async function sendMessage(text: string): Promise<boolean> {
   try {
@@ -818,12 +830,32 @@ async function main() {
             ? buildContinuationPrompt(result.seenNotProcessed)
             : buildPrompt(result.pending);
 
+          // Record timestamp before execution to detect if agent sent a message
+          const execStartTs = (Date.now() / 1000).toFixed(6);
+
           const execResult = await executePrompt(prompt);
 
           if (!execResult.success) {
             console.error("[Claw'd Worker] Prompt execution failed");
             // Send error message to channel
             await sendMessage(`[ERROR] Whoops!`);
+          } else {
+            // Re-injection: if agent produced substantial output but sent no message,
+            // send one ephemeral follow-up so it can deliver the response.
+            const stdoutText = execResult.output || "";
+            if (stdoutText.trim().length > 100 && !(await didAgentSendMessage(execStartTs))) {
+              console.log("[Claw'd Worker] Re-injection: agent produced output but sent no message");
+              const reinjectionPrompt =
+                "[NOTICE: Your previous turn produced output but did not call `chat_send_message` to deliver it — the human cannot see what you wrote.\n\n" +
+                "If you intended to respond to the human, call `chat_send_message` with your response now.\n" +
+                "If you intentionally chose not to respond, produce only [SILENT] and do nothing else.]";
+              const reinjResult = await executePrompt(reinjectionPrompt);
+              // stdout from re-injection subprocess contains agent's streaming text
+              const reinjText = reinjResult.output?.trim() ?? "";
+              if (reinjText.includes("[SILENT]")) {
+                console.log("[Claw'd Worker] Re-injection: agent replied [SILENT], discarding");
+              }
+            }
           }
         } finally {
           isProcessing = false;
