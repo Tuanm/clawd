@@ -32,8 +32,8 @@ interface Props {
 function PlusIcon() {
   return (
     <svg
-      width="14"
-      height="14"
+      width="20"
+      height="20"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -46,51 +46,22 @@ function PlusIcon() {
   );
 }
 
-function SkillIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26" />
-    </svg>
-  );
-}
-
-function ChevronIcon({ open }: { open: boolean }) {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      style={{ transition: "transform 0.15s", transform: open ? "rotate(90deg)" : "rotate(0deg)" }}
-    >
-      <polyline points="9 18 15 12 9 6" />
-    </svg>
-  );
-}
-
 export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
-  const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [cardLoading, setCardLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Collapsible sections
-  const [globalOpen, setGlobalOpen] = useState(true);
-  const [projectOpen, setProjectOpen] = useState(true);
-
-  // Editor state
+  // Skill detail dialog
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [isNew, setIsNew] = useState(false);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editTriggers, setEditTriggers] = useState("");
   const [editArgumentHint, setEditArgumentHint] = useState("");
   const [editContent, setEditContent] = useState("");
-  const [editScope, setEditScope] = useState<"project" | "global">("project");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -114,39 +85,35 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
     if (!isOpen) {
       setSelectedAgentId(null);
       setSkills([]);
-      setExpandedSkill(null);
-      setIsCreating(false);
+      setDialogOpen(false);
       setError(null);
-      clearEditor();
     }
   }, [isOpen]);
 
   useEffect(() => {
     if (!selectedAgentId) {
       setSkills([]);
-      setExpandedSkill(null);
-      setIsCreating(false);
+      setDialogOpen(false);
       return;
     }
     loadSkills(selectedAgentId);
-    setExpandedSkill(null);
-    setIsCreating(false);
   }, [selectedAgentId]);
 
   useEffect(() => {
-    if (isCreating) {
+    if (dialogOpen && isNew) {
       setTimeout(() => nameInputRef.current?.focus(), 100);
     }
-  }, [isCreating]);
+  }, [dialogOpen, isNew]);
 
-  const clearEditor = () => {
-    setEditName("");
-    setEditDescription("");
-    setEditTriggers("");
-    setEditArgumentHint("");
-    setEditContent("");
-    setEditScope("project");
-  };
+  // Close detail dialog on Escape
+  useEffect(() => {
+    if (!dialogOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !saving && !deleting) closeDetailDialog();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [dialogOpen, saving, deleting]);
 
   const loadSkills = useCallback(
     async (agentId: string) => {
@@ -157,8 +124,12 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
           `${API_URL}/api/app.skills.list?channel=${encodeURIComponent(channel)}&agent_id=${encodeURIComponent(agentId)}`,
         );
         const data = await res.json();
-        if (data.ok) setSkills(data.skills);
-        else setError(data.error || "Failed to load skills");
+        if (data.ok) {
+          // Only show project-scoped skills in this dialog
+          setSkills((data.skills as Skill[]).filter((s) => s.source === "project"));
+        } else {
+          setError(data.error || "Failed to load skills");
+        }
       } catch (err) {
         setError(String(err));
       } finally {
@@ -168,21 +139,13 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
     [channel],
   );
 
-  const handleToggleSkill = useCallback(
+  const handleCardClick = useCallback(
     async (skill: Skill) => {
-      if (expandedSkill === skill.name) {
-        setExpandedSkill(null);
-        clearEditor();
-        return;
-      }
-      setIsCreating(false);
+      if (cardLoading) return;
       setError(null);
+      setCardLoading(true);
       try {
-        const params = new URLSearchParams({ name: skill.name });
-        if (selectedAgentId) {
-          params.set("channel", channel);
-          params.set("agent_id", selectedAgentId);
-        }
+        const params = new URLSearchParams({ name: skill.name, channel, agent_id: selectedAgentId! });
         const res = await authFetch(`${API_URL}/api/app.skills.get?${params}`);
         const data = await res.json();
         if (data.ok && data.skill) {
@@ -192,25 +155,39 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
           setEditTriggers(Array.isArray(s.triggers) ? s.triggers.join(", ") : "");
           setEditArgumentHint(s.argumentHint || "");
           setEditContent(s.content || "");
-          setEditScope(s.source === "global" ? "global" : "project");
-          setExpandedSkill(skill.name);
+          setIsNew(false);
+          setDialogOpen(true);
+        } else {
+          setError(data.error || "Failed to load skill");
         }
       } catch (err) {
         setError(String(err));
+      } finally {
+        setCardLoading(false);
       }
     },
-    [channel, selectedAgentId, expandedSkill],
+    [channel, selectedAgentId, cardLoading],
   );
 
-  const handleCreateNew = useCallback(() => {
-    setExpandedSkill(null);
-    clearEditor();
-    setIsCreating(true);
+  const handleNewClick = useCallback(() => {
+    setEditName("");
+    setEditDescription("");
+    setEditTriggers("");
+    setEditArgumentHint("");
+    setEditContent("# Instructions\n\nSkill instructions here...\n");
+    setIsNew(true);
+    setDialogOpen(true);
     setError(null);
   }, []);
 
+  const closeDetailDialog = useCallback(() => {
+    if (saving || deleting) return;
+    setDialogOpen(false);
+    setError(null);
+  }, [saving, deleting]);
+
   const handleSave = useCallback(async () => {
-    if (!editName.trim()) return;
+    if (!editName.trim() || !selectedAgentId) return;
     setSaving(true);
     setError(null);
     try {
@@ -219,13 +196,11 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
         description: editDescription.trim(),
         triggers: editTriggers,
         content: editContent,
-        scope: editScope,
+        scope: "project",
+        channel,
+        agent_id: selectedAgentId,
       };
       if (editArgumentHint.trim()) body.argument_hint = editArgumentHint.trim();
-      if (selectedAgentId) {
-        body.channel = channel;
-        body.agent_id = selectedAgentId;
-      }
       const res = await authFetch(`${API_URL}/api/app.skills.save`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -233,11 +208,8 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
       });
       const data = await res.json();
       if (data.ok) {
-        setIsCreating(false);
-        if (selectedAgentId) {
-          await loadSkills(selectedAgentId);
-          setExpandedSkill(editName.trim());
-        }
+        setDialogOpen(false);
+        await loadSkills(selectedAgentId);
       } else {
         setError(data.error || "Failed to save skill");
       }
@@ -246,34 +218,19 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [
-    channel,
-    selectedAgentId,
-    editName,
-    editDescription,
-    editTriggers,
-    editArgumentHint,
-    editContent,
-    editScope,
-    loadSkills,
-  ]);
+  }, [channel, selectedAgentId, editName, editDescription, editTriggers, editArgumentHint, editContent, loadSkills]);
 
   const handleDelete = useCallback(async () => {
-    if (!expandedSkill) return;
+    if (!editName || !selectedAgentId || !confirm(`Delete skill "${editName}"?`)) return;
     setDeleting(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ name: expandedSkill });
-      if (selectedAgentId) {
-        params.set("channel", channel);
-        params.set("agent_id", selectedAgentId);
-      }
+      const params = new URLSearchParams({ name: editName, channel, agent_id: selectedAgentId });
       const res = await authFetch(`${API_URL}/api/app.skills.delete?${params}`, { method: "DELETE" });
       const data = await res.json();
       if (data.ok) {
-        setExpandedSkill(null);
-        clearEditor();
-        if (selectedAgentId) await loadSkills(selectedAgentId);
+        setDialogOpen(false);
+        await loadSkills(selectedAgentId);
       } else {
         setError(data.error || "Failed to delete skill");
       }
@@ -282,97 +239,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
     } finally {
       setDeleting(false);
     }
-  }, [channel, selectedAgentId, expandedSkill, loadSkills]);
-
-  const getSavePath = () => {
-    if (editScope === "global") return `~/.clawd/skills/${editName || "<name>"}/SKILL.md`;
-    const agent = agents.find((a) => a.agent_id === selectedAgentId);
-    const project = agent?.project || "<project>";
-    return `${project}/.clawd/skills/${editName || "<name>"}/SKILL.md`;
-  };
-
-  const globalSkills = skills.filter((s) => s.source === "global");
-  const projectSkills = skills.filter((s) => s.source === "project");
-
-  const renderEditorFields = (skillName: string | null) => (
-    <div className="skills-editor-fields skills-accordion-editor">
-      {/* Skill Name only shown for new skills — existing skills show name in the row header */}
-      {skillName === null && (
-        <>
-          <label className="skills-field-label">Skill Name</label>
-          <input
-            ref={nameInputRef}
-            type="text"
-            className="agent-field-input"
-            placeholder="kebab-case-name"
-            value={editName}
-            onChange={(e) => setEditName(e.target.value)}
-          />
-        </>
-      )}
-      <label className="skills-field-label">Description</label>
-      <input
-        type="text"
-        className="agent-field-input"
-        placeholder="Brief description (<200 chars)"
-        value={editDescription}
-        onChange={(e) => setEditDescription(e.target.value)}
-        maxLength={200}
-      />
-      <label className="skills-field-label">Triggers / Argument Hints</label>
-      <input
-        type="text"
-        className="agent-field-input"
-        placeholder="keyword1, keyword2, [arg-hint]"
-        value={editTriggers}
-        onChange={(e) => setEditTriggers(e.target.value)}
-      />
-      <label className="skills-field-label">Content</label>
-      <textarea
-        className="agent-field-input skills-content-input"
-        placeholder="Skill instructions (markdown)..."
-        value={editContent}
-        onChange={(e) => setEditContent(e.target.value)}
-      />
-      <div className="skills-scope-row">
-        <label className="skills-scope-label">
-          <input
-            type="radio"
-            name={`skills-scope-${skillName ?? "new"}`}
-            value="project"
-            checked={editScope === "project"}
-            onChange={() => setEditScope("project")}
-          />
-          <span>Project</span>
-        </label>
-        <label className="skills-scope-label">
-          <input
-            type="radio"
-            name={`skills-scope-${skillName ?? "new"}`}
-            value="global"
-            checked={editScope === "global"}
-            onChange={() => setEditScope("global")}
-          />
-          <span>Global</span>
-        </label>
-      </div>
-      <div className="skills-save-path">{getSavePath()}</div>
-      <div className="agent-buttons">
-        <button
-          className="agent-action-btn agent-action-btn--accent"
-          onClick={handleSave}
-          disabled={!editName.trim() || saving}
-        >
-          {saving ? "Saving..." : "Save"}
-        </button>
-        {skillName !== null && (
-          <button className="agent-action-btn agent-action-btn--danger" onClick={handleDelete} disabled={deleting}>
-            {deleting ? "Deleting..." : "Delete"}
-          </button>
-        )}
-      </div>
-    </div>
-  );
+  }, [channel, selectedAgentId, editName, loadSkills]);
 
   if (!isOpen) return null;
 
@@ -389,7 +256,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
           </button>
         </div>
 
-        {/* Agent avatar bar + plus button */}
+        {/* Agent avatar bar */}
         <div className="stream-agent-bar">
           {agents.map((agent) => {
             const isActive = selectedAgentId === agent.agent_id;
@@ -411,140 +278,152 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
               </button>
             );
           })}
-          {/* Plus button in the avatar bar — with "Add" label */}
-          {selectedAgentId && (
-            <button
-              className={`stream-agent-avatar-btn agent-add-btn ${isCreating ? "active" : ""}`}
-              onClick={handleCreateNew}
-              title="Create new skill"
-            >
-              <span className="stream-agent-avatar-wrap">
-                <PlusIcon />
-              </span>
-              <span className="stream-agent-avatar-name">Add</span>
-            </button>
-          )}
         </div>
 
-        {/* Body */}
+        {/* Body — skill cards */}
         <div className="skills-dialog-body">
-          {!selectedAgentId && (
+          {!selectedAgentId ? (
             <div className="stream-dialog-placeholder">
               {agents.length === 0 ? "No agents configured." : "Select an agent above to manage skills."}
             </div>
-          )}
-
-          {selectedAgentId && (
-            <div className="skills-list-view">
-              {/* New skill form at top when creating */}
-              {isCreating && (
-                <div className="skills-section">
-                  <div className="skills-section-items">
-                    <div className="skills-accordion-item expanded">
-                      <div className="skills-list-item skills-accordion-header active">
-                        <span className="skills-list-item-icon">
-                          <SkillIcon />
-                        </span>
-                        <span className="skills-list-item-info">
-                          <span className="skills-list-item-name">New Skill</span>
-                        </span>
-                        <ChevronIcon open={true} />
+          ) : loading ? (
+            <div className="skills-list-empty">Loading...</div>
+          ) : (
+            <div className="skills-cards-list">
+              {skills.map((s) => (
+                <div
+                  key={s.name}
+                  className="message-subspace-card"
+                  onClick={() => handleCardClick(s)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => e.key === "Enter" && handleCardClick(s)}
+                  style={cardLoading ? { opacity: 0.6, pointerEvents: "none" } : undefined}
+                >
+                  <div className="subspace-card-icon">
+                    <ClawdAvatar />
+                  </div>
+                  <div className="subspace-card-content">
+                    <div className="subspace-card-title">{s.name}</div>
+                    {s.description && <div className="subspace-card-description">{s.description}</div>}
+                    {s.triggers && s.triggers.length > 0 && (
+                      <div className="skill-file-triggers" style={{ marginTop: 4 }}>
+                        {s.triggers.slice(0, 5).map((t) => (
+                          <span key={t} className="skill-file-trigger">
+                            {t}
+                          </span>
+                        ))}
                       </div>
-                      {renderEditorFields(null)}
-                    </div>
+                    )}
                   </div>
                 </div>
-              )}
+              ))}
 
-              {loading ? (
-                <div className="skills-list-empty">Loading...</div>
-              ) : skills.length === 0 && !isCreating ? (
-                <div className="skills-list-empty">No skills found. Click + to create one.</div>
-              ) : (
-                <>
-                  {/* PROJECT section */}
-                  {projectSkills.length > 0 && (
-                    <div className="skills-section">
-                      <button className="skills-section-header" onClick={() => setProjectOpen(!projectOpen)}>
-                        <ChevronIcon open={projectOpen} />
-                        <span>PROJECT</span>
-                        <span className="skills-section-count">{projectSkills.length}</span>
-                      </button>
-                      {projectOpen && (
-                        <div className="skills-section-items">
-                          {projectSkills.map((skill) => {
-                            const isExpanded = expandedSkill === skill.name;
-                            return (
-                              <div key={skill.name} className={`skills-accordion-item ${isExpanded ? "expanded" : ""}`}>
-                                <button
-                                  className={`skills-list-item skills-accordion-header ${isExpanded ? "active" : ""}`}
-                                  onClick={() => handleToggleSkill(skill)}
-                                >
-                                  <span className="skills-list-item-icon">
-                                    <SkillIcon />
-                                  </span>
-                                  <span className="skills-list-item-info">
-                                    <span className="skills-list-item-name">{skill.name}</span>
-                                    {skill.description && (
-                                      <span className="skills-list-item-desc">{skill.description}</span>
-                                    )}
-                                  </span>
-                                  <ChevronIcon open={isExpanded} />
-                                </button>
-                                {isExpanded && renderEditorFields(skill.name)}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* GLOBAL section */}
-                  {globalSkills.length > 0 && (
-                    <div className="skills-section">
-                      <button className="skills-section-header" onClick={() => setGlobalOpen(!globalOpen)}>
-                        <ChevronIcon open={globalOpen} />
-                        <span>GLOBAL</span>
-                        <span className="skills-section-count">{globalSkills.length}</span>
-                      </button>
-                      {globalOpen && (
-                        <div className="skills-section-items">
-                          {globalSkills.map((skill) => {
-                            const isExpanded = expandedSkill === skill.name;
-                            return (
-                              <div key={skill.name} className={`skills-accordion-item ${isExpanded ? "expanded" : ""}`}>
-                                <button
-                                  className={`skills-list-item skills-accordion-header ${isExpanded ? "active" : ""}`}
-                                  onClick={() => handleToggleSkill(skill)}
-                                >
-                                  <span className="skills-list-item-icon">
-                                    <SkillIcon />
-                                  </span>
-                                  <span className="skills-list-item-info">
-                                    <span className="skills-list-item-name">{skill.name}</span>
-                                    {skill.description && (
-                                      <span className="skills-list-item-desc">{skill.description}</span>
-                                    )}
-                                  </span>
-                                  <ChevronIcon open={isExpanded} />
-                                </button>
-                                {isExpanded && renderEditorFields(skill.name)}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
+              {/* Add new skill card */}
+              <div
+                className="message-subspace-card"
+                onClick={handleNewClick}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === "Enter" && handleNewClick()}
+                style={{ borderStyle: "dashed", borderColor: "hsl(15 63.1% 59.6% / 50%)" }}
+              >
+                <div className="subspace-card-icon" style={{ color: "hsl(15 63.1% 59.6%)" }}>
+                  <PlusIcon />
+                </div>
+                <div className="subspace-card-content">
+                  <div className="subspace-card-title" style={{ color: "hsl(15 63.1% 59.6%)" }}>
+                    New Skill
+                  </div>
+                  <div className="subspace-card-description">Add a project skill for this agent</div>
+                </div>
+              </div>
             </div>
           )}
-
-          {error && <div className="agent-dialog-error">{error}</div>}
+          {error && !dialogOpen && <div className="agent-dialog-error">{error}</div>}
         </div>
       </div>
+
+      {/* Skill detail / edit dialog */}
+      {dialogOpen && (
+        <div className="stream-dialog-overlay" onClick={closeDetailDialog}>
+          <div className="stream-dialog agent-file-edit-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="stream-dialog-header">
+              <div className="stream-dialog-title-row">
+                <h3>{isNew ? "New Skill" : editName}</h3>
+              </div>
+              <button className="stream-dialog-close" onClick={closeDetailDialog}>
+                ×
+              </button>
+            </div>
+            <div className="agent-file-edit-body">
+              {isNew && (
+                <>
+                  <label className="skills-field-label">Name</label>
+                  <input
+                    ref={nameInputRef}
+                    className="agent-field-input"
+                    placeholder="skill-name (kebab-case)"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                  />
+                </>
+              )}
+              <label className="skills-field-label">Description</label>
+              <input
+                className="agent-field-input"
+                placeholder="Brief description"
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                maxLength={200}
+              />
+              <label className="skills-field-label">Triggers</label>
+              <input
+                className="agent-field-input"
+                placeholder="keyword1, keyword2, ..."
+                value={editTriggers}
+                onChange={(e) => setEditTriggers(e.target.value)}
+              />
+              <label className="skills-field-label">Argument Hint</label>
+              <input
+                className="agent-field-input"
+                placeholder="[optional arg hint]"
+                value={editArgumentHint}
+                onChange={(e) => setEditArgumentHint(e.target.value)}
+              />
+              <label className="skills-field-label">Content</label>
+              <textarea
+                className="agent-file-editor"
+                value={editContent}
+                onChange={(e) => setEditContent(e.target.value)}
+                placeholder="Skill instructions (markdown)..."
+              />
+              {error && <div className="agent-dialog-error">{error}</div>}
+            </div>
+            <div className="agent-file-edit-actions">
+              <button
+                className="agent-action-btn agent-action-btn--accent"
+                onClick={handleSave}
+                disabled={!editName.trim() || saving || deleting}
+              >
+                {saving ? "Saving..." : "Save"}
+              </button>
+              {!isNew && (
+                <button
+                  className="agent-action-btn agent-action-btn--danger"
+                  onClick={handleDelete}
+                  disabled={saving || deleting}
+                >
+                  {deleting ? "Deleting..." : "Delete"}
+                </button>
+              )}
+              <button className="agent-action-btn" onClick={closeDetailDialog}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>,
     document.body,
   );

@@ -5990,12 +5990,13 @@ textarea {
 }
 
 /* Skill list view — full width, collapsible sections */
-.skills-list-view {
+.skills-cards-list {
   flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  padding: 4px 0;
 }
 
 .skills-list-empty {
