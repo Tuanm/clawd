@@ -508,6 +508,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     return map;
   });
 
+  // Embedded mode — app loaded inside a sidebar iframe (e.g. subspace preview)
+  // Activated via ?embedded=1 query param; hides the site header
+  const isEmbedded = new URLSearchParams(window.location.search).has("embedded");
+
   // Global state
   const [connected, setConnected] = useState(false);
   const [validProject, setValidProject] = useState<boolean | null>(null);
@@ -2233,28 +2237,30 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // Loading state - Clawd running to header position
   if (validProject === null) {
     return (
-      <div className="app loading">
-        <header className="header">
-          <div className="header-left">
-            <div className="clawd-entrance">
-              <svg width="28" height="22" viewBox="0 0 66 52" fill="none">
-                <rect x="0" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-                <rect x="60" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-                <g className="leg1">
-                  <rect x="6" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-                  <rect x="42" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-                </g>
-                <g className="leg2">
-                  <rect x="18" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-                  <rect x="54" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
-                </g>
-                <rect x="6" width="54" height="39" fill="hsl(15 63.1% 59.6%)" />
-                <rect x="12" y="13" width="6" height="6.5" fill="#000" />
-                <rect x="48" y="13" width="6" height="6.5" fill="#000" />
-              </svg>
+      <div className="app loading" data-embedded={isEmbedded || undefined}>
+        {!isEmbedded && (
+          <header className="header">
+            <div className="header-left">
+              <div className="clawd-entrance">
+                <svg width="28" height="22" viewBox="0 0 66 52" fill="none">
+                  <rect x="0" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                  <rect x="60" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                  <g className="leg1">
+                    <rect x="6" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                    <rect x="42" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                  </g>
+                  <g className="leg2">
+                    <rect x="18" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                    <rect x="54" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+                  </g>
+                  <rect x="6" width="54" height="39" fill="hsl(15 63.1% 59.6%)" />
+                  <rect x="12" y="13" width="6" height="6.5" fill="#000" />
+                  <rect x="48" y="13" width="6" height="6.5" fill="#000" />
+                </svg>
+              </div>
             </div>
-          </div>
-        </header>
+          </header>
+        )}
       </div>
     );
   }
@@ -2276,112 +2282,114 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const hasActiveChannelUnread = !isActiveChannelAtBottom && (unreadCounts[activeChannel] || 0) > 0;
 
   return (
-    <div className="app" data-article-mode={isArticleMode || undefined}>
-      <header className="header">
-        <div className="header-left">
-          {isArticleMode ? (
-            <div className="clawd-logo-wrapper">
-              <ClawdLogo sleeping={false} hasUnread={false} />
-            </div>
-          ) : isSpaceChannel && parentChannel ? (
-            <>
-              <button
-                className="clawd-logo-button"
-                onClick={() => {
-                  const ts = spaceInfo?.card_message_ts;
-                  window.location.href = ts ? `/${parentChannel}?msg=${ts}` : `/${parentChannel}`;
-                }}
-                title="Back to channel"
-              >
+    <div className="app" data-article-mode={isArticleMode || undefined} data-embedded={isEmbedded || undefined}>
+      {!isEmbedded && (
+        <header className="header">
+          <div className="header-left">
+            {isArticleMode ? (
+              <div className="clawd-logo-wrapper">
                 <ClawdLogo sleeping={false} hasUnread={false} />
-              </button>
-              <span className="header-channel-name">
-                {parentChannel}
-                {spaceInfo?.agent_id ? ` | ${spaceInfo.agent_id}` : ""}
-              </span>
-            </>
-          ) : (
-            <>
-              <button
-                className="clawd-logo-button"
-                onClick={() => {
-                  window.location.pathname = "/";
-                }}
-                title="Home"
-              >
-                <ClawdLogo sleeping={isOffline && streamingAgents.length === 0} hasUnread={hasAnyUnread} />
-              </button>
-              <span className="header-channel-name">{displayName}</span>
-            </>
-          )}
-        </div>
-        {!isArticleMode && (
-          <div className="header-right">
-            {/* Notification permission toggle - hidden once granted */}
-            {"Notification" in window && notificationPermission !== "granted" && (
-              <button
-                className="notification-toggle"
-                onClick={handleNotificationToggle}
-                title={
-                  notificationPermission === "denied"
-                    ? "Notifications blocked - enable in browser settings"
-                    : "Enable desktop notifications"
-                }
-              >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                  <line x1="1" y1="1" x2="23" y2="23" strokeWidth="2" />
-                </svg>
-              </button>
-            )}
-            {/* Sub-agents indicator: shown when there are running sub-agents in this channel */}
-            {!isSpaceChannel && !isManagementChannel && activeSubAgents.length > 0 && (
-              <button
-                className="sub-agents-indicator-btn"
-                title={`${activeSubAgents.length} running sub-agent${activeSubAgents.length !== 1 ? "s" : ""} — click to view`}
-                onClick={() => setShowSubAgentsDialog(true)}
-              >
-                <BlackClawdIcon />
-                <span className="sub-agents-indicator-count">{activeSubAgents.length}</span>
-              </button>
-            )}
-            <div className="online-agents">
-              {/* Only show active (not sleeping) agents - sorted by agent_id */}
-              {[...activeAgents]
-                .sort((a, b) => a.agent_id.localeCompare(b.agent_id))
-                .map((agent) => (
-                  <div
-                    key={agent.agent_id}
-                    className="online-agent clickable"
-                    title={`${agent.agent_id} — click to see thoughts`}
-                    onClick={() => openAgentThoughts(agent.agent_id, agent.avatar_color)}
-                  >
-                    <AgentAvatarSmall color={agent.avatar_color} />
-                  </div>
-                ))}
-            </div>
-            {!isSpaceChannel && !isManagementChannel && (
-              <div
-                className={`connection-indicator ${!connected ? "reconnecting" : ""} clickable`}
-                title="Agent"
-                onClick={() => setShowAgentDialog(true)}
-              >
-                <CopilotLogo />
               </div>
+            ) : isSpaceChannel && parentChannel ? (
+              <>
+                <button
+                  className="clawd-logo-button"
+                  onClick={() => {
+                    const ts = spaceInfo?.card_message_ts;
+                    window.location.href = ts ? `/${parentChannel}?msg=${ts}` : `/${parentChannel}`;
+                  }}
+                  title="Back to channel"
+                >
+                  <ClawdLogo sleeping={false} hasUnread={false} />
+                </button>
+                <span className="header-channel-name">
+                  {parentChannel}
+                  {spaceInfo?.agent_id ? ` | ${spaceInfo.agent_id}` : ""}
+                </span>
+              </>
+            ) : (
+              <>
+                <button
+                  className="clawd-logo-button"
+                  onClick={() => {
+                    window.location.pathname = "/";
+                  }}
+                  title="Home"
+                >
+                  <ClawdLogo sleeping={isOffline && streamingAgents.length === 0} hasUnread={hasAnyUnread} />
+                </button>
+                <span className="header-channel-name">{displayName}</span>
+              </>
             )}
           </div>
-        )}
-      </header>
+          {!isArticleMode && (
+            <div className="header-right">
+              {/* Notification permission toggle - hidden once granted */}
+              {"Notification" in window && notificationPermission !== "granted" && (
+                <button
+                  className="notification-toggle"
+                  onClick={handleNotificationToggle}
+                  title={
+                    notificationPermission === "denied"
+                      ? "Notifications blocked - enable in browser settings"
+                      : "Enable desktop notifications"
+                  }
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    <line x1="1" y1="1" x2="23" y2="23" strokeWidth="2" />
+                  </svg>
+                </button>
+              )}
+              {/* Sub-agents indicator: shown when there are running sub-agents in this channel */}
+              {!isSpaceChannel && !isManagementChannel && activeSubAgents.length > 0 && (
+                <button
+                  className="sub-agents-indicator-btn"
+                  title={`${activeSubAgents.length} running sub-agent${activeSubAgents.length !== 1 ? "s" : ""} — click to view`}
+                  onClick={() => setShowSubAgentsDialog(true)}
+                >
+                  <BlackClawdIcon />
+                  <span className="sub-agents-indicator-count">{activeSubAgents.length}</span>
+                </button>
+              )}
+              <div className="online-agents">
+                {/* Only show active (not sleeping) agents - sorted by agent_id */}
+                {[...activeAgents]
+                  .sort((a, b) => a.agent_id.localeCompare(b.agent_id))
+                  .map((agent) => (
+                    <div
+                      key={agent.agent_id}
+                      className="online-agent clickable"
+                      title={`${agent.agent_id} — click to see thoughts`}
+                      onClick={() => openAgentThoughts(agent.agent_id, agent.avatar_color)}
+                    >
+                      <AgentAvatarSmall color={agent.avatar_color} />
+                    </div>
+                  ))}
+              </div>
+              {!isSpaceChannel && !isManagementChannel && (
+                <div
+                  className={`connection-indicator ${!connected ? "reconnecting" : ""} clickable`}
+                  title="Agent"
+                  onClick={() => setShowAgentDialog(true)}
+                >
+                  <CopilotLogo />
+                </div>
+              )}
+            </div>
+          )}
+        </header>
+      )}
 
       {/* Sub-agents dialog */}
       {showSubAgentsDialog && (
@@ -2502,6 +2510,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               artifactType={sidebarContent.artifactType}
               language={sidebarContent.language}
               fileType={sidebarContent.fileType}
+              navigateUrl={sidebarContent.navigateUrl}
+              isSubspace={sidebarContent.isSubspace}
             />
           )}
         </>
