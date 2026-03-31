@@ -170,6 +170,10 @@ function useTheme(): { theme: "light" | "dark"; toggle: () => void } {
     const applyTheme = () => {
       document.documentElement.setAttribute("data-theme", theme);
       reinitializeMermaid(theme === "dark");
+      // Update PWA title bar color immediately
+      document
+        .querySelector('meta[name="theme-color"]')
+        ?.setAttribute("content", theme === "dark" ? "#0d1117" : "#f9f7f3");
     };
 
     if (isFirstRender.current) {
