@@ -1,6 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <!-- FOUC prevention: apply stored theme before first paint -->
+    <script>
+      (function() {
+        var stored = localStorage.getItem("clawd-theme");
+        var t = (stored === "light" || stored === "dark") ? stored : "light";
+        document.documentElement.setAttribute("data-theme", t);
+        document.documentElement.classList.add("no-transition");
+        requestAnimationFrame(function() {
+          requestAnimationFrame(function() {
+            document.documentElement.classList.remove("no-transition");
+          });
+        });
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
