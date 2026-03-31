@@ -281,6 +281,20 @@ function IconButtonRow({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener("mousedown", handler);
   }, [menuOpen]);
 
+  // After dropdown renders, clamp its left edge to stay within viewport
+  useEffect(() => {
+    if (!menuOpen) return;
+    const el = dropdownRef.current;
+    if (!el) return;
+    const id = requestAnimationFrame(() => {
+      const rect = el.getBoundingClientRect();
+      if (rect.left < 8) {
+        setDropdownStyle((prev) => ({ ...prev, right: undefined, left: 8 }));
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [menuOpen]);
+
   // Position the dropdown relative to the button using fixed positioning
   const openMenu = useCallback(() => {
     if (!btnRef.current) return;
@@ -293,12 +307,11 @@ function IconButtonRow({ children }: { children: React.ReactNode }) {
 
     // Align right edge to button's right edge; clamp to stay within viewport
     const right = vw - rect.right;
-    const maxLeft = Math.max(8, right); // at least 8px from right edge
 
     setDropdownStyle({
       position: "fixed",
       ...(openAbove ? { bottom: window.innerHeight - top } : { top }),
-      right: Math.max(8, maxLeft),
+      right: Math.max(8, right),
       zIndex: 10000,
     });
     setMenuOpen((v) => !v);
