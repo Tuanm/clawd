@@ -3,6 +3,14 @@
  */
 
 import type { AppConfig } from "../config";
+import { resolveProviderBaseType } from "../agent/api/provider-config";
+import {
+  ClaudeCodeSpaceWorker,
+  registerClaudeCodeWorker,
+  unregisterClaudeCodeWorker,
+} from "../spaces/claude-code-worker";
+import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots } from "../server/mcp";
+import { timedFetch } from "../utils/timed-fetch";
 import type { SpaceManager } from "../spaces/manager";
 import type { SpaceWorkerManager } from "../spaces/worker";
 import type { ScheduledJob } from "./db";
@@ -63,7 +71,7 @@ export function initRunner(config: RunnerConfig): void {
     // 2. Post preview card to main channel
     const cardCtrl = new AbortController();
     const cardTimer = setTimeout(() => cardCtrl.abort(), 10000);
-    const cardRes = await fetch(`${appConfig.chatApiUrl}/api/chat.postMessage`, {
+    const cardRes = await timedFetch(`${appConfig.chatApiUrl}/api/chat.postMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -82,7 +90,6 @@ export function initRunner(config: RunnerConfig): void {
           channel: space.channel,
         }),
       }),
-      signal: cardCtrl.signal,
     }).finally(() => clearTimeout(cardTimer));
     if (cardRes.ok) {
       const cardData = (await cardRes.json()) as any;
@@ -92,8 +99,86 @@ export function initRunner(config: RunnerConfig): void {
     // 3. Post initial task to space channel
     await postToChannel(appConfig.chatApiUrl, space.space_channel, `**Task:** ${job.prompt}`, "Cron");
 
-    // 4. Start space worker — returns promise that resolves when complete_space is called
-    const completionPromise = spaceWorkerManager.startSpaceWorker(space, agentConfig);
+    // 4. Start space worker — route to ClaudeCodeSpaceWorker if provider is claude-code
+    let completionPromise: Promise<string>;
+
+    if (resolveProviderBaseType(agentConfig.provider) === "claude-code" || agentConfig.provider === "claude-code") {
+      // Claude Code provider — must use ClaudeCodeSpaceWorker (WorkerLoop can't handle it)
+      let ccResolve: (v: string) => void;
+      let ccSettled = false;
+
+      const wrappedResolve = (summary: string) => {
+        if (ccSettled) return;
+        ccSettled = true;
+        ccResolve?.(summary);
+      };
+
+      const ccWorker = new ClaudeCodeSpaceWorker({
+        space,
+        task: job.prompt,
+        model: agentConfig.model,
+        agentId: agentConfig.agentId,
+        apiUrl: appConfig.chatApiUrl,
+        projectRoot: agentConfig.project,
+        spaceManager,
+        resolve: wrappedResolve,
+        onComplete: () => unregisterClaudeCodeWorker(space.id),
+        providerName: agentConfig.provider,
+        yolo: appConfig.yolo,
+      });
+      registerClaudeCodeWorker(space.id, ccWorker);
+      spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
+
+      spaceCompleteCallbacks.set(space.id, (result: string) => {
+        const won = spaceManager.completeSpace(space.id, result);
+        if (won) {
+          postToChannel(appConfig.chatApiUrl, job.channel, result, agentConfig.agentId).catch(() => {});
+          wrappedResolve(result);
+          ccWorker.stop();
+        }
+      });
+
+      const timeoutMs = (space.timeout_seconds || 300) * 1000;
+      const timeoutTimer = setTimeout(() => {
+        if (!ccSettled) {
+          ccSettled = true;
+          spaceManager.timeoutSpace(space.id);
+          ccWorker.stop();
+        }
+      }, timeoutMs);
+      if (typeof timeoutTimer === "object" && "unref" in timeoutTimer) (timeoutTimer as any).unref();
+
+      completionPromise = new Promise<string>((resolve, reject) => {
+        ccResolve = resolve;
+        ccWorker
+          .start()
+          .then(() => {
+            if (!ccSettled) {
+              ccSettled = true;
+              spaceManager.failSpace(space.id, "Claude Code exited without calling complete_task");
+              reject(new Error("Claude Code exited without calling complete_task"));
+            }
+          })
+          .catch((err) => {
+            if (!ccSettled) {
+              ccSettled = true;
+              spaceManager.failSpace(space.id, (err as Error).message);
+              reject(err);
+            }
+          })
+          .finally(() => {
+            clearTimeout(timeoutTimer);
+            spaceCompleteCallbacks.delete(space.id);
+            spaceAuthTokens.delete(space.id);
+            spaceProjectRoots.delete(space.id);
+            unregisterClaudeCodeWorker(space.id);
+            ccWorker.cleanup();
+          });
+      });
+    } else {
+      // Normal LLM provider — use WorkerLoop via spaceWorkerManager
+      completionPromise = spaceWorkerManager.startSpaceWorker(space, agentConfig);
+    }
 
     // 5. Abort handler
     let settled = false;
