@@ -99,7 +99,11 @@ interface Message {
   // Path B: MCP-sent interactive artifact (interactive_json column parsed by server)
   interactive?: string;
   interactive_acted?: boolean;
-  interactive_action?: { action_id: string; value: string; user: string } | null;
+  interactive_action?: {
+    action_id: string;
+    value: string;
+    user: string;
+  } | null;
 }
 
 // Pending message type
@@ -2837,27 +2841,48 @@ export default function MessageList({
                     </div>
                   </div>
                 )}
-                {msg.subspace && (
-                  <div
-                    className={`message-subspace-card ${msg.subspace.status === "failed" || msg.subspace.status === "timed_out" ? "subspace-card-failed" : msg.subspace.status === "completed" ? "subspace-card-completed" : ""}`}
-                    onClick={() => (window.location.href = `/${msg.subspace!.channel}/${msg.subspace!.id}`)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) =>
-                      e.key === "Enter" && (window.location.href = `/${msg.subspace!.channel}/${msg.subspace!.id}`)
-                    }
-                  >
-                    <div className="subspace-card-icon">
-                      <ClawdAvatar />
-                    </div>
-                    <div className="subspace-card-content">
-                      <div className="subspace-card-title">{msg.subspace.title}</div>
-                      {msg.subspace.description && (
-                        <div className="subspace-card-description">{msg.subspace.description}</div>
-                      )}
-                    </div>
-                  </div>
-                )}
+                {msg.subspace &&
+                  (() => {
+                    const subspace = msg.subspace;
+                    const subspaceUrl = `/${subspace.channel}/${subspace.id}`;
+                    const openSubspace = () => {
+                      if (onOpenSidebar) {
+                        onOpenSidebar({
+                          type: "iframe",
+                          title: subspace.title,
+                          url: `${subspaceUrl}${subspaceUrl.includes("?") ? "&" : "?"}embedded=1`,
+                          navigateUrl: subspaceUrl,
+                          isSubspace: true,
+                        });
+                      } else {
+                        window.location.href = subspaceUrl;
+                      }
+                    };
+                    return (
+                      <div
+                        className={`message-subspace-card ${subspace.status === "failed" || subspace.status === "timed_out" ? "subspace-card-failed" : subspace.status === "completed" ? "subspace-card-completed" : ""}`}
+                        onClick={openSubspace}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            openSubspace();
+                          }
+                        }}
+                      >
+                        <div className="subspace-card-icon">
+                          <ClawdAvatar />
+                        </div>
+                        <div className="subspace-card-content">
+                          <div className="subspace-card-title">{subspace.title}</div>
+                          {subspace.description && (
+                            <div className="subspace-card-description">{subspace.description}</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 {msg.workspace &&
                   (() => {
                     const openWorkspaceDesktop = () => {
@@ -3066,7 +3091,12 @@ export default function MessageList({
             onMouseDown={(e) => {
               if (lightboxZoom > 1 && e.button === 0) {
                 setImgDragging(true);
-                imgDragStart.current = { x: e.clientX, y: e.clientY, ox: imgPan.x, oy: imgPan.y };
+                imgDragStart.current = {
+                  x: e.clientX,
+                  y: e.clientY,
+                  ox: imgPan.x,
+                  oy: imgPan.y,
+                };
               }
             }}
             onMouseMove={(e) => {

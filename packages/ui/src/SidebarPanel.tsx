@@ -19,11 +19,51 @@ export interface SidebarPanelContent {
   language?: string;
   /** mimetype for type === "file" */
   fileType?: string;
+  /** URL to navigate to when the expand button is clicked (full-page navigation) */
+  navigateUrl?: string;
+  /** True when the iframe is a subspace — shows Claw'd logo in the sidebar header badge */
+  isSubspace?: boolean;
 }
 
 interface SidebarPanelProps extends SidebarPanelContent {
   isOpen: boolean;
   onClose: () => void;
+}
+
+function ClawdLogoSmall() {
+  return (
+    <svg width="22" height="17" viewBox="0 0 66 52" fill="none">
+      <rect x="0" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="60" y="13" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="6" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="18" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="42" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="54" y="39" width="6" height="13" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="6" width="54" height="39" fill="hsl(15 63.1% 59.6%)" />
+      <rect x="12" y="13" width="6" height="6.5" fill="#000" />
+      <rect x="48" y="13" width="6" height="6.5" fill="#000" />
+    </svg>
+  );
+}
+
+function ExpandIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M15 3h6v6" />
+      <path d="M9 21H3v-6" />
+      <path d="M21 3l-7 7" />
+      <path d="M3 21l7-7" />
+    </svg>
+  );
 }
 
 function CloseIcon() {
@@ -54,7 +94,10 @@ export default function SidebarPanel({
   artifactType,
   language,
   fileType,
+  navigateUrl,
+  isSubspace,
 }: SidebarPanelProps) {
+  const expandUrl = navigateUrl ?? (type === "iframe" ? url : undefined);
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Escape key closes panel
@@ -95,7 +138,12 @@ export default function SidebarPanel({
                 {config.icon}
               </span>
             )}
-            {type === "iframe" && !config && (
+            {type === "iframe" && !config && isSubspace && (
+              <span className="sidebar-panel-type-badge sidebar-panel-type-badge--subspace">
+                <ClawdLogoSmall />
+              </span>
+            )}
+            {type === "iframe" && !config && !isSubspace && (
               <span className="sidebar-panel-type-badge sidebar-panel-type-badge--embed">{"</>"}</span>
             )}
             <span className="sidebar-panel-title">{title}</span>
@@ -132,7 +180,19 @@ export default function SidebarPanel({
                 </a>
               </>
             )}
+            {expandUrl && (
+              <button
+                type="button"
+                className="sidebar-panel-action-icon sidebar-panel-expand-btn"
+                onClick={() => (window.location.href = expandUrl)}
+                aria-label="Open full page"
+                title="Open full page"
+              >
+                <ExpandIcon />
+              </button>
+            )}
             <button
+              type="button"
               className="sidebar-panel-close-btn"
               onClick={onClose}
               aria-label="Close sidebar"

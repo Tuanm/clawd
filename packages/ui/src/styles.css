@@ -7195,6 +7195,13 @@ textarea {
   color: hsl(var(--text) / 90%);
 }
 
+.sidebar-panel-expand-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
 .sidebar-panel-type-badge {
   display: inline-flex;
   align-items: center;
@@ -7210,6 +7217,17 @@ textarea {
 
 .sidebar-panel-type-badge--embed {
   background: hsl(220 70% 55%);
+}
+
+.sidebar-panel-type-badge--subspace {
+  background: transparent;
+  width: auto;
+  padding: 0 4px;
+}
+
+/* When app is embedded in a sidebar iframe, hide the site header */
+.app[data-embedded] .header {
+  display: none;
 }
 
 .sidebar-panel-title {
