@@ -13,6 +13,7 @@ import { truncateToolResult, formatToolDescription, hasTmux } from "../claude-co
 import { initMemorySession, saveToMemory } from "../claude-code-memory";
 import { startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "../claude-code-tmux";
 import { runSDKQuery } from "../claude-code-sdk";
+import { loadOAuthToken } from "../mcp-oauth";
 import { spaceProjectRoots } from "../server/mcp";
 import type { Space } from "./db";
 import type { SpaceManager } from "./manager";
@@ -312,13 +313,61 @@ RULES:
     try {
       port = new URL(this.config.apiUrl).port || "3456";
     } catch {}
-    return {
+
+    const mcpServers: Record<string, any> = {
       clawd: {
         type: "http",
         url: `http://localhost:${port}/mcp/space/${this.config.space.id}`,
         headers: { Authorization: `Bearer ${this.spaceToken}` },
-      } as McpServerConfig,
+      },
     };
+
+    // Merge channel-specific MCP servers from ~/.clawd/config.json
+    try {
+      const { getChannelMCPServers } = require("../agent/api/provider-config");
+      const channelServers = getChannelMCPServers(this.config.space.channel);
+      for (const [name, config] of Object.entries(channelServers)) {
+        const cfg = config as any;
+        if (cfg.enabled === false) continue;
+        if (name === "clawd") continue;
+
+        if (cfg.transport === "sse") {
+          console.warn(
+            `[claude-code-worker] MCP server "${name}" uses SSE transport (not supported by Claude Code SDK), skipping`,
+          );
+          continue;
+        } else if (cfg.transport === "http" || cfg.type === "http") {
+          if (!cfg.url) {
+            console.warn(`[claude-code-worker] MCP server "${name}" missing url, skipping`);
+            continue;
+          }
+          const entry: any = { type: "http", url: cfg.url };
+          const headers: Record<string, string> = { ...(cfg.headers || {}) };
+          if (cfg.oauth?.client_id) {
+            const stored = loadOAuthToken(this.config.space.channel, name);
+            if (!stored?.access_token) {
+              console.log(`[claude-code-worker] Skipping MCP server ${name} (no OAuth token — connect via UI)`);
+              continue;
+            }
+            headers["Authorization"] = `Bearer ${stored.access_token}`;
+          }
+          if (Object.keys(headers).length) entry.headers = headers;
+          mcpServers[name] = entry;
+        } else {
+          if (!cfg.command) {
+            console.warn(`[claude-code-worker] MCP server "${name}" missing command, skipping`);
+            continue;
+          }
+          const entry: any = { command: cfg.command, args: cfg.args || [] };
+          if (cfg.env) entry.env = cfg.env;
+          mcpServers[name] = entry;
+        }
+      }
+    } catch (err) {
+      console.error(`[claude-code-worker] Failed to load channel MCP servers for ${this.config.space.channel}:`, err);
+    }
+
+    return mcpServers;
   }
 
   private async postAgentMessage(text: string): Promise<void> {
