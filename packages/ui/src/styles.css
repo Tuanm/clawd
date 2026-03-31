@@ -7123,8 +7123,7 @@ textarea {
   position: fixed;
   inset: 0;
   z-index: 1000;
-  background: hsl(var(--text) / 35%);
-  backdrop-filter: blur(3px);
+  background: hsl(var(--text) / 30%);
   display: flex;
   align-items: center;
   justify-content: center;
