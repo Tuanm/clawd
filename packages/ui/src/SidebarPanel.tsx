@@ -4,7 +4,7 @@
 //   "artifact"  — ArtifactRenderer for html/react/csv/markdown/code content
 //   "file"      — FilePreviewSidebar for PDF/CSV/text/code/image/audio/video files
 
-import { Fragment, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import FullArtifactRenderer from "./artifact-renderer";
 import { type ArtifactType, TYPE_CONFIG } from "./artifact-types";
@@ -119,17 +119,17 @@ export default function SidebarPanel({
 
   const config = artifactType ? (TYPE_CONFIG[artifactType] ?? TYPE_CONFIG.code) : null;
 
-  // Portal both backdrop and panel to document.body to ensure correct z-index stacking.
-  // Backdrop (z-index 199) must come BEFORE panel (z-index 200) in DOM order.
+  // Portal the overlay+dialog to document.body for correct z-index stacking.
   return createPortal(
-    <Fragment>
-      {isOpen && <div className="sidebar-backdrop" onClick={onClose} aria-hidden="true" />}
+    <div className={`sidebar-panel${isOpen ? " open" : ""}`} onClick={onClose} aria-hidden={!isOpen}>
       <div
         ref={panelRef}
-        className={`sidebar-panel${isOpen ? " open" : ""}`}
-        role="complementary"
+        className="sidebar-panel-box"
+        role="dialog"
+        aria-modal="true"
         aria-label={`${title} panel`}
         tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="sidebar-panel-header">
           <div className="sidebar-panel-header-left">
@@ -223,7 +223,7 @@ export default function SidebarPanel({
           )}
         </div>
       </div>
-    </Fragment>,
+    </div>,
     document.body,
   );
 }
