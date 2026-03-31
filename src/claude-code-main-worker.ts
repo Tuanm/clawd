@@ -24,6 +24,7 @@ import { getPendingMessages } from "./server/routes/messages";
 import { truncateToolResult, formatToolDescription } from "./claude-code-utils";
 import { initMemorySession, saveToMemory } from "./claude-code-memory";
 import { runSDKQuery } from "./claude-code-sdk";
+import { loadOAuthToken } from "./mcp-oauth";
 import type { AgentHealthSnapshot, AgentWorker } from "./worker-loop";
 
 // ============================================================================
@@ -703,17 +704,41 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         if (cfg.enabled === false) continue;
         if (name === "clawd") continue;
 
-        if (cfg.transport === "http" || cfg.type === "http") {
+        if (cfg.transport === "sse") {
+          console.warn(
+            `[claude-code-main-worker] MCP server "${name}" uses SSE transport (not supported by Claude Code SDK), skipping`,
+          );
+          continue;
+        } else if (cfg.transport === "http" || cfg.type === "http") {
+          if (!cfg.url) {
+            console.warn(`[claude-code-main-worker] MCP server "${name}" missing url, skipping`);
+            continue;
+          }
           const entry: any = { type: "http", url: cfg.url };
-          if (cfg.headers) entry.headers = cfg.headers;
+          const headers: Record<string, string> = { ...(cfg.headers || {}) };
+          if (cfg.oauth?.client_id) {
+            const stored = loadOAuthToken(channel, name);
+            if (!stored?.access_token) {
+              console.log(`[claude-code-main-worker] Skipping MCP server ${name} (no OAuth token — connect via UI)`);
+              continue;
+            }
+            headers["Authorization"] = `Bearer ${stored.access_token}`;
+          }
+          if (Object.keys(headers).length) entry.headers = headers;
           mcpServers[name] = entry;
         } else {
+          if (!cfg.command) {
+            console.warn(`[claude-code-main-worker] MCP server "${name}" missing command, skipping`);
+            continue;
+          }
           const entry: any = { command: cfg.command, args: cfg.args || [] };
           if (cfg.env) entry.env = cfg.env;
           mcpServers[name] = entry;
         }
       }
-    } catch {}
+    } catch (err) {
+      console.error(`[claude-code-main-worker] Failed to load channel MCP servers for ${channel}:`, err);
+    }
 
     return mcpServers;
   }

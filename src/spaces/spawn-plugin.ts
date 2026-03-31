@@ -639,15 +639,79 @@ export function createSpawnAgentPlugin(
         ? resolveModelAlias(tracked.agentFileConfig.model, agentConfig.model)
         : agentConfig.model;
       let completionPromise: Promise<string>;
-      try {
-        completionPromise = spaceWorkerManager.startSpaceWorker(
+
+      // Route claude-code provider to ClaudeCodeSpaceWorker (mirrors handleSpawnAgent routing)
+      if (resolveProviderBaseType(retaskProvider) === "claude-code" || retaskProvider === "claude-code") {
+        let ccResolve: (v: string) => void;
+        let ccSettled = false;
+        const wrappedResolve = (summary: string) => {
+          if (ccSettled) return;
+          ccSettled = true;
+          ccResolve?.(summary);
+        };
+        const ccWorker = new ClaudeCodeSpaceWorker({
           space,
-          { ...agentConfig, agentId: subAgentId, provider: retaskProvider, model: retaskModel },
-          tracked.agentFileConfig,
-        );
-      } catch (workerErr: any) {
-        spaceManager.failSpace(space.id, workerErr.message);
-        return { success: false, output: "", error: `Failed to start worker: ${workerErr.message}` };
+          task,
+          context: "",
+          model: retaskModel,
+          agentId: subAgentId,
+          apiUrl: config.apiUrl,
+          projectRoot: _cachedProjectRoot || agentConfig.project || undefined,
+          spaceManager,
+          resolve: wrappedResolve,
+          onComplete: () => unregisterClaudeCodeWorker(space.id),
+          agentPrompt: tracked.agentFileConfig?.systemPrompt || undefined,
+          providerName: retaskProvider,
+          yolo: config.yolo ?? false,
+        });
+        registerClaudeCodeWorker(space.id, ccWorker);
+        spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
+        spaceCompleteCallbacks.set(space.id, (result: string) => {
+          const won = spaceManager.completeSpace(space.id, result);
+          if (won) {
+            timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                channel: config.channel,
+                text: result,
+                user: subAgentId,
+                agent_id: subAgentId,
+              }),
+            }).catch(() => {});
+          }
+        });
+        completionPromise = new Promise<string>((resolve, reject) => {
+          ccResolve = resolve;
+          ccWorker
+            .start()
+            .then(() => {
+              if (!ccSettled) {
+                ccSettled = true;
+                resolve("Agent completed without explicit result");
+              }
+            })
+            .catch(reject)
+            .finally(() => {
+              spaceCompleteCallbacks.delete(space.id);
+              spaceAuthTokens.delete(space.id);
+              spaceProjectRoots.delete(space.id);
+              unregisterClaudeCodeWorker(space.id);
+              ccWorker.cleanup();
+            });
+        });
+      } else {
+        // Normal LLM provider — use WorkerLoop via spaceWorkerManager
+        try {
+          completionPromise = spaceWorkerManager.startSpaceWorker(
+            space,
+            { ...agentConfig, agentId: subAgentId, provider: retaskProvider, model: retaskModel },
+            tracked.agentFileConfig,
+          );
+        } catch (workerErr: any) {
+          spaceManager.failSpace(space.id, workerErr.message);
+          return { success: false, output: "", error: `Failed to start worker: ${workerErr.message}` };
+        }
       }
 
       // Set up timeout controller
