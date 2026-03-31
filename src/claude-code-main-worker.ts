@@ -129,7 +129,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       lastActivityAt: this.lastActivityAt,
       idleDurationMs: Date.now() - this.lastActivityAt,
       lastHeartbeatAt: this.lastHeartbeatAt,
-      sleeping: this.sleeping,
+      sleeping: this.userSleeping,
       running: this.running,
       isSpaceAgent: false,
       channel: this.config.channel,
@@ -155,7 +155,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   }
 
   injectHeartbeat(): void {
-    if (this.processing || this.sleeping) return;
+    if (this.processing || this.userSleeping) return;
     this.lastHeartbeatAt = Date.now();
     this.heartbeatPending = true;
   }
@@ -188,7 +188,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         if (pending.length === 0 && this.heartbeatPending) {
           this.heartbeatPending = false;
           this.sleeping = false;
-          pending = [{ ts: String(Date.now()), user: "UHUMAN", text: "[HEARTBEAT]" }];
+          pending = [{ ts: String(Date.now()), user: "UHUMAN", text: "<agent_signal>[HEARTBEAT]</agent_signal>" }];
         }
 
         if (pending.length === 0) {
@@ -450,7 +450,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
 
     // Detect heartbeat-initiated turns — suppress re-injection for these
-    const isHeartbeatTurn = messages.length === 1 && messages[0]?.text === "[HEARTBEAT]";
+    const isHeartbeatTurn = messages.length === 1 && messages[0]?.text?.includes("[HEARTBEAT]");
 
     // Reset per-turn re-injection state
     this.turnChatSent = false;
