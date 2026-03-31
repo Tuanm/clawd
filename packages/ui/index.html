@@ -1,12 +1,21 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <!-- FOUC prevention: apply stored theme before first paint -->
+    <!-- Static theme-color MUST come before the FOUC script so Chrome's parser
+         sees a real tag immediately. The script then mutates it synchronously.
+         Without this static tag, document.write() or appendChild can race with
+         Chrome's async IPC read of <head> and randomly produce a light title bar. -->
+    <meta name="theme-color" content="#f9f7f3" />
+    <!-- FOUC prevention: mutates the above meta tag before first paint. -->
     <script>
       (function() {
-        var stored = localStorage.getItem("clawd-theme");
+        var stored;
+        try { stored = localStorage.getItem("clawd-theme"); } catch (e) {}
         var t = (stored === "light" || stored === "dark") ? stored : "light";
         document.documentElement.setAttribute("data-theme", t);
+        // Mutate the pre-existing static tag synchronously — no IPC timing race.
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", t === "dark" ? "#0d1117" : "#f9f7f3");
         document.documentElement.classList.add("no-transition");
         requestAnimationFrame(function() {
           requestAnimationFrame(function() {
@@ -20,9 +29,8 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <meta name="theme-color" content="#f9f7f3" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Claw'd" />
     <link rel="icon" type="image/svg+xml" href="/clawd.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
