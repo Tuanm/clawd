@@ -358,6 +358,10 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
       "LS",
       "NotebookRead",
       "NotebookEdit",
+      // Claw'd provides its own schedule tools — disable CC's native cron tools
+      "CronCreate",
+      "CronDelete",
+      "CronList",
       ...(opts.disallowedTools ?? []),
     ],
     agent: opts.agentName,
