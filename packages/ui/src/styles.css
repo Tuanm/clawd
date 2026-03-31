@@ -3776,8 +3776,8 @@ body {
   align-items: center;
   justify-content: center;
   transition:
-    background 0.1s,
-    color 0.1s;
+    color 0.1s,
+    background 0.1s;
 }
 
 .action-btn:hover {
@@ -4619,14 +4619,12 @@ body {
   color: var(--text-muted);
   font-size: 12px;
   cursor: pointer;
-  transition:
-    background 0.1s,
-    color 0.1s;
+  transition: color 0.1s;
 }
 
 .plan-btn:hover {
+  background: transparent;
   color: hsl(var(--accent));
-  background: hsl(var(--text) / 5%);
 }
 
 .plan-btn svg {
@@ -5164,8 +5162,8 @@ body {
 }
 
 .search-btn:hover {
+  background: transparent;
   color: hsl(var(--accent));
-  background: hsl(var(--text) / 5%);
 }
 
 .search-btn svg {
@@ -5187,8 +5185,8 @@ body {
 }
 
 .projects-btn:hover {
+  background: transparent;
   color: hsl(var(--accent));
-  background: hsl(var(--text) / 5%);
 }
 
 .projects-btn svg {
@@ -5947,8 +5945,8 @@ textarea {
 }
 
 .mcp-btn:hover {
+  background: transparent;
   color: hsl(var(--accent));
-  background: hsl(var(--text) / 5%);
 }
 
 .mcp-btn svg {
@@ -5970,8 +5968,8 @@ textarea {
 }
 
 .skills-btn:hover {
+  background: transparent;
   color: hsl(var(--accent));
-  background: hsl(var(--text) / 5%);
 }
 
 .skills-btn svg {
@@ -7487,14 +7485,12 @@ textarea {
   border-radius: 4px;
   cursor: pointer;
   padding: 0;
-  transition:
-    color 0.15s,
-    background 0.15s;
+  transition: color 0.15s;
 }
 
 .worktree-btn:hover {
+  background: transparent;
   color: hsl(var(--accent));
-  background: hsl(var(--text) / 5%);
 }
 
 /* Refresh button next to dialog title */
@@ -8960,9 +8956,7 @@ body,
 }
 /* .action-btn: transition is NOT inherited — Moon/Sun icon color would snap without this */
 .action-btn {
-  transition:
-    color 0.2s ease,
-    background-color 0.2s ease;
+  transition: color 0.2s ease;
 }
 /* Avatar SVG rects: transition is NOT inherited from parent containers */
 .worker-avatar-body,
