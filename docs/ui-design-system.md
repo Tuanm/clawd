@@ -44,7 +44,7 @@
 
 ### What Claw'd Is NOT
 
-- It is not a dark-first app. Light mode is the primary experience; dark mode only partially applies (syntax highlighting, diffs, some form inputs).
+- It is not a dark-first app. Light mode is the default; dark mode is user-toggleable via the Moon/Sun button in the composer toolbar (`localStorage["clawd-theme"]`).
 - It is not a minimal/monochrome design system. The accent color and warmth are deliberate and should be preserved.
 - It is not a generic Material/Tailwind component library. Styles are custom CSS with semantic class names.
 
@@ -718,21 +718,38 @@ Sections: **CHANGES**, **STAGED**, **CONFLICTS**. Per-file hover reveals action 
 
 ### Dark Mode Status
 
-**Claw'd does NOT have a full dark mode.** The CSS custom properties (`--bg`, `--text`, `--accent`) do not change under `prefers-color-scheme: dark`. The base UI always renders in the warm light theme.
+**Claw'd has full user-toggleable dark mode** via a Moon/Sun button in the composer action toolbar.
 
-**Partial dark mode** applies only to:
+**Architecture:**
+- `<html data-theme="dark">` — CSS-only theming via attribute selector
+- `localStorage["clawd-theme"]` — persists user preference; written only on explicit toggle
+- First-visit default: **light** (no OS preference used)
+- FOUC prevention: inline `<script>` in `<head>` applies theme before first paint
+- Toggle animation: **View Transitions API** (`document.startViewTransition`) — GPU-composited 0.25s cross-fade; falls back to instant switch on unsupported browsers
+- Element transitions: 0.2s ease on `background-color`, `color`, `border-color`, `box-shadow`; `prefers-reduced-motion` guard disables all transitions
 
-| Component | What changes |
-|---|---|
-| Prism syntax highlighting | Full GitHub-dark theme |
-| Mermaid diagrams | `"dark"` mermaid theme |
-| Inline streaming diff spans (`.stream-diff-del` / `.stream-diff-add`) | Background/color overrides |
-| Interactive inputs/selects | `background: hsl(var(--text) / 5%)` |
-| Interactive buttons/toggles/radio/number | Adjusted border/bg colors |
-| Interactive slider thumb | `border-color: #1c2128` (GitHub dark) |
-| Interactive table headers | Slightly more opaque bg |
-| CSV table | Dark-mode styles |
-| Lazy placeholders | Dark shimmer gradient |
+**Dark palette (`#0d1117` GitHub near-black):**
+
+| Token | Light | Dark |
+|---|---|---|
+| `--bg` | `48 33.3% 97.1%` | `216 28% 7%` (#0d1117) |
+| `--bg-center` | `0 0% 100%` | `215 21% 11%` (#161b22) |
+| `--text` | `60 2.6% 7.6%` | `210 17% 88%` |
+| `--accent` | `15 63.1% 59.6%` | **unchanged** (coral orange branding) |
+| `--text-dim` | `210 10% 45%` | `210 10% 50%` |
+| `--border-dim` | `210 10% 82%` | `222 14% 28%` |
+| `--bg-dim` | `48 20% 92%` | `222 14% 9%` |
+| `--bg-highlight` | `48 33% 90%` | `222 14% 20%` |
+| `color-scheme` | `light` | `dark` |
+
+**Avatar inversion in dark mode:**
+- `WorkerClawdAvatar` and `BlackClawdIcon`: body `#333` → `#e8e8e8`, eyes `#fff` → `#1a1a1a`
+- All coral orange avatars (`ClawdAvatar`, `ClawdLogo`, etc.) — **unchanged** (brand color)
+
+**Out of scope:**
+- `<iframe>` document backgrounds (`.html-preview-frame`, `.sidebar-html-iframe` content)
+- Artifact iframe sandboxed content
+- Custom agent avatar colors
 
 ### Responsive Breakpoints
 

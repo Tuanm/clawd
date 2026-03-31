@@ -23,14 +23,16 @@ const LazyChartRenderer = React.lazy(() => import("./chart-renderer"));
 // Lazy-load InteractiveRenderer for declarative interactive artifacts
 const LazyInteractiveRenderer = React.lazy(() => import("./interactive-renderer"));
 
-// Initialize mermaid with dark-aware theme
-const prefersDark = typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
-mermaid.initialize({
-  startOnLoad: false,
-  theme: prefersDark ? "dark" : "neutral",
-  securityLevel: "strict",
-  fontFamily: "Lato, sans-serif",
-});
+// Initialize mermaid — reads data-theme set by FOUC script
+export function reinitializeMermaid(isDark: boolean) {
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: isDark ? "dark" : "neutral",
+    securityLevel: "strict",
+    fontFamily: "Lato, sans-serif",
+  });
+}
+reinitializeMermaid(typeof window !== "undefined" && document.documentElement.getAttribute("data-theme") === "dark");
 
 interface Message {
   ts: string;
@@ -241,11 +243,24 @@ export const MermaidDiagram = React.memo(function MermaidDiagram({
   const instanceId = useId();
   // Debounced chart to avoid queuing hundreds of render calls during streaming
   const [debouncedChart, setDebouncedChart] = useState(chart);
+  const [themeKey, setThemeKey] = useState(0); // bumped on data-theme change to trigger re-render
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedChart(chart), 300);
     return () => clearTimeout(t);
   }, [chart]);
+
+  // Watch data-theme attribute — fires after reinitializeMermaid() runs in App.tsx
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setThemeKey((k) => k + 1);
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -276,7 +291,7 @@ export const MermaidDiagram = React.memo(function MermaidDiagram({
     return () => {
       cancelled = true;
     };
-  }, [debouncedChart, instanceId, retryCount]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [debouncedChart, instanceId, retryCount, themeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error) {
     return (
@@ -1078,19 +1093,19 @@ function ClawdSeenIcon({ color: customColor, isSleeping }: { color?: string; isS
   );
 }
 
-// Worker Clawd SVG avatar (black/white version)
+// Worker Clawd SVG avatar (dark body, white eyes — inverts to white body + dark eyes in dark mode)
 function WorkerClawdAvatar() {
   return (
     <svg width="32" height="26" viewBox="0 0 66 52" fill="none">
-      <rect x="0" y="13" width="6" height="13" fill="#333" />
-      <rect x="60" y="13" width="6" height="13" fill="#333" />
-      <rect x="6" y="39" width="6" height="13" fill="#333" />
-      <rect x="18" y="39" width="6" height="13" fill="#333" />
-      <rect x="42" y="39" width="6" height="13" fill="#333" />
-      <rect x="54" y="39" width="6" height="13" fill="#333" />
-      <rect x="6" width="54" height="39" fill="#333" />
-      <rect x="12" y="13" width="6" height="6.5" fill="#fff" className="clawd-eye" />
-      <rect x="48" y="13" width="6" height="6.5" fill="#fff" className="clawd-eye" />
+      <rect x="0" y="13" width="6" height="13" fill="#333" className="worker-avatar-body" />
+      <rect x="60" y="13" width="6" height="13" fill="#333" className="worker-avatar-body" />
+      <rect x="6" y="39" width="6" height="13" fill="#333" className="worker-avatar-body" />
+      <rect x="18" y="39" width="6" height="13" fill="#333" className="worker-avatar-body" />
+      <rect x="42" y="39" width="6" height="13" fill="#333" className="worker-avatar-body" />
+      <rect x="54" y="39" width="6" height="13" fill="#333" className="worker-avatar-body" />
+      <rect x="6" width="54" height="39" fill="#333" className="worker-avatar-body" />
+      <rect x="12" y="13" width="6" height="6.5" fill="#fff" className="worker-avatar-eye" />
+      <rect x="48" y="13" width="6" height="6.5" fill="#fff" className="worker-avatar-eye" />
     </svg>
   );
 }

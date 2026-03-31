@@ -11,7 +11,7 @@ import {
 } from "./auth-fetch";
 import McpDialog, { McpIcon } from "./McpDialog";
 import MessageComposer from "./MessageComposer";
-import MessageList, { StreamOutputDialog } from "./MessageList";
+import MessageList, { StreamOutputDialog, reinitializeMermaid } from "./MessageList";
 import TodoDialog from "./PlanModal";
 import ProjectsDialog from "./ProjectsDialog";
 import SearchModal from "./SearchModal";
@@ -143,17 +143,59 @@ function AgentAvatarSmall({ color }: { color: string }) {
 function BlackClawdIcon() {
   return (
     <svg width="16" height="13" viewBox="0 0 66 52" fill="none">
-      <rect x="0" y="13" width="6" height="13" fill="#000" />
-      <rect x="60" y="13" width="6" height="13" fill="#000" />
-      <rect x="6" y="39" width="6" height="13" fill="#000" />
-      <rect x="18" y="39" width="6" height="13" fill="#000" />
-      <rect x="42" y="39" width="6" height="13" fill="#000" />
-      <rect x="54" y="39" width="6" height="13" fill="#000" />
-      <rect x="6" width="54" height="39" fill="#000" />
-      <rect x="12" y="13" width="6" height="6.5" fill="#fff" />
-      <rect x="48" y="13" width="6" height="6.5" fill="#fff" />
+      <rect x="0" y="13" width="6" height="13" fill="#000" className="black-clawd-body" />
+      <rect x="60" y="13" width="6" height="13" fill="#000" className="black-clawd-body" />
+      <rect x="6" y="39" width="6" height="13" fill="#000" className="black-clawd-body" />
+      <rect x="18" y="39" width="6" height="13" fill="#000" className="black-clawd-body" />
+      <rect x="42" y="39" width="6" height="13" fill="#000" className="black-clawd-body" />
+      <rect x="54" y="39" width="6" height="13" fill="#000" className="black-clawd-body" />
+      <rect x="6" width="54" height="39" fill="#000" className="black-clawd-body" />
+      <rect x="12" y="13" width="6" height="6.5" fill="#fff" className="black-clawd-eye" />
+      <rect x="48" y="13" width="6" height="6.5" fill="#fff" className="black-clawd-eye" />
     </svg>
   );
+}
+
+// Theme hook — persisted in localStorage, toggled by Moon/Sun button
+function useTheme(): { theme: "light" | "dark"; toggle: () => void } {
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    const stored = localStorage.getItem("clawd-theme");
+    if (stored === "light" || stored === "dark") return stored;
+    return "light"; // always default to light on first visit
+  });
+
+  const isFirstRender = useRef(true);
+
+  useEffect(() => {
+    const applyTheme = () => {
+      document.documentElement.setAttribute("data-theme", theme);
+      reinitializeMermaid(theme === "dark");
+    };
+
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      applyTheme(); // no animation on initial sync
+      return;
+    }
+
+    // View Transitions API: GPU-composited cross-fade; fallback to instant
+    if (typeof (document as any).startViewTransition === "function") {
+      (document as any).startViewTransition(applyTheme);
+    } else {
+      applyTheme();
+    }
+    // Note: localStorage written only in toggle(), not here
+  }, [theme]);
+
+  const toggle = useCallback(() => {
+    setTheme((t) => {
+      const next = t === "light" ? "dark" : "light";
+      localStorage.setItem("clawd-theme", next);
+      return next;
+    });
+  }, []);
+
+  return { theme, toggle };
 }
 
 // Manage open channels in localStorage
@@ -447,6 +489,7 @@ function ChannelDialogSwipeRow({
 
 export default function App({ channel: initialChannel, articleId }: Props) {
   const isArticleMode = !!articleId;
+  const { theme, toggle: toggleTheme } = useTheme();
   // Active channel (can be switched without page reload)
   const [activeChannel, setActiveChannel] = useState(initialChannel);
 
@@ -2555,6 +2598,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             ) : undefined
           }
           onPlanClick={() => setShowPlanModal(true)}
+          theme={theme}
+          onThemeToggle={toggleTheme}
         />
       )}
       <StreamOutputDialog

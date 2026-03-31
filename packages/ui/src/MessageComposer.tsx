@@ -126,6 +126,32 @@ interface AttachmentFile {
   preview?: string;
 }
 
+// Moon icon — shown in light mode
+function MoonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  );
+}
+
+// Sun icon — shown in dark mode
+function SunIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="5" fill="currentColor" stroke="none" />
+      <line x1="12" y1="1" x2="12" y2="3" />
+      <line x1="12" y1="21" x2="12" y2="23" />
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+      <line x1="1" y1="12" x2="3" y2="12" />
+      <line x1="21" y1="12" x2="23" y2="12" />
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+    </svg>
+  );
+}
+
 interface Props {
   onSend: (text: string, files?: File[]) => void;
   channel: string;
@@ -138,6 +164,8 @@ interface Props {
   skillsButton?: React.ReactNode;
   worktreeButton?: React.ReactNode;
   onPlanClick?: () => void;
+  theme: "light" | "dark";
+  onThemeToggle: () => void;
 }
 
 /**
@@ -320,6 +348,8 @@ export default function MessageComposer({
   skillsButton,
   worktreeButton,
   onPlanClick,
+  theme,
+  onThemeToggle,
 }: Props) {
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -748,7 +778,12 @@ export default function MessageComposer({
                     src={attachment.preview}
                     alt={attachment.name}
                     className="attachment-thumbnail"
-                    style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4 }}
+                    style={{
+                      width: 40,
+                      height: 40,
+                      objectFit: "cover",
+                      borderRadius: 4,
+                    }}
                   />
                 )}
                 <span className="attachment-name">{attachment.name}</span>
@@ -783,6 +818,16 @@ export default function MessageComposer({
               <svg viewBox="0 0 24 24" fill="currentColor">
                 <path d="M5 17v2h14v-2H5zm4.5-4.2h5l.9 2.2h2.1L12.75 4h-1.5L6.5 15h2.1l.9-2.2zM12 5.98L13.87 11h-3.74L12 5.98z" />
               </svg>
+            </button>
+            {/* Theme toggle — always visible, outside !showToolbar guard */}
+            <button
+              className="action-btn theme-toggle"
+              onClick={onThemeToggle}
+              aria-label="Dark mode"
+              aria-pressed={theme === "dark"}
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {theme === "dark" ? <SunIcon /> : <MoonIcon />}
             </button>
             {/* Icon buttons — auto-collapses into ⋮ when container overflows */}
             {!showToolbar &&

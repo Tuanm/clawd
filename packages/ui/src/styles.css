@@ -23,6 +23,12 @@
   --agent-color: hsl(var(--text));
   --user-color: hsl(var(--accent));
   --ui-scale: 1.25;
+  /* Light-mode defaults for orphaned vars used via hsl(var(...)) */
+  color-scheme: light;
+  --text-dim: 210 10% 45%;
+  --border-dim: 210 10% 82%;
+  --bg-dim: 48 20% 92%;
+  --bg-highlight: 48 33% 90%;
 }
 
 * {
@@ -8926,3 +8932,633 @@ textarea {
   padding: 1px 6px;
   border-radius: 3px;
 }
+
+/* ==========================================================================
+   DARK MODE — data-theme="dark"
+   Applied via <html data-theme="dark"> by useTheme() in App.tsx
+   ========================================================================== */
+
+/* Suppress all transitions during initial theme application (FOUC prevention) */
+.no-transition * {
+  transition: none !important;
+}
+
+/* Element-level transitions for smooth toggle animation */
+body,
+.app,
+.composer-box,
+.message,
+.header,
+.sidebar-panel,
+.stream-dialog,
+.modal-overlay {
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    border-color 0.15s ease,
+    box-shadow 0.2s ease;
+}
+/* .action-btn: transition is NOT inherited — Moon/Sun icon color would snap without this */
+.action-btn {
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease;
+}
+/* Avatar SVG rects: transition is NOT inherited from parent containers */
+.worker-avatar-body,
+.worker-avatar-eye,
+.black-clawd-body,
+.black-clawd-eye {
+  transition: fill 0.2s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  body,
+  .app,
+  .composer-box,
+  .message,
+  .header,
+  .sidebar-panel,
+  .stream-dialog,
+  .modal-overlay,
+  .action-btn,
+  .worker-avatar-body,
+  .worker-avatar-eye,
+  .black-clawd-body,
+  .black-clawd-eye {
+    transition: none !important;
+  }
+}
+
+/* Full-page cross-fade via View Transitions API (GPU-composited, no layout thrash) */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root) {
+    animation: 0.25s ease both vt-fade-out;
+  }
+  ::view-transition-new(root) {
+    animation: 0.25s ease both vt-fade-in;
+  }
+}
+@keyframes vt-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes vt-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Ensure light color-scheme on explicit light toggle (OS=dark + user=light scenario) */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* --------------------------------------------------------------------------
+   3.1 Dark token palette
+   -------------------------------------------------------------------------- */
+:root[data-theme="dark"] {
+  /* Backgrounds — GitHub near-black palette */
+  --bg: 216 28% 7%; /* #0d1117 */
+  --bg-center: 215 21% 11%; /* #161b22 */
+
+  /* Text */
+  --text: 210 17% 88%; /* ~#d8dde6 near-white */
+
+  /* Accent — UNCHANGED (coral orange branding) */
+  --accent: 15 63.1% 59.6%;
+
+  /* Native browser controls */
+  color-scheme: dark;
+
+  /* Dim text / secondary borders */
+  --text-dim: 210 10% 50%;
+  --border-dim: 222 14% 28%;
+
+  /* Card / component borders */
+  --border-color: #2d3748; /* consumed as var(--border-color) directly, NOT hsl(var()) */
+
+  /* Space-header/banner vars */
+  --bg-secondary: hsl(215, 21%, 14%);
+  --bg-warning: hsl(38, 50%, 18%);
+  --text-warning: hsl(38, 80%, 70%);
+
+  /* Orphaned vars — dark overrides */
+  --bg-dim: 222 14% 9%;
+  --bg-highlight: 222 14% 20%;
+}
+
+/* --------------------------------------------------------------------------
+   4. Background & dot pattern
+   -------------------------------------------------------------------------- */
+[data-theme="dark"] .app,
+[data-theme="dark"] .home-page,
+[data-theme="dark"] .modal-overlay {
+  background-image:
+    radial-gradient(circle at center, hsl(var(--bg-center)) 0%, hsl(var(--bg-center) / 70%) 40%, transparent 70%),
+    radial-gradient(circle, hsl(var(--text) / 6%) 1px, transparent 1px);
+}
+[data-theme="dark"] .plan-modal-overlay {
+  background-image:
+    radial-gradient(
+      circle at center,
+      hsl(var(--bg-center)) 0%,
+      hsl(var(--bg-center) / 85%) 50%,
+      hsl(var(--bg-center) / 70%) 100%
+    ),
+    radial-gradient(circle, hsl(var(--text) / 6%) 1px, transparent 1px);
+}
+[data-theme="dark"] .app {
+  background-color: hsl(var(--bg));
+}
+
+/* --------------------------------------------------------------------------
+   5. Component overrides
+   -------------------------------------------------------------------------- */
+
+/* 5.1 Header */
+[data-theme="dark"] .header {
+  border-bottom-color: hsl(var(--text) / 8%);
+}
+
+/* 5.2 Messages & inline content */
+[data-theme="dark"] .message:hover::before {
+  background: hsl(var(--text) / 4%);
+}
+[data-theme="dark"] .message-expand-toggle {
+  color: hsl(var(--text-dim));
+}
+[data-theme="dark"] .message-expand-toggle:hover {
+  color: hsl(var(--text));
+}
+[data-theme="dark"] .message-retry-btn {
+  background: hsl(0 30% 18%);
+  color: hsl(0 70% 70%);
+}
+[data-theme="dark"] .message-retry-btn:hover {
+  background: hsl(0 30% 22%);
+}
+[data-theme="dark"] .message-content a[href^="#"] {
+  background: hsl(15 40% 18%);
+  color: hsl(15 80% 72%);
+}
+[data-theme="dark"] .message-content a[href^="#"]:hover {
+  background: hsl(15 40% 24%);
+}
+[data-theme="dark"] .mention-clawd {
+  background: hsl(15 40% 18%);
+  color: hsl(15 80% 72%);
+}
+[data-theme="dark"] .mention-clawd:hover {
+  background: hsl(15 40% 24%);
+}
+[data-theme="dark"] .message-content hr {
+  border-color: hsl(var(--text) / 12%);
+}
+[data-theme="dark"] .message-content .footnote-ref,
+[data-theme="dark"] .message-content .footnotes {
+  border-color: hsl(var(--text) / 15%);
+}
+/* highlight-pulse (used by .message.highlight — distinct from search-pulse) */
+[data-theme="dark"] .message.highlight {
+  animation: highlight-pulse-dark 2s ease-out;
+}
+@keyframes highlight-pulse-dark {
+  0% {
+    background: hsl(48 60% 20%);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* 5.3 Stream dialog */
+[data-theme="dark"] .stream-dialog {
+  background: hsl(var(--bg-center));
+  color: hsl(var(--text));
+}
+
+/* 5.4 Hibernate banner */
+[data-theme="dark"] .hibernate-banner {
+  background: hsl(var(--text) / 5%);
+}
+
+/* 5.5 Composer box */
+[data-theme="dark"] .composer-box {
+  background: hsl(var(--bg-center));
+}
+[data-theme="dark"] .composer-raw-textarea {
+  color: hsl(var(--text));
+  background: transparent;
+}
+
+/* 5.6 Attachment chips & composer editor */
+[data-theme="dark"] .attachment-item,
+[data-theme="dark"] .composer-attachment-item {
+  background: hsl(var(--text) / 8%);
+}
+[data-theme="dark"] .attachment-remove:hover {
+  background: hsl(var(--text) / 15%);
+}
+[data-theme="dark"] .composer-attachments {
+  border-top-color: hsl(var(--text) / 10%);
+}
+[data-theme="dark"] .composer-editor code {
+  color: hsl(340 70% 65%);
+  background: hsl(222 14% 20%);
+}
+
+/* 5.7 Scroll-to-bottom */
+[data-theme="dark"] .scroll-to-bottom {
+  background: hsl(var(--bg-center));
+  border-color: hsl(var(--text) / 20%);
+  color: hsl(var(--text));
+}
+[data-theme="dark"] .scroll-to-bottom:hover {
+  background: hsl(var(--text) / 8%);
+}
+[data-theme="dark"] .scroll-to-bottom.has-unread {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+/* 5.8 Code blocks */
+[data-theme="dark"] .message-content pre {
+  background: hsl(222 14% 10%);
+}
+[data-theme="dark"] code:not(pre code) {
+  background: hsl(var(--text) / 10%);
+  color: hsl(15 80% 70%);
+}
+[data-theme="dark"] .code-preview {
+  background: hsl(var(--bg-center));
+  border-color: hsl(var(--text) / 15%);
+}
+[data-theme="dark"] .code-preview-header {
+  background: hsl(var(--text) / 6%);
+  border-bottom-color: hsl(var(--text) / 10%);
+}
+[data-theme="dark"] .code-preview-line-num {
+  color: hsl(210 10% 50%);
+}
+[data-theme="dark"] .code-copy-btn {
+  background: hsl(var(--bg-center));
+  border-color: hsl(var(--text) / 20%);
+  color: hsl(var(--text));
+}
+[data-theme="dark"] .code-copy-btn:hover {
+  background: hsl(var(--text) / 8%);
+}
+[data-theme="dark"] .code-copy-btn.copied {
+  background: hsl(142 40% 20%);
+  border-color: hsl(142 60% 40%);
+  color: hsl(142 60% 60%);
+}
+
+/* 5.9 HTML preview (outer div only — iframe document is OOS, see §16) */
+[data-theme="dark"] .html-preview {
+  background: hsl(var(--bg-center));
+  border-color: hsl(var(--text) / 15%);
+}
+
+/* 5.10 Article attachment cards */
+[data-theme="dark"] .message-article-card {
+  background: hsl(var(--bg-center));
+}
+
+/* 5.11 Markdown tables */
+[data-theme="dark"] .message-content th,
+[data-theme="dark"] .message-content td {
+  border-color: hsl(var(--text) / 15%);
+}
+[data-theme="dark"] .message-content th {
+  background: hsl(var(--text) / 8%);
+}
+[data-theme="dark"] .message-content tr:nth-child(even) {
+  background: hsl(var(--text) / 4%);
+}
+[data-theme="dark"] .message-content tr:hover {
+  background: hsl(var(--text) / 7%);
+}
+
+/* 5.12 Markdown details/summary (collapsibles) */
+[data-theme="dark"] .message-content details {
+  border-color: hsl(var(--text) / 15%);
+}
+[data-theme="dark"] .message-content summary {
+  background: hsl(var(--text) / 6%);
+}
+[data-theme="dark"] .message-content details[open] summary {
+  border-bottom-color: hsl(var(--text) / 15%);
+}
+[data-theme="dark"] .message-content summary:hover {
+  background: hsl(var(--text) / 10%);
+}
+
+/* 5.13 Callout blocks */
+[data-theme="dark"] .callout-note {
+  background: hsl(210 60% 15%);
+  border-color: #2196f3;
+}
+[data-theme="dark"] .callout-note .callout-title {
+  color: hsl(210 80% 70%);
+}
+[data-theme="dark"] .callout-tip {
+  background: hsl(142 40% 12%);
+  border-color: #4caf50;
+}
+[data-theme="dark"] .callout-tip .callout-title {
+  color: hsl(142 60% 60%);
+}
+[data-theme="dark"] .callout-important {
+  background: hsl(260 40% 15%);
+  border-color: #7c4dff;
+}
+[data-theme="dark"] .callout-important .callout-title {
+  color: hsl(260 70% 70%);
+}
+[data-theme="dark"] .callout-warning {
+  background: hsl(38 60% 12%);
+  border-color: #ff9800;
+}
+[data-theme="dark"] .callout-warning .callout-title {
+  color: hsl(38 80% 65%);
+}
+[data-theme="dark"] .callout-caution {
+  background: hsl(0 50% 14%);
+  border-color: #f44336;
+}
+[data-theme="dark"] .callout-caution .callout-title {
+  color: hsl(0 70% 70%);
+}
+
+/* 5.14 Search highlight */
+[data-theme="dark"] .search-highlight {
+  background: hsl(48 80% 30%);
+  color: hsl(48 80% 90%);
+}
+[data-theme="dark"] .message.search-highlight-message {
+  animation: search-pulse-dark 2s ease-out;
+}
+@keyframes search-pulse-dark {
+  0% {
+    background: hsl(48 60% 25%);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* 5.15 Space header & locked banner — via CSS vars in :root[data-theme="dark"] */
+/* --bg-secondary, --bg-warning, --text-warning defined in token block above */
+
+/* 5.16 Sidebar panel */
+[data-theme="dark"] .sidebar-panel {
+  border-left-color: hsl(var(--text) / 10%);
+}
+/* .sidebar-html-iframe element bg (iframe document content remains OOS) */
+[data-theme="dark"] .sidebar-html-iframe {
+  background: hsl(var(--bg-center));
+}
+
+/* 5.17 Artifact iframe container & error banner */
+[data-theme="dark"] .artifact-iframe-container {
+  background: #1a1a2e;
+}
+[data-theme="dark"] .artifact-error-banner {
+  background: #3d1f28;
+  color: #ffa198;
+  border-color: #5a2030;
+}
+
+/* 5.18 Stream diff, dialog status, tool status */
+[data-theme="dark"] .stream-diff-del {
+  color: hsl(0 60% 70%);
+  background: hsl(0 30% 15%);
+}
+[data-theme="dark"] .stream-diff-add {
+  color: hsl(130 50% 65%);
+  background: hsl(130 20% 15%);
+}
+[data-theme="dark"] .stream-dialog-status-completed {
+  background: hsl(150 30% 18%);
+  color: hsl(150 60% 65%);
+}
+[data-theme="dark"] .stream-tool-status-ok {
+  background: hsl(150 30% 16%);
+  color: hsl(150 55% 60%);
+}
+[data-theme="dark"] .stream-tool-status-error {
+  background: hsl(0 40% 18%);
+  color: hsl(0 70% 70%);
+}
+
+/* 5.19 Mermaid error UI */
+[data-theme="dark"] .mermaid-error-header {
+  color: hsl(45 80% 65%);
+}
+[data-theme="dark"] .mermaid-retry-btn {
+  color: hsl(45 80% 65%);
+}
+
+/* 5.20 Syntax highlight .hl-* classes */
+/* Scenario A: OS=light + user=dark (restore dark values overridden by prefers-color-scheme: light) */
+[data-theme="dark"] .hl-keyword {
+  color: #c586c0;
+}
+[data-theme="dark"] .hl-string {
+  color: #ce9178;
+}
+[data-theme="dark"] .hl-number {
+  color: #b5cea8;
+}
+[data-theme="dark"] .hl-comment {
+  color: #6a9955;
+  font-style: italic;
+}
+[data-theme="dark"] .hl-type {
+  color: #4ec9b0;
+}
+/* Scenario B: OS=dark + user=light (force light values; specificity 0-2-0 beats @media 0-1-0) */
+[data-theme="light"] .hl-keyword {
+  color: #0000ff;
+}
+[data-theme="light"] .hl-string {
+  color: #a31515;
+}
+[data-theme="light"] .hl-number {
+  color: #098658;
+}
+[data-theme="light"] .hl-comment {
+  color: #008000;
+  font-style: italic;
+}
+[data-theme="light"] .hl-type {
+  color: #267f99;
+}
+
+/* 5.21 Diff viewer lines — token-based, auto-adapt */
+
+/* 5.22 Box shadows */
+[data-theme="dark"] .home-dropdown,
+[data-theme="dark"] .composer-overflow-dropdown,
+[data-theme="dark"] .context-menu {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+[data-theme="dark"] .scroll-to-bottom {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* 5.23 Scrollbars & notification toggle */
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: hsl(var(--text) / 25%);
+}
+[data-theme="dark"] .notification-toggle:hover {
+  background: hsl(222 14% 22%);
+}
+[data-theme="dark"] .notification-toggle.enabled:hover {
+  background: hsl(15 40% 18%);
+}
+
+/* 5.24 Print reset — prevent dark backgrounds wasting ink */
+@media print {
+  [data-theme="dark"] * {
+    background: #fff !important;
+    color: #000 !important;
+    box-shadow: none !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   6. Interactive components — mirror @media (prefers-color-scheme: dark) blocks
+   -------------------------------------------------------------------------- */
+[data-theme="dark"] .interactive-input,
+[data-theme="dark"] .interactive-select {
+  background: hsl(var(--text) / 5%);
+  border-color: hsl(var(--text) / 20%);
+}
+[data-theme="dark"] .interactive-btn--secondary {
+  border-color: hsl(var(--accent) / 40%);
+}
+[data-theme="dark"] .interactive-rating-icon--inactive {
+  opacity: 0.25;
+}
+[data-theme="dark"] .interactive-checkbox-box {
+  border-color: hsl(var(--text) / 25%);
+}
+[data-theme="dark"] .interactive-btn--selected {
+  background: hsl(var(--accent));
+  color: #fff;
+}
+[data-theme="dark"] .interactive-hint {
+  color: var(--text-muted);
+}
+[data-theme="dark"] .interactive-slider {
+  background: hsl(var(--text) / 18%);
+}
+[data-theme="dark"] .interactive-slider::-webkit-slider-thumb {
+  border-color: #1c2128;
+}
+[data-theme="dark"] .interactive-slider::-moz-range-thumb {
+  border-color: #1c2128;
+}
+[data-theme="dark"] .interactive-toggle-thumb {
+  background: hsl(var(--text) / 25%);
+}
+/* .interactive-toggle-thumb::after { background: #fff } — white knob is correct in both modes */
+[data-theme="dark"] .interactive-radio-dot {
+  border-color: hsl(var(--text) / 30%);
+}
+[data-theme="dark"] .interactive-number-btn {
+  border-color: hsl(var(--text) / 20%);
+  background: hsl(var(--text) / 6%);
+}
+[data-theme="dark"] .interactive-number-field {
+  border-color: hsl(var(--text) / 20%);
+}
+[data-theme="dark"] .interactive-table th {
+  background: hsl(var(--text) / 8%);
+  border-bottom-color: hsl(var(--text) / 18%);
+}
+[data-theme="dark"] .interactive-table td {
+  border-bottom-color: hsl(var(--text) / 10%);
+}
+[data-theme="dark"] .interactive-tabs {
+  border-bottom-color: hsl(var(--text) / 18%);
+}
+
+/* --------------------------------------------------------------------------
+   7. CSV table, lazy placeholder, files — mirror @media block
+   -------------------------------------------------------------------------- */
+[data-theme="dark"] .artifact-csv-table {
+  border-color: #30363d;
+}
+[data-theme="dark"] .artifact-csv-table th {
+  background: #161b22;
+  border-color: #30363d;
+}
+[data-theme="dark"] .artifact-csv-table td {
+  border-color: #30363d;
+}
+[data-theme="dark"] .artifact-csv-table .row-odd {
+  background: #0d1117;
+}
+[data-theme="dark"] .artifact-csv-table .row-even {
+  background: #161b22;
+}
+[data-theme="dark"] .file-pdf-preview {
+  border-color: #30363d;
+}
+[data-theme="dark"] .file-audio-player {
+  background: #161b22;
+}
+[data-theme="dark"] .lazy-viewport-placeholder {
+  background: #161b22;
+}
+
+/* --------------------------------------------------------------------------
+   8. Prism syntax highlighting tokens
+   -------------------------------------------------------------------------- */
+:root[data-theme="dark"] {
+  --prism-comment: #8b949e;
+  --prism-keyword: #ff7b72;
+  --prism-string: #a5d6ff;
+  --prism-function: #d2a8ff;
+  --prism-number: #79c0ff;
+  --prism-operator: #ff7b72;
+  --prism-class: #f0883e;
+  --prism-punctuation: #c9d1d9;
+  --prism-property: #79c0ff;
+  --prism-tag: #7ee787;
+  --prism-attr-name: #d2a8ff;
+  --prism-attr-value: #a5d6ff;
+  --prism-builtin: #ffa657;
+  --prism-inserted: #aff5b4;
+  --prism-deleted: #ffa198;
+  --prism-changed: #ffa657;
+}
+
+/* --------------------------------------------------------------------------
+   11. Avatar dark mode — WorkerClawdAvatar & BlackClawdIcon
+   -------------------------------------------------------------------------- */
+[data-theme="dark"] .worker-avatar-body {
+  fill: #e8e8e8;
+}
+[data-theme="dark"] .worker-avatar-eye {
+  fill: #1a1a1a;
+}
+[data-theme="dark"] .black-clawd-body {
+  fill: #e8e8e8;
+}
+[data-theme="dark"] .black-clawd-eye {
+  fill: #1a1a1a;
+}
+
+/* ==========================================================================
+   END DARK MODE
+   ========================================================================== */
