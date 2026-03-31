@@ -171,9 +171,15 @@ function useTheme(): { theme: "light" | "dark"; toggle: () => void } {
       document.documentElement.setAttribute("data-theme", theme);
       reinitializeMermaid(theme === "dark");
       // Update PWA title bar color immediately
-      document
-        .querySelector('meta[name="theme-color"]')
-        ?.setAttribute("content", theme === "dark" ? "#0d1117" : "#f9f7f3");
+      let themeColorMeta = document.querySelector('meta[name="theme-color"]');
+      if (!themeColorMeta) {
+        // Self-heal: create the tag if somehow missing (e.g. browser stripped it)
+        console.warn("[theme] meta[name='theme-color'] not found — creating it");
+        themeColorMeta = document.createElement("meta");
+        themeColorMeta.setAttribute("name", "theme-color");
+        document.head.appendChild(themeColorMeta);
+      }
+      themeColorMeta.setAttribute("content", theme === "dark" ? "#0d1117" : "#f9f7f3");
     };
 
     if (isFirstRender.current) {
