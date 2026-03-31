@@ -187,6 +187,17 @@ function useTheme(): { theme: "light" | "dark"; toggle: () => void } {
     // Note: localStorage written only in toggle(), not here
   }, [theme]);
 
+  // Sync theme when another frame (e.g. subspace sidebar iframe) changes localStorage
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "clawd-theme" && (e.newValue === "light" || e.newValue === "dark")) {
+        setTheme(e.newValue);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   const toggle = useCallback(() => {
     setTheme((t) => {
       const next = t === "light" ? "dark" : "light";
