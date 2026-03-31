@@ -52,6 +52,7 @@ import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../agent/api/provide
 import { isWorktreeEnabled, loadConfigFile } from "../config-file";
 import { getSkillManager } from "../agent/skills/manager";
 import type { WorkerManager } from "../worker-manager";
+import { broadcastUpdate } from "../server/websocket";
 
 // ============================================================================
 // Security: Sensitive file patterns (blocked from reading)
@@ -764,7 +765,14 @@ export function registerAgentRoutes(
 
         // Update sleeping state if changed
         if (sleeping !== undefined) {
-          workerManager.setAgentSleeping(channel, agent_id, sleeping === true || sleeping === 1);
+          const isSleeping = sleeping === true || sleeping === 1;
+          workerManager.setAgentSleeping(channel, agent_id, isSleeping);
+          // Broadcast so the UI updates immediately (same as agent.setSleeping)
+          broadcastUpdate(channel, {
+            type: "agent_sleep",
+            agent_id: agent_id,
+            is_sleeping: isSleeping,
+          });
         }
 
         return json({
