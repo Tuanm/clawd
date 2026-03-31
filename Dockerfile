@@ -113,4 +113,4 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=30s \
   CMD curl -sf http://localhost:3456/health || exit 1
 
 ENTRYPOINT ["clawd-app"]
-CMD ["--no-browser"]
+CMD ["--no-open-browser", "--yolo"]
