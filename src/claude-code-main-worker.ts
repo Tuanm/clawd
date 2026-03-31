@@ -425,7 +425,29 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       agentFileConfig: this.config.agentFileConfig,
       mcpPrefix: "mcp__clawd__",
     };
-    const systemPrompt = buildDynamicSystemPrompt(ccCtx);
+    let systemPrompt = buildDynamicSystemPrompt(ccCtx);
+
+    // Dynamic: inject active sub-agent count as a system reminder (best-effort)
+    try {
+      const agentRes = await fetch(`${this.config.chatApiUrl}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: Date.now(),
+          method: "tools/call",
+          params: { name: "list_agents", arguments: { channel: this.config.channel } },
+        }),
+      });
+      const agentJson = (await agentRes.json()) as any;
+      const agentData = JSON.parse(agentJson?.result?.content?.[0]?.text ?? "{}") as any;
+      const activeCount = ((agentData?.agents ?? []) as any[]).filter((a: any) => a.status === "active").length;
+      if (activeCount > 0) {
+        systemPrompt += `\n\n<system-reminder>${activeCount} sub-agent${activeCount > 1 ? "s are" : " is"} currently running in this channel. They will report back when done — do not start work that overlaps their tasks.</system-reminder>`;
+      }
+    } catch {
+      /* best-effort — skip on error */
+    }
 
     // Detect heartbeat-initiated turns — suppress re-injection for these
     const isHeartbeatTurn = messages.length === 1 && messages[0]?.text === "[HEARTBEAT]";

@@ -612,6 +612,27 @@ LONG-TERM MEMORY:
             context += formatContextMessages(messages);
           }
 
+          // Inject active sub-agent reminder (only when agents are running)
+          try {
+            const agentRes = await timedFetch(`${apiUrl}/mcp`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: Date.now(),
+                method: "tools/call",
+                params: { name: "list_agents", arguments: { channel: config.channel } },
+              }),
+            });
+            const agentData = safeJsonParse(((await agentRes.json()) as any)?.result?.content?.[0]?.text, {}) as any;
+            const activeCount = (agentData?.agents ?? []).filter((a: any) => a.status === "active").length;
+            if (activeCount > 0) {
+              context += `\n<system-reminder>${activeCount} sub-agent${activeCount > 1 ? "s are" : " is"} currently running in this channel. They will report back when done — do not start work that overlaps their tasks.</system-reminder>\n`;
+            }
+          } catch {
+            /* best-effort — skip on error */
+          }
+
           return context || null;
         } catch {
           return null;

@@ -262,7 +262,12 @@ Delegate when:
 - Self-contained work that returns a summary
 
 Do NOT delegate:
-${doNotDelegate.map((r) => `- ${r}`).join("\n")}`;
+${doNotDelegate.map((r) => `- ${r}`).join("\n")}
+
+Active sub-agents:
+- Before starting any task, check ${p}list_agents for actively-running sub-agents
+- Sub-agents report their results back to the main channel when complete
+- Never start work that overlaps an in-flight sub-agent's task — wait for its report first`;
 }
 
 // ============================================================================
