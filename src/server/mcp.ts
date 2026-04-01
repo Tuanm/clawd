@@ -25,7 +25,7 @@ import {
 import { analyzeImage, analyzeVideo, editImage, generateImage, getImageQuotaStatus } from "./multimodal";
 import { getOptimizedFile } from "./routes/files";
 import { getConversationHistory, getPendingMessages, postMessage } from "./routes/messages";
-import { broadcastMessageSeen, broadcastUpdate } from "./websocket";
+import { broadcastMessage, broadcastMessageSeen, broadcastUpdate } from "./websocket";
 
 // Scheduler reference (set by index.ts after creation)
 let _scheduler: SchedulerManager | null = null;
@@ -1842,6 +1842,12 @@ async function executeToolCall(
           interactive_json: interactiveJson ? JSON.stringify(interactiveJson) : undefined,
         });
 
+        // Broadcast to WebSocket clients so UI updates immediately (no 10s poll wait)
+        if (result.ok && result.ts) {
+          const rawMsg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(result.ts);
+          if (rawMsg) broadcastMessage(channel, rawMsg);
+        }
+
         resultText = JSON.stringify(result);
         break;
       }
@@ -2365,6 +2371,10 @@ async function executeToolCall(
           const { attachFilesToMessage } = await import("./routes/files");
           const files = attachFilesToMessage(msgResult.ts, fileIds);
 
+          // Broadcast to WebSocket clients so UI updates immediately
+          const updatedMsg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(msgResult.ts);
+          if (updatedMsg) broadcastMessage(channel, updatedMsg);
+
           resultText = JSON.stringify(
             {
               ok: true,
@@ -2376,6 +2386,10 @@ async function executeToolCall(
             2,
           );
         } else {
+          if (msgResult.ok && msgResult.ts) {
+            const rawMsg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(msgResult.ts);
+            if (rawMsg) broadcastMessage(channel, rawMsg);
+          }
           resultText = JSON.stringify(msgResult);
         }
         break;
