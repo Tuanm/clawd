@@ -1984,11 +1984,17 @@ export default function MessageList({
   }, []);
 
   // Initial scroll to first unread or bottom on first render (page refresh)
+  // In article mode: always scroll to top instead.
   useEffect(() => {
     if (messages.length > 0 && !initialScrollDone.current) {
       initialScrollDone.current = true;
       // Use setTimeout to ensure DOM is fully rendered
       setTimeout(() => {
+        // Article mode: always start at top
+        if (isArticleMode) {
+          if (containerRef.current) containerRef.current.scrollTop = 0;
+          return;
+        }
         // Find first unread message
         if (userLastSeenTs) {
           const firstUnread = messages.find((m) => m.ts > userLastSeenTs && m.user !== "UHUMAN");
@@ -2002,7 +2008,7 @@ export default function MessageList({
         endRef.current?.scrollIntoView({ behavior: "instant" });
       }, 0);
     }
-  }, [messages.length, userLastSeenTs, messages]);
+  }, [messages.length, userLastSeenTs, messages, isArticleMode]);
 
   // Jump to message from search
   useEffect(() => {
@@ -2021,16 +2027,17 @@ export default function MessageList({
   }, [jumpToMessageTs, onJumpComplete]);
 
   // Auto-scroll to bottom on new messages (only if at latest and user is at bottom)
+  // Disabled in article mode — articles don't receive new messages.
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !initialScrollDone.current || !isAtLatest) return;
+    if (!container || !initialScrollDone.current || !isAtLatest || isArticleMode) return;
 
     // Check if user was at the bottom before new messages
     const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
     if (scrollBottom < 100) {
       endRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [isAtLatest]);
+  }, [isAtLatest, isArticleMode]);
 
   // Helper to check if scroll button should show (not at bottom)
   const checkScrollButtonVisibility = useCallback(() => {
@@ -2162,6 +2169,7 @@ export default function MessageList({
   const scrolledForChannelRef = useRef<Set<string>>(new Set());
 
   // Scroll to bottom when channel changes or when messages first load for new channel
+  // In article mode: scroll to top instead.
   useEffect(() => {
     if (!channelKey || messages.length === 0) return;
 
@@ -2172,13 +2180,16 @@ export default function MessageList({
       prevChannelKeyRef.current = channelKey;
       scrolledForChannelRef.current.add(channelKey);
 
-      // Longer delay on first load to ensure DOM is fully rendered
       const timer = setTimeout(() => {
-        endRef.current?.scrollIntoView({ behavior: "instant" });
+        if (isArticleMode) {
+          if (containerRef.current) containerRef.current.scrollTop = 0;
+        } else {
+          endRef.current?.scrollIntoView({ behavior: "instant" });
+        }
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [channelKey, messages.length]);
+  }, [channelKey, messages.length, isArticleMode]);
 
   // Check if a user is an agent - support both legacy UBOT/UWORKER patterns and new agent_id field
   const isAgent = (user: string) => user === "UBOT" || user.startsWith("UWORKER-");
