@@ -83,7 +83,7 @@ communicating with users through a real-time collaborative chat UI. Agents can:
 
 | Principle | Description |
 |---|---|
-| **Single binary deployment** | Compiles to `dist/server/clawd-app` with embedded UI + browser extension |
+| **Single binary deployment** | Compiles to `dist/clawd` with embedded UI + browser extension |
 | **Provider-agnostic** | Supports Copilot, OpenAI, Anthropic, Ollama, Minimax |
 | **Plugin-first agents** | All agent capabilities are expressed through the ToolPlugin/Plugin interfaces |
 | **Secure by default** | Sandboxed tool execution (bubblewrap/sandbox-exec), path validation, auth tokens |
@@ -2071,7 +2071,7 @@ flowchart TD
     S1["1. Vite builds UI\npackages/ui/ → packages/ui/dist/"]
     S2["2. embed-ui.ts\npackages/ui/dist/ → base64 → src/embedded-ui.ts"]
     S3["3. zip-extension.ts\npackages/browser-extension/ → zip → base64 → src/embedded-extension.ts"]
-    S4["4. bun build --compile\nsrc/index.ts → dist/server/clawd-app (single binary)"]
+    S4["4. bun build --compile\nsrc/index.ts → dist/clawd (single binary)"]
 
     Start --> S1 --> S2 --> S3 --> S4
 ```
@@ -2084,12 +2084,12 @@ flowchart TD
 | `bun run build` | Full build → single-platform binary |
 | `bun run build:all` | Full build → all platform binaries |
 | `bun run build:linux` | Linux x64 binary |
-| `bun run install:local` | Copy binary to `~/.clawd/bin/clawd-app` |
+| `bun run install:local` | Copy binary to `~/.clawd/bin/clawd` |
 
 ### CLI Options
 
 ```
-clawd-app [options]
+clawd [options]
   --host <host>           Bind address (default: 0.0.0.0)
   -p, --port <n>          Port number (default: 3456)
   --no-open-browser       Don't auto-open browser on start

@@ -444,7 +444,7 @@ export function listActiveWorkspaces(): WorkspaceHandle[] {
 
 /**
  * Destroy all orphaned clawd-ws-* workspace containers and networks from previous
- * clawd-app runs. Called once at startup before any new workspaces are spawned.
+ * clawd runs. Called once at startup before any new workspaces are spawned.
  * This prevents Docker network address pool exhaustion from leaked containers.
  */
 export async function cleanupOrphanedWorkspaces(): Promise<void> {

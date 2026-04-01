@@ -36,12 +36,12 @@ try {
     console.error("");
     console.log(`Claw'd App
 
-Usage: clawd-app [options]
+Usage: clawd [options]
 
 Options:
-  --host <host>                Server host (default: 0.0.0.0)
+  --host <host>               Server host (default: 0.0.0.0)
   -p, --port <port>           Server port (default: 3456)
-  --no-open-browser            Don't open browser on startup
+  --no-open-browser           Don't open browser on startup
   --yolo                      Disable sandbox restrictions for agents
   --debug                     Enable debug logging
   -h, --help                  Show this help message
@@ -50,9 +50,9 @@ Options:
   CLI flags take precedence over config file values.
 
 Examples:
-  clawd-app
-  clawd-app --host localhost --port 8080
-  clawd-app --no-open-browser --debug
+  clawd
+  clawd --host localhost --port 8080
+  clawd --no-open-browser --debug
 `);
     process.exit(1);
   }
@@ -62,12 +62,12 @@ Examples:
 if (parsedArgs.values.help) {
   console.log(`Claw'd App
 
-Usage: clawd-app [options]
+Usage: clawd [options]
 
 Options:
-  --host <host>                Server host (default: 0.0.0.0)
+  --host <host>               Server host (default: 0.0.0.0)
   -p, --port <port>           Server port (default: 3456)
-  --no-open-browser            Don't open browser on startup
+  --no-open-browser           Don't open browser on startup
   --yolo                      Disable sandbox restrictions for agents
   --debug                     Enable debug logging
   -h, --help                  Show this help message
@@ -76,9 +76,9 @@ Options:
   CLI flags take precedence over config file values.
 
 Examples:
-  clawd-app
-  clawd-app --host localhost --port 8080
-  clawd-app --no-open-browser --debug
+  clawd
+  clawd --host localhost --port 8080
+  clawd --no-open-browser --debug
 `);
   process.exit(0);
 }
@@ -416,7 +416,7 @@ const getUiDir = (): string | null => {
   const execAdjacentUi = join(execDir, "ui");
   if (existsSync(execAdjacentUi)) return execAdjacentUi;
 
-  // clawd-app specific: check for app-ui adjacent to executable
+  // clawd specific: check for app-ui adjacent to executable
   const appUi = join(execDir, "app-ui");
   if (existsSync(appUi)) return appUi;
 
@@ -428,7 +428,7 @@ const getUiDir = (): string | null => {
   const cwdPath = join(process.cwd(), "dist", "ui");
   if (existsSync(cwdPath)) return cwdPath;
 
-  console.warn("[clawd-app] Warning: UI directory not found and no embedded UI available");
+  console.warn("[clawd] Warning: UI directory not found and no embedded UI available");
   return null;
 };
 
@@ -836,7 +836,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
   path = path || url.pathname;
 
   try {
-    // ---- clawd-app specific routes ----
+    // ---- clawd specific routes ----
 
     // Agent management routes (handled by registerAgentRoutes)
     const agentResponse = handleAgentRoute(req, url, path, bunServer);
@@ -1054,7 +1054,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     if (path === "/health" || path === "/") {
       return json({
         ok: true,
-        server: "clawd-app",
+        server: "clawd",
         version: "0.1.0",
         clients: getClientCount(),
         workers: workerManager.getStatus().length,
@@ -1113,7 +1113,11 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     if (path === "/api/conversations.create" && req.method === "POST") {
       const body = await parseBody(req);
       const v = validateBody(
-        z.object({ name: z.string().min(1), description: z.string().optional(), user: z.string().optional() }),
+        z.object({
+          name: z.string().min(1),
+          description: z.string().optional(),
+          user: z.string().optional(),
+        }),
         body,
       );
       if (!v.ok) return v.error;
@@ -1547,13 +1551,23 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       if (!Array.isArray(body.items)) return json({ ok: false, error: "items array required" }, 400);
       if (body.items.length > 50) return json({ ok: false, error: "max 50 items per todo list" }, 400);
       const items = writeTodos(body.agent_id, body.channel, body.items);
-      return json({ ok: true, items, completed: items.length === 0 && body.items.length > 0 });
+      return json({
+        ok: true,
+        items,
+        completed: items.length === 0 && body.items.length > 0,
+      });
     }
 
     if (path === "/api/todos.update" && req.method === "POST") {
       const body = await parseBody(req);
       if (!body.agent_id || !body.channel || !body.item_id || !body.status)
-        return json({ ok: false, error: "agent_id, channel, item_id, and status required" }, 400);
+        return json(
+          {
+            ok: false,
+            error: "agent_id, channel, item_id, and status required",
+          },
+          400,
+        );
       const items = updateTodoItem(body.agent_id, body.channel, body.item_id, body.status);
       return json({ ok: true, items, completed: items.length === 0 });
     }
@@ -1700,10 +1714,9 @@ console.log(`
 +---------------------------------------------------------------+
 |  Claw'd App                                                   |
 +---------------------------------------------------------------+
-|  HTTP:      http://${HOST}:${PORT}                             |
-|  WebSocket: ws://${HOST}:${PORT}/ws                            |
+|  HTTP:      http://${HOST}:${PORT}
+|  WebSocket: ws://${HOST}:${PORT}/ws
 |  UI:        ${hasEmbeddedUI ? `embedded (${embeddedUIFileCount} files, ${(embeddedUITotalSize / 1024 / 1024).toFixed(1)}MB)` : UI_DIR ? UI_DIR : "(not found)"}
-|  Agent:     in-process
 +---------------------------------------------------------------+
 `);
 
@@ -1873,7 +1886,7 @@ setTimeout(async () => {
       }
     }
   } catch (error) {
-    console.error("[clawd-app] Failed to start worker manager:", error);
+    console.error("[clawd] Failed to start worker manager:", error);
   }
 }, 1000); // Delay 1s to ensure server is fully ready
 
@@ -1886,7 +1899,7 @@ if (config.openBrowser) {
       stderr: "ignore",
     });
   } catch {
-    console.log(`[clawd-app] Open http://localhost:${PORT} in your browser`);
+    console.log(`[clawd] Open http://localhost:${PORT} in your browser`);
   }
 }
 
@@ -1950,9 +1963,9 @@ let shutdownInProgress = false;
 const gracefulShutdown = async (signal: string) => {
   if (shutdownInProgress) return;
   shutdownInProgress = true;
-  console.log(`[clawd-app] Received ${signal}, shutting down...`);
+  console.log(`[clawd] Received ${signal}, shutting down...`);
   const forceTimer = setTimeout(() => {
-    console.error("[clawd-app] Shutdown timed out after 15s, forcing exit");
+    console.error("[clawd] Shutdown timed out after 15s, forcing exit");
     process.exit(1);
   }, 15000);
   forceTimer.unref();
@@ -1965,11 +1978,11 @@ const gracefulShutdown = async (signal: string) => {
     const { listActiveWorkspaces, destroyWorkspace } = await import("./agent/workspace/container.js");
     const workspaces = listActiveWorkspaces();
     if (workspaces.length > 0) {
-      console.log(`[clawd-app] Destroying ${workspaces.length} workspace container(s)...`);
+      console.log(`[clawd] Destroying ${workspaces.length} workspace container(s)...`);
       await Promise.allSettled(workspaces.map((w) => destroyWorkspace(w.id)));
     }
   } catch (err) {
-    console.error("[clawd-app] Error during shutdown:", err);
+    console.error("[clawd] Error during shutdown:", err);
   }
   // Final DB maintenance — checkpoint WAL before exit
   try {
@@ -1984,12 +1997,12 @@ process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 // Prevent unhandled rejections from crashing the process
 // (Claude Code SDK subprocess errors can surface as unhandled rejections)
 process.on("unhandledRejection", (reason: any) => {
-  console.error(`[clawd-app] Unhandled rejection: ${reason?.message || reason}`);
-  if (reason?.stack) console.error(`[clawd-app] Stack: ${reason.stack.slice(0, 500)}`);
+  console.error(`[clawd] Unhandled rejection: ${reason?.message || reason}`);
+  if (reason?.stack) console.error(`[clawd] Stack: ${reason.stack.slice(0, 500)}`);
 });
 
 process.on("uncaughtException", (err: Error) => {
-  console.error(`[clawd-app] Uncaught exception: ${err.message}`);
-  if (err.stack) console.error(`[clawd-app] Stack: ${err.stack.slice(0, 500)}`);
+  console.error(`[clawd] Uncaught exception: ${err.message}`);
+  if (err.stack) console.error(`[clawd] Stack: ${err.stack.slice(0, 500)}`);
   // Don't exit — let the process continue serving other agents
 });

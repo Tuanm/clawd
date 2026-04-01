@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "clawd-app",
+      "name": "clawd",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.81",
         "exceljs": "^4.4.0",
