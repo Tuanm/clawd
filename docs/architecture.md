@@ -1,6 +1,6 @@
 # Claw'd Architecture Reference
 
-> Last updated: 2026-03-29
+> Last updated: 2026-04-01
 
 ---
 
@@ -266,6 +266,23 @@ functions:
 |-------------|---------|
 | `/ws` | Real-time chat events (messages, reactions, agent streaming, tool calls) |
 | `/browser/ws` | Browser extension bridge (command dispatch + results) |
+
+#### Chat WebSocket Events
+
+| Event type | Trigger | Payload |
+|---|---|---|
+| `message` | New message posted (HTTP API or MCP `chat_send_message`) | `{ type, channel, message }` |
+| `message_changed` | Message updated or appended (`chat_update_message`, `chat_append_message`) | `{ type, channel, message }` |
+| `agent_streaming` | Agent begins or ends streaming a response | `{ type, channel, agent_id, is_streaming, avatar_color }` |
+| `agent_token` | Streaming token chunk | `{ type, channel, agent_id, token }` |
+| `agent_tool_call` | Tool invoked by agent | `{ type, channel, agent_id, tool, input }` |
+| `agent_seen` | Agent polled for new messages | `{ type, channel, agent_id, last_seen_ts }` |
+| `agent_status` | Agent status changed | `{ type, channel, agent_id, status }` |
+| `agent_sleep` | Agent sleep state changed | `{ type, channel, agent_id, is_sleeping }` |
+| `channel_cleared` | Channel history cleared | `{ type, channel }` |
+| `reaction_added` / `reaction_removed` | Emoji reaction toggled | `{ type, channel, item, reaction, user }` |
+
+The MCP `chat_send_message` tool calls `broadcastMessage()` immediately after inserting to the database, ensuring the UI receives the message in real time without waiting for the 10-second background poll fallback.
 
 ---
 
@@ -1189,6 +1206,28 @@ Support for custom claude-code providers (e.g., `"claude-code-2"` with type `"cl
 - Custom providers without type auto-inferred
 - Listed in agents dialog
 
+#### Tool Name Mapping
+
+Claude Code uses PascalCase native tool names (e.g., `Read`, `Write`, `Edit`). CC sub-agents spawn with a `CLAWD_TOOL_NAME_MAP` that automatically translates these to Claw'd MCP equivalents before the SDK call:
+
+| CC Native Name | Claw'd MCP Name |
+|---|---|
+| `Read` | `mcp__clawd__file_view` |
+| `Write` | `mcp__clawd__file_create` |
+| `Edit` | `mcp__clawd__file_edit` |
+| `MultiEdit` | `mcp__clawd__file_multi_edit` |
+| `Bash` | `mcp__clawd__bash` |
+| `Grep` | `mcp__clawd__file_grep` |
+| `Glob` | `mcp__clawd__file_glob` |
+| `WebFetch` | `mcp__clawd__web_fetch` |
+| `WebSearch` | `mcp__clawd__web_search` |
+| `TodoRead` | `mcp__clawd__todo_read` |
+| `TodoWrite` | `mcp__clawd__todo_write` |
+| `Task` | `mcp__clawd__spawn_agent` |
+| `custom_script` | `mcp__clawd__custom_script` |
+
+Native CC tools not in this map (e.g., `TaskOutput`, `TaskStop`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `EnterWorktree`, `ExitWorktree`, `RemoteTrigger`) are blocked via `disallowedTools` in `runSDKQuery`.
+
 #### Sub-Agent Capabilities
 
 - **Human interrupts**: Poll main channel space for human messages; abort + resume with human input
@@ -1746,11 +1785,11 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 | `app.skills.save` | POST | Create or update a skill |
 | `app.skills.delete` | DELETE | Remove a custom skill |
 
-### 13.9f Custom Tools APIs
+### 13.9f Custom Script APIs
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `custom_tool` | POST | Create/edit/delete/execute custom tools |
+| `custom_script` | POST | Create/edit/delete/execute custom scripts |
 
 ### 13.9g Worktree APIs
 
@@ -1972,7 +2011,25 @@ When `auth` is configured in `config.json`, the UI enforces access per channel:
 
 **Startup gate (`authGateCompleted`)** — On mount, `App.tsx` defers WebSocket connection and channel validation until the initial deep-link channel has been authenticated. If no initial channel is present, the gate completes immediately.
 
-### Recent UI Improvements (March 2026)
+### Article Mode
+
+When an article is opened at `/articles/{id}`, the UI switches to **article mode** (`isArticleMode`):
+
+- Header shows `{channel} | {article id}` instead of the agent roster
+- Message hover background is suppressed
+- Context menu is restricted to "Copy message" and "Copy text" (no Share, Copy link, Copy reference)
+- Initial scroll position goes to **top** instead of bottom
+- WebSocket subscriptions and background polling are disabled (articles are static)
+
+### Recent UI Improvements (April 2026)
+
+#### article_create — Multiple Content Sources
+The `article_create` tool (available to all agent types) now accepts three mutually exclusive content sources:
+- `content` — raw markdown string
+- `file_id` — file uploaded via `chat_upload_local_file`; file content used as article body
+- `message_ts` — timestamp of an existing chat message; message text used as article body
+
+Only `title` is required. This applies to the MCP agent endpoint, the REST endpoint (`/api/articles.create`), and the SDK agent tool.
 
 #### Text Selection & Copying
 - Text selection **enabled** on all messages

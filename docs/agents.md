@@ -118,6 +118,21 @@ Agents are assigned to chat channels via the UI (AgentDialog) or the API. Each c
 
 When an agent is assigned to a channel, Claw'd looks for its agent file by name. If found, the agent file's system prompt, directives, and language are injected into the agent's context.
 
+### Project Root
+
+The agent's **project root** determines which directory custom scripts and file tools are scoped to. Two paths are always valid:
+
+1. **Any path inside `root`** — the `root` value configured in `~/.clawd/config.json`
+2. **`~/.clawd/projects/{channel}`** — the default per-channel directory (auto-allowed even when `root` is set)
+
+If the project path is inside `~/.clawd/projects/`, it must be exactly `~/.clawd/projects/{channel}` — no subdirectories of other channels are permitted.
+
+When `root` is not configured (or `yolo: true` is set), any project path is accepted.
+
+### Worker Token
+
+Claude Code agents require a **worker token** — a personal access token used to authenticate the Claude Code CLI subprocess. The token can be set when creating an agent and edited afterwards via the Agents dialog (gear icon → edit). The stored value is masked in the UI (`abc***xyz`); entering a new value replaces it, and clicking **Clear** removes it entirely.
+
 ---
 
 ## Sub-Agent Spawning
