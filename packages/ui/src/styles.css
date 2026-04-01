@@ -7290,6 +7290,10 @@ textarea {
   width: 28px;
   height: 28px;
   border-radius: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
   color: hsl(var(--text) / 50%);
   text-decoration: none;
   transition:
@@ -7302,16 +7306,6 @@ textarea {
   color: hsl(var(--text) / 90%);
 }
 .sidebar-panel-action-icon:focus:not(:focus-visible) {
-  outline: none;
-}
-
-.sidebar-panel-expand-btn {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  padding: 0;
-}
-.sidebar-panel-expand-btn:focus:not(:focus-visible) {
   outline: none;
 }
 
