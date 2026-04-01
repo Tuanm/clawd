@@ -395,9 +395,11 @@ export function initAgentsTable(db: Database): void {
  * Validate that `projectPath` is inside the configured `root` (if any).
  * Returns an error string if the path violates the restriction, or null if OK.
  * In YOLO mode or when no root is configured, always returns null.
- * Paths inside ~/.clawd/projects/ are always allowed as an implicit second root.
+ *
+ * ~/.clawd/projects/ is always a valid location, but if the path is inside it
+ * it must be exactly ~/.clawd/projects/{channel} (when channel is provided).
  */
-function validateProjectRoot(projectPath: string): string | null {
+function validateProjectRoot(projectPath: string, channel?: string): string | null {
   const cfg = loadConfigFile();
   if (cfg.yolo || !cfg.root) return null;
 
@@ -416,9 +418,16 @@ function validateProjectRoot(projectPath: string): string | null {
     resolvedProject = resolve(projectPath);
   }
 
-  // ~/.clawd/projects/ is always a valid project location regardless of root
+  // ~/.clawd/projects/ is always a valid project location regardless of root,
+  // but the path must be exactly ~/.clawd/projects/{channel} (not a subdirectory).
   const defaultProjectsDir = resolve(join(homedir(), ".clawd", "projects"));
   if (resolvedProject.startsWith(defaultProjectsDir + "/") || resolvedProject === defaultProjectsDir) {
+    if (channel) {
+      const allowedChannelDir = resolve(join(defaultProjectsDir, channel));
+      if (resolvedProject !== allowedChannelDir) {
+        return `Project path inside ~/.clawd/projects/ must be ~/.clawd/projects/${channel} for channel "${channel}"`;
+      }
+    }
     return null;
   }
 
@@ -511,7 +520,7 @@ export function registerAgentRoutes(
 
         const agentProject = project || join(homedir(), ".clawd", "projects", channel);
         // Validate project path against configured root (sandbox mode) — always, not just for explicit paths
-        const rootErr = validateProjectRoot(agentProject);
+        const rootErr = validateProjectRoot(agentProject, channel);
         if (rootErr) return json({ ok: false, error: rootErr }, 400);
         // Auto-create default project directory
         if (!project && agentProject) {
@@ -658,7 +667,7 @@ export function registerAgentRoutes(
         }
         if (project !== undefined) {
           if (project) {
-            const rootErr = validateProjectRoot(project);
+            const rootErr = validateProjectRoot(project, channel);
             if (rootErr) return json({ ok: false, error: rootErr }, 400);
           }
           updates.push("project = ?");
