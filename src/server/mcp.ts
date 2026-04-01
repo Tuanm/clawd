@@ -3715,18 +3715,31 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         {
           name: "article_create",
           description:
-            "Create a new article (blog post, documentation, etc.). The article is stored and can be published to the channel. Use markdown for content.",
+            "Create a new article (blog post, documentation, etc.). The article is stored and can be published to the channel. Provide content via one of: 'content' (raw markdown), 'file_id' (uploaded file from chat_upload_local_file), or 'message_ts' (existing chat message timestamp).",
           inputSchema: {
             type: "object",
             properties: {
               title: { type: "string", description: "Article title" },
-              content: { type: "string", description: "Article content in markdown format" },
+              content: {
+                type: "string",
+                description: "Article content in markdown format (mutually exclusive with file_id and message_ts)",
+              },
+              file_id: {
+                type: "string",
+                description:
+                  "File ID from chat_upload_local_file — file content is used as article body (mutually exclusive with content and message_ts)",
+              },
+              message_ts: {
+                type: "string",
+                description:
+                  "Timestamp of an existing chat message — its text is used as article body (mutually exclusive with content and file_id)",
+              },
               description: { type: "string", description: "Short description/summary (optional)" },
               thumbnail_url: { type: "string", description: "URL for thumbnail image (optional)" },
               tags: { type: "array", items: { type: "string" }, description: "Array of tags (optional)" },
               published: { type: "boolean", description: "Whether to publish immediately (default: false)" },
             },
-            required: ["title", "content"],
+            required: ["title"],
           },
         },
         {
@@ -4787,11 +4800,50 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
           let text = "";
           switch (name) {
             case "article_create": {
-              const { title, content, description: desc, thumbnail_url, tags, published } = args as Record<string, any>;
-              if (!title || !content) {
-                text = JSON.stringify({ ok: false, error: "title and content are required" });
+              const {
+                title,
+                content: rawContent,
+                file_id,
+                message_ts: msgTs,
+                description: desc,
+                thumbnail_url,
+                tags,
+                published,
+              } = args as Record<string, any>;
+              if (!title) {
+                text = JSON.stringify({ ok: false, error: "title is required" });
                 break;
               }
+
+              // Resolve content from one of three sources
+              let resolvedContent: string | null = rawContent || null;
+
+              if (!resolvedContent && file_id) {
+                const { getFile } = await import("./routes/files");
+                const fileResult = getFile(file_id as string);
+                if (!fileResult) {
+                  text = JSON.stringify({ ok: false, error: `File not found: ${file_id}` });
+                  break;
+                }
+                resolvedContent = fileResult.data.toString("utf-8");
+              }
+
+              if (!resolvedContent && msgTs) {
+                const msg = db
+                  .query<{ text: string }, [string]>(`SELECT text FROM messages WHERE ts = ?`)
+                  .get(msgTs as string);
+                if (!msg) {
+                  text = JSON.stringify({ ok: false, error: `Message not found: ${msgTs}` });
+                  break;
+                }
+                resolvedContent = msg.text;
+              }
+
+              if (!resolvedContent) {
+                text = JSON.stringify({ ok: false, error: "Provide one of: content, file_id, or message_ts" });
+                break;
+              }
+
               const now = Math.floor(Date.now() / 1000);
               const articleId = randomUUID();
               const tagsJson = Array.isArray(tags) ? JSON.stringify(tags) : "[]";
@@ -4805,7 +4857,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
                   title,
                   desc || null,
                   thumbnail_url || null,
-                  content,
+                  resolvedContent,
                   tagsJson,
                   published ? 1 : 0,
                   now,
