@@ -1,6 +1,6 @@
 # Claw'd Codebase Summary
 
-> Updated: 2026-03-29 | Total Files: ~275 | Total Tokens: ~1.3M | Codebase size: 5.0M chars
+> Updated: 2026-04-01 | Total Files: ~275 | Total Tokens: ~1.3M | Codebase size: 5.0M chars
 
 ---
 

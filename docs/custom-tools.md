@@ -46,7 +46,7 @@ Ask any agent in a channel:
 
 > "Create a custom tool called `lint-sql` that takes a `file` parameter and runs sqlfluff lint on it."
 
-The agent uses the built-in `custom_tool` management tool to create the folder, `tool.json`, and script for you.
+The agent uses the built-in `custom_script` management tool to create the folder, `tool.json`, and script for you.
 
 ---
 
@@ -162,9 +162,9 @@ Custom tools always run sandboxed:
 
 ---
 
-## Management via `custom_tool`
+## Management via `custom_script`
 
-Agents have a built-in `custom_tool` tool with 6 modes:
+Agents have a built-in `custom_script` tool with 6 modes:
 
 | Mode | Description |
 |------|-------------|
