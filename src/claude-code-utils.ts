@@ -26,6 +26,20 @@ export function hasTmux(): boolean {
 
 export function truncateToolResult(response: any): string {
   if (!response) return "";
+  // Handle MCP content blocks — either { content: [...] } or the array directly [{ type, text }]
+  const contentArray = Array.isArray(response?.content)
+    ? response.content
+    : Array.isArray(response) && response[0]?.type
+      ? response
+      : null;
+  if (contentArray) {
+    return contentArray
+      .filter((b: any) => b?.type === "text")
+      .map((b: any) => b?.text || "")
+      .filter(Boolean)
+      .join("\n")
+      .slice(0, 2000);
+  }
   const text =
     response?.file?.content || response?.stdout || (typeof response === "string" ? response : JSON.stringify(response));
   return typeof text === "string" ? text.slice(0, 2000) : "";
@@ -33,25 +47,37 @@ export function truncateToolResult(response: any): string {
 
 export function formatToolDescription(tool: string, input: Record<string, any>): string {
   if (!input) return tool;
-  switch (tool) {
+  // Normalize mcp__clawd__ prefix for consistent matching
+  const normalized = tool.startsWith("mcp__clawd__") ? tool.slice("mcp__clawd__".length) : tool;
+  switch (normalized) {
     case "Read":
-      return input.file_path || "Read file";
+    case "file_view":
+      return input.file_path || input.path || "Read file";
     case "Edit":
-      return `${input.file_path || "file"} (edit)`;
+    case "MultiEdit":
+    case "file_edit":
+    case "file_multi_edit":
+      return `${input.file_path || input.path || "file"} (edit)`;
     case "Write":
     case "Create":
-      return input.file_path || "Write file";
+    case "file_create":
+      return input.file_path || input.path || "Write file";
     case "Bash":
+    case "bash":
       return (input.command || "").slice(0, 80);
     case "Glob":
+    case "file_glob":
       return input.pattern || "Search files";
     case "Grep":
+    case "file_grep":
       return `/${input.pattern || ""}/ ${input.path || ""}`.trim();
     case "WebSearch":
+    case "web_search":
       return input.query || "Web search";
     case "WebFetch":
+    case "web_fetch":
       return input.url || "Fetch URL";
     default:
-      return tool;
+      return normalized;
   }
 }

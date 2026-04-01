@@ -273,6 +273,7 @@ export function getMcpFileToolDefs(): McpToolDef[] {
 
 interface McpToolResult {
   content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
 }
 
 function mcpOk(data: unknown): McpToolResult {
@@ -280,7 +281,7 @@ function mcpOk(data: unknown): McpToolResult {
 }
 
 function mcpError(msg: string): McpToolResult {
-  return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: msg }) }] };
+  return { content: [{ type: "text", text: `Error: ${msg}` }], isError: true };
 }
 
 // ============================================================================

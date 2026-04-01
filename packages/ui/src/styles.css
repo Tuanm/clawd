@@ -3363,8 +3363,12 @@ body {
 .stream-diff-add {
   color: hsl(130 50% 30%);
   background: hsl(130 40% 95%);
-  display: inline-block;
-  width: 100%;
+}
+
+.stream-diff-sep {
+  color: hsl(var(--text) / 40%);
+  font-style: italic;
+  display: block;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -3375,6 +3379,9 @@ body {
   .stream-diff-add {
     color: hsl(130 50% 65%);
     background: hsl(130 20% 15%);
+  }
+  .stream-diff-sep {
+    color: hsl(var(--text) / 40%);
   }
 }
 
@@ -9468,6 +9475,9 @@ body,
 [data-theme="dark"] .stream-diff-add {
   color: hsl(130 50% 65%);
   background: hsl(130 20% 15%);
+}
+[data-theme="dark"] .stream-diff-sep {
+  color: hsl(var(--text) / 40%);
 }
 [data-theme="dark"] .stream-dialog-status-completed {
   background: hsl(150 30% 18%);

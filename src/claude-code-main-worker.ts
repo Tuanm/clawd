@@ -349,8 +349,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const { channel, agentId } = this.config;
     const input = (toolInput || {}) as Record<string, any>;
     const response = toolResponse as any;
-    const status = response?.error ? "error" : "completed";
     const result = truncateToolResult(response);
+    const status = response?.error || response?.isError || result.startsWith("Error: ") ? "error" : "completed";
     const description = formatToolDescription(toolName, input);
 
     // Track whether the agent successfully sent a message this turn (CC SDK uses mcp__ prefix)
@@ -596,7 +596,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       if (text.length > MAX_MESSAGE_LENGTH) {
         text = text.slice(0, MAX_MESSAGE_LENGTH) + "\n[truncated]";
       }
-      const line = `[${msg.ts}] ${user}: ${text}`;
+      const hasFiles = msg.files && msg.files.length > 0;
+      const fileInfo = hasFiles
+        ? `\n[Attached files: ${msg.files.map((f: any) => f.name || "unnamed").join(", ")}]`
+        : "";
+      const line = `[${msg.ts}] ${user}: ${text}${fileInfo}`;
       if (totalLen + line.length > MAX_COMBINED_PROMPT_LENGTH) break;
       parts.push(line);
       totalLen += line.length;
