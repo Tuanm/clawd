@@ -48,26 +48,6 @@ function ClawdLogoSmall() {
   );
 }
 
-function ExpandIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M15 3h6v6" />
-      <path d="M9 21H3v-6" />
-      <path d="M21 3l-7 7" />
-      <path d="M3 21l7-7" />
-    </svg>
-  );
-}
-
 function CloseIcon() {
   return (
     <svg
@@ -161,9 +141,7 @@ export default function SidebarPanel({
                 <ClawdLogoSmall />
               </span>
             )}
-            {type === "iframe" && !config && !isSubspace && (
-              <span className="sidebar-panel-type-badge sidebar-panel-type-badge--embed">{"</>"}</span>
-            )}
+
             <span className="sidebar-panel-title">{title}</span>
           </div>
           <div className="sidebar-panel-header-actions">
@@ -260,15 +238,20 @@ export default function SidebarPanel({
               </>
             )}
             {expandUrl && (
-              <button
-                type="button"
-                className="sidebar-panel-action-icon sidebar-panel-expand-btn"
-                onClick={() => (window.location.href = expandUrl)}
-                aria-label="Open full page"
-                title="Open full page"
+              <a
+                href={expandUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="sidebar-panel-action-icon"
+                aria-label="Open in new tab"
+                title="Open in new tab"
               >
-                <ExpandIcon />
-              </button>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+              </a>
             )}
             <button
               type="button"
@@ -284,7 +267,7 @@ export default function SidebarPanel({
         <div className="sidebar-panel-body">
           {isOpen && type === "iframe" && url && (
             <iframe
-              src={url}
+              src={url.includes("?") ? url + "&embedded=1" : url + "?embedded=1"}
               title={title}
               className="sidebar-panel-iframe"
               sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"
