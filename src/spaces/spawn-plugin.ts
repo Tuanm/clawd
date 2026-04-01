@@ -15,6 +15,7 @@ import { timedFetch } from "../utils/timed-fetch";
 import {
   ClaudeCodeSpaceWorker,
   getClaudeCodeWorker,
+  mapToMcpToolNames,
   registerClaudeCodeWorker,
   unregisterClaudeCodeWorker,
 } from "./claude-code-worker";
@@ -394,6 +395,11 @@ export function createSpawnAgentPlugin(
           agentPrompt: agentFileConfig?.systemPrompt || undefined,
           providerName: effectiveProvider,
           yolo: config.yolo ?? false,
+          // Translate agent YAML tool names (short or CC native) to MCP full names
+          allowedTools: agentFileConfig?.tools ? mapToMcpToolNames(agentFileConfig.tools) : undefined,
+          disallowedTools: agentFileConfig?.disallowedTools
+            ? mapToMcpToolNames(agentFileConfig.disallowedTools)
+            : undefined,
         });
         registerClaudeCodeWorker(space.id, ccWorker);
         spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
@@ -663,6 +669,11 @@ export function createSpawnAgentPlugin(
           agentPrompt: tracked.agentFileConfig?.systemPrompt || undefined,
           providerName: retaskProvider,
           yolo: config.yolo ?? false,
+          // Translate agent YAML tool names (short or CC native) to MCP full names
+          allowedTools: tracked.agentFileConfig?.tools ? mapToMcpToolNames(tracked.agentFileConfig.tools) : undefined,
+          disallowedTools: tracked.agentFileConfig?.disallowedTools
+            ? mapToMcpToolNames(tracked.agentFileConfig.disallowedTools)
+            : undefined,
         });
         registerClaudeCodeWorker(space.id, ccWorker);
         spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());

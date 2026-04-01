@@ -341,14 +341,10 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     cwd: opts.cwd,
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
-    // Disable CC's built-in file and shell tools — CC agents must use Claw'd MCP tools instead:
-    // - File: mcp__clawd__file_view, file_edit, file_multi_edit, file_create, file_glob, file_grep
-    // - Shell: mcp__clawd__bash (runs on the host, survives CC sandbox network isolation)
-    // This ensures consistent project-root scoping and security across all providers.
+    // Disable CC's built-in tools — CC agents must use Claw'd MCP equivalents instead.
+    // This ensures consistent project-root scoping, security, and UX across all providers.
     disallowedTools: [
-      "Agent",
-      "Bash",
-      "TodoWrite",
+      // File tools → use mcp__clawd__file_view/edit/multi_edit/create/glob/grep
       "Read",
       "Write",
       "Edit",
@@ -358,6 +354,26 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
       "LS",
       "NotebookRead",
       "NotebookEdit",
+      // Shell → use mcp__clawd__bash
+      "Bash",
+      // Todo → use mcp__clawd__todo_read/write/update
+      "TodoRead",
+      "TodoWrite",
+      // Task/agent lifecycle → use mcp__clawd__complete_task / mcp__clawd__stop_agent
+      "TaskOutput",
+      "TaskStop",
+      // User interaction → use mcp__clawd__chat_send_message
+      "AskUserQuestion",
+      // CC-internal plan mode — no Claw'd equivalent, not meaningful outside CC UI
+      "EnterPlanMode",
+      "ExitPlanMode",
+      // CC-internal git worktree management — not used in Claw'd spaces
+      "EnterWorktree",
+      "ExitWorktree",
+      // Remote triggers → use mcp__clawd__scheduler_create/list etc.
+      "RemoteTrigger",
+      // Sub-agent spawning → use mcp__clawd__spawn_agent
+      "Agent",
       // Claw'd provides its own schedule tools — disable CC's native cron tools
       "CronCreate",
       "CronDelete",
