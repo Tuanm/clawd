@@ -926,6 +926,11 @@ function HtmlPreview({ html }: { html: string }) {
   );
 }
 
+/** Strip mcp__clawd__ prefix from tool names so MCP tools render identically to native equivalents */
+function normalizeToolName(name: string): string {
+  return name.startsWith("mcp__clawd__") ? name.slice("mcp__clawd__".length) : name;
+}
+
 // Tool Result Card — expandable preview card for scheduled tool call results
 function ToolResultCard({
   toolResult,
@@ -960,7 +965,7 @@ function ToolResultCard({
       <div className="tool-result-card-header">
         {toolResult.source === "claude-code" && <span className="tool-result-card-badge">Claude Code</span>}
         <div className="tool-result-card-content">
-          <div className="tool-result-card-title">{toolResult.tool_name}</div>
+          <div className="tool-result-card-title">{normalizeToolName(toolResult.tool_name)}</div>
           <div className="tool-result-card-description">{toolResult.description}</div>
         </div>
       </div>
@@ -1511,7 +1516,7 @@ function groupToolEntries(entries: StreamEntry[]): GroupedItem[] {
         const candidate = entries[j];
         if (
           (candidate.type === "tool_end" || candidate.type === "tool_error") &&
-          candidate.toolName === entry.toolName
+          normalizeToolName(candidate.toolName || "") === normalizeToolName(entry.toolName || "")
         ) {
           matchIdx = j;
           break;
@@ -1552,8 +1557,9 @@ function extractFileId(text: string): string | null {
 
 // Render diff from tool args (client-side only, no backend changes)
 function ArgsDiffView({ toolName, args }: { toolName: string; args: any }) {
-  const isEdit = ["edit", "Edit", "edit_file"].includes(toolName);
-  const isCreate = ["create", "Create", "create_file", "write", "Write"].includes(toolName);
+  const isEdit = ["edit", "Edit", "edit_file", "file_edit"].includes(toolName);
+  const isMultiEdit = toolName === "file_multi_edit";
+  const isCreate = ["create", "Create", "create_file", "file_create", "write", "Write"].includes(toolName);
 
   if (isEdit && args.old_str && args.new_str) {
     const oldLines = String(args.old_str).split("\n");
@@ -1566,6 +1572,29 @@ function ArgsDiffView({ toolName, args }: { toolName: string; args: any }) {
         {newLines.map((line: string, i: number) => (
           <span key={`a${i}`} className="stream-diff-add">{`+ ${line}\n`}</span>
         ))}
+      </pre>
+    );
+  }
+
+  if (isMultiEdit && Array.isArray(args.edits) && args.edits.length > 0) {
+    return (
+      <pre className="stream-tool-block-content stream-tool-diff">
+        {args.edits.map((edit: any, idx: number) => {
+          if (!edit) return null;
+          const oldLines = edit.old_str ? String(edit.old_str).split("\n") : [];
+          const newLines = edit.new_str ? String(edit.new_str).split("\n") : [];
+          return (
+            <span key={idx}>
+              {idx > 0 && <span className="stream-diff-sep">{"\n--- edit " + (idx + 1) + " ---\n"}</span>}
+              {oldLines.map((line: string, i: number) => (
+                <span key={`d${idx}-${i}`} className="stream-diff-del">{`- ${line}\n`}</span>
+              ))}
+              {newLines.map((line: string, i: number) => (
+                <span key={`a${idx}-${i}`} className="stream-diff-add">{`+ ${line}\n`}</span>
+              ))}
+            </span>
+          );
+        })}
       </pre>
     );
   }
@@ -1589,7 +1618,19 @@ const IMAGE_OUTPUT_TOOLS = new Set(["browser_screenshot", "create_image", "edit_
 // Tools that take image input (file_id in args)
 const IMAGE_INPUT_TOOLS = new Set(["read_image", "edit_image"]);
 // Tools that should render a diff view from their args
-const DIFF_TOOLS = new Set(["edit", "Edit", "edit_file", "create", "Create", "create_file", "write", "Write"]);
+const DIFF_TOOLS = new Set([
+  "edit",
+  "Edit",
+  "edit_file",
+  "file_edit",
+  "file_multi_edit",
+  "create",
+  "Create",
+  "create_file",
+  "file_create",
+  "write",
+  "Write",
+]);
 
 // Combined tool call: same visual style as original (blue/green/red header) but input+output in one accordion
 function ToolCallCombinedView({ start, result }: { start: StreamEntry; result: StreamEntry | null }) {
@@ -1621,7 +1662,8 @@ function ToolCallCombinedView({ start, result }: { start: StreamEntry; result: S
     }
   }
 
-  const toolName = start.toolName || result?.toolName || "Unknown";
+  const rawToolName = start.toolName || result?.toolName || "Unknown";
+  const toolName = normalizeToolName(rawToolName);
   const statusClass = !result ? "stream-tool-start" : isError ? "stream-tool-error" : "stream-tool-end";
 
   // Image preview in input (read_image, edit_image)
