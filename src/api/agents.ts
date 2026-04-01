@@ -395,6 +395,7 @@ export function initAgentsTable(db: Database): void {
  * Validate that `projectPath` is inside the configured `root` (if any).
  * Returns an error string if the path violates the restriction, or null if OK.
  * In YOLO mode or when no root is configured, always returns null.
+ * Paths inside ~/.clawd/projects/ are always allowed as an implicit second root.
  */
 function validateProjectRoot(projectPath: string): string | null {
   const cfg = loadConfigFile();
@@ -413,6 +414,12 @@ function validateProjectRoot(projectPath: string): string | null {
     resolvedProject = realpathSync(projectPath);
   } catch {
     resolvedProject = resolve(projectPath);
+  }
+
+  // ~/.clawd/projects/ is always a valid project location regardless of root
+  const defaultProjectsDir = resolve(join(homedir(), ".clawd", "projects"));
+  if (resolvedProject.startsWith(defaultProjectsDir + "/") || resolvedProject === defaultProjectsDir) {
+    return null;
   }
 
   // Must be inside root (or equal to root)
