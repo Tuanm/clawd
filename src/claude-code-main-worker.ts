@@ -230,7 +230,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
                 `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
                  VALUES (?, ?, ?, ?, strftime('%s', 'now'))
                  ON CONFLICT(agent_id, channel) DO UPDATE SET
-                   last_processed_ts = MAX(last_processed_ts, ?),
+                   last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
                    updated_at = strftime('%s', 'now')`,
                 [this.config.agentId, this.config.channel, lastSkippedTs, lastSkippedTs, lastSkippedTs],
               );
@@ -287,33 +287,39 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         setAgentStreaming(this.config.agentId, this.config.channel, true);
         broadcastAgentStreaming(this.config.channel, this.config.agentId, true);
 
-        // Interrupt poller — aborts SDK query if new messages arrive
+        // Interrupt poller — aborts SDK query if new HUMAN messages arrive
         let interrupted = false;
+        const interruptMessageMap = new Map<string, any>();
         const interruptPoller = setInterval(() => {
           if (!this.processing) return;
           const newPending = this.pollForMessages();
-          const newMessages = newPending.filter((m: any) => !this.pendingTimestamps.includes(m.ts));
-          if (newMessages.length > 0) {
+          const newHumanMessages = newPending.filter(
+            (m: any) => m.user === "UHUMAN" && !this.pendingTimestamps.includes(m.ts) && !interruptMessageMap.has(m.ts),
+          );
+          if (newHumanMessages.length > 0) {
             interrupted = true;
-            console.log(`[claude-code-main] Interrupted by ${newMessages.length} new message(s)`);
+            for (const m of newHumanMessages) interruptMessageMap.set(m.ts, m);
+            console.log(`[claude-code-main] Interrupted by ${newHumanMessages.length} new human message(s)`);
             try {
               this.abortController?.abort();
             } catch {}
           }
         }, 2000);
 
+        this.wasCancelledByHeartbeat = false;
         try {
           await this.processMessages(pending);
         } catch (err: any) {
+          // Always check for session corruption, even on interrupt (aborted session may be invalid)
+          const msg = err.message || "";
+          if (msg.includes("No conversation found") || msg.includes("Invalid `signature` in `thinking` block")) {
+            console.warn(`[claude-code-main] Corrupted session — resetting for fresh start`);
+            this.sessionId = null;
+            this.persistSessionId(null);
+          }
+          // Only log unexpected errors (suppress abort errors from human interrupts and heartbeats)
           if (!interrupted && !this.wasCancelledByHeartbeat) {
-            console.error(`[claude-code-main] Error: ${err.message}`);
-            // Clear stale/corrupted session so next attempt starts fresh
-            const msg = err.message || "";
-            if (msg.includes("No conversation found") || msg.includes("Invalid `signature` in `thinking` block")) {
-              console.warn(`[claude-code-main] Corrupted session — resetting for fresh start`);
-              this.sessionId = null;
-              this.persistSessionId(null);
-            }
+            console.error(`[claude-code-main] Error: ${msg}`);
           }
         } finally {
           clearInterval(interruptPoller);
@@ -324,7 +330,72 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           this.lastActivityAt = Date.now();
         }
 
-        if (interrupted) continue;
+        if (interrupted) {
+          // Advance last_processed_ts to last message in the interrupted batch
+          // so next poll only returns NEW messages (the corrections)
+          const lastBatchTs = this.pendingTimestamps[this.pendingTimestamps.length - 1];
+          if (lastBatchTs) {
+            try {
+              db.run(
+                `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+                 VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+                 ON CONFLICT(agent_id, channel) DO UPDATE SET
+                   last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
+                   updated_at = strftime('%s', 'now')`,
+                [this.config.agentId, this.config.channel, lastBatchTs, lastBatchTs, lastBatchTs],
+              );
+            } catch {}
+          }
+          this.pendingTimestamps = [];
+
+          // Interrupt messages already deduplicated at push time via Map
+          const uniqueInterruptMsgs = Array.from(interruptMessageMap.values());
+
+          // Process interrupt messages with split prompt (Processing vs New)
+          if (uniqueInterruptMsgs.length > 0) {
+            this.processing = true;
+            this.processingStartedAt = Date.now();
+            this.lastActivityAt = Date.now();
+            this.pendingTimestamps = uniqueInterruptMsgs.map((m: any) => m.ts);
+
+            try {
+              markMessagesSeen(this.config.channel, this.config.agentId, this.pendingTimestamps);
+            } catch {}
+
+            setAgentStreaming(this.config.agentId, this.config.channel, true);
+            broadcastAgentStreaming(this.config.channel, this.config.agentId, true);
+
+            // Note: No nested interrupt poller for the resume turn — intentional to prevent
+            // infinite nesting. Third corrections queue until the next while iteration.
+            this.wasCancelledByHeartbeat = false;
+            try {
+              const interruptPrompt = this.formatInterruptPrompt(pending, uniqueInterruptMsgs);
+              await this.processMessagesWithPrompt(interruptPrompt, uniqueInterruptMsgs);
+            } catch (err: any) {
+              if (!this.wasCancelledByHeartbeat) {
+                console.error(`[claude-code-main] Interrupt processing error: ${err.message}`);
+                // Reset corrupted session on interrupt resume failures too
+                const msg = err.message || "";
+                if (msg.includes("No conversation found") || msg.includes("Invalid `signature` in `thinking` block")) {
+                  console.warn(`[claude-code-main] Corrupted session on interrupt resume — resetting`);
+                  this.sessionId = null;
+                  this.persistSessionId(null);
+                }
+              }
+            } finally {
+              setAgentStreaming(this.config.agentId, this.config.channel, false);
+              broadcastAgentStreaming(this.config.channel, this.config.agentId, false);
+              this.processing = false;
+              this.processingStartedAt = null;
+              this.lastActivityAt = Date.now();
+            }
+            // Let forceMarkRetries accumulate naturally — don't reset counters
+            // Add size cap to prevent unbounded growth from repeated interrupts
+            if (this.forceMarkRetries.size > 500) this.forceMarkRetries.clear();
+            this.forceMarkUnprocessed();
+          }
+          continue;
+        }
         this.forceMarkUnprocessed();
       } catch (err: any) {
         console.error(`[claude-code-main] Poll error: ${err.message}`);
@@ -389,9 +460,17 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     return pending;
   }
 
+  /** Process messages with a pre-built prompt (used by interrupt resume path) */
+  private async processMessagesWithPrompt(prompt: string, messages: any[]): Promise<void> {
+    return this._runSDKTurn(prompt, messages);
+  }
+
   private async processMessages(messages: any[]): Promise<void> {
-    this.wasCancelledByHeartbeat = false;
     const prompt = this.formatPrompt(messages);
+    return this._runSDKTurn(prompt, messages);
+  }
+
+  private async _runSDKTurn(prompt: string, messages: any[]): Promise<void> {
     saveToMemory(this.memorySessionId, "user", prompt);
 
     this.abortController = new AbortController();
@@ -585,22 +664,90 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
   }
 
+  /** Format a single message line for prompt building */
+  private formatMessageLine(msg: any): string {
+    const user = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
+    let text = msg.text || "";
+    if (text.length > MAX_MESSAGE_LENGTH) {
+      text = text.slice(0, MAX_MESSAGE_LENGTH) + "\n[truncated]";
+    }
+    const hasFiles = msg.files && msg.files.length > 0;
+    const fileInfo = hasFiles ? `\n[Attached files: ${msg.files.map((f: any) => f.name || "unnamed").join(", ")}]` : "";
+    return `[${msg.ts}] ${user}: ${text}${fileInfo}`;
+  }
+
   private formatPrompt(messages: any[]): string {
     const parts: string[] = [];
     parts.push(`# New Messages on Channel "${this.config.channel}"\n`);
 
+    // Reserve budget for newest messages — build from newest first,
+    // then reverse so prompt reads chronologically.
+    const NEWEST_RESERVE = Math.min(messages.length, 5);
+    const newest = messages.slice(-NEWEST_RESERVE);
+    const older = messages.slice(0, messages.length - NEWEST_RESERVE);
+
+    // Budget: reserve space for newest messages first
     let totalLen = 0;
-    for (const msg of messages) {
-      const user = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
-      let text = msg.text || "";
-      if (text.length > MAX_MESSAGE_LENGTH) {
-        text = text.slice(0, MAX_MESSAGE_LENGTH) + "\n[truncated]";
-      }
-      const hasFiles = msg.files && msg.files.length > 0;
-      const fileInfo = hasFiles
-        ? `\n[Attached files: ${msg.files.map((f: any) => f.name || "unnamed").join(", ")}]`
-        : "";
-      const line = `[${msg.ts}] ${user}: ${text}${fileInfo}`;
+    const newestLines: string[] = [];
+    for (const msg of newest) {
+      const line = this.formatMessageLine(msg);
+      newestLines.push(line);
+      totalLen += line.length;
+    }
+
+    // Fill remaining budget with older messages — iterate REVERSE to keep
+    // most-recent older messages (closest to the newest 5) when budget runs out
+    const olderLines: string[] = [];
+    for (let i = older.length - 1; i >= 0; i--) {
+      const line = this.formatMessageLine(older[i]);
+      if (totalLen + line.length > MAX_COMBINED_PROMPT_LENGTH) break;
+      olderLines.unshift(line); // maintain chronological order
+      totalLen += line.length;
+    }
+
+    // Combine chronologically: older first, then newest
+    parts.push(...olderLines, ...newestLines);
+
+    parts.push(
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI.]`,
+    );
+    return parts.join("\n");
+  }
+
+  /** Format interrupt resume prompt with Processing/New split */
+  private formatInterruptPrompt(processingMessages: any[], newMessages: any[]): string {
+    const parts: string[] = [];
+    parts.push(`[INTERRUPT] The human sent new messages while you were processing.`);
+    parts.push(`Read them carefully — they may override your current task.\n`);
+
+    // Processing section — messages from the interrupted batch (context)
+    // Use NEWEST_RESERVE to prioritize recent messages (corrections are most relevant)
+    parts.push(`# Processing Messages on Channel "${this.config.channel}"\n`);
+    const halfBudget = MAX_COMBINED_PROMPT_LENGTH / 2;
+    const PROC_NEWEST = Math.min(processingMessages.length, 5);
+    const procNewest = processingMessages.slice(-PROC_NEWEST);
+    const procOlder = processingMessages.slice(0, processingMessages.length - PROC_NEWEST);
+    let totalLen = 0;
+    const procNewestLines: string[] = [];
+    for (const msg of procNewest) {
+      const line = this.formatMessageLine(msg);
+      procNewestLines.push(line);
+      totalLen += line.length;
+    }
+    // Iterate REVERSE to keep most-recent older messages when budget runs out
+    const procOlderLines: string[] = [];
+    for (let i = procOlder.length - 1; i >= 0; i--) {
+      const line = this.formatMessageLine(procOlder[i]);
+      if (totalLen + line.length > halfBudget) break;
+      procOlderLines.unshift(line); // maintain chronological order
+      totalLen += line.length;
+    }
+    parts.push(...procOlderLines, ...procNewestLines);
+
+    // New section — the interrupt trigger messages (corrections)
+    parts.push(`\n# New Messages on Channel "${this.config.channel}"\n`);
+    for (const msg of newMessages) {
+      const line = this.formatMessageLine(msg);
       if (totalLen + line.length > MAX_COMBINED_PROMPT_LENGTH) break;
       parts.push(line);
       totalLen += line.length;
@@ -806,7 +953,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
              VALUES (?, ?, ?, ?, strftime('%s', 'now'))
              ON CONFLICT(agent_id, channel) DO UPDATE SET
-               last_processed_ts = MAX(last_processed_ts, ?),
+               last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
                updated_at = strftime('%s', 'now')`,
             [this.config.agentId, this.config.channel, ts, ts, ts],
           );

@@ -602,7 +602,7 @@ export class WorkerLoop implements AgentWorker {
                   `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
                    VALUES (?, ?, ?, ?, strftime('%s', 'now'))
                    ON CONFLICT(agent_id, channel) DO UPDATE SET
-                     last_processed_ts = MAX(last_processed_ts, ?),
+                     last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
                      updated_at = strftime('%s', 'now')`,
                   [this.config.agentId, this.config.channel, lastSkippedTs, lastSkippedTs, lastSkippedTs],
                 );
@@ -996,7 +996,7 @@ export class WorkerLoop implements AgentWorker {
           `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
            VALUES (?, ?, ?, ?, strftime('%s', 'now'))
            ON CONFLICT(agent_id, channel) DO UPDATE SET
-             last_processed_ts = excluded.last_processed_ts,
+             last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), excluded.last_processed_ts),
              updated_at = strftime('%s', 'now')`,
           [agentId, channel, ts, ts],
         );
