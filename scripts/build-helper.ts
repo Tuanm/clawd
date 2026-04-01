@@ -8,7 +8,6 @@
  *   bun run scripts/build-helper.ts mkdirp <dir>
  *   bun run scripts/build-helper.ts cp <src...> <dest>
  *   bun run scripts/build-helper.ts rmrf <paths...>
- *   bun run scripts/build-helper.ts copy-cli   (copies cli.js to dist/server/)
  */
 
 import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";

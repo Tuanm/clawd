@@ -1,5 +1,5 @@
 /**
- * Configuration for clawd-app
+ * Configuration for clawd
  *
  * Loads settings from CLI flags and ~/.clawd/config.json.
  * The agent runs in-process (no separate clawd binary needed).
@@ -107,15 +107,14 @@ export function validateConfig(_config: AppConfig): boolean {
 function printUsage() {
   console.log(`Claw'd App
 
-Usage: clawd-app [options]
+Usage: clawd [options]
 
 Options:
   --host <host>               Server host (default: 0.0.0.0)
   -p, --port <port>           Server port (default: 3456)
-  --no-open-browser            Don't open browser on startup
-  --restart                    Auto-restart on crash or SIGTERM
-  --yolo                       Disable sandbox restrictions for agents
-  --debug                      Enable debug logging
+  --no-open-browser           Don't open browser on startup
+  --yolo                      Disable sandbox restrictions for agents
+  --debug                     Enable debug logging
   -h, --help                  Show this help message
 
   Settings can also be configured in ~/.clawd/config.json:
@@ -123,9 +122,8 @@ Options:
   CLI flags take precedence over config file values.
 
 Examples:
-  clawd-app
-  clawd-app --host localhost --port 8080
-  clawd-app --no-open-browser --debug
-  clawd-app --restart
+  clawd
+  clawd --host localhost --port 8080
+  clawd --no-open-browser --debug
 `);
 }

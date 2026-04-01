@@ -823,7 +823,7 @@ Anthropic beta header for cache hits:
 2. **embed-ui.ts** — Base64 embeds UI into `src/embedded-ui.ts`
 3. **zip-extension.ts** — Packs extension → `src/embedded-extension.ts`
 4. **build-helper.ts** — Cross-platform build utilities (JSZip replaces system zip, handles file operations)
-5. **bun build --compile** — Produces single binary `dist/server/clawd-app`
+5. **bun build --compile** — Produces single binary `dist/clawd`
 
 ### Single Binary
 
@@ -857,7 +857,7 @@ security_opt:
 ### CLI Flags
 
 ```sh
-clawd-app [options]
+clawd [options]
   --host <host>           Server bind address (default: 0.0.0.0)
   -p, --port <port>       Server port (default: 3456)
   --debug                 Enable debug logging
@@ -1224,7 +1224,7 @@ bun run build
 ### Run
 
 ```sh
-./dist/server/clawd-app --port 3456 --debug
+./dist/clawd --port 3456 --debug
 # or
 bun run dev
 ```

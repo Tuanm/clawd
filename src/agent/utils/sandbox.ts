@@ -572,7 +572,7 @@ export async function initializeSandbox(projectRoot: string, yolo: boolean = fal
 
 /**
  * Set the sandbox project root (used by CLI mode for single agent).
- * In clawd-app mode with multiple agents, use runWithAgentContext instead.
+ * In clawd mode with multiple agents, use runWithAgentContext instead.
  */
 export function setSandboxProjectRoot(root: string) {
   sandboxProjectRootFallback = resolve(root);
@@ -580,7 +580,7 @@ export function setSandboxProjectRoot(root: string) {
 
 /**
  * Get the sandbox project root.
- * In clawd-app mode: returns value from AgentContext (per-agent isolation).
+ * In clawd mode: returns value from AgentContext (per-agent isolation).
  * In CLI mode: returns the fallback global value.
  */
 export function getSandboxProjectRoot(): string {

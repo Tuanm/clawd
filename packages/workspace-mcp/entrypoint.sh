@@ -46,4 +46,4 @@ if [ "${CLAWD_VNC_ENABLED:-false}" = "true" ]; then
 fi
 
 echo "[entrypoint] Starting workspace MCP server..."
-exec node /opt/workspace-mcp/dist/server.js
+exec node /opt/workspace-mcp/dist.js

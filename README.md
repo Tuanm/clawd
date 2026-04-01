@@ -35,7 +35,7 @@ bun run build    # Builds UI → embeds assets → compiles binary
 
 ```sh
 # Using compiled binary
-./dist/server/clawd-app
+./dist/clawd
 
 # Or development mode (hot reload)
 bun run dev          # Server
@@ -103,12 +103,12 @@ Settings are loaded from CLI flags and `~/.clawd/config.json`. CLI flags take pr
 ### CLI Flags
 
 ```sh
-clawd-app [options]
+clawd [options]
   --host <host>       Bind address (default: 0.0.0.0)
   --port, -p <port>   Port number (default: 3456)
   --debug             Enable debug logging
   --yolo              Disable sandbox restrictions for agents
-  --no-browser         Don't open browser on startup
+  --no-open-browser   Don't open browser on startup
 ```
 
 ### config.json Schema
@@ -876,7 +876,7 @@ bun run install:local  # Copy binary to ~/.clawd/bin/
 1. `vite build` — compiles React UI → `packages/ui/dist/`
 2. `embed-ui.ts` — base64 embeds UI into `src/embedded-ui.ts`
 3. `zip-extension.ts` — packs browser extension into `src/embedded-extension.ts`
-4. `bun build --compile` — produces `dist/server/clawd-app` binary
+4. `bun build --compile` — produces `dist/clawd` binary
 
 ### Code Style
 

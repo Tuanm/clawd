@@ -3,7 +3,7 @@
  *
  * This solves the concurrent agent access conflict where global variables
  * (sandboxProjectRoot, projectHash) get overwritten when multiple agents
- * run simultaneously in clawd-app.
+ * run simultaneously in clawd.
  *
  * Usage:
  *   // At agent entry point (worker-loop.ts):

@@ -101,16 +101,15 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 ENV PATH="/home/clawd/.cargo/bin:${PATH}"
 
 USER root
-COPY --from=builder /app/dist/server/clawd-app /usr/local/bin/clawd-app
-RUN ln -s /usr/local/bin/clawd-app /usr/local/bin/clawd
+COPY --from=builder /app/dist/clawd /usr/local/bin/clawd
 
 USER clawd
-WORKDIR /home/clawd
+WORKDIR /workspaces
 
 EXPOSE 3456
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s \
   CMD curl -sf http://localhost:3456/health || exit 1
 
-ENTRYPOINT ["clawd-app"]
+ENTRYPOINT ["clawd"]
 CMD ["--no-open-browser", "--yolo"]
