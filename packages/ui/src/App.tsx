@@ -557,6 +557,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   // Channel switcher state
   const [openChannels, setOpenChannels] = useState<string[]>(() => {
+    // Article mode: never write article channel IDs into stored channels
+    if (isArticleMode) return getStoredChannels();
     const stored = getStoredChannels();
     // Always include current channel
     if (!stored.includes(initialChannel) && !initialChannel.includes(":")) {
@@ -598,7 +600,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const [authGateCompleted, setAuthGateCompleted] = useState(
     // Gate is only needed when there is a deep-link initial channel to authenticate.
     // tryEnterChannel fast-paths for unprotected channels — no need to special-case "home".
-    !initialChannel,
+    // Article mode: gate is never needed; mark completed immediately.
+    !initialChannel || isArticleMode,
   );
 
   // Sidebar panel state
@@ -685,6 +688,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // Update document title with unread count
   // Include active channel unread when user is scrolled up (not at bottom)
   useEffect(() => {
+    if (isArticleMode) {
+      document.title = "Claw'd";
+      return;
+    }
     const totalUnread = Object.entries(unreadCounts)
       .filter(([ch]) => ch !== activeChannel || !isActiveChannelAtBottom)
       .reduce((acc, [, count]) => acc + count, 0);
@@ -693,7 +700,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       ? `Claw'd | ${parentChannel} | ${spaceInfo.agent_id}`
       : `Claw'd | ${displayName}`;
     document.title = totalUnread > 0 ? `${titleBase} (${countDisplay})` : titleBase;
-  }, [displayName, unreadCounts, activeChannel, isActiveChannelAtBottom, spaceInfo, parentChannel]);
+  }, [isArticleMode, displayName, unreadCounts, activeChannel, isActiveChannelAtBottom, spaceInfo, parentChannel]);
 
   // Keyboard shortcut: Ctrl+F / Cmd+F for search
   useEffect(() => {
@@ -745,6 +752,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // Focus new channel input when modal opens
   // Fetch agents for all channels when channel dialog opens
   useEffect(() => {
+    if (isArticleMode) return;
     if (!showChannelDialog) return;
     const fetchAllChannelAgents = async () => {
       const result: Record<string, SeenByAgent[]> = {};
@@ -772,13 +780,14 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     fetchAllChannelAgents();
   }, [showChannelDialog, openChannels]);
 
-  // Add current channel to stored list on mount (skip space channels)
+  // Add current channel to stored list on mount (skip space channels and article mode)
   useEffect(() => {
+    if (isArticleMode) return;
     if (!initialChannel.includes(":")) {
       const updated = addStoredChannel(initialChannel);
       setOpenChannels(updated);
     }
-  }, [initialChannel]);
+  }, [isArticleMode, initialChannel]);
 
   // Fetch space info when in space mode
   useEffect(() => {
@@ -802,7 +811,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   // Fetch worktree enabled state per channel
   useEffect(() => {
-    if (isSpaceChannel) {
+    if (isArticleMode || isSpaceChannel) {
       setWorktreeEnabled(false);
       return;
     }
@@ -810,11 +819,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       .then((res) => res.json())
       .then((data) => setWorktreeEnabled(data.ok && data.enabled === true))
       .catch(() => setWorktreeEnabled(false));
-  }, [activeChannel, isSpaceChannel]);
+  }, [isArticleMode, activeChannel, isSpaceChannel]);
 
   // Fetch MCP server count per channel (to show/hide MCP button)
   useEffect(() => {
-    if (isSpaceChannel) {
+    if (isArticleMode || isSpaceChannel) {
       setHasMcpServers(false);
       return;
     }
@@ -822,10 +831,15 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       .then((res) => res.json())
       .then((data) => setHasMcpServers(data.ok && Array.isArray(data.servers) && data.servers.length > 0))
       .catch(() => setHasMcpServers(false));
-  }, [activeChannel, isSpaceChannel]);
+  }, [isArticleMode, activeChannel, isSpaceChannel]);
 
   // Startup auth gate — authenticate the deep-link initial channel before loading anything
   useEffect(() => {
+    // Article mode: skip auth gate entirely, mark as completed immediately
+    if (isArticleMode) {
+      setAuthGateCompleted(true);
+      return;
+    }
     if (!initialChannel) {
       setAuthGateCompleted(true);
       return;
@@ -844,6 +858,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   // Validate stored channels and remove inaccessible ones
   useEffect(() => {
+    if (isArticleMode) return;
     if (!authGateCompleted) return; // wait for startup auth gate
 
     const validateChannels = async () => {
@@ -1010,6 +1025,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   // popstate listener — handle browser back/forward navigation
   useEffect(() => {
+    if (isArticleMode) return;
     const handlePopState = () => {
       const ch = window.location.pathname.slice(1) || "home";
       if (ch === activeChannel) return;
@@ -1021,7 +1037,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [activeChannel, tryEnterChannel]);
+  }, [isArticleMode, activeChannel, tryEnterChannel]);
 
   // Handle notification permission toggle
   const handleNotificationToggle = useCallback(async () => {
@@ -1124,10 +1140,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   // Refresh sub-agents when channel changes, and poll every 10 s as a fallback
   useEffect(() => {
+    if (isArticleMode) return;
     fetchActiveSubAgents();
     const id = setInterval(fetchActiveSubAgents, 10_000);
     return () => clearInterval(id);
-  }, [activeChannel, fetchActiveSubAgents]);
+  }, [isArticleMode, activeChannel, fetchActiveSubAgents]);
 
   const fetchUnreadCounts = useCallback(async () => {
     if (openChannels.length === 0) return;
@@ -1483,6 +1500,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // Handle ?msg= URL parameter for jumping to a specific message on load
   const isChannelLoaded = currentState.loaded;
   useEffect(() => {
+    if (isArticleMode) return;
     const params = new URLSearchParams(window.location.search);
     const msgTs = params.get("msg");
     if (msgTs && isChannelLoaded) {
@@ -1490,7 +1508,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       jumpToMessage(msgTs);
       window.history.replaceState({}, "", window.location.pathname);
     }
-  }, [isChannelLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isArticleMode, isChannelLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Jump to latest messages (scroll to bottom button)
   const jumpToLatest = useCallback(async () => {
@@ -1968,7 +1986,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
         const res = await authFetch(
           `${API_URL}/api/articles.get?id=${encodeURIComponent(articleId)}`,
           undefined,
-          activeChannel,
+          undefined, // article mode: no channel token needed
         );
         const data = await res.json();
         if (data.ok && data.article) {
@@ -1977,10 +1995,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             messages: [
               {
                 ts: String(art.created_at),
-                user: art.author || "Claw'd",
+                user: "Claw'd",
                 text: art.content,
-                agent_id: art.author || "clawd",
-                avatar_color: art.avatar_color,
+                agent_id: "Claw'd",
+                avatar_color: art.avatar_color || "#7c3aed",
               },
             ],
             hasMoreOlder: false,
@@ -2002,8 +2020,9 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   // Fetch unread counts on mount and when open channels change
   useEffect(() => {
+    if (isArticleMode) return;
     fetchUnreadCounts();
-  }, [fetchUnreadCounts]);
+  }, [isArticleMode, fetchUnreadCounts]);
 
   // Connect WebSocket and start background polling.
   // Uses authGateCompleted as a one-way latch: fires at most twice
@@ -2189,6 +2208,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // Stable callback for marking messages as seen (passed to MessageList)
   const handleMarkSeen = useCallback(
     (ts: string) => {
+      if (isArticleMode) return;
       // Only update if ts is newer than current userLastSeenTs
       const current = channelStatesRef.current.get(activeChannel)?.userLastSeenTs;
       if (!current || ts > current) {
@@ -2208,7 +2228,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           .catch((err) => console.error("Failed to mark seen:", err));
       }
     },
-    [activeChannel, updateChannelState, fetchUnreadCounts],
+    [isArticleMode, activeChannel, updateChannelState, fetchUnreadCounts],
   );
 
   // Memoize recentAgents to avoid recomputing on every render

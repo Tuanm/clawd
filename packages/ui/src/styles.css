@@ -2256,14 +2256,6 @@ body {
   border-bottom: 1px solid var(--border-color, #e2e8f0);
 }
 
-/* Article mode — hide avatar and author name, keep timestamp */
-[data-article-mode] .message-avatar {
-  display: none;
-}
-[data-article-mode] .message-sender {
-  display: none;
-}
-
 @keyframes fadeIn {
   from {
     opacity: 0;
