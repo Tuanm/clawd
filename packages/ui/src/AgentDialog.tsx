@@ -17,6 +17,7 @@ interface Agent {
   avatar_color: string | null;
   heartbeat_interval: number;
   agent_type: string | null;
+  worker_token: string | null;
 }
 
 interface ProviderOption {
@@ -180,6 +181,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const [savedEditHeartbeat, setSavedEditHeartbeat] = useState(0);
   const [editAgentType, setEditAgentType] = useState("");
   const [savedEditAgentType, setSavedEditAgentType] = useState("");
+  const [editWorkerToken, setEditWorkerToken] = useState("");
+  const [clearWorkerToken, setClearWorkerToken] = useState(false);
+  const [savedWorkerTokenMask, setSavedWorkerTokenMask] = useState<string | null>(null);
   const [fieldsDirty, setFieldsDirty] = useState(false);
   const [fieldsSaving, setFieldsSaving] = useState(false);
 
@@ -319,6 +323,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setSavedEditModel("");
       setSavedEditProject("");
       setSavedEditHeartbeat(0);
+      setEditWorkerToken("");
+      setClearWorkerToken(false);
+      setSavedWorkerTokenMask(null);
       setFieldsDirty(false);
       return;
     }
@@ -334,6 +341,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     setSavedEditHeartbeat(agent.heartbeat_interval ?? 0);
     setEditAgentType(agent.agent_type || "");
     setSavedEditAgentType(agent.agent_type || "");
+    setEditWorkerToken("");
+    setClearWorkerToken(false);
+    setSavedWorkerTokenMask(agent.worker_token || null);
     setFieldsDirty(false);
   }, [selectedAgentId, showAddForm]);
 
@@ -357,13 +367,17 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     project: string,
     heartbeat: number,
     agentType?: string,
+    workerToken?: string,
+    clearToken?: boolean,
   ) => {
     return (
       provider !== savedEditProvider ||
       model !== savedEditModel ||
       project !== savedEditProject ||
       heartbeat !== savedEditHeartbeat ||
-      (agentType !== undefined && agentType !== savedEditAgentType)
+      (agentType !== undefined && agentType !== savedEditAgentType) ||
+      (workerToken !== undefined && workerToken !== "") ||
+      (clearToken !== undefined && clearToken)
     );
   };
 
@@ -441,6 +455,12 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
             heartbeat_interval: editHeartbeat,
             // Only send agent_type when it changed (avoids unnecessary restart)
             ...(editAgentType !== savedEditAgentType ? { agent_type: editAgentType || null } : {}),
+            // Only send worker_token when explicitly changed or cleared
+            ...(clearWorkerToken
+              ? { worker_token: "" }
+              : editWorkerToken.trim()
+                ? { worker_token: editWorkerToken.trim() }
+                : {}),
           }),
         });
         const data = await res.json();
@@ -450,6 +470,15 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           setSavedEditModel(editModel);
           setSavedEditProject(editProject);
           setSavedEditHeartbeat(editHeartbeat);
+          if (clearWorkerToken) {
+            setSavedWorkerTokenMask(null);
+            setClearWorkerToken(false);
+          } else if (editWorkerToken.trim()) {
+            // Mask locally until next reload
+            const t = editWorkerToken.trim();
+            setSavedWorkerTokenMask(t.length > 7 ? `${t.slice(0, 4)}***${t.slice(-3)}` : `${t.slice(0, 2)}***`);
+          }
+          setEditWorkerToken("");
           setFieldsDirty(false);
           await loadAgents();
         } else {
@@ -461,7 +490,17 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
         setFieldsSaving(false);
       }
     },
-    [channel, editProvider, editModel, editProject, editHeartbeat, editAgentType, loadAgents],
+    [
+      channel,
+      editProvider,
+      editModel,
+      editProject,
+      editHeartbeat,
+      editAgentType,
+      editWorkerToken,
+      clearWorkerToken,
+      loadAgents,
+    ],
   );
 
   const handleRemoveAgent = useCallback(
@@ -698,6 +737,90 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   const val = Math.max(0, parseInt(e.target.value) || 0);
                   setEditHeartbeat(val);
                   setFieldsDirty(checkFieldsDirty(editProvider, editModel, editProject, val, editAgentType));
+                }}
+              />
+              <label className="skills-field-label">
+                Worker Token
+                {savedWorkerTokenMask && !clearWorkerToken && (
+                  <span style={{ fontWeight: 400, marginLeft: 6, opacity: 0.6 }}>({savedWorkerTokenMask})</span>
+                )}
+                {savedWorkerTokenMask && !clearWorkerToken && (
+                  <button
+                    type="button"
+                    style={{
+                      marginLeft: 8,
+                      fontSize: "0.75rem",
+                      opacity: 0.7,
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      color: "inherit",
+                      textDecoration: "underline",
+                    }}
+                    onClick={() => {
+                      setClearWorkerToken(true);
+                      setEditWorkerToken("");
+                      setFieldsDirty(true);
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+                {clearWorkerToken && (
+                  <span style={{ marginLeft: 8, fontSize: "0.75rem", color: "var(--color-danger, #e55)" }}>
+                    will be cleared
+                    <button
+                      type="button"
+                      style={{
+                        marginLeft: 6,
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        color: "inherit",
+                        textDecoration: "underline",
+                        fontSize: "inherit",
+                      }}
+                      onClick={() => {
+                        setClearWorkerToken(false);
+                        setFieldsDirty(
+                          checkFieldsDirty(
+                            editProvider,
+                            editModel,
+                            editProject,
+                            editHeartbeat,
+                            editAgentType,
+                            "",
+                            false,
+                          ),
+                        );
+                      }}
+                    >
+                      undo
+                    </button>
+                  </span>
+                )}
+              </label>
+              <input
+                type="password"
+                className="agent-field-input"
+                placeholder={
+                  savedWorkerTokenMask && !clearWorkerToken ? "Enter new token to replace" : "Worker token (optional)"
+                }
+                value={editWorkerToken}
+                disabled={clearWorkerToken}
+                onChange={(e) => {
+                  setEditWorkerToken(e.target.value);
+                  setFieldsDirty(
+                    checkFieldsDirty(
+                      editProvider,
+                      editModel,
+                      editProject,
+                      editHeartbeat,
+                      editAgentType,
+                      e.target.value,
+                      false,
+                    ),
+                  );
                 }}
               />
               <label className="skills-field-label">Identity</label>
