@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { ClawdAvatar } from "./MessageList";
 
@@ -18,6 +19,14 @@ interface Props {
 }
 
 export default function SubAgentsDialog({ spaces, onClose }: Props) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
   const navigate = (space: ActiveSubAgent) => {
     window.location.href = `/${space.channel}/${space.id}`;
   };

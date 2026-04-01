@@ -47,10 +47,13 @@ function ResizeDivider({
 }) {
   const handlePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
-    let lastPos = direction === "horizontal" ? e.clientX : e.clientY;
+    // Re-read direction at drag-start so viewport resizes while dialog is open
+    // don't lock the axis to a stale render-time value.
+    const axis = window.innerWidth <= 768 ? "vertical" : "horizontal";
+    let lastPos = axis === "horizontal" ? e.clientX : e.clientY;
 
     const handleMove = (me: PointerEvent) => {
-      const pos = direction === "horizontal" ? me.clientX : me.clientY;
+      const pos = axis === "horizontal" ? me.clientX : me.clientY;
       const delta = pos - lastPos;
       lastPos = pos;
       if (delta !== 0) onResize(delta);
@@ -63,7 +66,7 @@ function ResizeDivider({
       document.body.style.userSelect = "";
     };
 
-    document.body.style.cursor = direction === "horizontal" ? "col-resize" : "row-resize";
+    document.body.style.cursor = axis === "horizontal" ? "col-resize" : "row-resize";
     document.body.style.userSelect = "none";
     document.addEventListener("pointermove", handleMove);
     document.addEventListener("pointerup", handleUp);
@@ -564,7 +567,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose, initialAgentI
               {/* Left sidebar - file tree */}
               {(() => {
                 const rootLabel = projectRoot;
-                const isMobile = window.innerWidth <= 600;
+                const isMobile = window.innerWidth <= 768;
                 return (
                   <div
                     className={`projects-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}
@@ -628,9 +631,9 @@ export default function ProjectsDialog({ channel, isOpen, onClose, initialAgentI
               {/* Resize divider */}
               {!sidebarCollapsed && (
                 <ResizeDivider
-                  direction={window.innerWidth <= 600 ? "vertical" : "horizontal"}
+                  direction={window.innerWidth <= 768 ? "vertical" : "horizontal"}
                   onResize={(delta) => {
-                    const isMobile = window.innerWidth <= 600;
+                    const isMobile = window.innerWidth <= 768;
                     setSidebarSize((prev) => {
                       const next = prev + delta;
                       const collapseThreshold = isMobile ? 60 : 80;

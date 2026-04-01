@@ -633,6 +633,9 @@ body {
 .clawd-logo-button:hover {
   opacity: 0.8;
 }
+.clawd-logo-button:focus:not(:focus-visible) {
+  outline: none;
+}
 
 /* Header channel name (static, no dropdown) */
 .header-channel-name {
@@ -720,6 +723,9 @@ body {
   background-color: hsl(15 63.1% 59.6% / 10%);
   color: hsl(15 63.1% 59.6%);
   border-color: hsl(15 63.1% 59.6% / 40%);
+}
+.channel-dialog-plus-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .channel-dialog-list {
@@ -942,6 +948,9 @@ body {
   color: hsl(var(--accent));
   background: hsl(var(--accent) / 5%);
 }
+.agent-field-browse-btn:focus:not(:focus-visible) {
+  outline: none;
+}
 
 /* Shared action button styles */
 .agent-action-btn {
@@ -954,6 +963,9 @@ body {
   cursor: pointer;
   transition: all 0.15s;
   align-self: flex-start;
+}
+.agent-action-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .agent-action-btn:disabled {
@@ -1214,6 +1226,10 @@ body {
 
 .sub-agents-indicator-btn:hover {
   opacity: 1;
+}
+
+.sub-agents-indicator-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .sub-agents-indicator-count {
@@ -1875,7 +1891,7 @@ body {
 }
 
 .code-block-wrapper:hover .code-copy-btn,
-.code-copy-btn:focus {
+.code-copy-btn:focus-visible {
   opacity: 1;
 }
 
@@ -1934,6 +1950,10 @@ body {
 
 .message-article-card:hover {
   border-color: hsl(var(--accent) / 30%);
+}
+.message-article-card:focus-visible {
+  outline: 2px solid hsl(var(--accent));
+  outline-offset: 2px;
 }
 
 .article-card-thumbnail {
@@ -2245,6 +2265,9 @@ body {
 
 .space-back-btn:hover {
   background: var(--hover-bg, rgba(0, 0, 0, 0.04));
+}
+.space-back-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .space-header-title {
@@ -2964,6 +2987,9 @@ body {
   background: hsl(var(--text) / 5%);
   opacity: 0.7;
 }
+.stream-agent-avatar-btn:focus:not(:focus-visible) {
+  outline: none;
+}
 
 .stream-agent-avatar-btn.active {
   opacity: 1;
@@ -3079,6 +3105,9 @@ body {
 .stream-dialog-close:hover {
   background: hsl(var(--text) / 8%);
   color: hsl(var(--text));
+}
+.stream-dialog-close:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .stream-dialog-body {
@@ -3448,6 +3477,10 @@ body {
   color: var(--text-primary);
 }
 
+.toolbar-btn:focus:not(:focus-visible) {
+  outline: none;
+}
+
 .toolbar-btn svg {
   width: 16px;
   height: 16px;
@@ -3782,6 +3815,10 @@ body {
   color: var(--text-primary);
 }
 
+.action-btn:focus:not(:focus-visible) {
+  outline: none;
+}
+
 .action-btn svg {
   width: 20px;
   height: 20px;
@@ -3805,6 +3842,10 @@ body {
   transition:
     background 0.15s,
     color 0.15s;
+}
+
+.composer-send:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .composer-send:hover,
@@ -4171,6 +4212,10 @@ body {
 .attachment-remove:hover {
   background: #ddd;
   color: var(--text-primary);
+}
+
+.attachment-remove:focus:not(:focus-visible) {
+  outline: none;
 }
 
 /* ============================================
@@ -4622,6 +4667,10 @@ body {
 .plan-btn:hover {
   background: transparent;
   color: hsl(var(--accent));
+}
+
+.plan-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .plan-btn svg {
@@ -5163,6 +5212,10 @@ body {
   color: hsl(var(--accent));
 }
 
+.search-btn:focus:not(:focus-visible) {
+  outline: none;
+}
+
 .search-btn svg {
   width: 16px;
   height: 16px;
@@ -5184,6 +5237,10 @@ body {
 .projects-btn:hover {
   background: transparent;
   color: hsl(var(--accent));
+}
+
+.projects-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .projects-btn svg {
@@ -5501,6 +5558,7 @@ textarea {
   max-height: none;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 @media (max-width: 768px) {
@@ -5559,11 +5617,23 @@ textarea {
     transform: rotate(-90deg);
   }
 
-  /* Resize divider is horizontal on mobile */
-  .resize-divider--horizontal {
-    width: 100% !important;
-    height: 4px !important;
-    cursor: row-resize !important;
+  /* Resize divider is vertical (horizontal bar) on mobile */
+  .resize-divider--vertical {
+    width: 100%;
+    height: 4px;
+    cursor: row-resize;
+  }
+
+  /* Restore truncation for tree items on narrow screens */
+  .projects-tree-item {
+    min-width: 0;
+  }
+
+  .projects-tree-name {
+    flex: 1 1 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 }
 
@@ -5631,6 +5701,9 @@ textarea {
   background: hsl(var(--bg-highlight));
   color: hsl(var(--text));
 }
+.projects-sidebar-toggle:focus:not(:focus-visible) {
+  outline: none;
+}
 
 /* Collapsed sidebar state */
 .projects-sidebar.collapsed {
@@ -5655,7 +5728,7 @@ textarea {
 }
 
 /* Desktop collapsed: narrow vertical strip, arrow centered */
-@media (min-width: 601px) {
+@media (min-width: 769px) {
   .projects-sidebar.collapsed {
     width: 32px !important;
     min-width: 32px !important;
@@ -5691,6 +5764,7 @@ textarea {
   font-size: 13px;
   color: hsl(var(--text));
   white-space: nowrap;
+  min-width: max-content;
 }
 
 .projects-tree-item:hover {
@@ -5723,9 +5797,7 @@ textarea {
 }
 
 .projects-tree-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 1 0 auto;
 }
 
 .projects-tree-size {
@@ -5949,6 +6021,10 @@ textarea {
   color: hsl(var(--accent));
 }
 
+.mcp-btn:focus:not(:focus-visible) {
+  outline: none;
+}
+
 .mcp-btn svg {
   width: 16px;
   height: 16px;
@@ -5970,6 +6046,10 @@ textarea {
 .skills-btn:hover {
   background: transparent;
   color: hsl(var(--accent));
+}
+
+.skills-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .skills-btn svg {
@@ -7221,12 +7301,18 @@ textarea {
   background: hsl(var(--text) / 10%);
   color: hsl(var(--text) / 90%);
 }
+.sidebar-panel-action-icon:focus:not(:focus-visible) {
+  outline: none;
+}
 
 .sidebar-panel-expand-btn {
   border: none;
   background: transparent;
   cursor: pointer;
   padding: 0;
+}
+.sidebar-panel-expand-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .sidebar-panel-type-badge {
@@ -7286,6 +7372,9 @@ textarea {
 .sidebar-panel-close-btn:hover {
   background: hsl(var(--text) / 8%);
   color: var(--text-primary);
+}
+.sidebar-panel-close-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .sidebar-panel-body {
@@ -7529,6 +7618,10 @@ textarea {
   color: hsl(var(--accent));
 }
 
+.worktree-btn:focus:not(:focus-visible) {
+  outline: none;
+}
+
 /* Refresh button next to dialog title */
 .worktree-refresh-btn {
   display: flex;
@@ -7551,6 +7644,9 @@ textarea {
 .worktree-refresh-btn:hover:not(:disabled) {
   color: hsl(var(--text));
   background: hsl(var(--text) / 8%);
+}
+.worktree-refresh-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .worktree-refresh-btn:disabled {

@@ -4,7 +4,7 @@
 //   "artifact"  — ArtifactRenderer for html/react/csv/markdown/code content
 //   "file"      — FilePreviewSidebar for PDF/CSV/text/code/image/audio/video files
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import FullArtifactRenderer from "./artifact-renderer";
 import { type ArtifactType, TYPE_CONFIG } from "./artifact-types";
@@ -21,6 +21,8 @@ export interface SidebarPanelContent {
   fileType?: string;
   /** URL to navigate to when the expand button is clicked (full-page navigation) */
   navigateUrl?: string;
+  /** URL to copy when the copy button is clicked — shows a copy icon in the header */
+  copyUrl?: string;
   /** True when the iframe is a subspace — shows Claw'd logo in the sidebar header badge */
   isSubspace?: boolean;
 }
@@ -95,10 +97,26 @@ export default function SidebarPanel({
   language,
   fileType,
   navigateUrl,
+  copyUrl,
   isSubspace,
 }: SidebarPanelProps) {
   const expandUrl = navigateUrl ?? (type === "iframe" ? url : undefined);
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // Reset copied state when the article/content changes
+  useEffect(() => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    setCopied(false);
+  }, [copyUrl]);
+
+  // Clean up copy timer on unmount
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
   // Escape key closes panel
   useEffect(() => {
@@ -149,6 +167,67 @@ export default function SidebarPanel({
             <span className="sidebar-panel-title">{title}</span>
           </div>
           <div className="sidebar-panel-header-actions">
+            {copyUrl && (
+              <button
+                type="button"
+                className="sidebar-panel-action-icon"
+                onClick={() => {
+                  const absUrl = copyUrl.startsWith("http") ? copyUrl : `${window.location.origin}${copyUrl}`;
+                  navigator.clipboard
+                    .writeText(absUrl)
+                    .then(() => {
+                      setCopied(true);
+                      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+                      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
+                    })
+                    .catch(() => {
+                      // Clipboard API unavailable (HTTP, permissions denied, etc.)
+                      // Fall back to a temporary input element
+                      const el = document.createElement("textarea");
+                      el.value = absUrl;
+                      el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+                      document.body.appendChild(el);
+                      el.select();
+                      document.execCommand("copy");
+                      document.body.removeChild(el);
+                      setCopied(true);
+                      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+                      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
+                    });
+                }}
+                aria-label="Copy link"
+                title={copied ? "Copied!" : "Copy link"}
+              >
+                {copied ? (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                ) : (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                  </svg>
+                )}
+              </button>
+            )}
             {type === "file" && url && (
               <>
                 <a

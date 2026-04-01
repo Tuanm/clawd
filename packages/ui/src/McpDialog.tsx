@@ -68,6 +68,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [connecting, setConnecting] = useState(false);
 
@@ -87,13 +88,20 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
     return () => clearInterval(interval);
   }, [isOpen, channel]);
 
-  const loadServers = useCallback(async () => {
-    try {
-      const res = await authFetch(`${API_URL}/api/app.mcp.list?channel=${encodeURIComponent(channel)}`);
-      const data = await res.json();
-      if (data.ok) setServers(data.servers);
-    } catch {}
-  }, [channel]);
+  const loadServers = useCallback(
+    async (showLoading = false) => {
+      if (showLoading) setLoading(true);
+      try {
+        const res = await authFetch(`${API_URL}/api/app.mcp.list?channel=${encodeURIComponent(channel)}`);
+        const data = await res.json();
+        if (data.ok) setServers(data.servers);
+      } catch {
+      } finally {
+        if (showLoading) setLoading(false);
+      }
+    },
+    [channel],
+  );
 
   const handleConnect = useCallback(
     async (name: string) => {
@@ -163,6 +171,18 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
         <div className="stream-dialog-header">
           <div className="stream-dialog-title-row">
             <h3>MCP Servers</h3>
+            <button
+              className="worktree-refresh-btn"
+              onClick={() => loadServers(true)}
+              title="Refresh"
+              disabled={loading}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="23 4 23 10 17 10" />
+                <polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+              </svg>
+            </button>
           </div>
           <button className="stream-dialog-close" onClick={onClose}>
             ×
