@@ -140,7 +140,7 @@ const BUILTIN_TOOLS = new Set([
   "browser_frames",
   "browser_touch",
   // Management tool itself
-  "custom_tool",
+  "custom_script",
 ]);
 
 // ============================================================================
@@ -287,7 +287,7 @@ function handleAdd(projectRoot: string, args: Record<string, any>): ToolResult {
   writeFileSync(join(toolDir, "tool.json"), JSON.stringify(meta, null, 2));
   writeFileSync(join(toolDir, entrypoint_name), entrypoint_content);
 
-  return { success: true, output: `Custom tool '${tool_id}' created at .clawd/tools/${tool_id}/` };
+  return { success: true, output: `Custom script '${tool_id}' created at .clawd/tools/${tool_id}/` };
 }
 
 function handleEdit(projectRoot: string, args: Record<string, any>): ToolResult {
@@ -318,7 +318,7 @@ function handleEdit(projectRoot: string, args: Record<string, any>): ToolResult 
     writeFileSync(join(toolDir, meta.entrypoint), entrypoint_content);
   }
 
-  return { success: true, output: `Custom tool '${tool_id}' updated` };
+  return { success: true, output: `Custom script '${tool_id}' updated` };
 }
 
 function handleDelete(projectRoot: string, args: Record<string, any>): ToolResult {
@@ -330,7 +330,7 @@ function handleDelete(projectRoot: string, args: Record<string, any>): ToolResul
   if (!existsSync(toolDir)) return { success: false, output: `Tool '${tool_id}' does not exist` };
 
   rmSync(toolDir, { recursive: true, force: true });
-  return { success: true, output: `Custom tool '${tool_id}' deleted` };
+  return { success: true, output: `Custom script '${tool_id}' deleted` };
 }
 
 function handleView(projectRoot: string, args: Record<string, any>): ToolResult {
@@ -344,7 +344,7 @@ function handleView(projectRoot: string, args: Record<string, any>): ToolResult 
   const meta = loadToolMeta(toolDir);
   if (!meta) return { success: false, output: `Invalid tool.json for '${tool_id}'` };
 
-  let output = `# Custom Tool: ${meta.name}\n`;
+  let output = `# Custom Script: ${meta.name}\n`;
   output += `Description: ${meta.description}\n`;
   output += `Entrypoint: ${meta.entrypoint}\n`;
   output += `Interpreter: ${detectInterpreter(meta.entrypoint, meta.interpreter)}\n`;
@@ -370,16 +370,16 @@ function handleView(projectRoot: string, args: Record<string, any>): ToolResult 
 
 function handleList(projectRoot: string): ToolResult {
   const toolsDir = getToolsDir(projectRoot);
-  if (!existsSync(toolsDir)) return { success: true, output: "No custom tools found." };
+  if (!existsSync(toolsDir)) return { success: true, output: "No custom scripts found." };
 
   const entries = readdirSync(toolsDir).filter((e) => {
     const p = join(toolsDir, e);
     return statSync(p).isDirectory() && existsSync(join(p, "tool.json"));
   });
 
-  if (entries.length === 0) return { success: true, output: "No custom tools found." };
+  if (entries.length === 0) return { success: true, output: "No custom scripts found." };
 
-  let output = `Custom tools (${entries.length}):\n`;
+  let output = `Custom scripts (${entries.length}):\n`;
   for (const id of entries) {
     const meta = loadToolMeta(join(toolsDir, id));
     if (meta) {
@@ -400,10 +400,10 @@ export class CustomToolPlugin implements ToolPlugin {
   getTools(): ToolRegistration[] {
     return [
       {
-        name: "custom_tool",
+        name: "custom_script",
         description:
-          "Manage and execute project-scoped custom tools. Custom tools are reusable scripts that persist across sessions. " +
-          "All agents in the same project share these tools. " +
+          "Manage and execute project-scoped custom scripts. Custom scripts are reusable scripts that persist across sessions. " +
+          "All agents in the same project share these scripts. " +
           "Modes: list (show all), add (create new), edit (update existing), delete (remove), view (inspect code), execute (run with args).",
         parameters: {
           mode: {
@@ -489,7 +489,7 @@ export class CustomToolPlugin implements ToolPlugin {
   }
 
   /**
-   * Scan project's .clawd/tools/ and return ToolRegistrations for each discovered custom tool.
+   * Scan project's .clawd/tools/ and return ToolRegistrations for each discovered custom script.
    * These are registered as first-class tools alongside built-in tools.
    */
   getDiscoveredTools(projectRoot: string): ToolRegistration[] {
@@ -521,7 +521,7 @@ export class CustomToolPlugin implements ToolPlugin {
       // Register as first-class tool with "ct_" prefix to avoid collisions
       registrations.push({
         name: `ct_${meta.name}`,
-        description: `[Custom Tool] ${meta.description}`,
+        description: `[Custom Script] ${meta.description}`,
         parameters: meta.parameters as Record<string, ToolParameter>,
         required: meta.required || [],
         handler: async (args: Record<string, any>): Promise<ToolResult> => {
@@ -532,4 +532,123 @@ export class CustomToolPlugin implements ToolPlugin {
 
     return registrations;
   }
+}
+
+// ============================================================================
+// Standalone helpers (used by MCP endpoint and prompt builder)
+// ============================================================================
+
+/**
+ * Count the number of custom scripts in the project's .clawd/tools/ directory.
+ */
+export function countCustomScripts(projectRoot: string): number {
+  const toolsDir = getToolsDir(projectRoot);
+  if (!existsSync(toolsDir)) return 0;
+  try {
+    return readdirSync(toolsDir).filter((e) => {
+      const p = join(toolsDir, e);
+      return statSync(p).isDirectory() && existsSync(join(p, "tool.json"));
+    }).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** MCP-format tool definition for custom_script (used in tools/list responses). */
+export const CUSTOM_SCRIPT_MCP_TOOL_DEF = {
+  name: "custom_script",
+  description:
+    "Manage and execute project-scoped custom scripts. Custom scripts are reusable scripts that persist across sessions. " +
+    "All agents in the same project share these scripts. " +
+    "Modes: list (show all), add (create new), edit (update existing), delete (remove), view (inspect code), execute (run with args).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      mode: {
+        type: "string",
+        description: "Operation mode",
+        enum: ["list", "add", "edit", "delete", "view", "execute"],
+      },
+      tool_id: {
+        type: "string",
+        description:
+          "Script identifier (required for add/edit/delete/view/execute). Lowercase alphanumeric with hyphens/underscores.",
+      },
+      description: { type: "string", description: "Script description (required for add, optional for edit)" },
+      parameters: {
+        type: "object",
+        description:
+          'Parameter definitions as JSON object. Each key is a param name, value is {type, description, enum?, default?}. Example: {"query": {"type": "string", "description": "Search query"}}',
+      },
+      required: {
+        type: "array",
+        items: { type: "string" },
+        description: "List of required parameter names",
+      },
+      entrypoint_name: {
+        type: "string",
+        description:
+          "Filename of the entrypoint script (required for add). Extension determines interpreter: .sh→bash, .py→python3, .ts/.js→bun",
+      },
+      entrypoint_content: {
+        type: "string",
+        description: "Source code of the entrypoint script (required for add, optional for edit)",
+      },
+      interpreter: {
+        type: "string",
+        description: "Override interpreter (bash, sh, python3, bun, node). Auto-detected from extension if omitted.",
+        enum: ["bash", "sh", "python3", "python", "bun", "node"],
+      },
+      timeout: { type: "number", description: "Execution timeout in seconds (1-300, default 30)" },
+      arguments: {
+        type: "object",
+        description: "Arguments to pass when mode=execute. Passed as JSON via stdin to the entrypoint script.",
+      },
+    },
+    required: ["mode"],
+  },
+};
+
+/**
+ * Execute the custom_script tool and return an MCP-formatted result.
+ * Used by the MCP server endpoints (agent + space).
+ */
+export async function executeCustomScriptMcp(
+  projectRoot: string,
+  args: Record<string, any>,
+): Promise<{ content: Array<{ type: string; text: string }> }> {
+  let result: ToolResult;
+  switch (args.mode) {
+    case "list":
+      result = handleList(projectRoot);
+      break;
+    case "add":
+      result = handleAdd(projectRoot, args);
+      break;
+    case "edit":
+      result = handleEdit(projectRoot, args);
+      break;
+    case "delete":
+      result = handleDelete(projectRoot, args);
+      break;
+    case "view":
+      result = handleView(projectRoot, args);
+      break;
+    case "execute": {
+      const execIdErr = validateToolId(args.tool_id);
+      if (execIdErr) {
+        result = execIdErr;
+      } else {
+        result = await executeCustomTool(projectRoot, args.tool_id, args.arguments || {});
+      }
+      break;
+    }
+    default:
+      result = {
+        success: false,
+        output: `Unknown mode '${args.mode}'. Use: list, add, edit, delete, view, execute`,
+      };
+  }
+  const text = result.success ? result.output : `Error: ${result.output}`;
+  return { content: [{ type: "text", text }] };
 }

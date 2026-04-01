@@ -589,7 +589,7 @@ Examples:
   Table: { "components": [{ "type": "table", "headers": ["Name","Score"], "rows": [["Alice","95"],["Bob","87"]] }], "one_shot": false }
   Form: { "components": [{ "type": "select", "id": "env", "label": "Env", "options": [{"label":"Prod","value":"prod"}] }, { "type": "submit", "label": "Deploy" }], "on_action": { "type": "agent" }, "one_shot": true }
   Dashboard: { "components": [{ "type": "slider", "id": "min", "label": "Min", "min": 0, "max": 500 }, { "type": "chart", "spec": { "type": "bar", "data": [...], "xKey": "month", "series": [{"key": "sales"}] } }], "one_shot": false }
-Handlers: store (save), message (template:"{{value}}" — posts as user message, use for quick-reply options), agent (re-invoke), custom_tool (tool_id + args_template REQUIRED, runs .clawd/tools/ script — NOT built-in tools)
+Handlers: store (save), message (template:"{{value}}" — posts as user message, use for quick-reply options), agent (re-invoke), custom_script (tool_id + args_template REQUIRED, runs .clawd/tools/ script — NOT built-in tools)
   Quick-reply (no submit needed): { "components": [{ "type": "button_group", "id": "choice", "buttons": [{"label":"Option A","value":"a"},{"label":"Option B","value":"b"}] }], "on_action": { "type": "message", "template": "{{choice}}" } }
   → User clicks "Option A" → "Option A" posted as user message instantly (label resolved). Form disables. Use for offering choices the user should "say".
 Datasource: chart/table can ref files — { "datasource": { "type":"file", "file_id":"Fxyz", "filters": { "col": {"gte":"{{slider_id}}"} }, "sort": {"field":"col","order":"desc"}, "limit": 100 } }. {{id}} refs substituted live. Supports CSV/TSV/JSON.

@@ -410,13 +410,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         "todo_write",
         "todo_read",
         "memory_search",
-        // MCP file tools (Phase 2) — project-root-scoped, sandboxed
+        // MCP file tools — project-root-scoped, sandboxed
         "file_view",
         "file_edit",
         "file_multi_edit",
         "file_create",
         "file_glob",
         "file_grep",
+        // Custom scripts — project-scoped reusable scripts in .clawd/tools/
+        "custom_script",
       ],
       platform: process.platform,
       model: this.config.model || "sonnet",
