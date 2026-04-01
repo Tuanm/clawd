@@ -2260,7 +2260,7 @@ export default function MessageList({
   // Copy agent ID to clipboard when clicking avatar
   const copyMention = useCallback((agentId: string | undefined, event: React.MouseEvent<HTMLDivElement>) => {
     // Just copy the plain agent_id
-    const textToCopy = agentId || "Clawd";
+    const textToCopy = agentId || "Claw'd";
     navigator.clipboard.writeText(textToCopy);
 
     // Add animation class to avatar container
