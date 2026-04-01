@@ -593,6 +593,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const [jumpToMessageTs, setJumpToMessageTs] = useState<string | null>(null);
   const [activeSubAgents, setActiveSubAgents] = useState<ActiveSubAgent[]>([]);
   const [showSubAgentsDialog, setShowSubAgentsDialog] = useState(false);
+  const closeSubAgentsDialog = useCallback(() => setShowSubAgentsDialog(false), []);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [isActiveChannelAtBottom, setIsActiveChannelAtBottom] = useState(true);
   const [streamDialogOpen, setStreamDialogOpen] = useState(false);
@@ -2188,9 +2189,17 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // NOTE: Must be before early returns to satisfy React's Rules of Hooks
   const getStreamingOutput = useCallback((): StreamingAgentInfo[] => {
     const results: StreamingAgentInfo[] = [];
+    const prefix = `${activeChannel}:`;
     for (const [key, info] of streamingOutputRef.current.entries()) {
-      if (key.startsWith(`${activeChannel}:`)) {
-        results.push(info);
+      if (key.startsWith(prefix)) {
+        // Exclude sub-channel agents: key format is "channel:agentId".
+        // Sub-agents running in space channels have keys like "main:spaceId:agentId"
+        // where the agentId part (after channel prefix) still contains a colon.
+        // Filter those out so main channel Thoughts only shows main-channel agents.
+        const agentPart = key.slice(prefix.length);
+        if (!agentPart.includes(":")) {
+          results.push(info);
+        }
       }
     }
     return results;
@@ -2198,8 +2207,9 @@ export default function App({ channel: initialChannel, articleId }: Props) {
 
   // Clear completed streaming output when dialog closes (prevents memory leak)
   const clearCompletedStreamingOutput = useCallback(() => {
+    const prefix = `${activeChannel}:`;
     for (const [key, info] of streamingOutputRef.current.entries()) {
-      if (key.startsWith(`${activeChannel}:`) && info.completed) {
+      if (key.startsWith(prefix) && info.completed) {
         streamingOutputRef.current.delete(key);
       }
     }
@@ -2451,9 +2461,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       )}
 
       {/* Sub-agents dialog */}
-      {showSubAgentsDialog && (
-        <SubAgentsDialog spaces={activeSubAgents} onClose={() => setShowSubAgentsDialog(false)} />
-      )}
+      {showSubAgentsDialog && <SubAgentsDialog spaces={activeSubAgents} onClose={closeSubAgentsDialog} />}
 
       {/* Channel list dialog - triggered by logo click */}
       {showChannelDialog && (
@@ -2571,6 +2579,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               language={sidebarContent.language}
               fileType={sidebarContent.fileType}
               navigateUrl={sidebarContent.navigateUrl}
+              copyUrl={sidebarContent.copyUrl}
               isSubspace={sidebarContent.isSubspace}
             />
           )}

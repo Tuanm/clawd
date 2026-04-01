@@ -199,8 +199,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   // Agent files list (for Type dropdown)
   const [agentFiles, setAgentFiles] = useState<{ name: string; description: string }[]>([]);
 
-  // Folder browser state
+  // Folder browser state (shared between Add and Edit modes)
   const [showFolderBrowser, setShowFolderBrowser] = useState(false);
+  const [showEditFolderBrowser, setShowEditFolderBrowser] = useState(false);
   const [folderPath, setFolderPath] = useState("");
   const [folders, setFolders] = useState<{ name: string; path: string }[]>([]);
   const [folderLoading, setFolderLoading] = useState(false);
@@ -279,6 +280,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setNewProject("");
       setNewHeartbeat(0);
       setShowFolderBrowser(false);
+      setShowEditFolderBrowser(false);
       setIdentity("");
       setSavedIdentity("");
       setIdentityDirty(false);
@@ -319,6 +321,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
       setEditModel("");
       setEditProject("");
       setEditHeartbeat(0);
+      setShowEditFolderBrowser(false);
       setSavedEditProvider("");
       setSavedEditModel("");
       setSavedEditProject("");
@@ -590,9 +593,15 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     }
   }, []);
 
-  const handleFolderSelect = useCallback((path: string) => {
-    setNewProject(path);
-    setShowFolderBrowser(false);
+  const handleFolderSelect = useCallback((path: string, forEdit = false) => {
+    if (forEdit) {
+      setEditProject(path);
+      setShowEditFolderBrowser(false);
+      setFieldsDirty(true);
+    } else {
+      setNewProject(path);
+      setShowFolderBrowser(false);
+    }
   }, []);
 
   const selectedAgent = agents.find((a) => a.agent_id === selectedAgentId);
@@ -713,18 +722,70 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 }}
               />
               <label className="skills-field-label">Project</label>
-              <input
-                type="text"
-                className="agent-field-input"
-                placeholder={`~/.clawd/projects/${channel}`}
-                value={editProject}
-                onChange={(e) => {
-                  setEditProject(e.target.value);
-                  setFieldsDirty(
-                    checkFieldsDirty(editProvider, editModel, e.target.value, editHeartbeat, editAgentType),
-                  );
-                }}
-              />
+              <div className="agent-field-browse">
+                <input
+                  type="text"
+                  className="agent-field-input"
+                  placeholder={`~/.clawd/projects/${channel}`}
+                  value={editProject}
+                  onChange={(e) => {
+                    setEditProject(e.target.value);
+                    setFieldsDirty(
+                      checkFieldsDirty(editProvider, editModel, e.target.value, editHeartbeat, editAgentType),
+                    );
+                  }}
+                />
+                <button
+                  className="agent-field-browse-btn"
+                  onClick={() => {
+                    setShowEditFolderBrowser(!showEditFolderBrowser);
+                    if (!showEditFolderBrowser) {
+                      loadFolders(editProject || "/");
+                    }
+                  }}
+                  title="Browse"
+                >
+                  <FolderIcon />
+                </button>
+              </div>
+              {showEditFolderBrowser && (
+                <div className="agent-browser">
+                  <div className="agent-browser-head">
+                    {folderPath && folderPath !== "/" && (
+                      <button
+                        className="agent-browser-back"
+                        onClick={() => {
+                          const parent = folderPath.split("/").slice(0, -1).join("/") || "/";
+                          loadFolders(parent);
+                        }}
+                      >
+                        <ChevronIcon />
+                      </button>
+                    )}
+                    <span className="agent-browser-path">{folderPath || "/"}</span>
+                    <button
+                      className="agent-browser-check"
+                      onClick={() => handleFolderSelect(folderPath, true)}
+                      title="Select this folder"
+                    >
+                      <CheckIcon />
+                    </button>
+                  </div>
+                  <div className="agent-browser-list">
+                    {folderLoading ? (
+                      <div className="agent-browser-empty">Loading...</div>
+                    ) : folders.length === 0 ? (
+                      <div className="agent-browser-empty">No subdirectories</div>
+                    ) : (
+                      folders.map((f) => (
+                        <button key={f.path} className="agent-browser-item" onClick={() => loadFolders(f.path)}>
+                          {f.name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
               <label className="skills-field-label">Heartbeat Interval</label>
               <input
                 type="number"
@@ -878,7 +939,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 className="agent-field-input"
                 placeholder="Name"
                 value={newName}
-                onChange={(e) => setNewName(e.target.value)}
+                pattern="[^:]+"
+                title="Agent name cannot contain colons"
+                onChange={(e) => setNewName(e.target.value.replace(/:/g, ""))}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleAddAgent();
                   if (e.key === "Escape") {

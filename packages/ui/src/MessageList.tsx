@@ -2848,27 +2848,46 @@ export default function MessageList({
                     highlightLines={msg.code_preview.highlight_lines}
                   />
                 )}
-                {msg.article && (
-                  <div
-                    className="message-article-card"
-                    onClick={() => window.open(`/articles/${msg.article!.id}`, "_blank")}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => e.key === "Enter" && window.open(`/articles/${msg.article!.id}`, "_blank")}
-                  >
-                    {msg.article.thumbnail_url && (
-                      <div className="article-card-thumbnail">
-                        <img src={msg.article.thumbnail_url} alt={msg.article.title} />
+                {msg.article &&
+                  (() => {
+                    const article = msg.article!;
+                    const articleUrl = `/articles/${article.id}`;
+                    const openArticle = () => {
+                      if (onOpenSidebar) {
+                        onOpenSidebar({
+                          type: "iframe",
+                          title: article.title,
+                          url: articleUrl,
+                          navigateUrl: articleUrl,
+                          copyUrl: articleUrl,
+                        });
+                      } else {
+                        window.open(articleUrl, "_blank");
+                      }
+                    };
+                    return (
+                      <div
+                        className="message-article-card"
+                        onClick={openArticle}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === " ") e.preventDefault();
+                          if (e.key === "Enter" || e.key === " ") openArticle();
+                        }}
+                      >
+                        {article.thumbnail_url && (
+                          <div className="article-card-thumbnail">
+                            <img src={article.thumbnail_url} alt={article.title} />
+                          </div>
+                        )}
+                        <div className="article-card-content">
+                          <div className="article-card-title">{article.title}</div>
+                          {article.description && <div className="article-card-description">{article.description}</div>}
+                        </div>
                       </div>
-                    )}
-                    <div className="article-card-content">
-                      <div className="article-card-title">{msg.article.title}</div>
-                      {msg.article.description && (
-                        <div className="article-card-description">{msg.article.description}</div>
-                      )}
-                    </div>
-                  </div>
-                )}
+                    );
+                  })()}
                 {msg.subspace &&
                   (() => {
                     const subspace = msg.subspace;
