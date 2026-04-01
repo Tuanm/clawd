@@ -3925,6 +3925,8 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         inputSchema: t.inputSchema,
       }));
 
+      const { CUSTOM_SCRIPT_MCP_TOOL_DEF } = await import("../agent/plugins/custom-tool-plugin");
+
       const allTools = [
         ...MCP_TOOLS,
         ...AGENT_MCP_TOOLS,
@@ -3940,6 +3942,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         ...utilityToolDefs,
         ...remoteToolDefs,
         ...fileToolDefs,
+        CUSTOM_SCRIPT_MCP_TOOL_DEF,
       ];
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { tools: allTools } }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -4015,6 +4018,45 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
           }
           const { executeMcpFileTool } = await import("./mcp-file-tools");
           const result = await executeMcpFileTool(name, (toolArgs || {}) as Record<string, unknown>, projectRoot);
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        } catch (err: any) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err.message }) }] },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      }
+
+      // Handle custom_script tool
+      if (name === "custom_script") {
+        try {
+          const { getAgentProjectRoot } = await import("../api/agents");
+          const projectRoot = getAgentProjectRoot(db, channel, agentId);
+          if (!projectRoot) {
+            return new Response(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id,
+                result: {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({ ok: false, error: "No project configured for this agent" }),
+                    },
+                  ],
+                },
+              }),
+              { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+            );
+          }
+          const { executeCustomScriptMcp } = await import("../agent/plugins/custom-tool-plugin");
+          const result = await executeCustomScriptMcp(projectRoot, (toolArgs || {}) as Record<string, any>);
           return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
@@ -5389,6 +5431,9 @@ export async function handleSpaceMcpRequest(req: Request, spaceId: string): Prom
           description: t.description,
           inputSchema: t.inputSchema,
         }));
+        const { CUSTOM_SCRIPT_MCP_TOOL_DEF: spaceCustomScriptToolDef } = await import(
+          "../agent/plugins/custom-tool-plugin"
+        );
         result = {
           tools: [
             {
@@ -5406,6 +5451,7 @@ export async function handleSpaceMcpRequest(req: Request, spaceId: string): Prom
               },
             },
             ...spaceFileToolDefs,
+            spaceCustomScriptToolDef,
           ],
         };
         break;
@@ -5443,6 +5489,49 @@ export async function handleSpaceMcpRequest(req: Request, spaceId: string): Prom
             const { executeMcpFileTool } = await import("./mcp-file-tools");
             const fileResult = await executeMcpFileTool(name, (toolArgs || {}) as Record<string, unknown>, projectRoot);
             return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: fileResult }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          } catch (err: any) {
+            return new Response(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id,
+                result: { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err.message }) }] },
+              }),
+              { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+            );
+          }
+        }
+
+        if (name === "custom_script") {
+          try {
+            const projectRoot = spaceProjectRoots.get(spaceId);
+            if (!projectRoot) {
+              return new Response(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id,
+                  result: {
+                    content: [
+                      {
+                        type: "text",
+                        text: JSON.stringify({
+                          ok: false,
+                          error: "Space project root not registered yet — the space may still be initializing",
+                        }),
+                      },
+                    ],
+                  },
+                }),
+                { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+              );
+            }
+            const { executeCustomScriptMcp } = await import("../agent/plugins/custom-tool-plugin");
+            const customScriptResult = await executeCustomScriptMcp(
+              projectRoot,
+              (toolArgs || {}) as Record<string, any>,
+            );
+            return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: customScriptResult }), {
               headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
           } catch (err: any) {

@@ -323,6 +323,37 @@ function sectionBrowser(): string {
 }
 
 // ============================================================================
+// Section: Custom Scripts (conditional — only if scripts exist)
+// ============================================================================
+
+function sectionCustomScripts(ctx: PromptContext): string {
+  const p = ctx.mcpPrefix || "";
+  let count = 0;
+  try {
+    const { existsSync, readdirSync, statSync } = require("fs");
+    const { join } = require("path");
+    const toolsDir = join(ctx.projectRoot, ".clawd", "tools");
+    if (existsSync(toolsDir)) {
+      count = readdirSync(toolsDir).filter((e: string) => {
+        const d = join(toolsDir, e);
+        return statSync(d).isDirectory() && existsSync(join(d, "tool.json"));
+      }).length;
+    }
+  } catch {
+    count = 0;
+  }
+  if (count === 0) return "";
+  return `# Custom Scripts
+You have ${count} project-specific custom script${count === 1 ? "" : "s"} available via \`${p}custom_script\`. Always check them before writing ad-hoc solutions — they may already solve your problem.
+
+- \`${p}custom_script(mode="list")\` — see all scripts with descriptions
+- \`${p}custom_script(mode="view", tool_id="<id>")\` — inspect a script's code and parameters
+- \`${p}custom_script(mode="execute", tool_id="<id>", arguments={...})\` — run a script
+
+You can also add, edit, or delete scripts via \`mode="add"|"edit"|"delete"\`.`;
+}
+
+// ============================================================================
 // Section: Context Awareness
 // ============================================================================
 
@@ -384,6 +415,12 @@ export function buildDynamicSystemPrompt(ctx: PromptContext): string {
 
   if (ctx.browserEnabled) {
     sections.push(sectionBrowser());
+  }
+
+  // Custom scripts hint — shown to all agents (main + space) when scripts exist
+  const customScriptsSection = sectionCustomScripts(ctx);
+  if (customScriptsSection) {
+    sections.push(customScriptsSection);
   }
 
   sections.push(sectionContext());

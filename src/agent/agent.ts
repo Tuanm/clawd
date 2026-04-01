@@ -1598,8 +1598,8 @@ SUMMARY:`;
       }
     }
 
-    // Register custom tool plugin (custom_tool management + discovered ct_* tools)
-    // Scans {projectRoot}/.clawd/tools/ for user-created custom tools.
+    // Register custom script plugin (custom_script management + discovered ct_* tools)
+    // Scans {projectRoot}/.clawd/tools/ for user-created custom scripts.
     if (!this._customToolPluginRegistered) {
       try {
         const customPlugin = new CustomToolPlugin();
@@ -1613,7 +1613,7 @@ SUMMARY:`;
           for (const tool of discovered) {
             try {
               this.toolPluginManager.register({
-                name: `custom-tool-${tool.name}`,
+                name: `custom-script-${tool.name}`,
                 getTools: () => [tool],
               });
             } catch (toolErr: any) {

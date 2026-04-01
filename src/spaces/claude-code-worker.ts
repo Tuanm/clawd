@@ -47,6 +47,7 @@ export const CLAWD_TOOL_NAME_MAP: Record<string, string> = {
   get_environment: "mcp__clawd__get_environment",
   web_search: "mcp__clawd__web_search",
   web_fetch: "mcp__clawd__web_fetch",
+  custom_script: "mcp__clawd__custom_script",
   // Claude Code native tool names (PascalCase)
   Bash: "mcp__clawd__bash",
   Read: "mcp__clawd__file_view",
@@ -222,6 +223,10 @@ export class ClaudeCodeSpaceWorker {
       } catch {}
     }, 2000);
 
+    // Register project root for space MCP file tools (before runSDKQuery)
+    const effectiveProjectRoot = this.config.projectRoot || process.cwd();
+    spaceProjectRoots.set(space.id, effectiveProjectRoot);
+
     // Build tool-restriction addendum (injected after the agent prompt when tools are restricted)
     const allowedTools = this.config.allowedTools;
     let toolAddendum = "";
@@ -229,13 +234,19 @@ export class ClaudeCodeSpaceWorker {
       toolAddendum = `\n\nTOOL RESTRICTIONS: You may ONLY use the following tools: ${allowedTools.join(", ")}. Do NOT call any other tools.`;
     }
 
-    const basePrompt = agentPrompt
-      ? `${agentPrompt}${toolAddendum}\n\n---\n\n`
-      : `You are an autonomous coding agent. Complete the given task using your tools.\n\nFor file operations within the project, prefer the MCP file tools (mcp__clawd__file_view, mcp__clawd__file_edit, mcp__clawd__file_multi_edit, mcp__clawd__file_create, mcp__clawd__file_glob, mcp__clawd__file_grep) — they are project-root-scoped and sandbox-safe. Use Bash only for system commands that cannot be done with file tools.${toolAddendum}\n\n`;
+    // Custom scripts addendum
+    let customScriptAddendum = "";
+    try {
+      const { countCustomScripts } = require("../agent/plugins/custom-tool-plugin");
+      const scriptCount = countCustomScripts(effectiveProjectRoot);
+      if (scriptCount > 0) {
+        customScriptAddendum = `\n\nYou have ${scriptCount} project-specific custom script${scriptCount === 1 ? "" : "s"} available via \`mcp__clawd__custom_script\`. Use it to list and execute them.`;
+      }
+    } catch {}
 
-    // Register project root for space MCP file tools (before runSDKQuery)
-    const effectiveProjectRoot = this.config.projectRoot || process.cwd();
-    spaceProjectRoots.set(space.id, effectiveProjectRoot);
+    const basePrompt = agentPrompt
+      ? `${agentPrompt}${toolAddendum}${customScriptAddendum}\n\n---\n\n`
+      : `You are an autonomous coding agent. Complete the given task using your tools.\n\nFor file operations within the project, prefer the MCP file tools (mcp__clawd__file_view, mcp__clawd__file_edit, mcp__clawd__file_multi_edit, mcp__clawd__file_create, mcp__clawd__file_glob, mcp__clawd__file_grep) — they are project-root-scoped and sandbox-safe. Use Bash only for system commands that cannot be done with file tools.${toolAddendum}${customScriptAddendum}\n\n`;
 
     try {
       this.sessionId = await runSDKQuery(

@@ -44,7 +44,7 @@ const VALID_COMPONENT_TYPES = [
   "table",
   "tabs",
   "chart",
-  "custom_tool",
+  "custom_script",
 ];
 
 export function validateInteractiveJson(json: string): { valid: boolean; error?: string } {
@@ -235,11 +235,11 @@ export async function handleArtifactAction(req: ArtifactActionRequest, user: str
       .filter(Boolean)
       .join("\n");
     postMessage({ channel, text: actionText, user: "UBOT", subtype: "artifact_action" });
-  } else if (handler === "custom_tool" && spec?.on_action) {
-    // Execute a custom tool with form values as arguments
+  } else if (handler === "custom_script" && spec?.on_action) {
+    // Execute a custom script with form values as arguments
     const toolId = spec.on_action.tool_id;
     if (!toolId || typeof toolId !== "string") {
-      return { ok: false, error: "invalid", message: "custom_tool handler requires tool_id" };
+      return { ok: false, error: "invalid", message: "custom_script handler requires tool_id" };
     }
     // Resolve project root from channel_agents
     const channelAgent = db
@@ -254,7 +254,7 @@ export async function handleArtifactAction(req: ArtifactActionRequest, user: str
     // args_template is REQUIRED — only explicitly mapped fields reach the tool (security)
     const argsTemplate = spec.on_action.args_template as Record<string, string> | undefined;
     if (!argsTemplate || typeof argsTemplate !== "object" || Object.keys(argsTemplate).length === 0) {
-      return { ok: false, error: "invalid", message: "custom_tool handler requires args_template mapping" };
+      return { ok: false, error: "invalid", message: "custom_script handler requires args_template mapping" };
     }
     const toolArgs: Record<string, any> = {};
     for (const [key, val] of Object.entries(argsTemplate)) {
