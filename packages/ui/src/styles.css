@@ -5255,130 +5255,193 @@ body {
   height: 16px;
 }
 
-.search-modal-overlay {
+/* ---- Search overlay + input box (home-page style) ---- */
+.search-overlay {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  background: hsl(var(--text) / 40%);
+  background: hsl(var(--text) / 30%);
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding-top: 80px;
-  z-index: 1000;
+  padding-top: min(18vh, 140px);
+  padding-inline: 16px;
+  z-index: 1100;
+  backdrop-filter: blur(2px);
 }
 
-.search-modal {
-  background: hsl(var(--bg));
-  border-radius: 8px;
+.search-wrapper {
+  position: relative;
   width: 100%;
-  max-width: 560px;
-  max-height: 70vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 8px 32px hsl(var(--text) / 20%);
+  max-width: 520px;
+  animation: searchAppear 0.15s ease-out;
 }
 
-.search-modal-header {
+@keyframes searchAppear {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Input box — mirrors .home-space-input / .branding-input */
+.search-input-box {
   display: flex;
   align-items: center;
-  padding: 12px;
-  gap: 8px;
+  background: hsl(var(--bg-center));
+  border: 1px solid hsl(var(--text) / 20%);
+  border-radius: 8px;
+  padding: 4px 12px 4px 16px;
+  box-shadow: 0 2px 16px hsl(var(--text) / 12%);
+  gap: 10px;
 }
 
-.search-modal.has-results .search-modal-header {
-  border-bottom: 1px solid hsl(var(--text) / 8%);
+.search-input-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 
-.search-input {
+.search-field {
   flex: 1;
-  padding: 10px 12px;
-  border: 1px solid hsl(var(--text) / 10%);
-  border-radius: 6px;
-  font-size: 14px;
-  background: hsl(var(--bg));
-  color: var(--text-primary);
-}
-
-.search-input:focus {
+  background: transparent;
+  border: none;
   outline: none;
-  border-color: hsl(var(--accent));
+  font-size: 16px;
+  color: var(--text-primary);
+  font-family: "Lato", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 12px 0;
+  min-width: 0;
 }
 
-.search-input::placeholder {
+.search-field::placeholder {
   color: var(--text-muted);
 }
 
-.search-close {
-  width: 32px;
-  height: 32px;
-  display: flex;
+.search-kbd {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  background: transparent;
-  font-size: 24px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: "Lato", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--text-muted);
-  cursor: pointer;
+  background: hsl(var(--text) / 6%);
+  border: 1px solid hsl(var(--text) / 10%);
   border-radius: 4px;
+  line-height: 1.4;
+  flex-shrink: 0;
 }
 
-.search-close:hover {
-  background: hsl(var(--text) / 5%);
-  color: var(--text-primary);
-}
-
-.search-results {
-  flex: 1;
+/* Dropdown — mirrors .home-dropdown */
+.search-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: hsl(var(--bg-center));
+  border: 1px solid hsl(var(--text) / 12%);
+  border-radius: 12px;
+  max-height: 50vh;
   overflow-y: auto;
-  padding: 8px;
+  box-shadow: 0 4px 24px hsl(var(--text) / 15%);
+  animation: home-dropdown-appear 0.12s ease-out;
 }
 
-.search-empty {
-  padding: 24px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 13px;
+.search-dropdown::-webkit-scrollbar {
+  width: 6px;
+}
+.search-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+.search-dropdown::-webkit-scrollbar-thumb {
+  background: hsl(var(--text) / 15%);
+  border-radius: 3px;
+}
+.search-dropdown::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--text) / 25%);
 }
 
-.search-result-item {
-  padding: 10px 12px;
-  border-radius: 6px;
+/* Dropdown items — mirrors .home-dropdown-item */
+.search-dropdown-item {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 16px;
   cursor: pointer;
+  transition: background-color 0.1s;
 }
 
-.search-result-item:hover {
-  background: hsl(var(--text) / 5%);
+.search-dropdown-item:hover,
+.search-dropdown-item.active {
+  background: hsl(15 63.1% 59.6% / 8%);
 }
 
-.search-result-meta {
+.search-dropdown-item:first-child {
+  border-radius: 12px 12px 0 0;
+}
+.search-dropdown-item:last-child {
+  border-radius: 0 0 12px 12px;
+}
+.search-dropdown-item:only-child {
+  border-radius: 12px;
+}
+
+.search-dropdown-item + .search-dropdown-item {
+  border-top: 1px solid hsl(var(--text) / 5%);
+}
+
+.search-dropdown-item-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
-.search-result-author {
+.search-dropdown-item-author {
   font-weight: 600;
   font-size: 12px;
   color: var(--text-primary);
+  font-family: "Lato", sans-serif;
 }
 
-.search-result-time {
+.search-dropdown-item-time {
   font-size: 11px;
   color: var(--text-muted);
 }
 
-.search-result-text {
+.search-dropdown-item-text {
   font-size: 13px;
   color: var(--text-secondary);
-  line-height: 1.4;
+  line-height: 1.5;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-family: "Lato", sans-serif;
 }
 
+.search-dropdown-empty {
+  padding: 20px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-family: "Lato", sans-serif;
+}
+
+.search-dropdown-status {
+  padding: 10px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Match highlight */
 .search-highlight {
   background: #ffeb3b;
   color: #000;
@@ -5386,15 +5449,7 @@ body {
   border-radius: 2px;
 }
 
-.search-loading,
-.search-more {
-  padding: 12px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-/* Search jump highlight animation */
+/* Search jump highlight animation (on the message list) */
 .message.search-highlight-message {
   animation: search-pulse 2s ease-out;
 }
@@ -9428,7 +9483,13 @@ body,
   color: hsl(0 70% 70%);
 }
 
-/* 5.14 Search highlight */
+/* 5.14 Search highlight + dropdown dark overrides */
+[data-theme="dark"] .search-input-box {
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.4);
+}
+[data-theme="dark"] .search-dropdown {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
 [data-theme="dark"] .search-highlight {
   background: hsl(48 80% 30%);
   color: hsl(48 80% 90%);

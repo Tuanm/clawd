@@ -2,7 +2,7 @@
 
 > **Purpose:** This document is the canonical reference for Claw'd's UI design language. All future UI work — new components, refactors, visual polish — must align with what is described here. When in doubt, read this first.
 >
-> **Verified:** Audited by 3 independent review agents against `packages/ui/src/styles.css` (8,929 lines) and all component source files. Last updated 2026-03-31.
+> **Verified:** Audited by 3 independent review agents against `packages/ui/src/styles.css` and all component source files. Last updated 2026-04-01.
 
 ---
 
@@ -699,7 +699,8 @@ Sections: **CHANGES**, **STAGED**, **CONFLICTS**. Per-file hover reveals action 
 | `lazy-pulse` | Opacity pulse (0.4 ↔ 0.7) | Lazy viewport placeholders |
 | `highlight-pulse` | Message/content highlight flash | Jump-to-message highlight |
 | `plan-fade-in` | Plan mode fade | Plan mode UI |
-| `search-pulse` | Search animation | Search overlay |
+| `searchAppear` | Fade + slide-down + scale-in | Search overlay input appearance |
+| `search-pulse` | Yellow→transparent highlight flash | Target message after search jump |
 | `stream-dialog-fade-in` | Stream dialog entrance | Stream dialog |
 | `stream-dialog-slide-up` | Stream dialog slide | Stream dialog |
 
@@ -877,7 +878,60 @@ Plan mode has dedicated UI (`.plan-mode-*`) that fades in via `plan-fade-in`. Us
 
 ### Search Overlay
 
-A full-screen search UI (`.search-overlay`) with `search-pulse` animation. Similar to Slack's Cmd+K. Slides in from top.
+Triggered by **Ctrl+F / Cmd+F** or the search button in the header. Designed to match the home page input style.
+
+**Architecture:** Floating centered input box with live dropdown results — NOT a traditional modal dialog.
+
+```
+┌──────────────── backdrop (z-index: 1100, 30% scrim + blur) ────────────────┐
+│                                                                            │
+│         ┌──────────────────────────────────────┐                           │
+│         │ 🔍  [Search messages...]  [Esc]      │  ← .search-input-box     │
+│         └──────────────────────────────────────┘    (matches home input)   │
+│         ┌──────────────────────────────────────┐                           │
+│         │  Author · 2:30 PM                    │  ← .search-dropdown      │
+│         │  ...matching text with **highlight**  │    (matches home dropdown)│
+│         ├──────────────────────────────────────┤                           │
+│         │  Author · Yesterday                  │                           │
+│         │  ...another **highlight** result...   │                           │
+│         └──────────────────────────────────────┘                           │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Input box** (`.search-input-box`):
+- Mirrors `.home-space-input` / `.branding-input` design
+- `border-radius: 8px`, `border: 1px solid hsl(var(--text) / 20%)`
+- `background: hsl(var(--bg-center))`, `box-shadow: 0 2px 16px hsl(var(--text) / 12%)`
+- Search icon (18px) on left, `Esc` keyboard hint badge on right
+- Font: Lato 16px, matching home page field
+
+**Dropdown** (`.search-dropdown`):
+- Mirrors `.home-dropdown` design — positioned below input, `border-radius: 12px`
+- `max-height: 50vh`, overflow-y scroll with thin 6px scrollbar
+- Items separated by `1px solid hsl(var(--text) / 5%)`
+- Hover/active: `hsl(15 63.1% 59.6% / 8%)` — brand accent tint
+- Each item shows: author (12px/600) + time (11px muted) header, preview text (13px) with yellow highlight marks
+- First/last child border-radius matches container
+
+**Keyboard navigation:**
+- `↑` / `↓` — move active selection through results
+- `Enter` — jump to selected message
+- `Escape` — close search
+- `Tab` — trapped (focus stays on input)
+
+**Accessibility:**
+- `role="dialog"` + `aria-modal="true"` + `aria-label="Search messages"` on wrapper
+- Focus trap prevents Tab escape
+- Active item scrolled into view automatically
+
+**Dark mode:**
+- Input box shadow: `rgba(0, 0, 0, 0.4)`
+- Dropdown shadow: `rgba(0, 0, 0, 0.5)`
+- Highlight: `hsl(48 80% 30%)` bg / `hsl(48 80% 90%)` text
+
+**Animation:** `searchAppear` — 0.15s ease-out fade + translateY(-8px→0) + scale(0.98→1)
+
+**Jump highlight:** When a search result is clicked, the target message in the list pulses with `search-pulse` (yellow→transparent, 2s).
 
 ### Projects Sidebar Tree
 
@@ -922,4 +976,4 @@ packages/ui/src/
 
 ---
 
-*Last updated: 2026-03-31. Verified by 3 independent review agents (reviewer-1-colors-typography, reviewer-2-components, reviewer-3-layout-misc) against `packages/ui/src/styles.css` (8,929 lines) and all UI component source files.*
+*Last updated: 2026-04-01. Verified by 3 independent review agents (reviewer-1-colors-typography, reviewer-2-components, reviewer-3-layout-misc) against `packages/ui/src/styles.css` and all UI component source files. Search overlay redesigned 2026-04-01.*

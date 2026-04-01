@@ -708,7 +708,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "f") {
         e.preventDefault();
-        setShowSearchModal(true);
+        setShowSearchModal((prev) => !prev);
       }
     };
     document.addEventListener("keydown", handleKeyDown);

@@ -18,7 +18,7 @@ interface Props {
 
 const API_URL = "";
 
-// Highlight matching text with yellow background
+// Highlight matching text
 function HighlightedText({ text, query }: { text: string; query: string }) {
   if (!query.trim()) return <>{text}</>;
 
@@ -28,7 +28,7 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
   return (
     <>
       {parts.map((part, i) =>
-        regex.test(part) ? (
+        i % 2 === 1 ? (
           <mark key={i} className="search-highlight">
             {part}
           </mark>
@@ -41,26 +41,23 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
 }
 
 // Get preview text around the match
-function getPreview(text: string, query: string, maxLength = 100): string {
+function getPreview(text: string, query: string, maxLength = 120): string {
   const lowerText = text.toLowerCase();
   const lowerQuery = query.toLowerCase();
   const matchIndex = lowerText.indexOf(lowerQuery);
 
   if (matchIndex === -1) return text.slice(0, maxLength) + (text.length > maxLength ? "..." : "");
 
-  // Calculate start position to center the match
   const contextBefore = 30;
   const start = Math.max(0, matchIndex - contextBefore);
   let end = Math.min(text.length, start + maxLength);
 
-  // Adjust if we're at the beginning
   if (start === 0) {
     end = Math.min(text.length, maxLength);
   }
 
   let preview = text.slice(start, end);
 
-  // Add ellipsis
   if (start > 0) preview = `...${preview}`;
   if (end < text.length) preview = `${preview}...`;
 
@@ -83,30 +80,50 @@ function formatTime(ts: string): string {
   );
 }
 
+function SearchIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+    >
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  );
+}
+
 export default function SearchModal({ messages, isOpen, onClose, onJumpToMessage, channel }: Props) {
   const [query, setQuery] = useState("");
   const [serverResults, setServerResults] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [beforeTs, setBeforeTs] = useState<string | null>(null);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
-  const resultsRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<number | null>(null);
 
-  // Focus input when modal opens
+  // Focus input when opened
   useEffect(() => {
-    if (isOpen && inputRef.current) {
-      inputRef.current.focus();
+    if (isOpen) {
+      requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [isOpen]);
 
-  // Clear state when modal closes
+  // Clear state when closed
   useEffect(() => {
     if (!isOpen) {
       setQuery("");
       setServerResults([]);
       setBeforeTs(null);
       setHasMore(false);
+      setActiveIndex(-1);
     }
   }, [isOpen]);
 
@@ -162,11 +179,13 @@ export default function SearchModal({ messages, isOpen, onClose, onJumpToMessage
       setServerResults([]);
       setHasMore(false);
       setBeforeTs(null);
+      setActiveIndex(-1);
       return;
     }
 
     searchTimeoutRef.current = window.setTimeout(() => {
       setBeforeTs(null);
+      setActiveIndex(-1);
       searchMessages(query);
     }, 300);
 
@@ -177,9 +196,9 @@ export default function SearchModal({ messages, isOpen, onClose, onJumpToMessage
     };
   }, [query, searchMessages]);
 
-  // Infinite scroll
+  // Infinite scroll in dropdown
   const handleScroll = useCallback(() => {
-    const container = resultsRef.current;
+    const container = dropdownRef.current;
     if (!container || loading || !hasMore) return;
 
     const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
@@ -188,25 +207,22 @@ export default function SearchModal({ messages, isOpen, onClose, onJumpToMessage
     }
   }, [loading, hasMore, query, beforeTs, searchMessages]);
 
-  // Handle keyboard
+  // Close on outside click
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+    if (!isOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
-
-    if (isOpen) {
-      document.addEventListener("keydown", handleKeyDown);
-      return () => document.removeEventListener("keydown", handleKeyDown);
-    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, [isOpen, onClose]);
 
-  // Combine local and server results (prefer server when searching)
+  // Combine local and server results
   const results = useMemo(() => {
     if (!query.trim()) return [];
 
-    // Use server results if available, otherwise fall back to local filtering
     if (serverResults.length > 0) {
       return serverResults;
     }
@@ -216,48 +232,88 @@ export default function SearchModal({ messages, isOpen, onClose, onJumpToMessage
     return messages.filter((msg) => msg.text.toLowerCase().includes(lowerQuery)).slice(0, 20);
   }, [messages, query, serverResults]);
 
+  // Keyboard navigation
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveIndex((prev) => (prev < results.length - 1 ? prev + 1 : prev));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveIndex((prev) => (prev > 0 ? prev - 1 : -1));
+      } else if (e.key === "Enter" && activeIndex >= 0 && results[activeIndex]) {
+        e.preventDefault();
+        onJumpToMessage(results[activeIndex].ts);
+      }
+    },
+    [onClose, results, activeIndex, onJumpToMessage],
+  );
+
+  // Scroll active item into view
+  useEffect(() => {
+    if (activeIndex < 0 || !dropdownRef.current) return;
+    const items = dropdownRef.current.querySelectorAll(".search-dropdown-item");
+    items[activeIndex]?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
+
   if (!isOpen) return null;
 
   const hasQuery = query.trim().length > 0;
+  const showDropdown = hasQuery && (results.length > 0 || loading);
+  const showEmpty = hasQuery && results.length === 0 && !loading;
 
   return (
-    <div className="search-modal-overlay" onClick={onClose}>
-      <div className={`search-modal ${hasQuery ? "has-results" : ""}`} onClick={(e) => e.stopPropagation()}>
-        <div className="search-modal-header">
+    <div className="search-overlay">
+      <div className="search-wrapper" ref={wrapperRef} role="dialog" aria-modal="true" aria-label="Search messages">
+        <div className="search-input-box">
+          <span className="search-input-icon">
+            <SearchIcon />
+          </span>
           <input
             ref={inputRef}
             type="text"
-            className="search-input"
+            className="search-field"
             placeholder="Search messages..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
           />
-          <button className="search-close" onClick={onClose}>
-            ×
-          </button>
+          <kbd className="search-kbd">Esc</kbd>
         </div>
 
-        {hasQuery && (
-          <div className="search-results" ref={resultsRef} onScroll={handleScroll}>
-            {results.length === 0 && !loading && <div className="search-empty">No messages found</div>}
+        {(showDropdown || showEmpty) && (
+          <div className="search-dropdown" ref={dropdownRef} onScroll={handleScroll}>
+            {showEmpty && <div className="search-dropdown-empty">No messages found</div>}
 
-            {results.map((msg) => (
-              <div key={msg.ts} className="search-result-item" onClick={() => onJumpToMessage(msg.ts)}>
-                <div className="search-result-meta">
-                  <span className="search-result-author">
+            {results.map((msg, i) => (
+              <div
+                key={msg.ts}
+                className={`search-dropdown-item${i === activeIndex ? " active" : ""}`}
+                onClick={() => onJumpToMessage(msg.ts)}
+                onMouseEnter={() => setActiveIndex(i)}
+              >
+                <div className="search-dropdown-item-header">
+                  <span className="search-dropdown-item-author">
                     {msg.agent_id || (msg.user === "UHUMAN" ? "You" : msg.user)}
                   </span>
-                  <span className="search-result-time">{formatTime(msg.ts)}</span>
+                  <span className="search-dropdown-item-time">{formatTime(msg.ts)}</span>
                 </div>
-                <div className="search-result-text">
+                <div className="search-dropdown-item-text">
                   <HighlightedText text={getPreview(msg.text, query)} query={query} />
                 </div>
               </div>
             ))}
 
-            {loading && <div className="search-loading">Searching...</div>}
-
-            {hasMore && !loading && <div className="search-more">Scroll for more results</div>}
+            {loading && <div className="search-dropdown-status">Searching...</div>}
+            {hasMore && !loading && <div className="search-dropdown-status">Scroll for more</div>}
           </div>
         )}
       </div>
