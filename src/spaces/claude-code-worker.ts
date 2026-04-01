@@ -22,6 +22,51 @@ import type { SpaceManager } from "./manager";
 export { hasTmux, truncateToolResult, formatToolDescription };
 
 // ============================================================================
+// Tool name mapping
+// ============================================================================
+
+/**
+ * Maps Claw'd short tool names (used in agent YAML `tools`/`disallowedTools`)
+ * AND Claude Code native tool names (PascalCase) to their MCP full names.
+ *
+ * This is used when spawning a CC sub-agent with an agent file config so that
+ * tool restrictions from the YAML are honoured even though CC native tools are
+ * replaced by MCP equivalents at the SDK level.
+ */
+export const CLAWD_TOOL_NAME_MAP: Record<string, string> = {
+  // Short names (Claw'd agent YAML format)
+  bash: "mcp__clawd__bash",
+  view: "mcp__clawd__file_view",
+  edit: "mcp__clawd__file_edit",
+  multi_edit: "mcp__clawd__file_multi_edit",
+  multiedit: "mcp__clawd__file_multi_edit",
+  create: "mcp__clawd__file_create",
+  glob: "mcp__clawd__file_glob",
+  grep: "mcp__clawd__file_grep",
+  today: "mcp__clawd__today",
+  get_environment: "mcp__clawd__get_environment",
+  web_search: "mcp__clawd__web_search",
+  web_fetch: "mcp__clawd__web_fetch",
+  // Claude Code native tool names (PascalCase)
+  Bash: "mcp__clawd__bash",
+  Read: "mcp__clawd__file_view",
+  Write: "mcp__clawd__file_create",
+  Edit: "mcp__clawd__file_edit",
+  MultiEdit: "mcp__clawd__file_multi_edit",
+  Glob: "mcp__clawd__file_glob",
+  Grep: "mcp__clawd__file_grep",
+};
+
+/**
+ * Translates an array of tool names (short or CC native) to MCP full names.
+ * Names that are already MCP full names (mcp__*) are passed through unchanged.
+ * Unknown names are passed through as-is.
+ */
+export function mapToMcpToolNames(tools: string[]): string[] {
+  return tools.map((t) => CLAWD_TOOL_NAME_MAP[t] ?? t);
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -41,6 +86,16 @@ export interface ClaudeCodeWorkerConfig {
   providerName?: string;
   /** When false (default), sandbox restrictions apply. When true, bypasses all permission checks. */
   yolo?: boolean;
+  /**
+   * Allowlist of MCP tool names this agent may use (translated from agent YAML `tools`).
+   * When provided, injected into the system prompt as an explicit instruction.
+   */
+  allowedTools?: string[];
+  /**
+   * Denylist of MCP tool names this agent must NOT use (translated from agent YAML `disallowedTools`).
+   * Passed to the SDK's `disallowedTools` to hard-block the tools at the SDK level.
+   */
+  disallowedTools?: string[];
 }
 
 // ============================================================================
@@ -167,9 +222,16 @@ export class ClaudeCodeSpaceWorker {
       } catch {}
     }, 2000);
 
+    // Build tool-restriction addendum (injected after the agent prompt when tools are restricted)
+    const allowedTools = this.config.allowedTools;
+    let toolAddendum = "";
+    if (allowedTools && allowedTools.length > 0) {
+      toolAddendum = `\n\nTOOL RESTRICTIONS: You may ONLY use the following tools: ${allowedTools.join(", ")}. Do NOT call any other tools.`;
+    }
+
     const basePrompt = agentPrompt
-      ? `${agentPrompt}\n\n---\n\n`
-      : "You are an autonomous coding agent. Complete the given task using your tools.\n\nFor file operations within the project, prefer the MCP file tools (mcp__clawd__file_view, mcp__clawd__file_edit, mcp__clawd__file_multi_edit, mcp__clawd__file_create, mcp__clawd__file_glob, mcp__clawd__file_grep) — they are project-root-scoped and sandbox-safe. Use Bash only for system commands that cannot be done with file tools.\n\n";
+      ? `${agentPrompt}${toolAddendum}\n\n---\n\n`
+      : `You are an autonomous coding agent. Complete the given task using your tools.\n\nFor file operations within the project, prefer the MCP file tools (mcp__clawd__file_view, mcp__clawd__file_edit, mcp__clawd__file_multi_edit, mcp__clawd__file_create, mcp__clawd__file_glob, mcp__clawd__file_grep) — they are project-root-scoped and sandbox-safe. Use Bash only for system commands that cannot be done with file tools.${toolAddendum}\n\n`;
 
     // Register project root for space MCP file tools (before runSDKQuery)
     const effectiveProjectRoot = this.config.projectRoot || process.cwd();
@@ -205,6 +267,7 @@ RULES:
           },
           abortController: this.abortController,
           yolo: this.config.yolo ?? false,
+          disallowedTools: this.config.disallowedTools,
         },
         {
           onTextDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text),
@@ -256,6 +319,7 @@ RULES:
             },
             abortController: this.abortController,
             yolo: this.config.yolo ?? false,
+            disallowedTools: this.config.disallowedTools,
           },
           {
             onTextDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text),
