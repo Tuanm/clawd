@@ -20,6 +20,7 @@ markers and renders them as interactive visual cards with copy, download, and fu
 | `csv` | CSV with header row | Sortable data table |
 | `markdown` | Markdown text | Full markdown pipeline |
 | `code` | Source code | Prism syntax highlighting |
+| `interactive` | JSON component spec | Rendered inline as interactive UI widgets |
 
 ## Chart JSON Format
 
@@ -86,6 +87,7 @@ Content must NOT contain literal `</artifact>`. Use `&lt;/artifact&gt;` if docum
 | `code` | Inline in message (Prism highlighting) | — |
 | `html`, `react`, `markdown` | Preview card in message | Opens sidebar panel |
 | `csv` | Preview card in message | Sortable data table in sidebar |
+| `interactive` | Rendered inline in message | No modal — widgets render directly in chat |
 
 When `series` is omitted from chart specs, series are auto-inferred from numeric data keys.
 

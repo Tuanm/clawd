@@ -56,13 +56,13 @@
     - [Analytics APIs](#128-analytics-apis)
     - [Task Management APIs](#129-task-management-apis)
     - [Special Endpoints](#1210-special-endpoints)
-13. [LLM Provider System](#13-llm-provider-system)
-14. [Chat UI](#14-chat-ui)
-15. [Build System](#15-build-system)
-16. [Docker Deployment](#16-docker-deployment)
-17. [Configuration Reference](#17-configuration-reference)
-    - [config.json Schema](#171-configjson-schema)
-    - [System Files & Directories](#172-system-files--directories)
+14. [LLM Provider System](#14-llm-provider-system)
+15. [Chat UI](#15-chat-ui)
+16. [Build System](#16-build-system)
+17. [Docker Deployment](#17-docker-deployment)
+18. [Configuration Reference](#18-configuration-reference)
+    - [config.json Schema](#181-configjson-schema)
+    - [System Files & Directories](#182-system-files--directories)
 
 ---
 
@@ -1024,13 +1024,13 @@ The browser extension is **not installed from a store**. Instead:
 
 ---
 
-## 7.6 Artifact Rendering Pipeline
+## 8.6 Artifact Rendering Pipeline
 
 **Files**: `packages/ui/src/artifact-*.tsx`, `packages/ui/src/chart-renderer.tsx`
 
 Agents output structured content using `<artifact>` tags for rich visualization in the UI:
 
-**7 Artifact Types:**
+**8 Artifact Types:**
 
 | Type | Rendering | Security |
 |------|-----------|----------|
@@ -1219,12 +1219,8 @@ Claude Code uses PascalCase native tool names (e.g., `Read`, `Write`, `Edit`). C
 | `Bash` | `mcp__clawd__bash` |
 | `Grep` | `mcp__clawd__file_grep` |
 | `Glob` | `mcp__clawd__file_glob` |
-| `WebFetch` | `mcp__clawd__web_fetch` |
-| `WebSearch` | `mcp__clawd__web_search` |
-| `TodoRead` | `mcp__clawd__todo_read` |
-| `TodoWrite` | `mcp__clawd__todo_write` |
-| `Task` | `mcp__clawd__spawn_agent` |
-| `custom_script` | `mcp__clawd__custom_script` |
+
+The map also accepts Claw'd short names (e.g., `view`, `edit`, `multi_edit`, `create`, `glob`, `grep`, `bash`, `web_fetch`, `web_search`, `custom_script`) — these resolve to their `mcp__clawd__*` equivalents.
 
 Native CC tools not in this map (e.g., `TaskOutput`, `TaskStop`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `EnterWorktree`, `ExitWorktree`, `RemoteTrigger`) are blocked via `disallowedTools` in `runSDKQuery`.
 
@@ -1843,7 +1839,7 @@ All API endpoints are available at `/api/{method}` via POST (or GET where noted)
 
 ---
 
-## 13. LLM Provider System
+## 14. LLM Provider System
 
 Claw'd is provider-agnostic — agents can use any supported LLM provider, configured
 per-channel or globally.
@@ -1918,7 +1914,7 @@ Gemini → Minimax fallback chain for image generation.
 
 ---
 
-## 13.1 MCP Tools (Full Parity)
+## 14.1 MCP Tools (Full Parity)
 
 The agent's tool ecosystem has been expanded to provide complete feature parity between local and remote workers. **28 new tools** are available across 5 categories:
 
@@ -1972,7 +1968,7 @@ These tools are automatically exposed to Claude Code sub-agents and remote worke
 
 ---
 
-## 14. Chat UI
+## 15. Chat UI
 
 Built with React + Vite + TypeScript, the UI is embedded into the server binary at build
 time and served as a single-page application.
@@ -2063,7 +2059,7 @@ Only `title` is required. This applies to the MCP agent endpoint, the REST endpo
 
 ---
 
-## 15. Build System
+## 16. Build System
 
 The build process compiles everything into a single self-contained binary.
 
@@ -2104,7 +2100,7 @@ clawd-app [options]
 
 ---
 
-## 16. Docker Deployment
+## 17. Docker Deployment
 
 ### Multi-Stage Dockerfile
 
@@ -2151,7 +2147,7 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
 
 ---
 
-## 17. Configuration Reference
+## 18. Configuration Reference
 
 ### 17.0 Hot-Reload
 

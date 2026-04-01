@@ -224,12 +224,13 @@ Claude Code tool names automatically resolve to Claw'd equivalents for compatibi
 
 | Claude Code | Claw'd | Notes |
 |---|---|---|
-| `Read` | `view` | File viewing |
-| `Write` | `create` | File creation |
-| `Edit` | `edit` | File editing |
-| `Bash` | `bash` | Shell execution |
-| `Grep` | `grep` | Content search |
-| `Glob` | `glob` | File pattern matching |
+| `Read` | `mcp__clawd__file_view` | File viewing |
+| `Write` | `mcp__clawd__file_create` | File creation |
+| `Edit` | `mcp__clawd__file_edit` | File editing |
+| `MultiEdit` | `mcp__clawd__file_multi_edit` | Multi-hunk file editing |
+| `Bash` | `mcp__clawd__bash` | Shell execution |
+| `Grep` | `mcp__clawd__file_grep` | Content search |
+| `Glob` | `mcp__clawd__file_glob` | File pattern matching |
 
 You can use either tool name in agent files — they resolve automatically.
 

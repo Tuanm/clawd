@@ -178,7 +178,7 @@ Agents have a built-in `custom_script` tool with 6 modes:
 ### Validation Rules
 
 - **Name format:** `/^[a-z0-9][a-z0-9_-]{0,63}$/`
-- **No collisions:** Cannot use names of built-in tools (~150 reserved names)
+- **No collisions:** Cannot use names of built-in tools (76 reserved names)
 - **Entrypoint:** Filename only — no path separators (`/`, `\`)
 - **Interpreter:** Must be one of: `bash`, `sh`, `python3`, `python`, `bun`, `node`
 - **Content size:** Entrypoint script must be ≤ 1 MB

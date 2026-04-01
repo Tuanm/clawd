@@ -239,7 +239,7 @@ interface Plugin {
 }
 ```
 
-Built-in plugins: browser, workspace, context-mode, state-persistence, spawn-agent, scheduler, memory, custom-tool, clawd-agent-bus, mcp-client.
+Built-in plugins: browser, workspace, context-mode, state-persistence, spawn-agent, scheduler, memory, custom-tools, clawd-agent-bus, mcp-client.
 
 ### Heartbeat Monitor (`src/worker-manager.ts`)
 
