@@ -1578,7 +1578,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        const msgChannel = data.channel || activeChannel;
+        const msgChannel = data.channel || activeChannelRef.current;
 
         if (data.type === "message") {
           setChannelStates((prev) => {
@@ -1926,6 +1926,13 @@ export default function App({ channel: initialChannel, articleId }: Props) {
         } else if (data.type === "agent_processed") {
           // Agent processed a message - could update last activity indicator
           console.log(`[WS] Agent processed: ${data.agent_id}, ts=${data.last_processed_ts}`);
+        } else if (data.type === "space_locked") {
+          // Space completed/failed — update spaceInfo to lock the input area immediately
+          // Use ref to avoid stale closure (WS handler created once at mount)
+          const curCh = activeChannelRef.current;
+          if (curCh && curCh.includes(":") && data.channel === curCh) {
+            setSpaceInfo((prev) => (prev ? { ...prev, status: data.status } : prev));
+          }
         } else if (data.type === "channel_cleared") {
           updateChannelState(msgChannel, { messages: [], pendingMessages: [] });
         }
@@ -2585,11 +2592,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           )}
         </>
       )}
-      {!isArticleMode && !isManagementChannel && (
+      {!isArticleMode && !isManagementChannel && !(isSpaceChannel && isSpaceLocked) && (
         <MessageComposer
           onSend={sendMessage}
           channel={activeChannel}
-          disabled={!channelStates.get(activeChannel)?.loaded || (isSpaceChannel && isSpaceLocked)}
+          disabled={!channelStates.get(activeChannel)?.loaded}
           thinkingBanner={
             streamingAgents.length > 0 ? (
               <div

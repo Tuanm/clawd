@@ -690,6 +690,8 @@ export function createSpawnAgentPlugin(
                 agent_id: subAgentId,
               }),
             }).catch(() => {});
+            wrappedResolve(result);
+            ccWorker.stop();
           }
         });
         completionPromise = new Promise<string>((resolve, reject) => {
