@@ -2341,9 +2341,14 @@ export default function App({ channel: initialChannel, articleId }: Props) {
         <header className="header">
           <div className="header-left">
             {isArticleMode ? (
-              <div className="clawd-logo-wrapper">
-                <ClawdLogo sleeping={false} hasUnread={false} />
-              </div>
+              <>
+                <div className="clawd-logo-wrapper">
+                  <ClawdLogo sleeping={false} hasUnread={false} />
+                </div>
+                <span className="header-channel-name">
+                  {initialChannel} | {articleId}
+                </span>
+              </>
             ) : isSpaceChannel && parentChannel ? (
               <>
                 <button
@@ -2551,6 +2556,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               onScrollAtBottomChange={setIsActiveChannelAtBottom}
               hasActiveChannelUnread={hasActiveChannelUnread}
               onOpenSidebar={openSidebar}
+              isArticleMode={isArticleMode}
             />
           </div>
           {sidebarContent && (

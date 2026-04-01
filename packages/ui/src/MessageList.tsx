@@ -144,6 +144,8 @@ interface Props {
   hasActiveChannelUnread?: boolean; // Whether the active channel has unread messages (for scroll button red dot)
   // Sidebar integration — open rich content in the sidebar panel
   onOpenSidebar?: (content: import("./SidebarPanel").SidebarPanelContent) => void;
+  /** When true, context menu shows only Copy message / Copy text */
+  isArticleMode?: boolean;
 }
 
 // Link icon component (for message reference)
@@ -1157,7 +1159,15 @@ interface ContextMenuState {
 }
 
 // Context menu component
-function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose: () => void }) {
+function MessageContextMenu({
+  menu,
+  onClose,
+  isArticleMode = false,
+}: {
+  menu: ContextMenuState;
+  onClose: () => void;
+  isArticleMode?: boolean;
+}) {
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Close on click outside
@@ -1256,22 +1266,28 @@ function MessageContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
           <span>Copy text</span>
         </button>
       )}
-      <button className="context-menu-item" onClick={copyReference}>
-        <LinkIcon />
-        <span>Copy reference</span>
-      </button>
+      {!isArticleMode && (
+        <button className="context-menu-item" onClick={copyReference}>
+          <LinkIcon />
+          <span>Copy reference</span>
+        </button>
+      )}
       <button className="context-menu-item" onClick={copyMessage}>
         <CopyIcon />
         <span>Copy message</span>
       </button>
-      <button className="context-menu-item" onClick={copyLink}>
-        <LinkIcon />
-        <span>Copy link</span>
-      </button>
-      <button className="context-menu-item" onClick={shareAsArticle}>
-        <ShareIcon />
-        <span>Share</span>
-      </button>
+      {!isArticleMode && (
+        <button className="context-menu-item" onClick={copyLink}>
+          <LinkIcon />
+          <span>Copy link</span>
+        </button>
+      )}
+      {!isArticleMode && (
+        <button className="context-menu-item" onClick={shareAsArticle}>
+          <ShareIcon />
+          <span>Share</span>
+        </button>
+      )}
     </div>,
     document.body,
   );
@@ -1761,6 +1777,7 @@ export default function MessageList({
   onScrollAtBottomChange,
   hasActiveChannelUnread = false,
   onOpenSidebar,
+  isArticleMode = false,
 }: Props) {
   // agentSleeping: when all agents are sleeping, override per-message is_sleeping
 
@@ -3373,7 +3390,9 @@ export default function MessageList({
           document.body,
         )}
       {/* Context menu */}
-      {contextMenu && <MessageContextMenu menu={contextMenu} onClose={closeContextMenu} />}
+      {contextMenu && (
+        <MessageContextMenu menu={contextMenu} onClose={closeContextMenu} isArticleMode={isArticleMode} />
+      )}
     </div>
   );
 }
