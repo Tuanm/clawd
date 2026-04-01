@@ -1,5 +1,5 @@
 import { type Message, updateSubspaceStatus } from "../server/database";
-import { broadcastUpdate } from "../server/websocket";
+import { broadcastUpdate, broadcastSpaceLocked } from "../server/websocket";
 import {
   atomicLockSpace,
   type CreateSpaceParams,
@@ -20,7 +20,13 @@ export class SpaceManager {
   }
 
   lockSpace(spaceId: string, status: string, resultOrError?: string): boolean {
-    return atomicLockSpace(spaceId, status, resultOrError);
+    const won = atomicLockSpace(spaceId, status, resultOrError);
+    if (won) {
+      // Notify the subspace UI to hide the input area
+      const space = getSpace(spaceId);
+      if (space) broadcastSpaceLocked(space.space_channel, status);
+    }
+    return won;
   }
 
   updateSpaceCard(spaceId: string): void {

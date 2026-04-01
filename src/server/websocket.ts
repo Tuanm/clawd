@@ -259,6 +259,21 @@ export function broadcastAgentStreaming(channel: string, agentId: string, isStre
   }
 }
 
+// Broadcast that a space has been locked (completed/failed/timed_out)
+export function broadcastSpaceLocked(spaceChannel: string, status: string) {
+  const payload = JSON.stringify({
+    type: "space_locked",
+    channel: spaceChannel,
+    status,
+  });
+
+  for (const client of clients) {
+    if (isSubscribed(client, spaceChannel)) {
+      client.send(payload);
+    }
+  }
+}
+
 // Broadcast agent thinking tokens (real-time LLM output)
 export function broadcastAgentToken(
   channel: string,

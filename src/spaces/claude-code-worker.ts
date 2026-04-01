@@ -17,6 +17,8 @@ import { loadOAuthToken } from "../mcp-oauth";
 import { spaceProjectRoots } from "../server/mcp";
 import type { Space } from "./db";
 import type { SpaceManager } from "./manager";
+import { getPendingMessages } from "../server/routes/messages";
+import { countCustomScripts } from "../agent/plugins/custom-tool-plugin";
 
 // Re-export utils for backward compatibility (main-worker, spawn-plugin import from here)
 export { hasTmux, truncateToolResult, formatToolDescription };
@@ -203,17 +205,20 @@ export class ClaudeCodeSpaceWorker {
 
     // Interrupt poller — aborts SDK query if human sends a message to the space channel
     let interrupted = false;
-    let interruptMessage = "";
+    let interruptMessages: string[] = [];
     const interruptPoller = setInterval(() => {
       try {
-        const { getPendingMessages } = require("../server/routes/messages");
-        const result = getPendingMessages(space.space_channel, undefined, false, 10);
-        const humanMsgs = ((result as any).messages || []).filter(
-          (m: any) => m.user === "UHUMAN" && m.ts > (this.lastHumanTs || "0"),
+        const result = getPendingMessages(
+          space.space_channel,
+          this.lastHumanTs !== "0" ? this.lastHumanTs : undefined,
+          false,
+          20,
         );
+        const humanMsgs = ((result as any).messages || []).filter((m: any) => m.user === "UHUMAN");
         if (humanMsgs.length > 0) {
           interrupted = true;
-          interruptMessage = humanMsgs.map((m: any) => m.text).join("\n");
+          // Accumulate messages (poller may fire multiple times before resume drains them)
+          interruptMessages.push(...humanMsgs.map((m: any) => m.text));
           this.lastHumanTs = humanMsgs[humanMsgs.length - 1].ts;
           console.log(`[claude-code] Sub-agent interrupted by human message in ${space.space_channel}`);
           try {
@@ -237,7 +242,6 @@ export class ClaudeCodeSpaceWorker {
     // Custom scripts addendum
     let customScriptAddendum = "";
     try {
-      const { countCustomScripts } = require("../agent/plugins/custom-tool-plugin");
       const scriptCount = countCustomScripts(effectiveProjectRoot);
       if (scriptCount > 0) {
         customScriptAddendum = `\n\nYou have ${scriptCount} project-specific custom script${scriptCount === 1 ? "" : "s"} available via \`mcp__clawd__custom_script\`. Use it to list and execute them.`;
@@ -248,19 +252,32 @@ export class ClaudeCodeSpaceWorker {
       ? `${agentPrompt}${toolAddendum}${customScriptAddendum}\n\n---\n\n`
       : `You are an autonomous coding agent. Complete the given task using your tools.\n\nFor file operations within the project, prefer the MCP file tools (mcp__clawd__file_view, mcp__clawd__file_edit, mcp__clawd__file_multi_edit, mcp__clawd__file_create, mcp__clawd__file_glob, mcp__clawd__file_grep) — they are project-root-scoped and sandbox-safe. Use Bash only for system commands that cannot be done with file tools.${toolAddendum}${customScriptAddendum}\n\n`;
 
-    try {
-      this.sessionId = await runSDKQuery(
-        {
-          prompt,
-          model: this.config.model || "sonnet",
-          cwd: effectiveProjectRoot,
-          systemPrompt: basePrompt,
-          providerName: this.config.providerName,
-          agentName: "clawd-worker",
-          agentDef: {
-            "clawd-worker": {
-              description: "Sub-agent worker for Claw'd",
-              prompt: `${basePrompt}When your task is FULLY COMPLETE, you MUST call the MCP tool:
+    // Shared SDK callbacks (reused across initial run and interrupt resumes)
+    const sdkCallbacks = {
+      onTextDelta: (text: string) => broadcastAgentToken(space.space_channel, agentId, text),
+      onThinkingDelta: (text: string) => broadcastAgentToken(space.space_channel, agentId, text, "thinking"),
+      onAssistantMessage: (content: any[]) => this.handleAssistantMessage(content),
+      onToolResult: (name: string, input: unknown, response: unknown, id: string) =>
+        this.handleToolResult(name, input, response, id),
+      onActivity: () => {
+        setAgentStreaming(agentId, space.space_channel, true);
+      },
+      onSessionId: (sid: string) => {
+        this.sessionId = sid;
+      },
+    };
+
+    const buildSdkOpts = (sdkPrompt: string) => ({
+      prompt: sdkPrompt,
+      model: this.config.model || "sonnet",
+      cwd: effectiveProjectRoot,
+      systemPrompt: basePrompt,
+      providerName: this.config.providerName,
+      agentName: "clawd-worker",
+      agentDef: {
+        "clawd-worker": {
+          description: "Sub-agent worker for Claw'd",
+          prompt: `${basePrompt}When your task is FULLY COMPLETE, you MUST call the MCP tool:
   mcp__clawd__complete_task(space_id="${space.id}", result="your summary here")
 
 RULES:
@@ -268,82 +285,53 @@ RULES:
 - Call complete_task ONCE when done — this is the ONLY way to signal completion
 - If the task is unclear, do your best interpretation and complete
 - Do NOT stop without calling complete_task`,
-            },
-          },
-          mcpServers: this.buildMcpServers(),
-          resume: this.sessionId || undefined,
-          env: {
-            CLAWD_SPACE_ID: space.id,
-            CLAWD_SPACE_TOKEN: this.spaceToken,
-          },
-          abortController: this.abortController,
-          yolo: this.config.yolo ?? false,
-          disallowedTools: this.config.disallowedTools,
         },
-        {
-          onTextDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text),
-          onThinkingDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text, "thinking"),
-          onAssistantMessage: (content) => this.handleAssistantMessage(content),
-          onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
-          onActivity: () => {
-            setAgentStreaming(agentId, space.space_channel, true);
-          },
-          onSessionId: (sid) => {
-            this.sessionId = sid;
-          },
-        },
-      );
+      },
+      mcpServers: this.buildMcpServers(),
+      resume: this.sessionId || undefined,
+      env: {
+        CLAWD_SPACE_ID: space.id,
+        CLAWD_SPACE_TOKEN: this.spaceToken,
+      },
+      abortController: this.abortController!,
+      yolo: this.config.yolo ?? false,
+      disallowedTools: this.config.disallowedTools,
+    });
 
-      // If interrupted by human, resume with the human's message
+    try {
+      // Run the initial prompt; if interrupted by human message, catch abort and resume below
+      try {
+        this.sessionId = await runSDKQuery(buildSdkOpts(prompt), sdkCallbacks);
+      } catch (err: any) {
+        // If this was a human-interrupt abort, fall through to the resume loop
+        if (!interrupted) throw err;
+        console.log(`[claude-code] Initial run aborted by human interrupt in ${space.space_channel}`);
+      }
+
+      // Resume loop — runs whenever the SDK was interrupted by a human message
       while (interrupted && !this.stopped) {
+        if (!this.sessionId) {
+          console.warn(`[claude-code] Resuming without session ID in ${space.space_channel} — starting fresh session`);
+        }
         interrupted = false;
         this.abortController = new AbortController();
-        const humanPrompt = `[HUMAN INTERRUPT] The user sent a new message while you were working:\n\n${interruptMessage}\n\nPlease address this message. If it changes your task, adjust accordingly. When done, call complete_task.`;
-        console.log(`[claude-code] Resuming sub-agent with human interrupt in ${space.space_channel}`);
+        // Drain accumulated messages and reset the buffer
+        const pendingText = interruptMessages.join("\n");
+        interruptMessages = [];
+        const humanPrompt = `# New Messages on Channel\n\n${pendingText}\n\nPlease address these message(s). If they change your task, adjust accordingly. When done, call complete_task.`;
+        console.log(`[claude-code] Resuming sub-agent with human message in ${space.space_channel}`);
 
-        this.sessionId = await runSDKQuery(
-          {
-            prompt: humanPrompt,
-            model: this.config.model || "sonnet",
-            cwd: effectiveProjectRoot,
-            systemPrompt: basePrompt,
-            providerName: this.config.providerName,
-            agentName: "clawd-worker",
-            agentDef: {
-              "clawd-worker": {
-                description: "Sub-agent worker for Claw'd",
-                prompt: `${basePrompt}When your task is FULLY COMPLETE, you MUST call the MCP tool:
-  mcp__clawd__complete_task(space_id="${space.id}", result="your summary here")
-
-RULES:
-- For file operations, use MCP file tools (mcp__clawd__file_view, mcp__clawd__file_edit, mcp__clawd__file_multi_edit, mcp__clawd__file_create, mcp__clawd__file_glob, mcp__clawd__file_grep); use Bash for system commands only
-- Call complete_task ONCE when done — this is the ONLY way to signal completion
-- If the task is unclear, do your best interpretation and complete
-- Do NOT stop without calling complete_task`,
-              },
-            },
-            mcpServers: this.buildMcpServers(),
-            resume: this.sessionId || undefined,
-            env: {
-              CLAWD_SPACE_ID: space.id,
-              CLAWD_SPACE_TOKEN: this.spaceToken,
-            },
-            abortController: this.abortController,
-            yolo: this.config.yolo ?? false,
-            disallowedTools: this.config.disallowedTools,
-          },
-          {
-            onTextDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text),
-            onThinkingDelta: (text) => broadcastAgentToken(space.space_channel, agentId, text, "thinking"),
-            onAssistantMessage: (content) => this.handleAssistantMessage(content),
-            onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
-            onActivity: () => {
-              setAgentStreaming(agentId, space.space_channel, true);
-            },
-            onSessionId: (sid) => {
-              this.sessionId = sid;
-            },
-          },
+        try {
+          this.sessionId = await runSDKQuery(buildSdkOpts(humanPrompt), sdkCallbacks);
+        } catch (err: any) {
+          if (!interrupted) throw err;
+          console.log(`[claude-code] Resume aborted by another human message in ${space.space_channel}`);
+        }
+      }
+      // Warn if human message arrived at the exact completion boundary
+      if (interrupted && this.stopped) {
+        console.warn(
+          `[claude-code] Human message in ${space.space_channel} arrived at completion boundary — not processed (space locked)`,
         );
       }
     } finally {
