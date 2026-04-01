@@ -650,17 +650,30 @@ registerTool(
 
 registerTool(
   "article_create",
-  "Create a new article (blog post, documentation, etc.). The article is stored and can be published to the channel. Use markdown for content.",
+  "Create a new article (blog post, documentation, etc.). The article is stored and can be published to the channel. Provide content via one of: 'content' (raw markdown), 'file_id' (uploaded file from chat_upload_local_file), or 'message_ts' (existing chat message timestamp).",
   {
     title: { type: "string", description: "Article title" },
-    content: { type: "string", description: "Article content in markdown format" },
+    content: {
+      type: "string",
+      description: "Article content in markdown format (mutually exclusive with file_id and message_ts)",
+    },
+    file_id: {
+      type: "string",
+      description:
+        "File ID from chat_upload_local_file — file content used as article body (mutually exclusive with content and message_ts)",
+    },
+    message_ts: {
+      type: "string",
+      description:
+        "Timestamp of an existing chat message — its text used as article body (mutually exclusive with content and file_id)",
+    },
     description: { type: "string", description: "Short description/summary (optional)" },
     thumbnail_url: { type: "string", description: "URL for thumbnail image (optional)" },
     tags: { type: "array", description: "Array of tags for the article (optional)", items: { type: "string" } },
     published: { type: "boolean", description: "Whether to publish immediately (default: false)" },
   },
-  ["title", "content"],
-  async ({ title, content, description, thumbnail_url, tags, published }) => {
+  ["title"],
+  async ({ title, content, file_id, message_ts, description, thumbnail_url, tags, published }) => {
     const channel = getContextChannel();
     const agentId = getContextAgentId() || "agent";
 
@@ -669,10 +682,12 @@ registerTool(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          channel: channel,
+          channel,
           author: agentId,
           title,
-          content,
+          ...(content !== undefined ? { content } : {}),
+          ...(file_id !== undefined ? { file_id } : {}),
+          ...(message_ts !== undefined ? { message_ts } : {}),
           description: description || "",
           thumbnail_url: thumbnail_url || "",
           tags: tags || [],

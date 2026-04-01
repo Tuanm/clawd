@@ -116,10 +116,35 @@ export function registerArticleRoutes(
     if (path === "/api/articles.create" && req.method === "POST") {
       return handleAsync(req, async () => {
         const body = await parseBody(req);
-        const { channel, author, title, description, thumbnail_url, content, tags, published } = body;
+        const { channel, author, title, description, thumbnail_url, tags, published } = body;
+        let { content, file_id, message_ts } = body;
 
-        if (!channel || !title || !content) {
-          return json({ ok: false, error: "channel, title, and content are required" }, 400);
+        if (!channel || !title) {
+          return json({ ok: false, error: "channel and title are required" }, 400);
+        }
+
+        // Resolve content from file_id or message_ts if raw content not provided
+        if (!content && file_id) {
+          const { getFile } = await import("../server/routes/files");
+          const fileResult = getFile(file_id as string);
+          if (!fileResult) {
+            return json({ ok: false, error: `File not found: ${file_id}` }, 404);
+          }
+          content = fileResult.data.toString("utf-8");
+        }
+
+        if (!content && message_ts) {
+          const msg = db
+            .query<{ text: string }, [string]>(`SELECT text FROM messages WHERE ts = ?`)
+            .get(message_ts as string);
+          if (!msg) {
+            return json({ ok: false, error: `Message not found: ${message_ts}` }, 404);
+          }
+          content = msg.text;
+        }
+
+        if (!content) {
+          return json({ ok: false, error: "Provide one of: content, file_id, or message_ts" }, 400);
         }
 
         const id = body.id || randomUUID();
