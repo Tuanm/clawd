@@ -1406,6 +1406,11 @@ body {
   background: #ffffff;
 }
 
+/* Article mode: no hover background on messages */
+[data-article-mode] .message:hover::before {
+  background: transparent;
+}
+
 /* Block start messages - hover stays flush (same as continuation messages) */
 /* The 16px margin-top gap between blocks remains unhighlighted on hover */
 
@@ -9115,6 +9120,10 @@ body,
 /* 5.2 Messages & inline content */
 [data-theme="dark"] .message:hover::before {
   background: hsl(var(--text) / 4%);
+}
+[data-theme="dark"][data-article-mode] .message:hover::before,
+[data-theme="dark"] [data-article-mode] .message:hover::before {
+  background: transparent;
 }
 [data-theme="dark"] .message-expand-toggle {
   color: hsl(var(--text-dim));
