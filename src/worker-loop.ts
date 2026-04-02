@@ -738,7 +738,17 @@ export class WorkerLoop implements AgentWorker {
               // infinite nesting. Further messages queue until the next while iteration.
               try {
                 const processingMsgs = isContinuation ? result.seenNotProcessed : result.pending;
-                const interruptPrompt = this.buildInterruptPrompt(processingMsgs, interruptMsgs);
+                let interruptPrompt = this.buildInterruptPrompt(processingMsgs, interruptMsgs);
+                // Hard-truncation guard (same as buildPrompt path)
+                if (interruptPrompt.length > MAX_COMBINED_PROMPT_LENGTH) {
+                  const suffix = `\n\n[TRUNCATED — interrupt prompt exceeded ${MAX_COMBINED_PROMPT_LENGTH} character budget]`;
+                  let cutPoint = MAX_COMBINED_PROMPT_LENGTH - suffix.length;
+                  if (cutPoint > 0 && cutPoint < interruptPrompt.length) {
+                    const code = interruptPrompt.charCodeAt(cutPoint - 1);
+                    if (code >= 0xd800 && code <= 0xdbff) cutPoint--;
+                  }
+                  interruptPrompt = interruptPrompt.slice(0, cutPoint) + suffix;
+                }
                 const resumeResult = await this.executePrompt(interruptPrompt, this.sessionName);
                 const output = resumeResult.output || "";
                 this.lastExecutionHadError =

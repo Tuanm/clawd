@@ -439,7 +439,7 @@ export async function executeAgentToolCall(
       const { getClaudeCodeWorker } = await import("./claude-code-worker");
       const spaces = _spaceManager.listSpaces(channel);
       const agents = spaces
-        .filter((s) => s.source === "claude_code")
+        .filter((s) => s.source === "claude_code" || s.source === "spawn_agent")
         .map((s) => ({
           id: s.id,
           name: s.title,

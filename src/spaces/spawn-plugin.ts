@@ -121,7 +121,10 @@ export function createSpawnAgentPlugin(
 
             // Spawned sub-agents (running, completed, and failed)
             if (!type || type === "running") {
+              // In-memory tracked agents
+              const trackedIds = new Set<string>();
               const spawned = Array.from(trackedSpaces.values()).map((t) => {
+                trackedIds.add(t.spaceId);
                 const entry: Record<string, unknown> = {
                   id: t.spaceId,
                   name: t.name,
@@ -134,6 +137,18 @@ export function createSpawnAgentPlugin(
                 if (t.agentFileConfig) entry.agent = t.agentFileConfig.name;
                 return entry;
               });
+              // DB fallback — include active spaces not in trackedSpaces (e.g. after restart)
+              const dbSpaces = spaceManager
+                .listSpaces(config.channel, "active")
+                .filter((s) => (s.source === "spawn_agent" || s.source === "claude_code") && !trackedIds.has(s.id));
+              for (const s of dbSpaces) {
+                spawned.push({
+                  id: s.id,
+                  name: s.title,
+                  status: s.status === "active" ? "running" : s.status === "timed_out" ? "failed" : s.status,
+                  note: "Recovered from DB — spawned before last restart",
+                });
+              }
               result.spawned = { count: spawned.length, agents: spawned };
             }
 
@@ -175,22 +190,36 @@ export function createSpawnAgentPlugin(
             if (!id) return { success: false, output: "", error: "Missing required parameter: agent_id" };
 
             const tracked = trackedSpaces.get(id);
-            if (!tracked) {
-              return { success: false, output: "", error: `No tracked agent with id '${id}'` };
+            if (tracked) {
+              const report: Record<string, unknown> = {
+                id: tracked.spaceId,
+                name: tracked.name,
+                status: tracked.status,
+                started_at: new Date(tracked.startedAt).toISOString(),
+                duration_ms: Date.now() - tracked.startedAt,
+              };
+              if (tracked.agentFileConfig) report.agent = tracked.agentFileConfig.name;
+              if (tracked.result) report.result = tracked.result;
+              if (tracked.error) report.error = tracked.error;
+              if (tracked.status === "running") report.note = "Agent is still running. Result not yet available.";
+              return { success: true, output: JSON.stringify(report, null, 2) };
             }
 
+            // DB fallback — survives process restart/compaction
+            const space = spaceManager.getSpace(id);
+            if (!space) return { success: false, output: "", error: `No agent with id '${id}'` };
+            // Normalize DB status to match in-memory vocabulary
+            const normalizedStatus =
+              space.status === "active" ? "running" : space.status === "timed_out" ? "failed" : space.status;
             const report: Record<string, unknown> = {
-              id: tracked.spaceId,
-              name: tracked.name,
-              status: tracked.status,
-              started_at: new Date(tracked.startedAt).toISOString(),
-              duration_ms: Date.now() - tracked.startedAt,
+              id: space.id,
+              name: space.title,
+              status: normalizedStatus,
+              started_at: new Date(space.created_at).toISOString(),
+              duration_ms: Date.now() - space.created_at,
+              result: space.result_summary ?? undefined,
             };
-            if (tracked.agentFileConfig) report.agent = tracked.agentFileConfig.name;
-            if (tracked.result) report.result = tracked.result;
-            if (tracked.error) report.error = tracked.error;
-            if (tracked.status === "running") report.note = "Agent is still running. Result not yet available.";
-
+            if (normalizedStatus === "running") report.note = "Agent is still running (recovered from DB).";
             return { success: true, output: JSON.stringify(report, null, 2) };
           },
         },
@@ -223,38 +252,56 @@ export function createSpawnAgentPlugin(
             if (!id) return { success: false, output: "", error: "Missing required parameter: agent_id" };
 
             const tracked = trackedSpaces.get(id);
-            if (!tracked) {
-              return { success: false, output: "", error: `No tracked agent with id '${id}'` };
-            }
-            if (tracked.status !== "running") {
-              return {
-                success: false,
-                output: "",
-                error: `Agent '${id}' is already ${tracked.status}, cannot stop`,
-              };
+            let agentName = tracked?.name || id;
+
+            // Validate status — check in-memory first, then DB
+            if (tracked) {
+              if (tracked.status !== "running") {
+                return {
+                  success: false,
+                  output: "",
+                  error: `Agent '${id}' is already ${tracked.status}, cannot stop`,
+                };
+              }
+            } else {
+              // DB fallback — check if the agent exists and is active
+              const space = spaceManager.getSpace(id);
+              if (!space) return { success: false, output: "", error: `No agent with id '${id}'` };
+              agentName = space.title || id;
+              if (space.status !== "active") {
+                const displayStatus = space.status === "timed_out" ? "failed (timed out)" : space.status;
+                return {
+                  success: false,
+                  output: "",
+                  error: `Agent '${id}' is already ${displayStatus}, cannot stop`,
+                };
+              }
             }
 
             // Mark as failed and stop the worker
             spaceManager.failSpace(id, reason);
-            // Stop Claude Code worker or normal space worker
+            // Stop Claude Code worker or normal space worker — cleanup is idempotent
             const ccWorker = getClaudeCodeWorker(id);
             if (ccWorker) {
               ccWorker.stop();
               unregisterClaudeCodeWorker(id);
-              spaceCompleteCallbacks.delete(id);
-              spaceAuthTokens.delete(id);
-              spaceProjectRoots.delete(id);
-            } else {
+            }
+            spaceCompleteCallbacks.delete(id);
+            spaceAuthTokens.delete(id);
+            spaceProjectRoots.delete(id);
+            if (!ccWorker) {
               spaceWorkerManager.stopSpaceWorker(id);
             }
-            tracked.status = "failed";
-            tracked.error = reason;
+            if (tracked) {
+              tracked.status = "failed";
+              tracked.error = reason;
+            }
 
             return {
               success: true,
               output: JSON.stringify({
                 agent_id: id,
-                name: tracked.name,
+                name: agentName,
                 status: "stopped",
                 reason,
               }),
@@ -595,7 +642,19 @@ export function createSpawnAgentPlugin(
 
     const tracked = trackedSpaces.get(agentId);
     if (!tracked) {
-      return { success: false, output: "", error: `No tracked agent with id '${agentId}'` };
+      // Check if agent exists in DB but is no longer in memory (e.g. after restart)
+      const dbSpace = spaceManager.getSpace(agentId);
+      const dbDisplayStatus = dbSpace
+        ? dbSpace.status === "active"
+          ? "running"
+          : dbSpace.status === "timed_out"
+            ? "failed"
+            : dbSpace.status
+        : "";
+      const hint = dbSpace
+        ? ` Agent exists in DB (status: ${dbDisplayStatus}) but lost in-memory state after restart. Spawn a new agent instead.`
+        : "";
+      return { success: false, output: "", error: `No tracked agent with id '${agentId}'.${hint}` };
     }
     if (tracked.status !== "completed") {
       return {
@@ -605,10 +664,17 @@ export function createSpawnAgentPlugin(
       };
     }
 
-    // Cancel the pending eviction so the space stays in memory
-    if (tracked.evictionTimer !== undefined) {
-      clearTimeout(tracked.evictionTimer);
-      tracked.evictionTimer = undefined;
+    // Check max-9 limit before retasking (resetSpace sets status back to 'active')
+    const MAX_ACTIVE_SUB_AGENTS = 9;
+    const activeSpaces = spaceManager
+      .listSpaces(config.channel, "active")
+      .filter((s) => s.source === "spawn_agent" || s.source === "claude_code");
+    if (activeSpaces.length >= MAX_ACTIVE_SUB_AGENTS) {
+      return {
+        success: false,
+        output: "",
+        error: `Channel has ${activeSpaces.length} active sub-agents (max ${MAX_ACTIVE_SUB_AGENTS}). Wait for existing agents to complete or stop some with stop_agent before retasking.`,
+      };
     }
 
     // Reset the space in DB (only succeeds if status is 'completed')
@@ -619,6 +685,12 @@ export function createSpawnAgentPlugin(
         output: "",
         error: `Failed to reset space '${agentId}' — it may no longer be in 'completed' state`,
       };
+    }
+
+    // Cancel the pending eviction so the space stays in memory (after resetSpace to avoid leaks on failure)
+    if (tracked.evictionTimer !== undefined) {
+      clearTimeout(tracked.evictionTimer);
+      tracked.evictionTimer = undefined;
     }
 
     const space = spaceManager.getSpace(agentId);
