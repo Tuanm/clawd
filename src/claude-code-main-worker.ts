@@ -70,6 +70,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private processingStartedAt: number | null = null;
   private lastHeartbeatAt = Date.now();
   private stopped = false;
+  private stoppedResolve: (() => void) | null = null;
+  private stoppedPromise: Promise<void> | null = null;
   private heartbeatPending = false;
   private memorySessionId: string | null = null;
   private pendingTimestamps: string[] = [];
@@ -167,262 +169,281 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   async start(): Promise<void> {
     this.running = true;
-    this.restoreSessionId();
-    const sessionName = `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
-    this.memorySessionId = initMemorySession(sessionName, this.config.model);
+    this.stoppedPromise = new Promise<void>((resolve) => {
+      this.stoppedResolve = resolve;
+    });
+    try {
+      this.restoreSessionId();
+      const sessionName = `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
+      this.memorySessionId = initMemorySession(sessionName, this.config.model);
 
-    console.log(
-      `[claude-code-main] Started: ${this.config.channel}:${this.config.agentId}` +
-        (this.sessionId ? ` (resuming session ${this.sessionId.slice(0, 8)}...)` : " (new session)"),
-    );
+      console.log(
+        `[claude-code-main] Started: ${this.config.channel}:${this.config.agentId}` +
+          (this.sessionId ? ` (resuming session ${this.sessionId.slice(0, 8)}...)` : " (new session)"),
+      );
 
-    while (this.running) {
-      try {
-        // Skip polling entirely when user has put the agent to sleep
-        if (this.userSleeping) {
-          await Bun.sleep(5000);
-          continue;
-        }
-
-        let pending = this.pollForMessages();
-
-        if (pending.length === 0 && this.heartbeatPending) {
-          this.heartbeatPending = false;
-          this.sleeping = false;
-          pending = [{ ts: String(Date.now()), user: "UHUMAN", text: "<agent_signal>[HEARTBEAT]</agent_signal>" }];
-        }
-
-        if (pending.length === 0) {
-          if (!this.sleeping) this.sleeping = true;
-          // Keep agent_seen.updated_at fresh so listAgents() doesn't
-          // mark us as sleeping while we're still polling for sub-agent results
-          this.touchActivity();
-          await Bun.sleep(SLEEP_BACKOFF_MS);
-          continue;
-        }
-
-        if (this.sleeping) {
-          this.sleeping = false;
-          const agent = getAgent(this.config.agentId, this.config.channel);
-          if (agent) {
-            broadcastUpdate(this.config.channel, {
-              type: "message",
-              ts: "",
-              user: this.config.agentId,
-              text: "",
-              agent_id: this.config.agentId,
-              avatar_color: agent.avatar_color || "#D97706",
-              is_sleeping: false,
-            } as any);
+      while (this.running) {
+        try {
+          // Skip polling entirely when user has put the agent to sleep
+          if (this.userSleeping) {
+            await Bun.sleep(5000);
+            continue;
           }
 
-          // Wakeup handling: if many messages accumulated during sleep,
-          // skip old ones and only process recent messages with context
-          if (pending.length > MAX_WAKEUP_MESSAGES) {
-            const skipped = pending.length - MAX_WAKEUP_MESSAGES;
-            const skippedMessages = pending.slice(0, skipped);
-            pending = pending.slice(skipped);
+          let pending = this.pollForMessages();
 
-            // Mark skipped messages as processed so they don't reappear
-            const lastSkippedTs = skippedMessages[skippedMessages.length - 1].ts;
-            try {
-              db.run(
-                `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+          if (pending.length === 0 && this.heartbeatPending) {
+            this.heartbeatPending = false;
+            this.sleeping = false;
+            pending = [{ ts: String(Date.now()), user: "UHUMAN", text: "<agent_signal>[HEARTBEAT]</agent_signal>" }];
+          }
+
+          if (pending.length === 0) {
+            if (!this.sleeping) this.sleeping = true;
+            // Keep agent_seen.updated_at fresh so listAgents() doesn't
+            // mark us as sleeping while we're still polling for sub-agent results
+            this.touchActivity();
+            await Bun.sleep(SLEEP_BACKOFF_MS);
+            continue;
+          }
+
+          if (this.sleeping) {
+            this.sleeping = false;
+            const agent = getAgent(this.config.agentId, this.config.channel);
+            if (agent) {
+              broadcastUpdate(this.config.channel, {
+                type: "message",
+                ts: "",
+                user: this.config.agentId,
+                text: "",
+                agent_id: this.config.agentId,
+                avatar_color: agent.avatar_color || "#D97706",
+                is_sleeping: false,
+              } as any);
+            }
+
+            // Wakeup handling: if many messages accumulated during sleep,
+            // skip old ones and only process recent messages with context
+            if (pending.length > MAX_WAKEUP_MESSAGES) {
+              const skipped = pending.length - MAX_WAKEUP_MESSAGES;
+              const skippedMessages = pending.slice(0, skipped);
+              pending = pending.slice(skipped);
+
+              // Mark skipped messages as processed so they don't reappear
+              const lastSkippedTs = skippedMessages[skippedMessages.length - 1].ts;
+              try {
+                db.run(
+                  `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
                  VALUES (?, ?, ?, ?, strftime('%s', 'now'))
                  ON CONFLICT(agent_id, channel) DO UPDATE SET
                    last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
                    updated_at = strftime('%s', 'now')`,
-                [this.config.agentId, this.config.channel, lastSkippedTs, lastSkippedTs, lastSkippedTs],
+                  [this.config.agentId, this.config.channel, lastSkippedTs, lastSkippedTs, lastSkippedTs],
+                );
+              } catch {}
+
+              // Build a conversation summary of skipped messages
+              const convoLines: string[] = [];
+              for (const m of skippedMessages) {
+                const user = m.user === "UHUMAN" ? "Human" : m.agent_id || m.user || "unknown";
+                const text = (m.text || "").slice(0, 200).replace(/\n/g, " ");
+                convoLines.push(`${user}: ${text}`);
+              }
+              const summary = convoLines.join("\n");
+
+              pending.unshift({
+                ts: "0",
+                user: "UHUMAN",
+                text: [
+                  `[WAKEUP] You've just woken up from sleep.`,
+                  ``,
+                  `While you were sleeping, ${skipped} message(s) were exchanged on this channel.`,
+                  `Here is a summary of the conversation you missed (already processed — do NOT call chat_mark_processed for any of these):`,
+                  ``,
+                  `--- Missed conversation ---`,
+                  summary,
+                  `--- End of missed conversation ---`,
+                  ``,
+                  `Now focus ONLY on the new message(s) below. Use the missed conversation as context to understand what happened, but only respond to the new messages. If something from the missed conversation still needs your attention, the user will ask again.`,
+                ].join("\n"),
+              });
+
+              console.log(
+                `[claude-code-main] Wakeup: skipped ${skipped} old messages, processing ${pending.length - 1} recent`,
               );
-            } catch {}
-
-            // Build a conversation summary of skipped messages
-            const convoLines: string[] = [];
-            for (const m of skippedMessages) {
-              const user = m.user === "UHUMAN" ? "Human" : m.agent_id || m.user || "unknown";
-              const text = (m.text || "").slice(0, 200).replace(/\n/g, " ");
-              convoLines.push(`${user}: ${text}`);
-            }
-            const summary = convoLines.join("\n");
-
-            pending.unshift({
-              ts: "0",
-              user: "UHUMAN",
-              text: [
-                `[WAKEUP] You've just woken up from sleep.`,
-                ``,
-                `While you were sleeping, ${skipped} message(s) were exchanged on this channel.`,
-                `Here is a summary of the conversation you missed (already processed — do NOT call chat_mark_processed for any of these):`,
-                ``,
-                `--- Missed conversation ---`,
-                summary,
-                `--- End of missed conversation ---`,
-                ``,
-                `Now focus ONLY on the new message(s) below. Use the missed conversation as context to understand what happened, but only respond to the new messages. If something from the missed conversation still needs your attention, the user will ask again.`,
-              ].join("\n"),
-            });
-
-            console.log(
-              `[claude-code-main] Wakeup: skipped ${skipped} old messages, processing ${pending.length - 1} recent`,
-            );
-          }
-        }
-        this.processing = true;
-        this.processingStartedAt = Date.now();
-        this.lastActivityAt = Date.now();
-        this.pendingTimestamps = pending.map((m: any) => m.ts);
-
-        // Mark messages as seen and broadcast to UI
-        try {
-          const tsList = pending.map((m: any) => m.ts);
-          const newlySeen = markMessagesSeen(this.config.channel, this.config.agentId, tsList);
-          if (newlySeen.length > 0) {
-            const lastHumanTs = pending.filter((m: any) => m.user === "UHUMAN").slice(-1)[0]?.ts;
-            if (lastHumanTs && newlySeen.includes(lastHumanTs)) {
-              broadcastMessageSeen(this.config.channel, lastHumanTs, this.config.agentId);
             }
           }
-        } catch {}
+          this.processing = true;
+          this.processingStartedAt = Date.now();
+          this.lastActivityAt = Date.now();
+          this.pendingTimestamps = pending.map((m: any) => m.ts);
 
-        setAgentStreaming(this.config.agentId, this.config.channel, true);
-        broadcastAgentStreaming(this.config.channel, this.config.agentId, true);
-
-        // Interrupt poller — aborts SDK query if new messages arrive from any channel member
-        // (human or other agents — all are collaborators in the channel)
-        let interrupted = false;
-        const interruptMessageMap = new Map<string, any>();
-        const pendingTimestampSet = new Set(this.pendingTimestamps);
-        const interruptPoller = setInterval(() => {
-          if (!this.processing) return;
+          // Mark messages as seen and broadcast to UI
           try {
-            const newPending = this.pollForMessages();
-            const newMessages = newPending.filter(
-              (m: any) => !pendingTimestampSet.has(m.ts) && !interruptMessageMap.has(m.ts),
-            );
-            if (newMessages.length > 0) {
-              interrupted = true;
-              for (const m of newMessages) interruptMessageMap.set(m.ts, m);
-              console.log(`[claude-code-main] Interrupted by ${newMessages.length} new message(s)`);
+            const tsList = pending.map((m: any) => m.ts);
+            const newlySeen = markMessagesSeen(this.config.channel, this.config.agentId, tsList);
+            if (newlySeen.length > 0) {
+              const lastHumanTs = pending.filter((m: any) => m.user === "UHUMAN").slice(-1)[0]?.ts;
+              if (lastHumanTs && newlySeen.includes(lastHumanTs)) {
+                broadcastMessageSeen(this.config.channel, lastHumanTs, this.config.agentId);
+              }
+            }
+          } catch {}
+
+          setAgentStreaming(this.config.agentId, this.config.channel, true);
+          broadcastAgentStreaming(this.config.channel, this.config.agentId, true);
+
+          // Interrupt poller — aborts SDK query if new messages arrive from any channel member
+          // (human or other agents — all are collaborators in the channel)
+          let interrupted = false;
+          const interruptMessageMap = new Map<string, any>();
+          const pendingTimestampSet = new Set(this.pendingTimestamps);
+          const interruptPoller = setInterval(() => {
+            if (!this.processing) return;
+            try {
+              const newPending = this.pollForMessages();
+              const newMessages = newPending.filter(
+                (m: any) => !pendingTimestampSet.has(m.ts) && !interruptMessageMap.has(m.ts),
+              );
+              if (newMessages.length > 0) {
+                interrupted = true;
+                for (const m of newMessages) interruptMessageMap.set(m.ts, m);
+                console.log(`[claude-code-main] Interrupted by ${newMessages.length} new message(s)`);
+                try {
+                  this.abortController?.abort();
+                } catch {}
+              }
+            } catch (e) {
+              // Polling errors during interrupt detection are non-fatal
+              console.warn(`[claude-code-main] Interrupt poll error: ${e}`);
+            }
+          }, 2000);
+
+          this.wasCancelledByHeartbeat = false;
+          try {
+            await this.processMessages(pending);
+          } catch (err: any) {
+            // Always check for session corruption, even on interrupt (aborted session may be invalid)
+            const msg = err.message || "";
+            if (msg.includes("No conversation found") || msg.includes("Invalid `signature` in `thinking` block")) {
+              console.warn(`[claude-code-main] Corrupted session — resetting for fresh start`);
+              this.sessionId = null;
+              this.persistSessionId(null);
+            }
+            // Only log unexpected errors (suppress abort errors from human interrupts and heartbeats)
+            if (!interrupted && !this.wasCancelledByHeartbeat) {
+              console.error(`[claude-code-main] Error: ${msg}`);
+            }
+          } finally {
+            clearInterval(interruptPoller);
+            setAgentStreaming(this.config.agentId, this.config.channel, false);
+            broadcastAgentStreaming(this.config.channel, this.config.agentId, false);
+            this.processing = false;
+            this.processingStartedAt = null;
+            this.lastActivityAt = Date.now();
+          }
+
+          if (interrupted) {
+            // Advance last_processed_ts to last message in the interrupted batch
+            // so next poll only returns NEW messages (the corrections)
+            const lastBatchTs = this.pendingTimestamps[this.pendingTimestamps.length - 1];
+            if (lastBatchTs) {
               try {
-                this.abortController?.abort();
+                db.run(
+                  `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+                 VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+                 ON CONFLICT(agent_id, channel) DO UPDATE SET
+                   last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
+                   updated_at = strftime('%s', 'now')`,
+                  [this.config.agentId, this.config.channel, lastBatchTs, lastBatchTs, lastBatchTs],
+                );
               } catch {}
             }
-          } catch (e) {
-            // Polling errors during interrupt detection are non-fatal
-            console.warn(`[claude-code-main] Interrupt poll error: ${e}`);
-          }
-        }, 2000);
+            this.pendingTimestamps = [];
 
-        this.wasCancelledByHeartbeat = false;
-        try {
-          await this.processMessages(pending);
-        } catch (err: any) {
-          // Always check for session corruption, even on interrupt (aborted session may be invalid)
-          const msg = err.message || "";
-          if (msg.includes("No conversation found") || msg.includes("Invalid `signature` in `thinking` block")) {
-            console.warn(`[claude-code-main] Corrupted session — resetting for fresh start`);
-            this.sessionId = null;
-            this.persistSessionId(null);
-          }
-          // Only log unexpected errors (suppress abort errors from human interrupts and heartbeats)
-          if (!interrupted && !this.wasCancelledByHeartbeat) {
-            console.error(`[claude-code-main] Error: ${msg}`);
-          }
-        } finally {
-          clearInterval(interruptPoller);
-          setAgentStreaming(this.config.agentId, this.config.channel, false);
-          broadcastAgentStreaming(this.config.channel, this.config.agentId, false);
-          this.processing = false;
-          this.processingStartedAt = null;
-          this.lastActivityAt = Date.now();
-        }
+            // Interrupt messages already deduplicated at push time via Map
+            const uniqueInterruptMsgs = Array.from(interruptMessageMap.values());
 
-        if (interrupted) {
-          // Advance last_processed_ts to last message in the interrupted batch
-          // so next poll only returns NEW messages (the corrections)
-          const lastBatchTs = this.pendingTimestamps[this.pendingTimestamps.length - 1];
-          if (lastBatchTs) {
-            try {
-              db.run(
-                `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
-                 VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-                 ON CONFLICT(agent_id, channel) DO UPDATE SET
-                   last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
-                   updated_at = strftime('%s', 'now')`,
-                [this.config.agentId, this.config.channel, lastBatchTs, lastBatchTs, lastBatchTs],
-              );
-            } catch {}
-          }
-          this.pendingTimestamps = [];
+            // Process interrupt messages with split prompt (Processing vs New)
+            if (uniqueInterruptMsgs.length > 0) {
+              this.processing = true;
+              this.processingStartedAt = Date.now();
+              this.lastActivityAt = Date.now();
+              this.pendingTimestamps = uniqueInterruptMsgs.map((m: any) => m.ts);
 
-          // Interrupt messages already deduplicated at push time via Map
-          const uniqueInterruptMsgs = Array.from(interruptMessageMap.values());
+              try {
+                markMessagesSeen(this.config.channel, this.config.agentId, this.pendingTimestamps);
+              } catch {}
 
-          // Process interrupt messages with split prompt (Processing vs New)
-          if (uniqueInterruptMsgs.length > 0) {
-            this.processing = true;
-            this.processingStartedAt = Date.now();
-            this.lastActivityAt = Date.now();
-            this.pendingTimestamps = uniqueInterruptMsgs.map((m: any) => m.ts);
+              setAgentStreaming(this.config.agentId, this.config.channel, true);
+              broadcastAgentStreaming(this.config.channel, this.config.agentId, true);
 
-            try {
-              markMessagesSeen(this.config.channel, this.config.agentId, this.pendingTimestamps);
-            } catch {}
-
-            setAgentStreaming(this.config.agentId, this.config.channel, true);
-            broadcastAgentStreaming(this.config.channel, this.config.agentId, true);
-
-            // Note: No nested interrupt poller for the resume turn — intentional to prevent
-            // infinite nesting. Third corrections queue until the next while iteration.
-            this.wasCancelledByHeartbeat = false;
-            try {
-              const interruptPrompt = this.formatInterruptPrompt(pending, uniqueInterruptMsgs);
-              await this.processMessagesWithPrompt(interruptPrompt, uniqueInterruptMsgs);
-            } catch (err: any) {
-              if (!this.wasCancelledByHeartbeat) {
-                console.error(`[claude-code-main] Interrupt processing error: ${err.message}`);
-                // Reset corrupted session on interrupt resume failures too
-                const msg = err.message || "";
-                if (msg.includes("No conversation found") || msg.includes("Invalid `signature` in `thinking` block")) {
-                  console.warn(`[claude-code-main] Corrupted session on interrupt resume — resetting`);
-                  this.sessionId = null;
-                  this.persistSessionId(null);
+              // Note: No nested interrupt poller for the resume turn — intentional to prevent
+              // infinite nesting. Third corrections queue until the next while iteration.
+              this.wasCancelledByHeartbeat = false;
+              try {
+                const interruptPrompt = this.formatInterruptPrompt(pending, uniqueInterruptMsgs);
+                await this.processMessagesWithPrompt(interruptPrompt, uniqueInterruptMsgs);
+              } catch (err: any) {
+                if (!this.wasCancelledByHeartbeat) {
+                  console.error(`[claude-code-main] Interrupt processing error: ${err.message}`);
+                  // Reset corrupted session on interrupt resume failures too
+                  const msg = err.message || "";
+                  if (
+                    msg.includes("No conversation found") ||
+                    msg.includes("Invalid `signature` in `thinking` block")
+                  ) {
+                    console.warn(`[claude-code-main] Corrupted session on interrupt resume — resetting`);
+                    this.sessionId = null;
+                    this.persistSessionId(null);
+                  }
+                }
+              } finally {
+                setAgentStreaming(this.config.agentId, this.config.channel, false);
+                broadcastAgentStreaming(this.config.channel, this.config.agentId, false);
+                this.processing = false;
+                this.processingStartedAt = null;
+                this.lastActivityAt = Date.now();
+              }
+              // Let forceMarkRetries accumulate naturally — don't reset counters
+              // Add size cap to prevent unbounded growth from repeated interrupts
+              if (this.forceMarkRetries.size > 500) {
+                // Evict oldest half to prevent unbounded growth while preserving recent retry counts
+                const entries = [...this.forceMarkRetries.entries()];
+                for (let i = 0; i < Math.floor(entries.length / 2); i++) {
+                  this.forceMarkRetries.delete(entries[i][0]);
                 }
               }
-            } finally {
-              setAgentStreaming(this.config.agentId, this.config.channel, false);
-              broadcastAgentStreaming(this.config.channel, this.config.agentId, false);
-              this.processing = false;
-              this.processingStartedAt = null;
-              this.lastActivityAt = Date.now();
+              this.forceMarkUnprocessed();
             }
-            // Let forceMarkRetries accumulate naturally — don't reset counters
-            // Add size cap to prevent unbounded growth from repeated interrupts
-            if (this.forceMarkRetries.size > 500) {
-              // Evict oldest half to prevent unbounded growth while preserving recent retry counts
-              const entries = [...this.forceMarkRetries.entries()];
-              for (let i = 0; i < Math.floor(entries.length / 2); i++) {
-                this.forceMarkRetries.delete(entries[i][0]);
-              }
-            }
-            this.forceMarkUnprocessed();
+            continue;
           }
-          continue;
+          this.forceMarkUnprocessed();
+        } catch (err: any) {
+          console.error(`[claude-code-main] Poll error: ${err.message}`);
+          await Bun.sleep(200);
         }
-        this.forceMarkUnprocessed();
-      } catch (err: any) {
-        console.error(`[claude-code-main] Poll error: ${err.message}`);
-        await Bun.sleep(200);
       }
-    }
 
-    console.log(`[claude-code-main] Stopped: ${this.config.channel}:${this.config.agentId}`);
+      console.log(`[claude-code-main] Stopped: ${this.config.channel}:${this.config.agentId}`);
+    } finally {
+      // Always resolve stoppedPromise — even if init throws before the while loop
+      this.stoppedResolve?.();
+      this.stoppedResolve = null;
+    }
   }
 
-  stop(): void {
+  stop(): Promise<void> {
     this.running = false;
     this.stopped = true;
     this.cancelProcessing();
+    // Return a promise that resolves when the main loop actually exits.
+    // If the loop already exited (or never started), resolve immediately.
+    if (!this.stoppedPromise) return Promise.resolve();
+    // Timeout guard: don't block forever (e.g. stuck in Bun.sleep(5000) when userSleeping).
+    // After timeout, old loop may briefly overlap with new worker (~0-5s). This is safe:
+    // the old loop is sleeping (won't process messages) and registerMainWorker overwrites the key.
+    return Promise.race([this.stoppedPromise, new Promise<void>((resolve) => setTimeout(resolve, 5000))]);
   }
 
   // --------------------------------------------------------------------------

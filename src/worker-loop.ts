@@ -155,7 +155,7 @@ export interface WorkerLoopConfig {
  */
 export interface AgentWorker {
   start(): void;
-  stop(): void;
+  stop(): void | Promise<void>;
   readonly isSleeping: boolean;
   readonly isRunning: boolean;
   setSleeping(sleeping: boolean): void;
