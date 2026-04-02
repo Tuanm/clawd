@@ -23,6 +23,7 @@ import { db, getAgent, markMessagesSeen, setAgentStreaming } from "./server/data
 import { getPendingMessages } from "./server/routes/messages";
 import { truncateToolResult, formatToolDescription } from "./claude-code-utils";
 import { initMemorySession, saveToMemory } from "./claude-code-memory";
+import { getAgentMemoryStore, extractKeywords, type AgentMemory } from "./agent/memory/agent-memory";
 import { runSDKQuery } from "./claude-code-sdk";
 import { loadOAuthToken } from "./mcp-oauth";
 import type { AgentHealthSnapshot, AgentWorker } from "./worker-loop";
@@ -81,6 +82,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   // Re-injection state: track per-turn whether chat_send_message was called
   private turnChatSent = false;
   private turnStreamText = "";
+  // Memory injection: last keywords from user message for relevance scoring
+  private lastKeywords: string[] = [];
 
   constructor(config: ClaudeCodeMainConfig) {
     this.config = config;
@@ -516,6 +519,14 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     // Build the system prompt using the shared dynamic builder (same as clawd-chat path)
     // with MCP prefix so all tool references use the full mcp__clawd__ namespace.
+    // Update keywords from user message for memory relevance
+    if (messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg?.text) {
+        this.lastKeywords = extractKeywords(lastMsg.text).slice(0, 15);
+      }
+    }
+
     const ccCtx: PromptContext = {
       agentId: this.config.agentId,
       projectRoot: this.config.projectRoot,
@@ -525,7 +536,13 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         "spawn_agent",
         "todo_write",
         "todo_read",
-        "memory_search",
+        "chat_history_search",
+        // Memory tools (same as non-CC agents)
+        "memo_save",
+        "memo_recall",
+        "memo_delete",
+        "memo_pin",
+        "memo_unpin",
         // MCP file tools — project-root-scoped, sandboxed
         "file_view",
         "file_edit",
@@ -545,6 +562,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       mcpPrefix: "mcp__clawd__",
     };
     let systemPrompt = buildDynamicSystemPrompt(ccCtx);
+
+    // Inject relevant memories (same system as non-CC agents)
+    const memoryContext = this.loadMemoryContext();
+    if (memoryContext) {
+      systemPrompt += "\n\n" + memoryContext;
+    }
 
     // Dynamic: inject active sub-agent count as a system reminder (best-effort)
     try {
@@ -810,6 +833,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   private identityCache: string | null = null;
   private identityMtimes: Record<string, number> = {};
+  private memoryStore = getAgentMemoryStore();
 
   /** Check if any identity source file has been modified since last cache */
   private identityFilesChanged(): boolean {
@@ -873,6 +897,65 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     this.identityMtimes = mtimes;
     this.identityCache = contexts.length > 0 ? contexts.join("\n\n---\n\n") + "\n\n---\n\n" : "";
     return this.identityCache;
+  }
+
+  // --------------------------------------------------------------------------
+  // Memory injection (same as WorkerLoop — dynamically loads relevant memories)
+  // --------------------------------------------------------------------------
+
+  private formatAge(unixSeconds: number): string {
+    const now = Math.floor(Date.now() / 1000);
+    const diff = now - unixSeconds;
+    if (diff < 60) return "just now";
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+    return `${Math.floor(diff / 604800)}w ago`;
+  }
+
+  /** Load relevant memories into the system prompt (same approach as non-CC agents) */
+  private loadMemoryContext(): string {
+    try {
+      const { agentId, channel } = this.config;
+      const memories = this.memoryStore.getRelevant(agentId, channel, this.lastKeywords, 5, 10);
+      if (memories.length === 0) return "";
+
+      const INJECTION_CAP = 4000;
+      let output = "<agent_memory>\n";
+      let charCount = 0;
+
+      // Pinned rules — always included (up to 1500 chars)
+      const pinned = memories.filter((m: AgentMemory) => m.priority >= 80);
+      if (pinned.length > 0) {
+        output += "  <pinned_rules>\n";
+        for (const mem of pinned) {
+          const line = `    - [#${mem.id} ${mem.category}] ${mem.content}\n`;
+          if (charCount + line.length > 1500) break;
+          output += line;
+          charCount += line.length;
+        }
+        output += "  </pinned_rules>\n";
+      }
+
+      // Relevant + recent memories
+      const others = memories.filter((m: AgentMemory) => m.priority < 80);
+      if (others.length > 0) {
+        output += "  <relevant>\n";
+        for (const mem of others) {
+          const age = this.formatAge(mem.createdAt);
+          const line = `    - [#${mem.id} ${mem.category} ${age}] ${mem.content}\n`;
+          if (charCount + line.length > INJECTION_CAP) break;
+          output += line;
+          charCount += line.length;
+        }
+        output += "  </relevant>\n";
+      }
+
+      output += "</agent_memory>";
+      return output;
+    } catch {
+      return "";
+    }
   }
 
   // --------------------------------------------------------------------------

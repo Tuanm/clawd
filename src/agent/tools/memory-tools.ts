@@ -1,5 +1,5 @@
 /**
- * Memory Tools — memory_search, memory_summary
+ * Memory Tools — chat_history_search, memory_summary
  *
  * Registers memory/history search tools into the shared tool registry.
  */
@@ -11,7 +11,7 @@ import { registerTool } from "./registry";
 // ============================================================================
 
 registerTool(
-  "memory_search",
+  "chat_history_search",
   "Search past conversation history. Filter by time range, keywords, or role.",
   {
     keywords: {

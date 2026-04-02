@@ -1,6 +1,6 @@
 /**
  * Chat Tools — skill_*, todo_write/read/update, spawn_agent, list_agents,
- *              kill_agent, agent_logs, article_*, chat_send_article
+ *              kill_agent, get_agent_logs, article_*, chat_send_article
  *
  * Registers chat/collaboration tools into the shared tool registry.
  */
@@ -462,7 +462,7 @@ echo "Exit code: $?" >> "${logFile}"
           name,
           status: "running",
           project_hash: currentProjectHash,
-          message: `Sub-agent spawned. Use list_agents to check status, agent_logs to view output, or kill_agent to stop it.`,
+          message: `Sub-agent spawned. Use list_agents to check status, get_agent_logs to view output, or kill_agent to stop it.`,
         },
         null,
         2,
@@ -597,7 +597,7 @@ registerTool(
 );
 
 registerTool(
-  "agent_logs",
+  "get_agent_logs",
   "Get the output logs of a sub-agent by its ID. Use this to check what a sub-agent is doing or has done.",
   {
     agent_id: {

@@ -24,7 +24,7 @@ const TOOL_CAPS: Record<string, number> = {
   chat_poll_and_ack: 10240,
   git_diff: 8192,
   git_log: 8192,
-  memory_search: 6144,
+  chat_history_search: 6144,
   web_fetch: 10240,
   tmux_capture: 8192,
   article_get: 10240,

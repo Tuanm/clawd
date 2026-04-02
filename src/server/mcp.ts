@@ -26,6 +26,7 @@ import { analyzeImage, analyzeVideo, editImage, generateImage, getImageQuotaStat
 import { getOptimizedFile } from "./routes/files";
 import { getConversationHistory, getPendingMessages, postMessage } from "./routes/messages";
 import { broadcastMessage, broadcastMessageSeen, broadcastUpdate } from "./websocket";
+import { getProjectAgentsDir } from "../agent/tools/registry";
 
 // Scheduler reference (set by index.ts after creation)
 let _scheduler: SchedulerManager | null = null;
@@ -3811,7 +3812,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       // Memory tools
       const memoryToolDefs = [
         {
-          name: "memory_search",
+          name: "chat_history_search",
           description: "Search past conversation history. Filter by time range, keywords, or role.",
           inputSchema: {
             type: "object",
@@ -3845,6 +3846,87 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
             required: ["session_id"],
           },
         },
+        // Agent memory tools (same as non-CC agents — per-agent, per-channel long-term memory)
+        {
+          name: "memo_save",
+          description:
+            "Save important information to your long-term memory. Memories persist across sessions and are scoped to you. Use categories: fact, preference, decision, lesson, correction. Use memo_pin to ensure critical memories are always loaded.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              content: {
+                type: "string",
+                description: "The information to remember (be specific and atomic — one fact per save)",
+              },
+              category: {
+                type: "string",
+                description: "Memory category",
+                enum: ["fact", "preference", "decision", "lesson", "correction"],
+                default: "fact",
+              },
+              scope: {
+                type: "string",
+                description: '"channel" (default) = this channel only, "agent" = remember across all channels',
+                enum: ["channel", "agent"],
+                default: "channel",
+              },
+            },
+            required: ["content"],
+          },
+        },
+        {
+          name: "memo_recall",
+          description:
+            "Search your long-term memories. Without a query, returns recent memories. Use to recall previously saved facts, decisions, preferences, and lessons.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: { type: "string", description: "Search keywords (optional — omit to see recent memories)" },
+              category: {
+                type: "string",
+                description: "Filter by category",
+                enum: ["fact", "preference", "decision", "lesson", "correction"],
+              },
+              limit: { type: "number", description: "Max results (default: 20, max: 50)", default: 20 },
+              offset: { type: "number", description: "Offset for pagination (default: 0)", default: 0 },
+            },
+            required: [],
+          },
+        },
+        {
+          name: "memo_delete",
+          description: "Delete a memory by its ID. Use memo_recall to find IDs first.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "number", description: "Memory ID to delete" },
+            },
+            required: ["id"],
+          },
+        },
+        {
+          name: "memo_pin",
+          description:
+            "Pin a memory so it is ALWAYS loaded into your context. Use for critical rules, important decisions, and must-remember facts.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "number", description: "Memory ID to pin" },
+            },
+            required: ["id"],
+          },
+        },
+        {
+          name: "memo_unpin",
+          description: "Unpin a previously pinned memory. It will still exist but only loaded when relevant.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "number", description: "Memory ID to unpin" },
+            },
+            required: ["id"],
+          },
+        },
       ];
 
       // Utility tools
@@ -3874,7 +3956,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
           },
         },
         {
-          name: "agent_logs",
+          name: "get_agent_logs",
           description:
             "Get the output logs of a sub-agent by its ID. Use this to check what a sub-agent is doing or has done.",
           inputSchema: {
@@ -5014,14 +5096,14 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       }
 
       // Handle memory tools
-      if (name === "memory_search" || name === "memory_summary") {
+      if (name === "chat_history_search" || name === "memory_summary") {
         try {
           const { getMemoryManager } = await import("../agent/memory/memory");
           const memory = getMemoryManager();
           const args = toolArgs || {};
           let text = "";
           switch (name) {
-            case "memory_search": {
+            case "chat_history_search": {
               const results = memory.search({
                 keywords: args.keywords as string[] | undefined,
                 startTime: args.start_time as number | undefined,
@@ -5070,12 +5152,140 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         }
       }
 
+      // Handle agent memory tools (memo_* — same as non-CC agents)
+      if (
+        name === "memo_save" ||
+        name === "memo_recall" ||
+        name === "memo_delete" ||
+        name === "memo_pin" ||
+        name === "memo_unpin"
+      ) {
+        try {
+          const { getAgentMemoryStore } = await import("../agent/memory/agent-memory");
+          const store = getAgentMemoryStore();
+
+          // Helper: format unix timestamp to relative age string
+          function formatAge(unixSeconds: number): string {
+            const now = Math.floor(Date.now() / 1000);
+            const diff = now - unixSeconds;
+            if (diff < 60) return "just now";
+            if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+            if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+            if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+            return `${Math.floor(diff / 604800)}w ago`;
+          }
+          const args = toolArgs || {};
+          let text = "";
+
+          switch (name) {
+            case "memo_save": {
+              const content = args.content as string;
+              if (!content?.trim()) {
+                text = JSON.stringify({ ok: false, error: "Content is required" });
+                break;
+              }
+              const result = store.save({
+                agentId,
+                channel,
+                content: content.trim(),
+                category: args.category as any,
+                source: "explicit",
+              });
+              if (result.id === null) {
+                text = JSON.stringify({ ok: false, error: result.warning || "Failed to save memory" });
+              } else {
+                const msg = result.warning
+                  ? `Memory #${result.id} saved (${result.warning})`
+                  : `Memory #${result.id} saved successfully`;
+                text = JSON.stringify({ ok: true, id: result.id, message: msg });
+              }
+              break;
+            }
+            case "memo_recall": {
+              const results = store.recall({
+                agentId,
+                channel,
+                query: args.query as string | undefined,
+                category: args.category as any,
+                limit: (args.limit as number) || 20,
+                offset: (args.offset as number) || 0,
+                includeGlobal: true,
+              });
+              if (results.length === 0) {
+                text = args.query ? `No memories found matching "${args.query}"` : "No memories saved yet";
+              } else {
+                const lines = results.map((m: any) => {
+                  const age = formatAge(m.createdAt);
+                  const scope = m.channel ? "" : " [agent-wide]";
+                  return `#${m.id} [${m.category}] (${age}${scope}): ${m.content}`;
+                });
+                const header = args.query
+                  ? `Found ${results.length} memories matching "${args.query}":`
+                  : `Recent ${results.length} memories:`;
+                text = `${header}\n${lines.join("\n")}`;
+              }
+              break;
+            }
+            case "memo_delete": {
+              const id = Number(args.id);
+              if (!id || isNaN(id)) {
+                text = JSON.stringify({ ok: false, error: "Valid memory ID required" });
+                break;
+              }
+              const deleted = store.delete(id, agentId);
+              text = deleted
+                ? JSON.stringify({ ok: true, message: `Memory #${id} deleted` })
+                : JSON.stringify({ ok: false, error: `Memory #${id} not found or not owned by you` });
+              break;
+            }
+            case "memo_pin": {
+              const id = Number(args.id);
+              if (!id || isNaN(id)) {
+                text = JSON.stringify({ ok: false, error: "Valid memory ID required" });
+                break;
+              }
+              const result = store.pin(id, agentId);
+              text = result.success
+                ? `Memory #${id} pinned — it will always be loaded into your context.`
+                : JSON.stringify({ ok: false, error: result.error || "Failed to pin" });
+              break;
+            }
+            case "memo_unpin": {
+              const id = Number(args.id);
+              if (!id || isNaN(id)) {
+                text = JSON.stringify({ ok: false, error: "Valid memory ID required" });
+                break;
+              }
+              const result = store.unpin(id, agentId);
+              text = result.success
+                ? `Memory #${id} unpinned — it will only be loaded when relevant.`
+                : JSON.stringify({ ok: false, error: result.error || "Failed to unpin" });
+              break;
+            }
+            default:
+              text = `Error: Unknown memo tool: ${name}`;
+          }
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        } catch (err: any) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "text", text: `Memory error: ${err.message}` }] },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      }
+
       // Handle utility tools
       if (
         name === "get_environment" ||
         name === "today" ||
         name === "convert_to_markdown" ||
-        name === "agent_logs" ||
+        name === "get_agent_logs" ||
         name === "bash"
       ) {
         try {
@@ -5138,50 +5348,34 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               text = `Converted ${result.format?.toUpperCase() || "document"} to Markdown (${result.markdown.length} chars). Saved to: ${mdPath}\nUse view("${mdPath}") to read the full content.`;
               break;
             }
-            case "agent_logs": {
+            case "get_agent_logs": {
               const targetAgentId = args.agent_id as string;
               // Validate targetAgentId to only allow safe characters (prevent path traversal)
               if (!/^[a-zA-Z0-9_-]+$/.test(targetAgentId)) {
                 text = `Error: Invalid agent_id "${targetAgentId}": only alphanumeric, underscore, and hyphen characters are allowed.`;
                 break;
               }
-              const channel = args.channel as string;
-              // Also validate the channel parameter to prevent path traversal
-              if (!/^[a-zA-Z0-9_-]+$/.test(channel)) {
-                text = JSON.stringify({ ok: false, error: "Invalid channel identifier" });
-                break;
-              }
               const tail = (args.tail as number) || 100;
-              // Try to find agent log from ~/.clawd/projects/.../agents/ directory
-              const { join } = await import("node:path");
-              const { homedir } = await import("node:os");
+              // Use getProjectAgentsDir() for correct project-scoped path
+              // (mirrors chat-tools.ts get_agent_logs handler)
               const { readFileSync, existsSync, statSync: fsStatSync } = await import("node:fs");
-              // Check common agent log locations
-              const clauwdDir = join(homedir(), ".clawd");
-              const logCandidates = [
-                join(clauwdDir, "agents", targetAgentId, "output.log"),
-                join(clauwdDir, "projects", channel, "agents", targetAgentId, "output.log"),
-              ];
+              const agentsDir = getProjectAgentsDir();
+              // sessionName = agent_id without "tmux-" prefix, matching chat-tools.ts logic
+              const sessionName = targetAgentId.replace(/^tmux-/, "");
+              const logFile = join(agentsDir, sessionName, "output.log");
               const MAX_LOG_BYTES = 1 * 1024 * 1024; // 1 MB
-              let found = false;
-              for (const logFile of logCandidates) {
-                if (existsSync(logFile)) {
-                  const logStat = fsStatSync(logFile);
-                  if (logStat.size > MAX_LOG_BYTES) {
-                    text = `Agent: ${targetAgentId}\n(log file too large: ${logStat.size} bytes, max ${MAX_LOG_BYTES})`;
-                    found = true;
-                    break;
-                  }
+              if (existsSync(logFile)) {
+                const logStat = fsStatSync(logFile);
+                if (logStat.size > MAX_LOG_BYTES) {
+                  text = `Agent: ${targetAgentId}\n(log file too large: ${logStat.size} bytes, max ${MAX_LOG_BYTES})`;
+                } else {
                   const content = readFileSync(logFile, "utf-8");
                   const lines = content.split("\n");
                   const output = lines.slice(-tail).join("\n");
                   text = `Agent: ${targetAgentId}\n\n--- Output (last ${Math.min(tail, lines.length)} lines) ---\n${output || "(no output yet)"}`;
-                  found = true;
-                  break;
                 }
-              }
-              if (!found) {
-                text = `Agent: ${targetAgentId}\n(no output log found — agent may not have started or log path differs)`;
+              } else {
+                text = `Agent: ${targetAgentId}\n(no output log found at ${logFile} — agent may not have started yet)`;
               }
               break;
             }
