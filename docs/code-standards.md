@@ -1034,12 +1034,14 @@ Claude Code sub-agents are spawned via `@anthropic-ai/claude-agent-sdk` and rece
 
 Sub-agents load identity from 4 directories with priority override:
 
-1. **Global lowest** — `~/.claude/CLAUDE.md`
-2. **Project** — `{project}/.claude/CLAUDE.md`
-3. **Agent type config** — `src/agent/agents/config/claude-code.yaml`
-4. **Per-agent highest** — `~/.clawd/agents/{name}.md` or `{project}/.clawd/agents/{name}.md`
+1. **Global lowest** — `~/.claude/agents/{name}.md` (Claude Code global agents)
+2. **Claw'd global** — `~/.clawd/agents/{name}.md` (Claw'd global agents)
+3. **Claude Code project** — `{project}/.claude/agents/{name}.md` (Claude Code project agents)
+4. **Per-agent highest** — `{project}/.clawd/agents/{name}.md` (Claw'd project agents)
 
-**Auto-refresh**: Modify any `CLAUDE.md` file; identity refreshes on mtime change.
+**Auto-refresh**: Modify any agent file; identity refreshes on mtime change.
+
+> **Note**: Agent files use markdown with YAML frontmatter (name, description, model, tools, directives). See `docs/agents.md` for the full format.
 
 **System prompt injection**: PROJECT ROOT path automatically injected into sub-agent context.
 

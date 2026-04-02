@@ -161,8 +161,8 @@ Three agents are available by default (source: "built-in"):
 
 | Agent | Description | Model | Tools |
 |-------|-------------|-------|-------|
-| `explore` | Fast read-only codebase explorer for file discovery and pattern analysis | Haiku | view, grep, glob, bash, today, get_environment, web_search, web_fetch |
-| `plan` | Research agent for gathering context before implementation planning | inherit | view, grep, glob, bash, today, get_environment, web_search, web_fetch |
+| `explore` | Fast read-only codebase explorer for file discovery and pattern analysis | Haiku | view, grep, glob, bash, today, **get_environment**, web_search, web_fetch |
+| `plan` | Research agent for gathering context before implementation planning | inherit | view, grep, glob, bash, today, **get_environment**, web_search, web_fetch |
 | `general` | Capable general-purpose agent for complex multi-step tasks | inherit | all |
 
 Built-in agents can be overridden by custom agents with the same name using the 4-directory priority system.
@@ -245,6 +245,24 @@ The `memory` field enables persistent cross-session learning:
 | `user` | `~/.clawd/agent-memory/{name}/` | Knowledge across all projects |
 | `project` | `.clawd/agent-memory/{name}/` | Project-specific, shareable via VCS |
 | `local` | `.clawd/agent-memory-local/{name}/` | Project-specific, not in VCS |
+
+### Memory Tools
+
+Agents have access to long-term memory via these tools:
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `memo_save` | Save important information | `content`, `category`, `scope` |
+| `memo_recall` | Search long-term memories | `query`, `category`, `limit` |
+| `memo_delete` | Delete a memory by ID | `id` |
+| `memo_pin` | Pin memory for always-loading | `id` |
+| `memo_unpin` | Unpin previously pinned memory | `id` |
+| `chat_history_search` | Search conversation history | `keywords`, `start_time`, `end_time`, `role` |
+| `memory_summary` | Get session summary | `session_id` |
+
+**Categories:** `fact`, `preference`, `decision`, `lesson`, `correction`
+
+> **CC Main agents**: Claude Code main workers (the primary agent in a channel) use the same memory system via MCP tools. Memory is injected into the system prompt via the memory plugin's `getSystemContext` hook.
 
 ---
 

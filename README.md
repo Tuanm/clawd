@@ -470,6 +470,29 @@ For full details and examples, see **[docs/custom-tools.md](docs/custom-tools.md
 3. **Agent memories** — long-term facts, preferences, and decisions per agent
    - Persistent across sessions via SQLite with FTS5 search
 
+### Memory Tools
+
+| Tool | Description |
+|---|---|
+| `memo_save` | Save facts, preferences, or decisions to long-term memory |
+| `memo_recall` | Search long-term memory by keywords or category |
+| `memo_delete` | Delete specific memories from long-term storage |
+| `memo_pin` | Pin important memories for quick access |
+| `memo_unpin` | Unpin memories from quick access |
+| `chat_history_search` | Search past conversation history across channels |
+| `memory_summary` | Get conversation session summaries |
+| `knowledge_search` | Search indexed tool outputs from the knowledge base |
+| `get_agent_logs` | View sub-agent output logs for debugging |
+
+### CC Main Agent Memory
+
+CC Main agents (using Claude Code SDK) have the same memory capabilities as standard agents:
+- Memory tools (`memo_*`) exposed via MCP server
+- Automatic memory injection via `getSystemContext` hook from the memory plugin
+- `identity_update` tool to save agent identity information to long-term memory
+
+Memory is injected automatically during prompt building through the same `MemoryPlugin` used by all agent types in `worker-loop.ts`.
+
 ### Sub-Agents (Spaces)
 
 Agents can delegate tasks via `spawn_agent(task, agent="agent-name")`:
@@ -479,7 +502,7 @@ Agents can delegate tasks via `spawn_agent(task, agent="agent-name")`:
 - `agent` parameter loads a specific agent file configuration (model, tools, system prompt, directives)
 - Without `agent` parameter, sub-agents inherit parent's full configuration (unchanged behavior)
 - Returns results via `complete_task(result)` — the only way to deliver work from sub-agents
-- Configurable timeout (default 300s; spawn_agent overrides to 600s), max 5 per channel / 20 global
+- Configurable timeout (default 300s; spawn_agent overrides to 600s), max 9 per channel (no global cap)
 - `context` parameter for seeding sub-agents with parent knowledge
 - `retask_agent(agent_id, task)` — re-task a completed sub-agent without cold-start
 - **Sub-agent tools**: Limited to `complete_task`, `chat_mark_processed`, `get_environment`, `today` (no chat_send_message)
@@ -520,6 +543,9 @@ Custom agents override built-in ones via the 4-directory priority system.
   - `query="keyword"` — search available agents by name/description
   - No type specified → returns both sections
 - `get_agent_report(id)` — fetch specific sub-agent's full result or error
+- `kill_agent(agent_id)` — terminate a running sub-agent and all its children
+- `stop_agent(agent_id)` — stop a sub-agent (spaces system)
+- `retask_agent(agent_id, task)` — re-task a completed sub-agent without cold-start
 - **Tool name aliases**: Claude Code tool names (Read, Write, Bash, etc.) resolve to Claw'd equivalents (view, create, bash, etc.) in agent file tool restrictions for compatibility
 
 ### Scheduler
