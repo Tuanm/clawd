@@ -522,7 +522,7 @@ const TOOL_ALIASES: Record<string, string> = {
   TaskGet: "todo_read",
   TaskList: "todo_read",
   TaskUpdate: "todo_update",
-  TaskOutput: "agent_logs",
+  TaskOutput: "get_agent_logs",
   TaskStop: "stop_agent",
   TodoWrite: "todo_write",
   // Skill tool
