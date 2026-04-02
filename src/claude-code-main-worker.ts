@@ -467,12 +467,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const lastTs = seen?.last_processed_ts || undefined;
 
     const result = getPendingMessages(channel, lastTs, true, 50);
+    // Filter: include any message not from this agent, excluding anonymous UBOT messages.
+    // This catches: UHUMAN, UWORKER-*, other CC Main agents (UBOT+agent_id), and sub-agents
+    // (custom user IDs like "verify-v5-A-8f32cd"). Mirrors WorkerLoop's isRelevant() logic.
     const pending = ((result as any).messages || []).filter(
-      (m: any) =>
-        m.ts > (lastTs || "0") &&
-        (m.user === "UHUMAN" ||
-          (typeof m.user === "string" && m.user.startsWith("UWORKER-")) ||
-          (m.user === "UBOT" && m.agent_id && m.agent_id !== agentId)),
+      (m: any) => m.ts > (lastTs || "0") && m.agent_id !== agentId && !(m.user === "UBOT" && !m.agent_id),
     );
     return pending;
   }
