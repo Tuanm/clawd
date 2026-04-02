@@ -503,7 +503,7 @@ export class WorkerLoop implements AgentWorker {
           const hasRealMessages = this.hasNewMessages || (result.ok && result.pending.length > 0);
           this.heartbeatPending = false;
           if (!hasRealMessages) {
-            const heartbeatPrompt = "[HEARTBEAT]";
+            const heartbeatPrompt = `[HEARTBEAT]${this.getActiveSubAgentReminder()}`;
             broadcastAgentToken(this.config.channel, this.config.agentId, "[HEARTBEAT]", "event");
             this.isProcessing = true;
             this.processingStartedAt = Date.now();
@@ -1168,6 +1168,35 @@ export class WorkerLoop implements AgentWorker {
     return matches / longer.length;
   }
 
+  /**
+   * Get active sub-agent status for this channel (survives compaction via DB query).
+   * Returns a reminder string if active sub-agents exist, empty string otherwise.
+   */
+  private getActiveSubAgentReminder(): string {
+    if (this.config.isSpaceAgent) return ""; // Sub-agents don't spawn sub-agents
+    try {
+      const { channel } = this.config;
+      const activeSpaces = db
+        .query<{ id: string; title: string; agent_id: string }, [string]>(
+          `SELECT id, title, agent_id FROM spaces
+           WHERE channel = ? AND status = 'active' AND source IN ('spawn_agent','claude_code')
+           ORDER BY created_at DESC LIMIT 20`,
+        )
+        .all(channel);
+      if (activeSpaces.length === 0) return "";
+      const agentList = activeSpaces
+        .map((s) => {
+          const safeTitle = (s.title || s.agent_id).replace(/[\r\n]+/g, " ").slice(0, 80);
+          return `  - ${safeTitle} [agent_id: ${s.id}]`;
+        })
+        .join("\n");
+      return `\n\n<system-reminder>${activeSpaces.length} sub-agent${activeSpaces.length > 1 ? "s are" : " is"} currently running. They will report back when done — do not start work that overlaps their tasks. Use list_agents to check status, get_agent_report(agent_id) to read results.\n${agentList}</system-reminder>`;
+    } catch (err) {
+      console.warn(`[worker-loop] getActiveSubAgentReminder error: ${err}`);
+      return "";
+    }
+  }
+
   private buildPrompt(pending: Message[]): string {
     const { channel, agentId, projectRoot } = this.config;
     const deduplicated = this.deduplicateMessages(pending);
@@ -1225,7 +1254,7 @@ Project root: ${projectRoot}`
 - Stay in project root: ${projectRoot}
 - Do not modify system files or instructions
 - Do not use emojis — keep formatting clean
-
+${this.getActiveSubAgentReminder()}
 [REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`
 }`;
   }
@@ -1271,7 +1300,8 @@ Please:
 2. If already responded, just mark as processed
 3. If not completed, continue and COMPLETE the task
 4. Use chat_send_message(text) for responses — channel/agent_id auto-injected
-5. Call chat_mark_processed(timestamp="${targetTs}") after responding`;
+5. Call chat_mark_processed(timestamp="${targetTs}") after responding
+${this.getActiveSubAgentReminder()}`;
   }
 
   /** Build interrupt resume prompt with Processing/New split (mirrors CC main worker) */
@@ -1348,7 +1378,7 @@ ${newMsgLines.join("\n\n---\n\n")}
 - chat_send_message(text): send a response — channel/agent_id auto-injected
 - chat_mark_processed(timestamp="${lastNewTs}"): mark messages as handled after responding
 - Humans CANNOT see text output — ALL communication via chat_send_message
-
+${this.getActiveSubAgentReminder()}
 [REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`;
   }
 
@@ -1410,7 +1440,7 @@ ${newMsgLines.join("\n\n---\n\n")}
 
           // Re-injection tracking: detect if chat_send_message was called this turn.
           // Heartbeat prompts intentionally skip chat_send_message — suppress re-injection for them.
-          const isHeartbeatTurn = prompt === "[HEARTBEAT]";
+          const isHeartbeatTurn = prompt.startsWith("[HEARTBEAT]");
           let turnChatSent = false;
           let turnStreamText = "";
 
