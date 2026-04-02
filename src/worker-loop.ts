@@ -640,6 +640,37 @@ export class WorkerLoop implements AgentWorker {
           this.isProcessing = true;
           this.processingStartedAt = Date.now();
           this.wasCancelledByHeartbeat = false;
+
+          // Track current batch timestamps for interrupt detection
+          const currentBatchTs = new Set(result.pending.map((m) => m.ts));
+
+          // Interrupt poller — cancels active agent if new messages arrive from
+          // any channel member (human or other agents — all are collaborators)
+          let wlInterrupted = false;
+          const wlInterruptMessageMap = new Map<string, any>();
+          const wlInterruptPoller = setInterval(() => {
+            if (!this.isProcessing) return;
+            try {
+              const pollResult = this.pollPendingDirect();
+              if (!pollResult.ok) return;
+              const newMsgs = pollResult.pending.filter(
+                (m) => !currentBatchTs.has(m.ts) && !wlInterruptMessageMap.has(m.ts),
+              );
+              if (newMsgs.length > 0) {
+                wlInterrupted = true;
+                for (const m of newMsgs) wlInterruptMessageMap.set(m.ts, m);
+                this.log(`Interrupted by ${newMsgs.length} new message(s)`);
+                // Cancel the active agent
+                try {
+                  this.activeAgent?.cancel();
+                } catch {}
+              }
+            } catch (e) {
+              // Polling errors during interrupt detection are non-fatal
+              this.log(`Interrupt poll error: ${e}`);
+            }
+          }, 2000);
+
           try {
             let prompt = isContinuation
               ? this.buildContinuationPrompt(result.seenNotProcessed)
@@ -667,16 +698,64 @@ export class WorkerLoop implements AgentWorker {
               output.includes("[stream error");
             this.wasCancelledByHeartbeat = false;
 
-            if (!execResult.success) {
+            if (!execResult.success && !wlInterrupted) {
               this.log("Prompt execution failed");
               await this.sendMessage(`[ERROR] ${execResult.output || "Unexpected error"}`);
             }
           } finally {
+            clearInterval(wlInterruptPoller);
             this.isProcessing = false;
             this.processingStartedAt = null;
             this.lastActivityAt = Date.now();
             this.stoppedPromise?.resolve();
             this.stoppedPromise = null;
+          }
+
+          // Handle interrupt: advance cursor past current batch, then process new messages
+          if (wlInterrupted) {
+            // Advance cursor past the interrupted batch
+            const lastBatchTs = result.pending[result.pending.length - 1]?.ts;
+            if (lastBatchTs) {
+              try {
+                db.run(
+                  `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+                   VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+                   ON CONFLICT(agent_id, channel) DO UPDATE SET
+                     last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
+                     updated_at = strftime('%s', 'now')`,
+                  [this.config.agentId, this.config.channel, lastBatchTs, lastBatchTs, lastBatchTs],
+                );
+              } catch {}
+            }
+
+            const interruptMsgs = Array.from(wlInterruptMessageMap.values());
+            if (interruptMsgs.length > 0) {
+              this.isProcessing = true;
+              this.processingStartedAt = Date.now();
+              this.wasCancelledByHeartbeat = false;
+
+              // Note: No nested interrupt poller for resume turn — intentional to prevent
+              // infinite nesting. Further messages queue until the next while iteration.
+              try {
+                const processingMsgs = isContinuation ? result.seenNotProcessed : result.pending;
+                const interruptPrompt = this.buildInterruptPrompt(processingMsgs, interruptMsgs);
+                const resumeResult = await this.executePrompt(interruptPrompt, this.sessionName);
+                const output = resumeResult.output || "";
+                this.lastExecutionHadError =
+                  !resumeResult.success || output.includes("[Agent stopped") || output.includes("[stream error");
+              } catch (err: any) {
+                if (!this.wasCancelledByHeartbeat) {
+                  this.log(`Interrupt processing error: ${err.message}`);
+                }
+              } finally {
+                this.isProcessing = false;
+                this.processingStartedAt = null;
+                this.lastActivityAt = Date.now();
+                this.stoppedPromise?.resolve();
+                this.stoppedPromise = null;
+              }
+            }
+            continue;
           }
         }
       } catch (error) {
@@ -1193,6 +1272,84 @@ Please:
 3. If not completed, continue and COMPLETE the task
 4. Use chat_send_message(text) for responses — channel/agent_id auto-injected
 5. Call chat_mark_processed(timestamp="${targetTs}") after responding`;
+  }
+
+  /** Build interrupt resume prompt with Processing/New split (mirrors CC main worker) */
+  private buildInterruptPrompt(processingMessages: Message[], newMessages: any[]): string {
+    const { channel, agentId, projectRoot } = this.config;
+
+    const formatMsg = (m: any) => {
+      const author =
+        m.user === "UHUMAN"
+          ? "human"
+          : m.user?.startsWith("UWORKER-")
+            ? `[Sub-agent: ${m.agent_id || "unknown"}]`
+            : m.agent_id || m.user || "unknown";
+      const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
+      return `[ts:${m.ts}] ${author}: ${text}`;
+    };
+
+    // Budget: reserve space for NEW messages first (they're the reason for interrupt),
+    // then fill processing context with remaining budget
+    const halfBudget = MAX_COMBINED_PROMPT_LENGTH / 2;
+
+    // 1. New messages get guaranteed half-budget
+    let newLen = 0;
+    const newMsgLines: string[] = [];
+    for (const msg of newMessages) {
+      const line = formatMsg(msg);
+      if (newLen + line.length > halfBudget) break;
+      newMsgLines.push(line);
+      newLen += line.length;
+    }
+
+    // 2. Processing messages fill remaining budget (newest 5 reserved, older in reverse)
+    const procBudget = MAX_COMBINED_PROMPT_LENGTH - newLen;
+    const PROC_NEWEST = Math.min(processingMessages.length, 5);
+    const procNewest = processingMessages.slice(-PROC_NEWEST);
+    const procOlder = processingMessages.slice(0, processingMessages.length - PROC_NEWEST);
+    let procLen = 0;
+    const procNewestLines: string[] = [];
+    for (const msg of procNewest) {
+      const line = formatMsg(msg);
+      if (procLen + line.length > procBudget) break;
+      procNewestLines.push(line);
+      procLen += line.length;
+    }
+    const procOlderLines: string[] = [];
+    for (let i = procOlder.length - 1; i >= 0; i--) {
+      const line = formatMsg(procOlder[i]);
+      if (procLen + line.length > procBudget) break;
+      procOlderLines.unshift(line);
+      procLen += line.length;
+    }
+
+    const lastNewTs = newMessages[newMessages.length - 1]?.ts || "";
+
+    return `[SYSTEM] YOU ARE AGENT: "${agentId}"
+PROJECT ROOT: ${projectRoot}
+
+[INTERRUPT] New messages arrived while you were processing.
+Read them carefully — they may override your current task.
+
+# Processing Messages on Channel "${channel}"
+
+${[...procOlderLines, ...procNewestLines].join("\n\n---\n\n")}
+
+# New Messages on Channel "${channel}"
+
+${newMsgLines.join("\n\n---\n\n")}
+
+---
+
+# INSTRUCTIONS
+
+## Communication
+- chat_send_message(text): send a response — channel/agent_id auto-injected
+- chat_mark_processed(timestamp="${lastNewTs}"): mark messages as handled after responding
+- Humans CANNOT see text output — ALL communication via chat_send_message
+
+[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`;
   }
 
   /** Execute a prompt using the in-process Agent */
