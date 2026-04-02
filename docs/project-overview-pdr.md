@@ -233,7 +233,7 @@
 **Features:**
 - Colored avatars instead of black
 - `list_agents(type="running")` shows spawned sub-agents
-- `get_agent_report(id)` fetches full result or error
+- `get_agent_logs(agent_id, tail?)` gets output logs of a sub-agent
 - Optional `agent` parameter to load specific agent file
 
 **Files:**
@@ -261,7 +261,7 @@
 - `src/scheduler/runner.ts`
 - `src/scheduler/parse-schedule.ts`
 
-### 8. Artifact Rendering (7 Types)
+### 8. Artifact Rendering (8 Types)
 
 **Supported artifact types:**
 
@@ -274,8 +274,9 @@
 | `csv` | Sortable HTML table | Spreadsheet data |
 | `markdown` | Full markdown pipeline | Formatted text |
 | `code` | Prism syntax highlighting (32+ languages) | Source code |
+| `interactive` | JSON component spec | Rendered inline as interactive UI widgets |
 
-**Inline rendering:** chart, svg, code
+**Inline rendering:** chart, svg, code, interactive
 **Sidebar rendering (click preview):** html, react, csv, markdown
 
 **Files:**

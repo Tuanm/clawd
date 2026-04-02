@@ -683,43 +683,101 @@ interface Plugin {
 
 ### 6.5 Memory System
 
-The memory system has three tiers, each serving different retrieval needs:
+The memory system uses three separate stores, each serving distinct retrieval needs:
 
 ```mermaid
 flowchart LR
-    subgraph T1["Tier 1: Session Memory (messages table)"]
-        T1A["Full conversation history with LLM"]
-        T1B["Subject to compaction at token thresholds"]
-        T1C["Checkpointed for recovery"]
+    subgraph MM["MemoryManager (memory.ts)"]
+        MMA["Session chat history"]
+        MMB["FTS5-indexed messages"]
+        MMC["Context compaction"]
     end
 
-    subgraph T2["Tier 2: Knowledge Base (knowledge table)"]
-        T2A["FTS5-indexed tool output chunks"]
-        T2B["Retrieved by FTS5 keyword matching on demand"]
-        T2C["Enables recall of past tool results"]
+    subgraph KB["KnowledgeBase (knowledge-base.ts)"]
+        KBA["Tool output indexing"]
+        KBB["FTS5 chunk retrieval"]
+        KBC["BM25 ranking"]
     end
 
-    subgraph T3["Tier 3: Agent Memory (agent_memories table)"]
-        T3A["Long-term facts, preferences, decisions"]
-        T3B["FTS5-indexed for search"]
-        T3C["Persists across sessions indefinitely"]
+    subgraph AMS["AgentMemoryStore (agent-memory.ts)"]
+        AMSA["Per-agent long-term memory"]
+        AMSB["Categories: fact/preference/decision/lesson/correction"]
+        AMSC["Priority decay + effectiveness scoring"]
     end
 
-    T1 --> T2 --> T3
+    MM --> KB
+    KB --> AMS
 ```
 
-**Tier 1 — Session memory**: The raw conversation with the LLM, stored in `memory.db → messages`.
-This is the working memory that gets compacted when token limits are reached.
+**MemoryManager** (`src/agent/memory/memory.ts`): Manages session chat history with FTS5 full-text search. Stores raw conversation in `memory.db → messages`. Subject to context compaction at token thresholds.
 
-**Tier 2 — Knowledge base**: When tools return large outputs (file contents, command results,
-web pages), the output is chunked and stored in `knowledge` with FTS5 indexing. The
-agent can later retrieve relevant chunks via FTS5 keyword matching without re-executing the tool.
+**KnowledgeBase** (`src/agent/memory/knowledge-base.ts`): Indexes tool outputs (file contents, command results, web pages) as chunks in `memory.db → knowledge` with FTS5 indexing. Enables recall of past tool results without re-execution.
 
-**Tier 3 — Agent memory**: Explicit long-term storage of facts ("user prefers dark mode"),
-preferences ("always use TypeScript"), and decisions ("we chose PostgreSQL for the DB").
-These persist indefinitely and are injected into the system prompt when relevant.
+**AgentMemoryStore** (`src/agent/memory/agent-memory.ts`): Per-agent long-term memories with categories:
+- **fact**: Factual information ("uses PostgreSQL")
+- **preference**: User preferences ("prefers dark mode")
+- **decision**: Architectural decisions ("chose React over Vue")
+- **lesson**: Learned lessons ("don't modify tests")
+- **correction**: Corrected errors ("was broken, fixed by...")
 
-### 6.6 Heartbeat Monitor
+Supports priority decay, effectiveness scoring, auto-extraction via LLM, and memory consolidation (Phase 3).
+
+### 6.6 MCP Tool Architecture
+
+**File**: `src/server/mcp.ts` (JSON-RPC over HTTP)
+
+The MCP server exposes tools to Claude Code sub-agents via the `handleAgentMcpRequest` function. Route: `/mcp/agent/{channel}/{agentId}`
+
+**Architecture:**
+
+```
+Claude Code Sub-Agent
+    │
+    ▼ (MCP request with JSON-RPC)
+handleAgentMcpRequest(channel, agentId)
+    │
+    ├── Validates request (OPTIONS/POST only)
+    ├── Extracts JSON-RPC payload
+    ├── Resolves tool name + args
+    │
+    ▼
+Tool Dispatcher
+    │
+    ├── Chat tools (chat_send_message, chat_poll_and_ack, etc.)
+    ├── File tools (read, write, edit)
+    ├── Agent tools (spawn_agent, list_agents, get_agent_logs, stop_agent)
+    ├── Memory tools (chat_history_search, memory_summary)
+    ├── Memo tools (memo_save, memo_recall, memo_delete, memo_pin, memo_unpin)
+    ├── Task tools (task_add, task_list, task_complete, etc.)
+    ├── Job tools (job_submit, job_status, job_wait, etc.)
+    └── Utility tools (get_environment, today, convert_to_markdown)
+    │
+    ▼
+HTTP Response (JSON-RPC result or error)
+```
+
+**Key MCP Tools:**
+
+| Tool | Purpose |
+|------|---------|
+| `chat_send_message` | Post message to channel |
+| `chat_poll_and_ack` | Poll pending messages, acknowledge processed |
+| `spawn_agent` | Spawn Claude Code sub-agent via SDK |
+| `list_agents` | List running sub-agents |
+| `get_agent_logs` | Get sub-agent output logs (tail optional) |
+| `stop_agent` | Stop a running sub-agent |
+| `chat_history_search` | Search conversation history via FTS5 |
+| `memory_summary` | Get session summary with key topics |
+| `memo_save/recall/delete` | Long-term memory CRUD |
+| `memo_pin/unpin` | Pin memories for always-loading |
+| `task_*` | Kanban task management |
+
+**Agent Context Injection:**
+- `channel` and `agentId` auto-injected into every tool call
+- No need for agents to pass these parameters
+- Enables per-agent isolation and audit trails
+
+### 6.7 Heartbeat Monitor
 
 **File**: `src/worker-manager.ts`
 
@@ -753,7 +811,7 @@ A background health monitor keeps agents responsive and recovers from stuck stat
 - `processing_timeout` — Agent cancelled for exceeding processing timeout
 - `space_auto_failed` — Sub-agent space failed after max heartbeat attempts
 
-### 6.7 Stream Timeouts (State-Based)
+### 6.8 Stream Timeouts (State-Based)
 
 **File**: `src/agent/api/client.ts`
 
@@ -774,7 +832,7 @@ Stream timeouts are state-based (not model-name-based) to handle different phase
 
 This approach accommodates slow models (Opus, o1, o3) with extended thinking without hardcoding model-specific timeouts.
 
-### 6.8 Model Tiering & Tool Filtering
+### 6.9 Model Tiering & Tool Filtering
 
 **Files**: `src/agent/agent.ts` (`getIterationModel`), `src/agent/api/factory.ts`
 
