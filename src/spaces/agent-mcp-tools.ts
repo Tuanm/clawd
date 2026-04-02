@@ -159,6 +159,20 @@ export async function executeAgentToolCall(
       const task = args.task as string;
       if (!task) return textResult(JSON.stringify({ ok: false, error: "Missing task" }));
 
+      // Limit active sub-agents per channel to prevent resource exhaustion
+      const MAX_ACTIVE_SUB_AGENTS = 9;
+      const activeSpaces = _spaceManager
+        .listSpaces(channel, "active")
+        .filter((s) => s.source === "spawn_agent" || s.source === "claude_code");
+      if (activeSpaces.length >= MAX_ACTIVE_SUB_AGENTS) {
+        return textResult(
+          JSON.stringify({
+            ok: false,
+            error: `Channel has ${activeSpaces.length} active sub-agents (max ${MAX_ACTIVE_SUB_AGENTS}). Wait for existing agents to complete or stop some with stop_agent before spawning more.`,
+          }),
+        );
+      }
+
       // Dynamic import to avoid circular deps
       const { ClaudeCodeSpaceWorker, registerClaudeCodeWorker, unregisterClaudeCodeWorker } = await import(
         "./claude-code-worker"

@@ -80,7 +80,7 @@ export function createSpawnAgentPlugin(
         {
           name: "spawn_agent",
           description:
-            "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning. The sub-agent will report back via complete_task when done. Use list_agents(type='running') to check status, get_agent_report(agent_id) to read results, or kill_agent(agent_id) to stop it.\n\nChoose the right agent type for the task:\n- agent='general' (DEFAULT) — full access: read, write, edit, bash. Use for implementation, fixes, multi-step tasks.\n- agent='explore' — read-only, fast (haiku model). Use ONLY for search, analysis, code review where no file changes are needed.\n- agent='plan' — read-only research for gathering context before planning.\n\nCustom agents from .clawd/agents/ are also available (use list_agents(type='available') to discover).\n\nIMPORTANT: Sub-agents can ONLY use complete_task to report results — they CANNOT use chat_send_message or other chat tools. Write the task as a self-contained work request. The result will be posted to the channel automatically when the sub-agent calls complete_task.",
+            "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning. The sub-agent will report back via complete_task when done. Use list_agents(type='running') to check status, get_agent_report(agent_id) to read results, or stop_agent(agent_id) to stop it.\n\nChoose the right agent type for the task:\n- agent='general' (DEFAULT) — full access: read, write, edit, bash. Use for implementation, fixes, multi-step tasks.\n- agent='explore' — read-only, fast (haiku model). Use ONLY for search, analysis, code review where no file changes are needed.\n- agent='plan' — read-only research for gathering context before planning.\n\nCustom agents from .clawd/agents/ are also available (use list_agents(type='available') to discover).\n\nIMPORTANT: Sub-agents can ONLY use complete_task to report results — they CANNOT use chat_send_message or other chat tools. Write the task as a self-contained work request. The result will be posted to the channel automatically when the sub-agent calls complete_task.",
           parameters: {
             task: { type: "string", description: "The task for the sub-agent" },
             name: { type: "string", description: "Optional friendly name" },
@@ -271,6 +271,19 @@ export function createSpawnAgentPlugin(
 
     if (!task) {
       return { success: false, output: "", error: "Missing required parameter: task" };
+    }
+
+    // Limit active sub-agents per channel to prevent resource exhaustion
+    const MAX_ACTIVE_SUB_AGENTS = 9;
+    const activeSpaces = spaceManager
+      .listSpaces(config.channel, "active")
+      .filter((s) => s.source === "spawn_agent" || s.source === "claude_code");
+    if (activeSpaces.length >= MAX_ACTIVE_SUB_AGENTS) {
+      return {
+        success: false,
+        output: "",
+        error: `Channel has ${activeSpaces.length} active sub-agents (max ${MAX_ACTIVE_SUB_AGENTS}). Wait for existing agents to complete or stop some with stop_agent before spawning more.`,
+      };
     }
 
     try {

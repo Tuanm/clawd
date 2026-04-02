@@ -1862,8 +1862,11 @@ SUMMARY:`;
     }
 
     // Build messages array
-    const isHeartbeat = userMessage === "[HEARTBEAT]";
-    const effectiveMessage = isHeartbeat ? "<agent_signal>[HEARTBEAT]</agent_signal>" : userMessage;
+    const isHeartbeat = userMessage.startsWith("[HEARTBEAT]");
+    // Wrap heartbeat signal; preserve any appended context (e.g., sub-agent reminders)
+    const effectiveMessage = isHeartbeat
+      ? `<agent_signal>[HEARTBEAT]</agent_signal>${userMessage.slice("[HEARTBEAT]".length)}`
+      : userMessage;
     let messages: Message[] = [
       { role: "system", content: finalSystemPrompt },
       ...history,
