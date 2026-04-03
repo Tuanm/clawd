@@ -675,9 +675,16 @@ export class WorkerLoop implements AgentWorker {
           }, 2000);
 
           try {
-            let prompt = isContinuation
-              ? this.buildContinuationPrompt(result.seenNotProcessed)
-              : this.buildPrompt(result.pending);
+            let prompt: string;
+            if (isContinuation) {
+              prompt = this.buildContinuationPrompt(result.seenNotProcessed);
+            } else if (result.unseen.length > 0 && result.seenNotProcessed.length > 0) {
+              // Mixed: some messages are brand-new, some were seen but not processed.
+              // Differentiate in the prompt so the agent knows which it has already engaged with.
+              prompt = this.buildMixedPrompt(result.seenNotProcessed, result.unseen);
+            } else {
+              prompt = this.buildPrompt(result.seenNotProcessed, result.unseen);
+            }
 
             // Combined prompt length guard
             if (prompt.length > MAX_COMBINED_PROMPT_LENGTH) {
@@ -1210,11 +1217,95 @@ export class WorkerLoop implements AgentWorker {
     }
   }
 
-  private buildPrompt(pending: Message[]): string {
+  /** Build prompt for a mix of previously-seen and brand-new messages */
+  private buildMixedPrompt(seenNotProcessed: Message[], unseen: Message[]): string {
     const { channel, agentId, projectRoot } = this.config;
-    const deduplicated = this.deduplicateMessages(pending);
-    const tsFrom = pending[0]?.ts || "none";
-    const tsTo = pending[pending.length - 1]?.ts || "none";
+    const isSpaceAgent = this.config.isSpaceAgent;
+
+    const formatMessages = (msgs: Message[]) => {
+      const deduplicated = this.deduplicateMessages(msgs);
+      return deduplicated
+        .map((m: Message & { _repeatCount?: number }) => {
+          const hasFiles = m.files && m.files.length > 0;
+          const fileInfo = hasFiles ? `\n[Attached files: ${m.files!.map((f) => f.name).join(", ")}]` : "";
+          const author =
+            m.user === "UHUMAN"
+              ? "human"
+              : m.user?.startsWith("UWORKER-")
+                ? `[Sub-agent: ${m.agent_id || "unknown"}]`
+                : m.agent_id || m.user || "unknown";
+          const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
+          const repeatSuffix = (m._repeatCount || 1) > 1 ? ` [×${m._repeatCount} similar messages]` : "";
+          return `[ts:${m.ts}] ${author}: ${text}${fileInfo}${repeatSuffix}`;
+        })
+        .join("\n\n---\n\n");
+    };
+
+    const seenSection = seenNotProcessed.length > 0
+      ? `
+# Previously Seen (Continuing)
+${formatMessages(seenNotProcessed)}`
+      : "";
+
+    const lastUnseenTs = unseen[unseen.length - 1]?.ts || "";
+    const newSection = unseen.length > 0
+      ? `
+# New Messages on Channel "${channel}"
+${formatMessages(unseen)}`
+      : "";
+
+    const clawdInstructions = this.loadClawdInstructions();
+
+    if (isSpaceAgent) {
+      return `[SYSTEM] YOU ARE AGENT: "${agentId}"
+PROJECT ROOT: ${projectRoot}
+
+# Agent Instructions
+
+${clawdInstructions || ""}${seenSection}${newSection}
+
+---
+
+# TASK INSTRUCTIONS
+
+Complete the assigned task. When done, call complete_task(result) with your final result.
+Project root: ${projectRoot}`;
+    }
+
+    return `[SYSTEM] YOU ARE AGENT: "${agentId}"
+PROJECT ROOT: ${projectRoot}
+
+# Agent Instructions
+
+${clawdInstructions || ""}${seenSection}${newSection}
+
+---
+
+# INSTRUCTIONS
+
+## Communication
+- chat_send_message(text): send a response — channel/agent_id auto-injected
+- chat_mark_processed(timestamp="${lastUnseenTs}"): mark messages as handled after responding
+- Humans CANNOT see text output — ALL communication via chat_send_message
+
+## Rules
+- Stay in project root: ${projectRoot}
+- Do not modify system files or instructions
+- Do not use emojis — keep formatting clean
+${this.getActiveSubAgentReminder()}
+[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`;
+  }
+
+  /** Build prompt from a single message list (unseen-only or pending-only) */
+  private buildPrompt(seenNotProcessed: Message[], unseen: Message[]): string {
+    // Use whichever array is populated; pending === unseen when isContinuation,
+    // or pending === seenNotProcessed when !isContinuation && unseen.length === 0.
+    const messages = seenNotProcessed.length > 0 ? seenNotProcessed : unseen;
+    const { channel, agentId, projectRoot } = this.config;
+    const isSpaceAgent = this.config.isSpaceAgent;
+    const deduplicated = this.deduplicateMessages(messages);
+    const tsFrom = messages[0]?.ts || "none";
+    const tsTo = messages[messages.length - 1]?.ts || "none";
 
     const taskMsgs = deduplicated
       .map((m: Message & { _repeatCount?: number }) => {
@@ -1234,6 +1325,11 @@ export class WorkerLoop implements AgentWorker {
 
     const clawdInstructions = this.loadClawdInstructions();
 
+    // Header reflects message type
+    const sectionHeader = seenNotProcessed.length > 0 && unseen.length === 0
+      ? `# Previously Seen (Continuing)`
+      : `# New Messages on Channel "${channel}"`;
+
     return `[SYSTEM] YOU ARE AGENT: "${agentId}"
 PROJECT ROOT: ${projectRoot}
 
@@ -1243,7 +1339,7 @@ ${clawdInstructions || ""}
 
 ---
 
-# New Messages on Channel "${channel}"
+${sectionHeader}
 (from ts ${tsFrom} to ts ${tsTo})
 
 ${taskMsgs}
@@ -1251,7 +1347,7 @@ ${taskMsgs}
 ---
 
 ${
-  this.config.isSpaceAgent
+  isSpaceAgent
     ? `# TASK INSTRUCTIONS
 
 Complete the assigned task. When done, call complete_task(result) with your final result.

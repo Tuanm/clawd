@@ -742,7 +742,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   private formatPrompt(messages: any[]): string {
     const parts: string[] = [];
-    parts.push(`# New Messages on Channel "${this.config.channel}"\n`);
+    // Label as "poll start" — these messages may include brand-new and/or
+    // previously-seen-not-processed ones (CC worker doesn't track last_seen_ts).
+    parts.push(`# Messages on Channel "${this.config.channel}" (poll start)\n`);
 
     // Reserve budget for newest messages — build from newest first,
     // then reverse so prompt reads chronologically.
