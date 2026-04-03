@@ -396,7 +396,8 @@ export async function exchangeOAuthCode(
   });
 
   const rawText = await res.text();
-  console.log(`[mcp-oauth] Token response: status=${res.status}, body=${rawText.slice(0, 500)}`);
+  // SECURITY: Never log token response body — contains access_token/refresh_token
+  console.log(`[mcp-oauth] Token response: status=${res.status}, body_length=${rawText.length}`);
 
   if (!res.ok) {
     throw new Error(`Token exchange failed (${res.status}): ${rawText}`);

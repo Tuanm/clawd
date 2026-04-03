@@ -879,8 +879,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const code = url.searchParams.get("code");
       const stateParam = url.searchParams.get("state");
       const errorParam = url.searchParams.get("error");
+      // SECURITY: Never log auth codes or full query strings — they contain credentials
       console.log(
-        `[OAuth callback] code=${code ? code.slice(0, 12) + "..." : "null"}, state=${stateParam ? "present" : "null"}, error=${errorParam || "none"}, full_url=${url.pathname}?${url.search}`,
+        `[OAuth callback] code=${code ? "present" : "null"}, state=${stateParam ? "present" : "null"}, error=${errorParam || "none"}`,
       );
 
       if (errorParam) {
