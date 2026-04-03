@@ -58,6 +58,8 @@ export const CLAWD_TOOL_NAME_MAP: Record<string, string> = {
   MultiEdit: "mcp__clawd__file_multi_edit",
   Glob: "mcp__clawd__file_glob",
   Grep: "mcp__clawd__file_grep",
+  WebSearch: "mcp__clawd__web_search",
+  WebFetch: "mcp__clawd__web_fetch",
 };
 
 /**

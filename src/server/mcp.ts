@@ -3081,6 +3081,84 @@ async function executeToolCall(
         break;
       }
 
+      case "web_search": {
+        const { webSearch } = await import("../agent/tools/web-search");
+        const query = args.query as string;
+        const maxResults = (args.max_results as number) || 5;
+        const allowedDomains = args.allowed_domains as string[] | undefined;
+        const blockedDomains = args.blocked_domains as string[] | undefined;
+        if (!query) {
+          resultText = JSON.stringify({ ok: false, error: "Missing required parameter: query" });
+          break;
+        }
+        let effectiveQuery = query;
+        if (Array.isArray(allowedDomains) && allowedDomains.length > 0)
+          effectiveQuery += " " + allowedDomains.map((d) => `site:${d}`).join(" OR ");
+        const searchResult = await webSearch(effectiveQuery, maxResults);
+        const filtered =
+          Array.isArray(blockedDomains) && blockedDomains.length > 0
+            ? {
+                ...searchResult,
+                results: (searchResult as any).results?.filter(
+                  (r: any) => !blockedDomains.some((d) => r.url?.includes(d)),
+                ),
+              }
+            : searchResult;
+        resultText = JSON.stringify(filtered);
+        break;
+      }
+
+      case "web_fetch": {
+        const url = args.url as string;
+        const raw = (args.raw as boolean) || false;
+        const maxLength = (args.max_length as number) || 10000;
+        if (!url) {
+          resultText = JSON.stringify({ ok: false, error: "Missing required parameter: url" });
+          break;
+        }
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 30000);
+          const fetchRes = await fetch(url, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; ClawdAgent/1.0)",
+              Accept: "text/html,application/json,text/plain,*/*",
+            },
+            signal: ctrl.signal,
+          }).finally(() => clearTimeout(timer));
+          if (!fetchRes.ok) {
+            resultText = JSON.stringify({ ok: false, error: `HTTP ${fetchRes.status}: ${fetchRes.statusText}` });
+            break;
+          }
+          const contentType = fetchRes.headers.get("content-type") || "";
+          let content = await fetchRes.text();
+          const { stripHtmlTagBlocks } = await import("../agent/tools/registry");
+          if (!raw && contentType.includes("text/html")) {
+            content = stripHtmlTagBlocks(content, "script");
+            content = stripHtmlTagBlocks(content, "style");
+            content = content
+              .replace(/<p[^>]*>/gi, "\n")
+              .replace(/<\/p>/gi, "\n")
+              .replace(/<br\s*\/?>/gi, "\n")
+              .replace(/<li[^>]*>/gi, "- ")
+              .replace(/<\/li>/gi, "\n")
+              .replace(/<[^>]+>/g, "")
+              .replace(/&nbsp;/g, " ")
+              .replace(/&lt;/g, "<")
+              .replace(/&gt;/g, ">")
+              .replace(/&quot;/g, '"')
+              .replace(/&amp;/g, "&")
+              .replace(/\n{3,}/g, "\n\n")
+              .trim();
+          }
+          if (content.length > maxLength) content = content.substring(0, maxLength) + "\n\n[Content truncated]";
+          resultText = JSON.stringify({ ok: true, content });
+        } catch (fetchErr: any) {
+          resultText = JSON.stringify({ ok: false, error: fetchErr.message });
+        }
+        break;
+      }
+
       default:
         resultText = JSON.stringify({ error: `Unknown tool: ${name}` });
     }
@@ -4036,6 +4114,44 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
 
       const { CUSTOM_SCRIPT_MCP_TOOL_DEF } = await import("../agent/plugins/custom-tool-plugin");
 
+      const webToolDefs = [
+        {
+          name: "web_search",
+          description: "Search the web. Returns results with titles, URLs, and snippets.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: { type: "string", description: "The search query" },
+              max_results: { type: "number", description: "Maximum number of results (default: 5)" },
+              allowed_domains: {
+                type: "array",
+                items: { type: "string" },
+                description: "Only include results from these domains",
+              },
+              blocked_domains: {
+                type: "array",
+                items: { type: "string" },
+                description: "Exclude results from these domains",
+              },
+            },
+            required: ["query"],
+          },
+        },
+        {
+          name: "web_fetch",
+          description: "Fetch a URL and return its content as markdown.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The URL to fetch" },
+              raw: { type: "boolean", description: "Return raw HTML instead of markdown (default: false)" },
+              max_length: { type: "number", description: "Maximum characters to return (default: 10000)" },
+            },
+            required: ["url"],
+          },
+        },
+      ];
+
       const allTools = [
         ...MCP_TOOLS,
         ...AGENT_MCP_TOOLS,
@@ -4051,6 +4167,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         ...utilityToolDefs,
         ...remoteToolDefs,
         ...fileToolDefs,
+        ...webToolDefs,
         CUSTOM_SCRIPT_MCP_TOOL_DEF,
       ];
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { tools: allTools } }), {
@@ -5712,6 +5829,41 @@ export async function handleSpaceMcpRequest(req: Request, spaceId: string): Prom
             },
             ...spaceFileToolDefs,
             spaceCustomScriptToolDef,
+            {
+              name: "web_search",
+              description: "Search the web. Returns results with titles, URLs, and snippets.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  query: { type: "string", description: "The search query" },
+                  max_results: { type: "number", description: "Maximum number of results (default: 5)" },
+                  allowed_domains: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Only include results from these domains",
+                  },
+                  blocked_domains: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Exclude results from these domains",
+                  },
+                },
+                required: ["query"],
+              },
+            },
+            {
+              name: "web_fetch",
+              description: "Fetch a URL and return its content as markdown.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  url: { type: "string", description: "The URL to fetch" },
+                  raw: { type: "boolean", description: "Return raw HTML instead of markdown (default: false)" },
+                  max_length: { type: "number", description: "Maximum characters to return (default: 10000)" },
+                },
+                required: ["url"],
+              },
+            },
           ],
         };
         break;
@@ -5804,6 +5956,98 @@ export async function handleSpaceMcpRequest(req: Request, spaceId: string): Prom
               { headers: { ...corsHeaders, "Content-Type": "application/json" } },
             );
           }
+        }
+
+        if (name === "web_search" || name === "web_fetch") {
+          try {
+            if (name === "web_search") {
+              const { webSearch } = await import("../agent/tools/web-search");
+              const query = (toolArgs?.query as string) || "";
+              const maxResults = (toolArgs?.max_results as number) || 5;
+              const allowedDomains = toolArgs?.allowed_domains as string[] | undefined;
+              const blockedDomains = toolArgs?.blocked_domains as string[] | undefined;
+              if (!query) {
+                result = {
+                  content: [
+                    { type: "text", text: JSON.stringify({ ok: false, error: "Missing required parameter: query" }) },
+                  ],
+                };
+                break;
+              }
+              let q = query;
+              if (Array.isArray(allowedDomains) && allowedDomains.length > 0)
+                q += " " + allowedDomains.map((d) => `site:${d}`).join(" OR ");
+              const sr = await webSearch(q, maxResults);
+              const filtered =
+                Array.isArray(blockedDomains) && blockedDomains.length > 0
+                  ? {
+                      ...sr,
+                      results: (sr as any).results?.filter(
+                        (r: any) => !blockedDomains.some((d: string) => r.url?.includes(d)),
+                      ),
+                    }
+                  : sr;
+              result = { content: [{ type: "text", text: JSON.stringify(filtered) }] };
+            } else {
+              const url = (toolArgs?.url as string) || "";
+              const raw = (toolArgs?.raw as boolean) || false;
+              const maxLength = (toolArgs?.max_length as number) || 10000;
+              if (!url) {
+                result = {
+                  content: [
+                    { type: "text", text: JSON.stringify({ ok: false, error: "Missing required parameter: url" }) },
+                  ],
+                };
+                break;
+              }
+              const ctrl = new AbortController();
+              const timer = setTimeout(() => ctrl.abort(), 30000);
+              const fetchRes = await fetch(url, {
+                headers: {
+                  "User-Agent": "Mozilla/5.0 (compatible; ClawdAgent/1.0)",
+                  Accept: "text/html,application/json,text/plain,*/*",
+                },
+                signal: ctrl.signal,
+              }).finally(() => clearTimeout(timer));
+              if (!fetchRes.ok) {
+                result = {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({ ok: false, error: `HTTP ${fetchRes.status}: ${fetchRes.statusText}` }),
+                    },
+                  ],
+                };
+                break;
+              }
+              const contentType = fetchRes.headers.get("content-type") || "";
+              let content = await fetchRes.text();
+              const { stripHtmlTagBlocks } = await import("../agent/tools/registry");
+              if (!raw && contentType.includes("text/html")) {
+                content = stripHtmlTagBlocks(content, "script");
+                content = stripHtmlTagBlocks(content, "style");
+                content = content
+                  .replace(/<p[^>]*>/gi, "\n")
+                  .replace(/<\/p>/gi, "\n")
+                  .replace(/<br\s*\/?>/gi, "\n")
+                  .replace(/<li[^>]*>/gi, "- ")
+                  .replace(/<\/li>/gi, "\n")
+                  .replace(/<[^>]+>/g, "")
+                  .replace(/&nbsp;/g, " ")
+                  .replace(/&lt;/g, "<")
+                  .replace(/&gt;/g, ">")
+                  .replace(/&quot;/g, '"')
+                  .replace(/&amp;/g, "&")
+                  .replace(/\n{3,}/g, "\n\n")
+                  .trim();
+              }
+              if (content.length > maxLength) content = content.substring(0, maxLength) + "\n\n[Content truncated]";
+              result = { content: [{ type: "text", text: JSON.stringify({ ok: true, content }) }] };
+            }
+          } catch (webErr: any) {
+            result = { content: [{ type: "text", text: JSON.stringify({ ok: false, error: webErr.message }) }] };
+          }
+          break;
         }
 
         if (name !== "complete_task") {

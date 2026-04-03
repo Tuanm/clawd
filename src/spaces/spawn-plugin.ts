@@ -22,6 +22,23 @@ import {
 import type { SpaceManager } from "./manager";
 import type { SpaceWorkerManager } from "./worker";
 
+/**
+ * Build the disallowedTools list for a CC sub-agent.
+ * Custom CC providers (any provider whose base type is claude-code but whose name is not the
+ * built-in "claude-code") must use mcp__clawd__web_search / mcp__clawd__web_fetch instead of
+ * the CC-native WebSearch / WebFetch tools.
+ */
+function buildCcDisallowedTools(
+  agentCfg: AgentFileConfig | null | undefined,
+  providerName: string,
+): string[] | undefined {
+  const fromConfig = agentCfg?.disallowedTools ? mapToMcpToolNames(agentCfg.disallowedTools) : [];
+  // Block native CC web tools only for custom CC providers, not the built-in "claude-code"
+  const extra = providerName !== "claude-code" ? ["WebSearch", "WebFetch"] : [];
+  const merged = [...fromConfig, ...extra];
+  return merged.length > 0 ? merged : undefined;
+}
+
 /** Surrogate-safe string slice — avoids cutting UTF-16 surrogate pairs */
 function surrogateSlice(s: string, maxLen: number): string {
   if (s.length <= maxLen) return s;
@@ -457,9 +474,7 @@ export function createSpawnAgentPlugin(
           yolo: config.yolo ?? false,
           // Translate agent YAML tool names (short or CC native) to MCP full names
           allowedTools: agentFileConfig?.tools ? mapToMcpToolNames(agentFileConfig.tools) : undefined,
-          disallowedTools: agentFileConfig?.disallowedTools
-            ? mapToMcpToolNames(agentFileConfig.disallowedTools)
-            : undefined,
+          disallowedTools: buildCcDisallowedTools(agentFileConfig, effectiveProvider),
         });
         registerClaudeCodeWorker(space.id, ccWorker);
         spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
@@ -756,9 +771,7 @@ export function createSpawnAgentPlugin(
           yolo: config.yolo ?? false,
           // Translate agent YAML tool names (short or CC native) to MCP full names
           allowedTools: tracked.agentFileConfig?.tools ? mapToMcpToolNames(tracked.agentFileConfig.tools) : undefined,
-          disallowedTools: tracked.agentFileConfig?.disallowedTools
-            ? mapToMcpToolNames(tracked.agentFileConfig.disallowedTools)
-            : undefined,
+          disallowedTools: buildCcDisallowedTools(tracked.agentFileConfig, retaskProvider),
         });
         registerClaudeCodeWorker(space.id, ccWorker);
         spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
