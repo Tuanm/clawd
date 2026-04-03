@@ -845,11 +845,17 @@ export class MCPManager extends EventEmitter {
   // ============================================================================
 
   hasTool(toolName: string): boolean {
+    // Check prefixed format: serverName__actualToolName
+    const sep = toolName.indexOf("__");
+    if (sep !== -1) {
+      const serverName = toolName.slice(0, sep);
+      const actualName = toolName.slice(sep + 2);
+      const conn = this.connections.get(serverName);
+      if (conn?.tools.some((t) => t.name === actualName)) return true;
+    }
+    // Fallback: search all servers by raw tool name
     for (const [, connection] of this.connections) {
-      const hasTool = connection.tools.some((t) => t.name === toolName);
-      if (hasTool) {
-        return true;
-      }
+      if (connection.tools.some((t) => t.name === toolName)) return true;
     }
     return false;
   }
@@ -869,8 +875,9 @@ export class MCPManager extends EventEmitter {
         console.log(`[MCP] Server "${serverName}" tools: ${connection.tools.map((t) => t.name).join(", ") || "none"}`);
       }
       for (const tool of connection.tools) {
-        // All tools are native (no prefix) for cleaner API calls
-        const toolName = tool.name;
+        // Prefix external MCP tool names with serverName__ so they become
+        // mcp__clawd__{serverName}__{toolName} after CC's mcp__clawd__ prefix
+        const toolName = `${serverName}__${tool.name}`;
 
         definitions.push({
           type: "function",
@@ -906,31 +913,38 @@ export class MCPManager extends EventEmitter {
   async executeMCPTool(
     toolName: string,
     args: Record<string, any>,
-  ): Promise<{ success: boolean; result?: any; error?: string }> {
-    // Check if it's a prefixed name (mcp_servername_toolname)
-    const match = toolName.match(/^mcp_([^_]+)_(.+)$/);
-    let serverName: string;
-    let actualToolName: string;
+  ): Promise<{ success: boolean; result?: any; error?: string } | undefined> {
+    let serverName: string | null = null;
+    let actualToolName: string = toolName;
 
-    if (match) {
-      // Prefixed format (for non-chat MCP tools)
-      serverName = match[1];
-      actualToolName = match[2];
-    } else if (toolName.startsWith("chat_")) {
-      // Chat tools are native - find which server provides them
-      serverName = this.findServerForTool(toolName);
-      actualToolName = toolName;
-      if (!serverName) {
-        const availableTools = this.getAllTools().map((t) => t.tool.name);
-        console.error(`[MCP] Unknown chat tool: ${toolName}. Available: ${availableTools.join(", ")}`);
-        return { success: false, error: `Unknown tool: ${toolName}` };
+    // Check prefixed format: serverName__actualToolName
+    const sep = toolName.indexOf("__");
+    if (sep !== -1) {
+      const candidate = toolName.slice(0, sep);
+      const rest = toolName.slice(sep + 2);
+      if (this.connections.has(candidate)) {
+        serverName = candidate;
+        actualToolName = rest;
       }
-    } else {
-      // Try to find by tool name
+    }
+
+    // Legacy prefixed format: mcp_servername_toolname
+    if (!serverName) {
+      const match = toolName.match(/^mcp_([^_]+)_(.+)$/);
+      if (match) {
+        serverName = match[1];
+        actualToolName = match[2];
+      }
+    }
+
+    if (!serverName) {
+      // Try to find by tool name across all connected servers
       serverName = this.findServerForTool(toolName);
       actualToolName = toolName;
       if (!serverName) {
-        return { success: false, error: `Unknown tool: ${toolName}` };
+        // Tool not provided by any connected MCP server — return undefined
+        // so the caller can fall through to built-in tool handlers
+        return undefined;
       }
     }
 
@@ -952,11 +966,17 @@ export class MCPManager extends EventEmitter {
 
   // Find which MCP server provides this tool
   private findServerForTool(toolName: string): string | null {
+    // Check prefixed format first: serverName__actualToolName
+    const sep = toolName.indexOf("__");
+    if (sep !== -1) {
+      const candidate = toolName.slice(0, sep);
+      const rest = toolName.slice(sep + 2);
+      const conn = this.connections.get(candidate);
+      if (conn?.tools.some((t) => t.name === rest)) return candidate;
+    }
+    // Fallback: search all servers by raw tool name
     for (const [serverName, connection] of this.connections) {
-      const hasTool = connection.tools.some((t) => t.name === toolName);
-      if (hasTool) {
-        return serverName;
-      }
+      if (connection.tools.some((t) => t.name === toolName)) return serverName;
     }
     return null;
   }

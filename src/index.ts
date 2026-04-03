@@ -158,7 +158,13 @@ import {
   migrateChannelIds,
   renameChannel,
 } from "./server/database";
-import { handleAgentMcpRequest, handleMcpRequest, handleSpaceMcpRequest, setMcpScheduler } from "./server/mcp";
+import {
+  handleAgentMcpRequest,
+  handleMcpRequest,
+  handleSpaceMcpRequest,
+  setMcpScheduler,
+  setMcpWorkerManager,
+} from "./server/mcp";
 // Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
 import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import { handleAgentStatusRoutes } from "./server/routes/agents";
@@ -384,6 +390,7 @@ initRunner({
 // Initialize worker manager
 const workerManager = new WorkerManager(config, scheduler);
 workerManager.setSpaceInfra(spaceManager, spaceWorkerManager);
+setMcpWorkerManager(workerManager);
 
 // Wire channel MCP lookup so sub-agents inherit parent channel's MCP servers
 spaceWorkerManager.setChannelMcpLookup((channel) => workerManager.getChannelMcpManager(channel));

@@ -16,7 +16,7 @@ import { buildDynamicSystemPrompt, type PromptContext } from "./agent/prompt/bui
 import { initMemorySession, saveToMemory } from "./claude-code-memory";
 import { runSDKQuery } from "./claude-code-sdk";
 import { formatToolDescription, truncateToolResult } from "./claude-code-utils";
-import { loadOAuthToken } from "./mcp-oauth";
+
 import { db, getAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
 import { getPendingMessages } from "./server/routes/messages";
 import {
@@ -1171,58 +1171,18 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     } catch {}
     const { channel, agentId } = this.config;
 
-    const mcpServers: Record<string, any> = {
+    // Only the clawd MCP server is passed to the CC SDK.
+    // Channel MCP servers are proxied through the clawd MCP endpoint:
+    // - tools/list (mcp.ts:4181) appends channel MCPManager tools
+    // - tools/call (mcp.ts:~4500) delegates to MCPManager for execution
+    // This avoids double-exposure (same tools via CC SDK + clawd proxy) and
+    // prevents external server failures from blocking clawd-chat tools.
+    return {
       clawd: {
         type: "http",
         url: `http://localhost:${port}/mcp/agent/${encodeURIComponent(channel)}/${encodeURIComponent(agentId)}`,
       },
     };
-
-    // Merge channel-specific MCP servers from config.json
-    try {
-      const { getChannelMCPServers } = require("./agent/api/provider-config");
-      const channelServers = getChannelMCPServers(channel);
-      for (const [name, config] of Object.entries(channelServers)) {
-        const cfg = config as any;
-        if (cfg.enabled === false) continue;
-        if (name === "clawd") continue;
-
-        if (cfg.transport === "sse") {
-          console.warn(
-            `[claude-code-main-worker] MCP server "${name}" uses SSE transport (not supported by Claude Code SDK), skipping`,
-          );
-        } else if (cfg.transport === "http" || cfg.type === "http") {
-          if (!cfg.url) {
-            console.warn(`[claude-code-main-worker] MCP server "${name}" missing url, skipping`);
-            continue;
-          }
-          const entry: any = { type: "http", url: cfg.url };
-          const headers: Record<string, string> = { ...(cfg.headers || {}) };
-          if (cfg.oauth?.client_id) {
-            const stored = loadOAuthToken(channel, name);
-            if (!stored?.access_token) {
-              console.log(`[claude-code-main-worker] Skipping MCP server ${name} (no OAuth token — connect via UI)`);
-              continue;
-            }
-            headers["Authorization"] = `Bearer ${stored.access_token}`;
-          }
-          if (Object.keys(headers).length) entry.headers = headers;
-          mcpServers[name] = entry;
-        } else {
-          if (!cfg.command) {
-            console.warn(`[claude-code-main-worker] MCP server "${name}" missing command, skipping`);
-            continue;
-          }
-          const entry: any = { command: cfg.command, args: cfg.args || [] };
-          if (cfg.env) entry.env = cfg.env;
-          mcpServers[name] = entry;
-        }
-      }
-    } catch (err) {
-      console.error(`[claude-code-main-worker] Failed to load channel MCP servers for ${channel}:`, err);
-    }
-
-    return mcpServers;
   }
 
   // --------------------------------------------------------------------------

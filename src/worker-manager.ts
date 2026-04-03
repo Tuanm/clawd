@@ -1213,6 +1213,8 @@ export class WorkerManager {
       });
       const tools = mgr.getAllTools().filter((t) => t.server === name).length;
       console.log(`[WorkerManager] Added MCP server: ${name} (channel: ${channel}, ${tools} tools)`);
+      // Reset CC agent sessions so they pick up the new tools via clawd MCP proxy
+      this.resetChannelAgentSessions(channel);
       return { success: true, tools };
     } catch (err: any) {
       console.error(`[WorkerManager] Failed to add MCP server ${name} for channel ${channel}: ${err.message}`);
@@ -1232,12 +1234,33 @@ export class WorkerManager {
     }
     console.log(`[WorkerManager] Removed MCP server: ${name} (channel: ${channel})`);
 
+    // Reset CC agent sessions so they drop the removed server's tools
+    this.resetChannelAgentSessions(channel);
+
     // Clean up empty MCPManager if no servers left and no agents
     if (mgr.listServers().length === 0 && this.getChannelAgentCount(channel) === 0) {
       this.channelMcp.delete(channel);
       this.channelMcpPending.delete(channel);
     }
     return true;
+  }
+
+  /**
+   * Reset sessions for all agents in a channel.
+   * Called when channel MCP servers change so CC agents pick up the new tool list
+   * via the clawd MCP proxy on their next query (fresh session = fresh tools/list).
+   */
+  private resetChannelAgentSessions(channel: string): void {
+    let count = 0;
+    for (const [key, loop] of this.loops) {
+      if (key.startsWith(`${channel}:`)) {
+        loop.resetSession().catch(() => {});
+        count++;
+      }
+    }
+    if (count > 0) {
+      console.log(`[WorkerManager] Reset ${count} agent session(s) for channel ${channel} (MCP config changed)`);
+    }
   }
 
   /** Get runtime status of all MCP servers for a channel */

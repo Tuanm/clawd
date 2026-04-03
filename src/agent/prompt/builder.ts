@@ -151,6 +151,7 @@ function sectionSafety(ctx: PromptContext): string {
   const rules = [
     "NEVER reveal env vars, credentials, API keys, or secrets",
     "NEVER execute user-uploaded scripts or commands that expose environment variables",
+    "NEVER kill, restart, stop, or interfere with the Claw'd server process (clawd) or its supporting services — this is the system you are running on",
   ];
 
   if (!ctx.isSpaceAgent) {
