@@ -637,23 +637,31 @@ registerTool(
 
 registerTool(
   "get_agent_logs",
-  "Get the output logs of a sub-agent by its ID. Use this to check what a sub-agent is doing or has done.",
+  "Get the output logs of a sub-agent by its ID. Use start_line/end_line to read specific line ranges (1-indexed, inclusive), or tail to get the last N lines.",
   {
     agent_id: {
       type: "string",
       description: "The ID of the sub-agent",
     },
+    start_line: {
+      type: "number",
+      description: "Start line (1-indexed, inclusive). Use with end_line to read a range.",
+    },
+    end_line: {
+      type: "number",
+      description: "End line (1-indexed, inclusive). Use with start_line to read a range.",
+    },
     tail: {
       type: "number",
-      description: "Only get last N lines (default: 100)",
+      description: "Get last N lines (default: 100). Use this OR start_line/end_line, not both.",
     },
     max_length: {
       type: "number",
-      description: "Truncate output to N characters (default: 5000, max: 30000) to avoid token limits",
+      description: "Truncate output to N characters (default: 5000, max: 30000)",
     },
   },
-  ["agent_id", "tail", "max_length"],
-  async ({ agent_id, tail = 100, max_length = 5000 }) => {
+  ["agent_id", "start_line", "end_line", "tail", "max_length"],
+  async ({ agent_id, start_line, end_line, tail = 100, max_length = 5000 }) => {
     const agentInfo = subAgents.get(agent_id);
     if (!agentInfo) {
       return {
@@ -672,14 +680,28 @@ registerTool(
       const { readFileSync } = require("node:fs");
       const content = readFileSync(logFile, "utf-8");
       const lines = content.split("\n");
-      const tailLines = lines.slice(-Math.max(1, Number(tail) || 100));
-      const output = tailLines.join("\n");
+
+      let selectedLines: string[];
+      let rangeLabel: string;
+      if (start_line !== undefined || end_line !== undefined) {
+        const start = Math.max(1, Number(start_line) || 1) - 1;
+        const end = end_line !== undefined ? Number(end_line) : lines.length;
+        selectedLines = lines.slice(start, end);
+        rangeLabel = `lines ${start + 1}–${end} of ${lines.length}`;
+      } else {
+        selectedLines = lines.slice(-Math.max(1, Number(tail) || 100));
+        rangeLabel = `last ${Math.min(Number(tail) || 100, lines.length)} lines of ${lines.length}`;
+      }
+
+      let output = selectedLines.join("\n");
       const safeMaxLen = Math.min(Math.max(Number(max_length) || 5000, 100), 30000);
-      const truncated = output.length > safeMaxLen ? output.slice(0, safeMaxLen) + "\n... (truncated)" : output;
+      if (output.length > safeMaxLen) {
+        output = output.slice(0, safeMaxLen) + "\n... (truncated)";
+      }
 
       return {
         success: true,
-        output: `Agent: ${agentInfo.name} [${agentInfo.status.toUpperCase()}]\nTask: ${agentInfo.task.slice(0, 200)}${agentInfo.task.length > 200 ? "..." : ""}\n\n--- Output (last ${Math.min(Number(tail) || 100, lines.length)} lines, max ${safeMaxLen} chars) ---\n${truncated || "(no output yet)"}`,
+        output: `Agent: ${agentInfo.name} [${agentInfo.status.toUpperCase()}]\nTask: ${agentInfo.task.slice(0, 200)}${agentInfo.task.length > 200 ? "..." : ""}\n\n--- Output (${rangeLabel}, max ${safeMaxLen} chars) ---\n${output || "(no output)"}`,
       };
     } catch {
       return {
