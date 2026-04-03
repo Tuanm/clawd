@@ -690,6 +690,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       resume: this.sessionId || undefined,
       abortController: this.abortController,
       yolo: this.config.yolo ?? false,
+      // Custom CC providers (not the built-in "claude-code") must use mcp__clawd__web_search /
+      // mcp__clawd__web_fetch — disable the CC-native equivalents for them.
+      ...(this.config.provider && this.config.provider !== "claude-code"
+        ? { disallowedTools: ["WebSearch", "WebFetch"] }
+        : {}),
     };
 
     const newSessionId = await runSDKQuery(sdkOpts, {
