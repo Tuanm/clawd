@@ -513,26 +513,65 @@ Sub-agents can spawn their own sub-agents (up to 3 levels deep). The sub-agent w
 registerTool(
   "list_agents",
   "List all spawned sub-agents and their current status. Useful to check which agents are running before using kill_agent.",
-  {},
-  [],
-  async () => {
-    const agents = Array.from(subAgents.values()).map((a) => ({
-      id: a.id,
-      name: a.name,
-      status: a.status,
-      task: a.task.slice(0, 100) + (a.task.length > 100 ? "..." : ""),
-      started_at: new Date(a.startedAt).toISOString(),
-      completed_at: a.completedAt ? new Date(a.completedAt).toISOString() : null,
-      duration_ms: a.completedAt ? a.completedAt - a.startedAt : Date.now() - a.startedAt,
-    }));
+  {
+    type: {
+      type: "string",
+      description:
+        "Filter by agent type: 'available' (registered but not completed), 'spawned' (all), or omit for all.",
+      enum: ["available", "spawned"],
+    },
+    status: {
+      type: "string",
+      description: "Filter by status: 'running', 'completed', 'failed', 'stopped'.",
+    },
+    query: {
+      type: "string",
+      description: "Search by agent name (case-insensitive substring match).",
+    },
+    limit: {
+      type: "number",
+      description: "Maximum results to return (default: 10, max: 50).",
+    },
+    offset: {
+      type: "number",
+      description: "Pagination offset (default: 0).",
+    },
+  },
+  ["limit", "offset"],
+  async ({ status, query, limit = 10, offset = 0 }) => {
+    const maxLimit = Math.min(Math.max(Number(limit) || 10, 1), 50);
+    const pageOffset = Number(offset) || 0;
+    const q = (query as string | undefined)?.toLowerCase();
+
+    let agents = Array.from(subAgents.values())
+      .filter((a) => {
+        if (q) return a.name.toLowerCase().includes(q);
+        return true;
+      })
+      .filter((a) => {
+        if (status) return a.status === status;
+        return true;
+      })
+      .map((a) => ({
+        id: a.id,
+        name: a.name,
+        status: a.status,
+        task: a.task.slice(0, 100) + (a.task.length > 100 ? "..." : ""),
+        started_at: new Date(a.startedAt).toISOString(),
+        completed_at: a.completedAt ? new Date(a.completedAt).toISOString() : null,
+        duration_ms: a.completedAt ? a.completedAt - a.startedAt : Date.now() - a.startedAt,
+      }));
+
+    const total = agents.length;
+    agents = agents.slice(pageOffset, pageOffset + maxLimit);
 
     if (agents.length === 0) {
-      return { success: true, output: "No sub-agents spawned in this session." };
+      return { success: true, output: "No sub-agents found." };
     }
 
     return {
       success: true,
-      output: JSON.stringify({ agents }, null, 2),
+      output: JSON.stringify({ total, count: agents.length, offset: pageOffset, limit: maxLimit, agents }),
     };
   },
 );
@@ -606,11 +645,15 @@ registerTool(
     },
     tail: {
       type: "number",
-      description: "Only get last N lines (optional, returns last 100 by default)",
+      description: "Only get last N lines (default: 100)",
+    },
+    max_length: {
+      type: "number",
+      description: "Truncate output to N characters (default: 5000, max: 30000) to avoid token limits",
     },
   },
-  ["agent_id"],
-  async ({ agent_id, tail = 100 }) => {
+  ["agent_id", "tail", "max_length"],
+  async ({ agent_id, tail = 100, max_length = 5000 }) => {
     const agentInfo = subAgents.get(agent_id);
     if (!agentInfo) {
       return {
@@ -629,11 +672,14 @@ registerTool(
       const { readFileSync } = require("node:fs");
       const content = readFileSync(logFile, "utf-8");
       const lines = content.split("\n");
-      const output = tail ? lines.slice(-tail).join("\n") : content;
+      const tailLines = lines.slice(-Math.max(1, Number(tail) || 100));
+      const output = tailLines.join("\n");
+      const safeMaxLen = Math.min(Math.max(Number(max_length) || 5000, 100), 30000);
+      const truncated = output.length > safeMaxLen ? output.slice(0, safeMaxLen) + "\n... (truncated)" : output;
 
       return {
         success: true,
-        output: `Agent: ${agentInfo.name} [${agentInfo.status.toUpperCase()}]\nTask: ${agentInfo.task.slice(0, 200)}${agentInfo.task.length > 200 ? "..." : ""}\n\n--- Output (last ${Math.min(tail, lines.length)} lines) ---\n${output || "(no output yet)"}`,
+        output: `Agent: ${agentInfo.name} [${agentInfo.status.toUpperCase()}]\nTask: ${agentInfo.task.slice(0, 200)}${agentInfo.task.length > 200 ? "..." : ""}\n\n--- Output (last ${Math.min(Number(tail) || 100, lines.length)} lines, max ${safeMaxLen} chars) ---\n${truncated || "(no output yet)"}`,
       };
     } catch {
       return {

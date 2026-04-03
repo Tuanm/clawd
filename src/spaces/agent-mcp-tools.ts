@@ -65,10 +65,34 @@ export const AGENT_MCP_TOOLS = [
   },
   {
     name: "list_agents",
-    description: "List spawned sub-agents and their status.",
+    description:
+      "List spawned sub-agents and their status. Supports filtering by name/query and status, and limits results to avoid large outputs.",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        type: {
+          type: "string",
+          description:
+            "Filter by agent type: 'available' (registered agents, no result), 'spawned' (agents spawned by this agent), or omit for all. Default: 'available'.",
+          enum: ["available", "spawned"],
+        },
+        status: {
+          type: "string",
+          description: "Filter by status: 'running', 'completed', 'failed', 'stopped'. Omit for all.",
+        },
+        query: {
+          type: "string",
+          description: "Search by agent name (case-insensitive substring match).",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum results to return (default: 10, max: 50).",
+        },
+        offset: {
+          type: "number",
+          description: "Pagination offset (default: 0).",
+        },
+      },
       required: [],
     },
   },
@@ -437,16 +461,39 @@ export async function executeAgentToolCall(
 
     case "list_agents": {
       const { getClaudeCodeWorker } = await import("./claude-code-worker");
+      const agentType = (args.type as string) || "available";
+      const statusFilter = args.status as string | undefined;
+      const query = (args.query as string | undefined)?.toLowerCase();
+      const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 50);
+      const offset = Number(args.offset) || 0;
+
       const spaces = _spaceManager.listSpaces(channel);
-      const agents = spaces
-        .filter((s) => s.source === "claude_code" || s.source === "spawn_agent")
-        .map((s) => ({
-          id: s.id,
-          name: s.title,
-          status: s.status,
-          result: s.result_summary?.slice(0, 200),
-        }));
-      return textResult(JSON.stringify({ ok: true, count: agents.length, agents }));
+      let agents = spaces
+        .filter((s) => {
+          if (agentType === "available") return !s.result_summary;
+          if (agentType === "spawned") return !!s.result_summary;
+          return true;
+        })
+        .filter((s) => {
+          if (query) return s.title.toLowerCase().includes(query);
+          return true;
+        })
+        .filter((s) => {
+          if (statusFilter) return s.status === statusFilter;
+          return true;
+        });
+
+      const total = agents.length;
+      agents = agents.slice(offset, offset + limit);
+
+      const results = agents.map((s) => ({
+        id: s.id,
+        name: s.title,
+        status: s.status,
+        result: s.result_summary?.slice(0, 300),
+      }));
+
+      return textResult(JSON.stringify({ ok: true, total, count: results.length, offset, limit, agents: results }));
     }
 
     case "get_agent_report": {
