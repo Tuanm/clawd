@@ -1,6 +1,6 @@
 # Claw'd Architecture Reference
 
-> Last updated: 2026-04-01
+> Last updated: 2026-04-03
 
 ---
 
@@ -140,6 +140,7 @@ flowchart TD
 6. **Agent → Browser**: WebSocket bridge to Chrome extension for remote browser automation
 7. **Agent → Sub-agents**: Spaces system spawns isolated sub-agent channels for parallel work
 8. **Agent → Remote Worker**: WebSocket MCP bridge extends agent tools to external machines (TS/Python/Java workers)
+9. **Agent → Channel MCP Tools**: Connected channel MCP server tools automatically exposed to Claude Code agents
 
 ---
 
@@ -750,11 +751,22 @@ Tool Dispatcher
     ├── Memo tools (memo_save, memo_recall, memo_delete, memo_pin, memo_unpin)
     ├── Task tools (task_add, task_list, task_complete, etc.)
     ├── Job tools (job_submit, job_status, job_wait, etc.)
-    └── Utility tools (get_environment, today, convert_to_markdown)
+    ├── Utility tools (get_environment, today, convert_to_markdown)
+    └── Channel MCP Tools (from connected MCP servers for this channel)
     │
     ▼
 HTTP Response (JSON-RPC result or error)
 ```
+
+**Channel MCP Server Integration:**
+
+Connected channel MCP server tools are automatically exposed to Claude Code agents. When a tool list request is made, the MCP server:
+1. Collects all built-in tools (web, file, custom scripts, etc.)
+2. Retrieves channel-specific MCP server tool definitions via `WorkerManager.getChannelMcpManager(channel)`
+3. Converts MCP tool definitions to agent-compatible format (supports both OpenAI and MCP formats)
+4. Appends channel MCP tools to the agent's available tool list
+
+This enables per-channel MCP server integrations where agents can access channel-specific tools.
 
 **Key MCP Tools:**
 
