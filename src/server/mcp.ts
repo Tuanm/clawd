@@ -34,6 +34,12 @@ export function setMcpScheduler(scheduler: SchedulerManager): void {
   _scheduler = scheduler;
 }
 
+// WorkerManager reference (set by index.ts after creation — used by handleAgentMcpRequest)
+let _workerManager: any = null;
+export function setMcpWorkerManager(wm: any): void {
+  _workerManager = wm;
+}
+
 /**
  * Truncate text for agent context — always active (defense in depth).
  * Applied unconditionally regardless of contextMode since this prevents
@@ -4171,6 +4177,28 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         ...webToolDefs,
         CUSTOM_SCRIPT_MCP_TOOL_DEF,
       ];
+
+      // Append connected channel MCP server tools (convert from OpenAI → MCP format)
+      try {
+        const mcpManager = _workerManager?.getChannelMcpManager(channel);
+        if (mcpManager) {
+          const mcpDefs = mcpManager.getToolDefinitions?.() ?? [];
+          for (const def of mcpDefs) {
+            if (def.type === "function" && def.function) {
+              // Convert OpenAI format → MCP format
+              allTools.push({
+                name: def.function.name,
+                description: def.function.description,
+                inputSchema: def.function.parameters,
+              });
+            } else if (def.name) {
+              // Already MCP format
+              allTools.push(def);
+            }
+          }
+        }
+      } catch {}
+
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { tools: allTools } }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -5720,6 +5748,20 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         channel: (toolArgs?.channel as string) || channel,
         agent_id: (toolArgs?.agent_id as string) || agentId,
       };
+
+      // Handle connected channel MCP server tools
+      try {
+        const mcpManager = _workerManager?.getChannelMcpManager(channel);
+        if (mcpManager) {
+          const mcpResult = await mcpManager.executeMCPTool(name, enrichedArgs);
+          if (mcpResult !== undefined) {
+            const text = typeof mcpResult === "string" ? mcpResult : JSON.stringify(mcpResult);
+            return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+        }
+      } catch {}
 
       const result = await executeToolCall(name, enrichedArgs);
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {

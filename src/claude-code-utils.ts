@@ -48,8 +48,11 @@ export function truncateToolResult(response: any): string {
 export function formatToolDescription(tool: string, input: Record<string, any>): string {
   if (!input) return tool;
   // Normalize mcp__clawd__ prefix for consistent matching
-  const normalized = tool.startsWith("mcp__clawd__") ? tool.slice("mcp__clawd__".length) : tool;
-  switch (normalized) {
+  let normalized = tool.startsWith("mcp__clawd__") ? tool.slice("mcp__clawd__".length) : tool;
+  // For external MCP tools (serverName__toolName), extract the raw tool name for matching
+  const extSep = normalized.indexOf("__");
+  const rawToolName = extSep !== -1 ? normalized.slice(extSep + 2) : normalized;
+  switch (rawToolName) {
     case "Read":
     case "file_view":
       return input.file_path || input.path || "Read file";
@@ -78,6 +81,7 @@ export function formatToolDescription(tool: string, input: Record<string, any>):
     case "web_fetch":
       return input.url || "Fetch URL";
     default:
-      return normalized;
+      // For external MCP tools, show as "server/tool" for readability
+      return extSep !== -1 ? `${normalized.slice(0, extSep)}/${rawToolName}` : normalized;
   }
 }
