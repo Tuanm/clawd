@@ -84,8 +84,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private forceMarkRetries = new Map<string, number>();
   private abortController: AbortController | null = null;
   private wasCancelledByHeartbeat = false;
-  // Re-injection state: track per-turn whether chat_send_message was called
+  // Re-injection state: track per-turn whether chat_send_message / chat_mark_processed were called
   private turnChatSent = false;
+  private turnMarkProcessed = false;
   private turnStreamText = "";
   // Memory injection: last keywords from user message for relevance scoring
   private lastKeywords: string[] = [];
@@ -492,6 +493,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     if (toolName === "mcp__clawd__chat_send_message" && !response?.error) {
       this.turnChatSent = true;
     }
+    // Track whether chat_mark_processed was called this turn
+    if (toolName === "mcp__clawd__chat_mark_processed" && !response?.error) {
+      this.turnMarkProcessed = true;
+    }
 
     broadcastAgentToolCall(channel, agentId, toolName, input, "started");
     broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`);
@@ -665,6 +670,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     // Reset per-turn re-injection state
     this.turnChatSent = false;
+    this.turnMarkProcessed = false;
     this.turnStreamText = "";
 
     const sdkOpts = {
@@ -766,6 +772,51 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // If agent replied [SILENT], produced nothing, or already sent via chat_send_message, discard
       if (reinjectionText.trim() && !reinjectionText.includes("[SILENT]") && !this.turnChatSent) {
         broadcastAgentToken(channel, agentId, reinjectionText);
+      }
+    }
+
+    // Re-injection: if agent completed without calling chat_mark_processed,
+    // send a follow-up prompt so it can mark the messages as processed.
+    // Skip for: heartbeat turns, cancelled turns, or if mark_processed was already called.
+    if (
+      !this.turnMarkProcessed &&
+      !this.wasCancelledByHeartbeat &&
+      !isHeartbeatTurn &&
+      !this.abortController?.signal.aborted
+    ) {
+      const lastTs = this.pendingTimestamps[this.pendingTimestamps.length - 1] || "";
+      const reminderPrompt =
+        `[NOTICE: You completed your turn but did not call \`mcp__clawd__chat_mark_processed\` to mark the message(s) as handled. ` +
+        `This is required so the same messages are not polled again.\n\n` +
+        `Call \`mcp__clawd__chat_mark_processed(timestamp="${lastTs}")\` now, even if empty.` +
+        `If you intentionally did not need to respond, produce only [SILENT].]`;
+
+      try {
+        await runSDKQuery(
+          {
+            ...sdkOpts,
+            prompt: reminderPrompt,
+            resume: this.sessionId || undefined,
+            abortController: new AbortController(),
+          },
+          {
+            onTextDelta: () => {},
+            onThinkingDelta: () => {},
+            onAssistantMessage: () => {},
+            onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
+            onActivity: () => {
+              this.lastActivityAt = Date.now();
+            },
+            onSessionId: (sid) => {
+              if (sid) {
+                this.sessionId = sid;
+                this.persistSessionId(sid);
+              }
+            },
+          },
+        );
+      } catch {
+        // Best-effort
       }
     }
   }

@@ -712,6 +712,25 @@ export class WorkerLoop implements AgentWorker {
               this.log("Prompt execution failed");
               await this.sendMessage(`[ERROR] ${execResult.output || "Unexpected error"}`);
             }
+
+            // Re-injection: if agent completed without calling chat_mark_processed,
+            // send a follow-up prompt so it can mark the messages as processed.
+            // Skip for: heartbeat turns, continuation prompts, cancelled turns, or if already called.
+            if (!execResult.markProcessed && !isContinuation && !this.wasCancelledByHeartbeat && !wlInterrupted) {
+              const lastTs = result.pending[result.pending.length - 1]?.ts || "";
+              const reminderPrompt =
+                `[NOTICE: You completed your turn but did not call \`chat_mark_processed\` to mark the message(s) as handled. ` +
+                `This is required so the same messages are not polled again.\n\n` +
+                `Call \`chat_mark_processed(timestamp="${lastTs}")\` now, even if empty. ` +
+                `If you intentionally did not need to respond, produce only [SILENT].]`;
+
+              try {
+                await this.executePrompt(reminderPrompt, this.sessionName);
+                this.log("Mark-processed re-injection: ok");
+              } catch (err) {
+                this.log(`Mark-processed re-injection failed: ${err}`);
+              }
+            }
           } finally {
             clearInterval(wlInterruptPoller);
             this.isProcessing = false;
@@ -1241,18 +1260,20 @@ export class WorkerLoop implements AgentWorker {
         .join("\n\n---\n\n");
     };
 
-    const seenSection = seenNotProcessed.length > 0
-      ? `
+    const seenSection =
+      seenNotProcessed.length > 0
+        ? `
 # Previously Seen (Continuing)
 ${formatMessages(seenNotProcessed)}`
-      : "";
+        : "";
 
     const lastUnseenTs = unseen[unseen.length - 1]?.ts || "";
-    const newSection = unseen.length > 0
-      ? `
+    const newSection =
+      unseen.length > 0
+        ? `
 # New Messages on Channel "${channel}"
 ${formatMessages(unseen)}`
-      : "";
+        : "";
 
     const clawdInstructions = this.loadClawdInstructions();
 
@@ -1326,9 +1347,10 @@ ${this.getActiveSubAgentReminder()}
     const clawdInstructions = this.loadClawdInstructions();
 
     // Header reflects message type
-    const sectionHeader = seenNotProcessed.length > 0 && unseen.length === 0
-      ? `# Previously Seen (Continuing)`
-      : `# New Messages on Channel "${channel}"`;
+    const sectionHeader =
+      seenNotProcessed.length > 0 && unseen.length === 0
+        ? `# Previously Seen (Continuing)`
+        : `# New Messages on Channel "${channel}"`;
 
     return `[SYSTEM] YOU ARE AGENT: "${agentId}"
 PROJECT ROOT: ${projectRoot}
@@ -1492,7 +1514,10 @@ ${this.getActiveSubAgentReminder()}
   }
 
   /** Execute a prompt using the in-process Agent */
-  private async executePrompt(prompt: string, sessionName: string): Promise<{ success: boolean; output: string }> {
+  private async executePrompt(
+    prompt: string,
+    sessionName: string,
+  ): Promise<{ success: boolean; output: string; markProcessed: boolean }> {
     const { chatApiUrl, channel, agentId, provider, model, projectRoot } = this.config;
 
     const projectHash = `${channel}_${agentId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -1547,10 +1572,11 @@ ${this.getActiveSubAgentReminder()}
             worktreeBranch: this.config.worktreeBranch,
           };
 
-          // Re-injection tracking: detect if chat_send_message was called this turn.
-          // Heartbeat prompts intentionally skip chat_send_message — suppress re-injection for them.
+          // Re-injection tracking: detect if chat_send_message / chat_mark_processed were called this turn.
+          // Heartbeat prompts intentionally skip both — suppress re-injection for them.
           const isHeartbeatTurn = prompt.startsWith("[HEARTBEAT]");
           let turnChatSent = false;
+          let turnMarkProcessed = false;
           let turnStreamText = "";
 
           const agentConfig: AgentConfig = {
@@ -1579,6 +1605,10 @@ ${this.getActiveSubAgentReminder()}
               // Track whether the agent successfully sent a message (non-prefixed name in this path)
               if (name === "chat_send_message" && result.success) {
                 turnChatSent = true;
+              }
+              // Track whether chat_mark_processed was called this turn
+              if (name === "chat_mark_processed" && result.success) {
+                turnMarkProcessed = true;
               }
             },
           };
@@ -1741,7 +1771,7 @@ ${this.getActiveSubAgentReminder()}
             if (remoteWorkerBridge) remoteWorkerBridge.destroy();
             agent = null; // Prevent double-close in finally
 
-            return { success: true, output: result.content };
+            return { success: true, output: result.content, markProcessed: turnMarkProcessed };
           } finally {
             // Ensure agent is always cleaned up, even on error
             this.activeAgent = null;
@@ -1757,7 +1787,7 @@ ${this.getActiveSubAgentReminder()}
           }
         } catch (error) {
           this.log(`Failed to run agent: ${error}`);
-          return { success: false, output: String(error) };
+          return { success: false, output: String(error), markProcessed: false };
         }
       },
     );
