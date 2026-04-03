@@ -175,6 +175,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     this.stoppedPromise = new Promise<void>((resolve) => {
       this.stoppedResolve = resolve;
     });
+    // Reset sleeping state on fresh start — prevents stale userSleeping from
+    // an old loop (e.g. after provider change + restart) blocking message polling.
+    this.sleeping = false;
+    this.userSleeping = false;
     try {
       this.restoreSessionId();
       const sessionName = `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;

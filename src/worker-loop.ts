@@ -355,6 +355,9 @@ export class WorkerLoop implements AgentWorker {
     this.heartbeatPending = false;
     this.lastHeartbeatAt = Date.now();
     this.abortController = new AbortController();
+    // Reset sleeping state on fresh start — prevents stale sleeping state from
+    // an old loop (e.g. after provider change + restart) blocking message polling.
+    this.sleeping = false;
     this.log("Starting worker loop");
     this.connectWebSocket();
     this.loop();
