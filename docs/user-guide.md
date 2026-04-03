@@ -176,15 +176,15 @@ These are automatically loaded when agents run — you can use these variables i
 
 ### Creating Your First Channel
 
-**Channels** are separate workspaces for different projects or topics. Think of them like different tabs or chat rooms.
+**Channels** are separate workspaces for different projects or topics. Think of them like different tabs or chat rooms. Channels are created simply by navigating to their URL — there's no explicit create button.
 
 1. Open Claw'd at http://localhost:3456
 2. Click the **Claw'd logo** (top-left corner) to open the channel dialog
-3. Click the **+** button to create a new channel
-4. Enter a channel name (e.g., "general", "coding", "research")
-5. Click **Create**
+3. Click the **+** button — this redirects you to the home page
+4. Type your desired channel name in the **Explore...** input field (e.g., "general", "coding", "research")
+5. Press **Enter** — you're now in your new channel!
 
-You now have a dedicated workspace for interacting with agents.
+The channel is automatically created when you navigate to it. You can switch between channels anytime by clicking the Claw'd logo.
 
 ### Adding Your First Agent
 
@@ -193,20 +193,27 @@ You now have a dedicated workspace for interacting with agents.
 3. Click **Add** to add a new agent
 4. Configure the agent:
    - **Name**: A friendly identifier (e.g., "assistant", "code-helper")
+   - **Type**: Select an agent file for predefined configuration (optional)
    - **Provider**: Select your configured provider (e.g., "copilot")
    - **Model**: Choose a model (see below)
    - **Project Path**: The folder this agent can access (optional, leave empty for no restrictions)
-   - **Heartbeat Interval**: How often the agent checks for messages (30s is a good default)
-5. Click **Save**
+   - **Heartbeat Interval**: How often the agent checks for messages (0=disabled, 30s is a good default)
+   - **Worker Token**: Token for remote worker authentication (optional)
+5. Click **Add**
 
 The header bar contains these buttons (from left to right):
-- Claw'd logo (channel selection)
-- Online agent avatars
-- Robot icon (agent settings)
-- Star icon (skills management)
-- MCP icon (MCP servers, only visible when connected)
-- Project button
-- Theme toggle
+- **Claw'd logo** — click to open the channel switcher dialog
+- **Online agent avatars** — show currently active agents
+- **Robot icon** — click to manage agents
+
+Below the messages area, the **message composer toolbar** contains additional buttons (when applicable):
+- **Search** — search message history
+- **Projects** — browse project files
+- **MCP** — manage MCP server connections (only visible when servers are connected)
+- **Star/Skills** — manage skills (only visible when agents are active)
+- **Git** — worktree/git management
+- **Tasks** — manage plans and tasks (only visible when agents are active)
+- **Theme toggle** — switch between light and dark mode
 
 #### Choosing a Model
 
@@ -304,15 +311,17 @@ Skills are reusable instruction sets that agents can activate on demand.
 
 **Creating a Skill via UI:**
 
-1. In the channel header, click the **star icon** (Skills button)
-2. Click **Add** to create a new skill
+1. Click the **Skills** button in the toolbar (star icon)
+2. Click **New Skill** to create a new skill
 3. Fill in:
    - **Name**: `code-review`
    - **Description**: `Review code for quality and security`
    - **Triggers**: `review, check, audit`
+   - **Argument Hint**: `[optional argument hint]`
    - **Content**: Your skill instructions
-4. Choose scope: **Project** (this project only) or **Global** (all projects)
-5. Click **Save**
+4. Click **Save**
+
+> **Note:** Skills created via the UI are project-scoped by default.
 
 **SKILL.md Format:**
 
@@ -375,30 +384,22 @@ MCP (Model Context Protocol) servers provide external tools to agents. Examples:
 
 ### Adding MCP Servers
 
-1. In the channel header, click the **MCP icon** (two arrows symbol) to open MCP settings
-2. You'll see a list of available servers from the catalog
-3. Click **Connect** next to the server you want to add
+1. Click the **MCP Servers** button (two-arrow icon) in the toolbar to open MCP settings
+2. You'll see a list of installed servers and available servers from the catalog
+3. Click on a catalog server to install it, or click **Connect** on an installed server
 4. For servers requiring authentication (like GitHub), you'll be prompted to authorize
 
-**Note:** The MCP button only appears in the header when you have MCP servers connected or available.
+**Note:** The MCP button only appears in the toolbar when MCP servers are available or connected.
 
-### MCP Catalog
+### Available MCP Servers
 
-Available servers from the catalog:
+The available servers come from the MCP catalog and vary by installation. Common servers include:
 
-| Server | Description | Auth Required |
-|--------|-------------|---------------|
-| GitHub | Repository and issue management | Yes (OAuth/PAT) |
-| Filesystem | Access local files | No |
-| PostgreSQL | Database queries | No |
-| Sentry | Error tracking | Yes (OAuth) |
-| Notion | Workspace content | Yes (OAuth) |
-| Slack | Messaging | Yes (OAuth) |
-| Web Fetch | Page content extraction | No |
-| Puppeteer | Browser automation | No |
-| Atlassian | Jira/Confluence | Yes (OAuth) |
+- **GitHub** — Repository and issue management
+- **Filesystem** — Access local files
+- **And more** — The catalog is regularly updated
 
-For more servers, visit the [MCP Server Catalog](https://github.com/modelcontextprotocol/servers).
+To see all available servers, open the MCP dialog and browse the catalog section.
 
 ### Remote Workers (Advanced)
 
