@@ -84,6 +84,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private forceMarkRetries = new Map<string, number>();
   private abortController: AbortController | null = null;
   private wasCancelledByHeartbeat = false;
+  // Track whether the interrupt poller detected new messages this cycle.
+  // Used to skip re-injections when interrupted (mirrors WorkerLoop's !wlInterrupted guard).
+  private interruptDetected = false;
   // Re-injection state: track per-turn whether chat_send_message / chat_mark_processed were called
   private turnChatSent = false;
   private turnMarkProcessed = false;
@@ -321,20 +324,35 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           let interrupted = false;
           const interruptMessageMap = new Map<string, any>();
           const pendingTimestampSet = new Set(this.pendingTimestamps);
+          let interruptPollCount = 0;
+          this.interruptDetected = false;
+          this.wasCancelledByHeartbeat = false;
           const interruptPoller = setInterval(() => {
             if (!this.processing) return;
+            interruptPollCount++;
             try {
               const newPending = this.pollForMessages();
               const newMessages = newPending.filter(
                 (m: any) => !pendingTimestampSet.has(m.ts) && !interruptMessageMap.has(m.ts),
               );
+              // Debug: log every 5th poll to confirm poller is running (gated to avoid prod noise)
+              if (this.config.debug && interruptPollCount % 5 === 0) {
+                console.log(
+                  `[claude-code-main] Interrupt poll #${interruptPollCount}: ${newPending.length} pending, ${newMessages.length} new, ac=${this.abortController ? "set" : "null"}`,
+                );
+              }
               if (newMessages.length > 0) {
                 interrupted = true;
+                this.interruptDetected = true;
                 for (const m of newMessages) interruptMessageMap.set(m.ts, m);
-                console.log(`[claude-code-main] Interrupted by ${newMessages.length} new message(s)`);
+                console.log(
+                  `[claude-code-main] Interrupted by ${newMessages.length} new message(s) (poll #${interruptPollCount}, ac.aborted=${this.abortController?.signal.aborted})`,
+                );
                 try {
                   this.abortController?.abort();
-                } catch {}
+                } catch (abortErr) {
+                  console.error(`[claude-code-main] AbortController.abort() threw: ${abortErr}`);
+                }
               }
             } catch (e) {
               // Polling errors during interrupt detection are non-fatal
@@ -342,7 +360,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             }
           }, 2000);
 
-          this.wasCancelledByHeartbeat = false;
           try {
             await this.processMessages(pending, unseen, seenNotProcessed);
           } catch (err: any) {
@@ -412,6 +429,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
               // Note: No nested interrupt poller for the resume turn — intentional to prevent
               // infinite nesting. Third corrections queue until the next while iteration.
               this.wasCancelledByHeartbeat = false;
+              this.interruptDetected = false; // Reset so re-injections can fire on the resume turn
               try {
                 const interruptPrompt = this.formatInterruptPrompt(pending, uniqueInterruptMsgs);
                 await this.processMessagesWithPrompt(interruptPrompt, uniqueInterruptMsgs);
@@ -736,7 +754,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       this.turnStreamText.trim().length > 100 &&
       !this.wasCancelledByHeartbeat &&
       !isHeartbeatTurn &&
-      !this.abortController?.signal.aborted
+      !this.abortController?.signal.aborted &&
+      !this.interruptDetected
     ) {
       const reinjectionPrompt =
         "[NOTICE: Your previous turn produced output but did not call `mcp__clawd__chat_send_message` to deliver it — the human cannot see what you wrote.\n\n" +
@@ -783,11 +802,13 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // Re-injection: if agent completed without calling chat_mark_processed,
     // send a follow-up prompt so it can mark the messages as processed.
     // Skip for: heartbeat turns, cancelled turns, or if mark_processed was already called.
+    // Dual guard: signal.aborted catches cancelProcessing/setSleeping; interruptDetected catches poller-detected interrupts
     if (
       !this.turnMarkProcessed &&
       !this.wasCancelledByHeartbeat &&
       !isHeartbeatTurn &&
-      !this.abortController?.signal.aborted
+      !this.abortController?.signal.aborted &&
+      !this.interruptDetected
     ) {
       const lastTs = this.pendingTimestamps[this.pendingTimestamps.length - 1] || "";
       const reminderPrompt =
@@ -796,13 +817,16 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         `Call \`mcp__clawd__chat_mark_processed(timestamp="${lastTs}")\` now, even if empty.` +
         `If you intentionally did not need to respond, produce only [SILENT].]`;
 
+      // Use a tracked AbortController so the interrupt poller can abort this re-injection too.
+      const markProcessedAbort = new AbortController();
+      this.abortController = markProcessedAbort;
       try {
         await runSDKQuery(
           {
             ...sdkOpts,
             prompt: reminderPrompt,
             resume: this.sessionId || undefined,
-            abortController: new AbortController(),
+            abortController: markProcessedAbort,
           },
           {
             onTextDelta: () => {},
@@ -820,8 +844,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             },
           },
         );
-      } catch {
-        // Best-effort
+      } catch (err: any) {
+        // Best-effort — only log non-abort errors
+        if (!markProcessedAbort.signal.aborted) {
+          console.error(`[cc-main-worker] Mark-processed re-injection failed: ${err?.message || err}`);
+        }
       }
     }
   }
