@@ -746,7 +746,7 @@ Tool Dispatcher
     ├── Chat tools (chat_send_message, chat_poll_and_ack, etc.)
     ├── File tools (read, write, edit)
     ├── Agent tools (spawn_agent, list_agents, get_agent_logs, stop_agent)
-    ├── Memory tools (chat_history_search, memory_summary)
+    ├── Memory tools (chat_search, memory_summary)
     ├── Memo tools (memo_save, memo_recall, memo_delete, memo_pin, memo_unpin)
     ├── Task tools (task_add, task_list, task_complete, etc.)
     ├── Job tools (job_submit, job_status, job_wait, etc.)
@@ -766,7 +766,7 @@ HTTP Response (JSON-RPC result or error)
 | `list_agents` | List running sub-agents |
 | `get_agent_logs` | Get sub-agent output logs (tail optional) |
 | `stop_agent` | Stop a running sub-agent |
-| `chat_history_search` | Search conversation history via FTS5 |
+| `chat_search` | Search conversation history via FTS5 |
 | `memory_summary` | Get session summary with key topics |
 | `memo_save/recall/delete` | Long-term memory CRUD |
 | `memo_pin/unpin` | Pin memories for always-loading |

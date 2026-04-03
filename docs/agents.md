@@ -257,7 +257,7 @@ Agents have access to long-term memory via these tools:
 | `memo_delete` | Delete a memory by ID | `id` |
 | `memo_pin` | Pin memory for always-loading | `id` |
 | `memo_unpin` | Unpin previously pinned memory | `id` |
-| `chat_history_search` | Search conversation history | `keywords`, `start_time`, `end_time`, `role` |
+| `chat_search` | Search conversation history | `keywords`, `start_time`, `end_time`, `role` |
 | `memory_summary` | Get session summary | `session_id` |
 
 **Categories:** `fact`, `preference`, `decision`, `lesson`, `correction`

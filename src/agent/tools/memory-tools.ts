@@ -1,18 +1,18 @@
 /**
- * Memory Tools — chat_history_search, memory_summary
+ * Memory Tools — chat_search, memory_summary
  *
  * Registers memory/history search tools into the shared tool registry.
  */
 
-import { registerTool } from "./registry";
+import { getContextChannel, registerTool } from "./registry";
 
 // ============================================================================
 // Tool: Memory Search
 // ============================================================================
 
 registerTool(
-  "chat_history_search",
-  "Search past conversation history. Filter by time range, keywords, or role.",
+  "chat_search",
+  "Search past conversation history in the current channel. Filter by time range, keywords, or role.",
   {
     keywords: {
       type: "array",
@@ -48,12 +48,15 @@ registerTool(
       const { getMemoryManager } = await import("../memory/memory");
       const memory = getMemoryManager();
 
+      const channel = getContextChannel();
       const results = memory.search({
         keywords: args.keywords,
         startTime: args.start_time,
         endTime: args.end_time,
         role: args.role,
         sessionId: args.session_id,
+        // Scope to current channel unless a specific session_id is provided
+        sessionNamePrefix: !args.session_id && channel ? `${channel}-` : undefined,
         limit: args.limit || 20,
       });
 

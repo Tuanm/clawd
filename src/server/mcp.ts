@@ -3890,8 +3890,9 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       // Memory tools
       const memoryToolDefs = [
         {
-          name: "chat_history_search",
-          description: "Search past conversation history. Filter by time range, keywords, or role.",
+          name: "chat_search",
+          description:
+            "Search past conversation history in the current channel. Filter by time range, keywords, or role.",
           inputSchema: {
             type: "object",
             properties: {
@@ -5213,14 +5214,14 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       }
 
       // Handle memory tools
-      if (name === "chat_history_search" || name === "memory_summary") {
+      if (name === "chat_search" || name === "memory_summary") {
         try {
           const { getMemoryManager } = await import("../agent/memory/memory");
           const memory = getMemoryManager();
           const args = toolArgs || {};
           let text = "";
           switch (name) {
-            case "chat_history_search": {
+            case "chat_search": {
               // Auto-scope to current channel unless a specific session_id is provided.
               // Session names follow the pattern "{channel}-{agentId}", so filtering
               // by "{channel}-" prefix limits results to the current channel's history.
