@@ -8,7 +8,7 @@
     <meta name="theme-color" content="#f9f7f3" />
     <!-- FOUC prevention: mutates the above meta tag before first paint. -->
     <script>
-      (function() {
+      (() => {
         var stored;
         try { stored = localStorage.getItem("clawd-theme"); } catch (e) {}
         var t = (stored === "light" || stored === "dark") ? stored : "light";
@@ -17,8 +17,8 @@
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute("content", t === "dark" ? "#0d1117" : "#f9f7f3");
         document.documentElement.classList.add("no-transition");
-        requestAnimationFrame(function() {
-          requestAnimationFrame(function() {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
             document.documentElement.classList.remove("no-transition");
           });
         });

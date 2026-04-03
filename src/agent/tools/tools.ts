@@ -16,63 +16,60 @@ import "./web-tools";
 import "./git-tools";
 import "./chat-tools";
 
+// Re-export additional agent-context utilities not in registry
+export { runWithAgentContext } from "../utils/agent-context";
+// Re-export sandbox utilities not in registry
+export { enableSandbox, setSandboxProjectRoot } from "../utils/sandbox";
+// Re-export sub-agent lifecycle helpers from chat-tools
+export { terminateAllSubAgents, waitForSubAgents } from "./chat-tools";
 // ============================================================================
 // Re-exports from registry (shared state + utilities)
 // ============================================================================
 export {
-  // Tool registry state
-  tools,
-  toolDefinitions,
-  registerTool,
-  // Types
-  type ToolResult,
-  type ToolHandler,
-  // Project directories
-  setProjectHash,
-  getProjectHash,
-  getProjectDir,
-  getProjectAgentsDir,
-  getProjectJobsDir,
-  // Chat API state
-  setCurrentAgentId,
-  setCurrentChannel,
-  setChatApiUrl,
-  // Shell helpers
-  IS_WINDOWS,
-  getShellArgs,
-  getSafeWindowsShell,
-  stripHtmlTagBlocks,
-  // Fetch helper
-  toolFetch,
-  // Utilities
-  normalizeToolArgs,
-  // Path helpers
-  resolveSafePath,
-  validatePath,
-  isPathAllowed,
-  isSensitiveFile,
+  // Sandbox helpers (re-exported from sandbox)
+  checkSandboxBeforeExec,
   // Context helpers (re-exported from agent-context)
   getAgentContext,
   getContextAgentId,
   getContextChannel,
   getContextConfigRoot,
-  // Sandbox helpers (re-exported from sandbox)
-  checkSandboxBeforeExec,
+  getProjectAgentsDir,
+  getProjectDir,
+  getProjectHash,
+  getProjectJobsDir,
+  getSafeWindowsShell,
   getSandboxProjectRoot,
+  getShellArgs,
+  // Shell helpers
+  IS_WINDOWS,
+  isPathAllowed,
   isSandboxEnabled,
   isSandboxReady,
+  isSensitiveFile,
+  // Utilities
+  normalizeToolArgs,
+  registerTool,
+  // Path helpers
+  resolveSafePath,
   runInSandbox,
+  setChatApiUrl,
+  // Chat API state
+  setCurrentAgentId,
+  setCurrentChannel,
+  // Project directories
+  setProjectHash,
+  stripHtmlTagBlocks,
+  type ToolHandler,
+  // Types
+  type ToolResult,
+  toolDefinitions,
+  // Fetch helper
+  toolFetch,
+  // Tool registry state
+  tools,
+  validatePath,
   wrapCommandForSandbox,
 } from "./registry";
-
-// Re-export additional agent-context utilities not in registry
-export { runWithAgentContext } from "../utils/agent-context";
-
-// Re-export sandbox utilities not in registry
-export { enableSandbox, setSandboxProjectRoot } from "../utils/sandbox";
-
-// Re-export sub-agent lifecycle helpers from chat-tools
-export { waitForSubAgents, terminateAllSubAgents } from "./chat-tools";
 
 // ============================================================================
 // Mark read-only tools for parallel execution (post-registration)
@@ -110,7 +107,7 @@ for (const def of _td) {
 
 import type { ToolCall } from "../api/client";
 import { getHookManager } from "../hooks/manager";
-import { checkSandboxBeforeExec, normalizeToolArgs, tools, type ToolResult } from "./registry";
+import { checkSandboxBeforeExec, normalizeToolArgs, type ToolResult, tools } from "./registry";
 
 export async function executeTool(toolCall: ToolCall): Promise<ToolResult> {
   const sandboxErr = checkSandboxBeforeExec();

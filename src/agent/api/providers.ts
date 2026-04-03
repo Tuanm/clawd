@@ -122,6 +122,23 @@ export interface MCPServerConfig {
   };
 }
 
+/**
+ * Claude Desktop / CC SDK MCP server entry format.
+ * Used as a read-only alias key `mcpServers` in ~/.clawd/config.json.
+ * At load time this is merged into mcp_servers["*"] (existing entries win).
+ */
+export interface CCMcpServerConfig {
+  /** stdio command */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  /** HTTP url */
+  url?: string;
+  headers?: Record<string, string>;
+  /** CC SDK sets type:"http" for HTTP servers */
+  type?: "http" | "stdio";
+}
+
 export interface Config {
   /**
    * Provider configurations.
@@ -145,4 +162,11 @@ export interface Config {
    * { "channel-name": { "server-name": { command, args, env } } }
    */
   mcp_servers?: Record<string, Record<string, MCPServerConfig>>;
+  /**
+   * CC-format alias (read-only at load time).
+   * Users can paste a Claude Desktop / CC `mcpServers` block here directly.
+   * At load time it is merged into mcp_servers["*"] — existing named entries win.
+   * All writes use mcp_servers; this key is never written back to disk.
+   */
+  mcpServers?: Record<string, CCMcpServerConfig>;
 }

@@ -9,8 +9,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { gzipSync } from "node:zlib";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 
 const CLI_PATH = join(import.meta.dir, "..", "node_modules", "@anthropic-ai", "claude-agent-sdk", "cli.js");
 const TS_OUTPUT = join(import.meta.dir, "..", "src", "embedded-cli.ts");

@@ -71,13 +71,13 @@ function validateMcpFilePath(inputPath: string, projectRoot: string): ValidateMc
   // which collapses the boundary check (root+sep === root → every path passes startsWith).
   // On Windows, path.parse("C:\\").root === "C:\\" catches drive roots.
   const { root: fsRoot } = parsePath(projectRoot);
-  const stripped = projectRoot.replace(/[\/\\]+$/, "");
-  if (stripped === "" || stripped === fsRoot.replace(/[\/\\]+$/, "")) {
+  const stripped = projectRoot.replace(/[/\\]+$/, "");
+  if (stripped === "" || stripped === fsRoot.replace(/[/\\]+$/, "")) {
     return { error: "Invalid project root: filesystem root is not allowed." };
   }
 
   // Normalize projectRoot to strip any trailing separator (prevents boundary check edge cases)
-  const root = projectRoot.replace(/[\/\\]+$/, "");
+  const root = projectRoot.replace(/[/\\]+$/, "");
 
   // 1. Resolve absolute path (relative → under projectRoot)
   const abs = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);

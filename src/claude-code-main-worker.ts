@@ -6,12 +6,19 @@
  * communicate via Claw'd's MCP tools (chat_send_message, chat_mark_processed, etc.).
  */
 
-import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "./agent/agents/loader";
+import { type AgentMemory, extractKeywords, getAgentMemoryStore } from "./agent/memory/agent-memory";
 import { buildDynamicSystemPrompt, type PromptContext } from "./agent/prompt/builder";
+import { initMemorySession, saveToMemory } from "./claude-code-memory";
+import { runSDKQuery } from "./claude-code-sdk";
+import { formatToolDescription, truncateToolResult } from "./claude-code-utils";
+import { loadOAuthToken } from "./mcp-oauth";
+import { db, getAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
+import { getPendingMessages } from "./server/routes/messages";
 import {
   broadcastAgentStreaming,
   broadcastAgentToken,
@@ -19,13 +26,6 @@ import {
   broadcastMessageSeen,
   broadcastUpdate,
 } from "./server/websocket";
-import { db, getAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
-import { getPendingMessages } from "./server/routes/messages";
-import { truncateToolResult, formatToolDescription } from "./claude-code-utils";
-import { initMemorySession, saveToMemory } from "./claude-code-memory";
-import { getAgentMemoryStore, extractKeywords, type AgentMemory } from "./agent/memory/agent-memory";
-import { runSDKQuery } from "./claude-code-sdk";
-import { loadOAuthToken } from "./mcp-oauth";
 import type { AgentHealthSnapshot, AgentWorker } from "./worker-loop";
 
 // ============================================================================
@@ -1191,7 +1191,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           console.warn(
             `[claude-code-main-worker] MCP server "${name}" uses SSE transport (not supported by Claude Code SDK), skipping`,
           );
-          continue;
         } else if (cfg.transport === "http" || cfg.type === "http") {
           if (!cfg.url) {
             console.warn(`[claude-code-main-worker] MCP server "${name}" missing url, skipping`);

@@ -24,8 +24,8 @@ import { formatToolResult, parseToolArguments } from "./core/loop";
 import { destroyHooks, initializeHooks } from "./hooks/manager";
 import { MCPManager } from "./mcp/client";
 import { estimateMessagesTokens, estimateTokens } from "./memory/memory";
-import { type ContextModePluginResult, createContextModePlugin } from "./plugins/context-mode-plugin";
 import { BrowserPlugin } from "./plugins/browser-plugin";
+import { type ContextModePluginResult, createContextModePlugin } from "./plugins/context-mode-plugin";
 import { CustomToolPlugin } from "./plugins/custom-tool-plugin";
 import { type Plugin, PluginManager } from "./plugins/manager";
 import { createStatePersistencePlugin } from "./plugins/state-persistence-plugin";
@@ -34,6 +34,13 @@ import { WorkspaceToolPlugin } from "./plugins/workspace-plugin";
 import { buildDynamicSystemPrompt, type PromptContext } from "./prompt/builder";
 import { type Checkpoint, CheckpointManager } from "./session/checkpoint";
 import { getSessionManager, type Session, type SessionManager } from "./session/manager";
+import {
+  compressMessage,
+  fitToBudget,
+  reorderForAttention,
+  repairRoleAlternation,
+  scoreMessages,
+} from "./session/message-scoring";
 import { getSkillManager } from "./skills/manager";
 import { type ToolPlugin, ToolPluginManager } from "./tools/plugin";
 import { executeTools, getSandboxProjectRoot, type ToolResult, toolDefinitions } from "./tools/tools";
@@ -41,13 +48,6 @@ import { getAgentContext, getContextProjectRoot } from "./utils/agent-context";
 import { ContextTracker } from "./utils/context-tracker";
 import { isDebugEnabled } from "./utils/debug";
 import { smartTruncate } from "./utils/smart-truncation";
-import {
-  scoreMessages,
-  fitToBudget,
-  compressMessage,
-  repairRoleAlternation,
-  reorderForAttention,
-} from "./session/message-scoring";
 
 // ============================================================================
 // Colored Logging Helpers

@@ -8,20 +8,20 @@
  * - Session ID extraction from system init / result messages
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
 import type {
-  Options,
   HookCallback,
   HookCallbackMatcher,
   HookInput,
   HookJSONOutput,
   McpServerConfig,
+  Options,
   SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
-import { gunzipSync } from "node:zlib";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import { getSafeEnvVars } from "./agent/utils/sandbox";
 
 // ============================================================================
@@ -397,7 +397,7 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
   };
 
   // Try with resume first; if session is stale, retry without it
-  let options: Options = opts.resume ? { ...baseOptions, resume: opts.resume } : baseOptions;
+  const options: Options = opts.resume ? { ...baseOptions, resume: opts.resume } : baseOptions;
 
   const runStream = async (runOptions: Options): Promise<void> => {
     const stream = query({ prompt: opts.prompt, options: runOptions });

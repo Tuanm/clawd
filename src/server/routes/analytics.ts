@@ -4,6 +4,7 @@
  * Handles all /api/analytics/copilot/* endpoints.
  */
 
+import { keyPool } from "../../agent/api/key-pool";
 import {
   type CallsQueryOptions,
   queryCalls,
@@ -14,7 +15,6 @@ import {
   queryRecentStats,
   querySummary,
 } from "../../analytics";
-import { keyPool } from "../../agent/api/key-pool";
 import { json, numParam } from "../http-helpers";
 
 export function handleAnalyticsRoutes(req: Request, url: URL, path: string): Response | null {

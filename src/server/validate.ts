@@ -7,7 +7,7 @@
  *   // v.data is typed
  */
 
-import { type ZodSchema } from "zod";
+import type { ZodSchema } from "zod";
 
 export type ValidationResult<T> = { ok: true; data: T } | { ok: false; error: Response };
 

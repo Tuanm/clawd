@@ -10,7 +10,7 @@
  * Usage: bun run scripts/zip-extension.ts
  */
 
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import JSZip from "jszip";
 

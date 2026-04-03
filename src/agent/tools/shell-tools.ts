@@ -7,11 +7,11 @@
 
 import { spawn } from "node:child_process";
 import {
-  IS_WINDOWS,
   getContextAgentId,
   getSafeWindowsShell,
   getSandboxProjectRoot,
   getShellArgs,
+  IS_WINDOWS,
   isSandboxEnabled,
   isSandboxReady,
   registerTool,
@@ -21,6 +21,7 @@ import {
   validatePath,
   wrapCommandForSandbox,
 } from "./registry";
+
 // ============================================================================
 // Tool: Today
 // ============================================================================

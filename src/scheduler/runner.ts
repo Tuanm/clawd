@@ -2,17 +2,17 @@
  * Scheduler Runner — executes scheduled jobs, reminders, and tool calls
  */
 
-import type { AppConfig } from "../config";
 import { resolveProviderBaseType } from "../agent/api/provider-config";
+import type { AppConfig } from "../config";
+import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots } from "../server/mcp";
 import {
   ClaudeCodeSpaceWorker,
   registerClaudeCodeWorker,
   unregisterClaudeCodeWorker,
 } from "../spaces/claude-code-worker";
-import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots } from "../server/mcp";
-import { timedFetch } from "../utils/timed-fetch";
 import type { SpaceManager } from "../spaces/manager";
 import type { SpaceWorkerManager } from "../spaces/worker";
+import { timedFetch } from "../utils/timed-fetch";
 import type { ScheduledJob } from "./db";
 import type { SchedulerManager } from "./manager";
 

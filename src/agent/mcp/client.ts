@@ -6,6 +6,7 @@
 import { EventEmitter } from "node:events";
 import { type Subprocess, spawn } from "bun";
 import { isDebugEnabled } from "../utils/debug";
+import { MCPHealthMonitor } from "./health-monitor";
 
 // ============================================================================
 // Types
@@ -81,6 +82,7 @@ export interface IMCPConnection extends EventEmitter {
   disconnect(): Promise<void>;
   request(method: string, params?: any): Promise<any>;
   callTool(name: string, args: Record<string, any>): Promise<any>;
+  refreshCapabilities?(): Promise<void>;
 }
 
 // ============================================================================
@@ -117,6 +119,11 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
   // ============================================================================
 
   async connect(): Promise<void> {
+    // Kill any stale subprocess before spawning a replacement
+    if (this.process) {
+      this.process.kill();
+      this.process = null;
+    }
     this.process = spawn({
       cmd: [this.command, ...this.args],
       env: { ...process.env, ...this.env },
@@ -170,7 +177,26 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
         this.buffer += decoder.decode(value, { stream: true });
         this.processBuffer();
       }
+      // stdout EOF — subprocess died unexpectedly
+      if (this.connected) {
+        this.connected = false;
+        // Drain pending requests so callers don't hang
+        for (const [, pending] of this.pendingRequests) {
+          pending.reject(new Error("Connection closed"));
+        }
+        this.pendingRequests.clear();
+        this.emit("disconnected");
+      }
     } catch (error) {
+      if (this.connected) {
+        this.connected = false;
+        // Drain pending requests so callers don't hang (same as EOF path)
+        for (const [, pending] of this.pendingRequests) {
+          pending.reject(new Error("Connection closed"));
+        }
+        this.pendingRequests.clear();
+        this.emit("disconnected");
+      }
       this.emit("error", error);
     }
   }
@@ -339,8 +365,10 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
       this.process.kill();
       this.process = null;
     }
-    this.connected = false;
-    this.emit("disconnected");
+    if (this.connected) {
+      this.connected = false;
+      this.emit("disconnected");
+    }
   }
 }
 
@@ -417,7 +445,7 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     await this.notify("notifications/initialized", {});
   }
 
-  private async refreshCapabilities(): Promise<void> {
+  async refreshCapabilities(): Promise<void> {
     // Fetch tools — mandatory; re-throws on failure so connect() surfaces the error
     const toolsResult = await this.request("tools/list", {});
     this.tools = toolsResult.tools || [];
@@ -476,6 +504,14 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
         body: JSON.stringify(request),
         signal: ctrl.signal,
       });
+    } catch (err: any) {
+      clearTimeout(timer);
+      // Sanitize URL from error to avoid leaking credentials/internal addresses
+      const safeMsg = `MCP HTTP request failed: ${err?.message?.split("http")[0]?.trim() || "network error"}`;
+      const safeErr = new Error(safeMsg);
+      // Emit error so health monitor can detect dead HTTP servers
+      this.emit("error", safeErr);
+      throw safeErr;
     } finally {
       clearTimeout(timer);
     }
@@ -491,7 +527,10 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
       } catch {
         /* ignore parse errors */
       }
-      throw new Error(`HTTP error: ${response.status}${detail}`);
+      const errMsg = `HTTP error: ${response.status}${detail}`;
+      // Emit error event so health monitor can detect persistent failures (same message as thrown)
+      this.emit("error", new Error(errMsg));
+      throw new Error(errMsg);
     }
 
     // Track session ID from server
@@ -589,6 +628,14 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     return result.content;
   }
 
+  /**
+   * Update the Bearer token used for all subsequent requests.
+   * Called after a proactive OAuth refresh so the live connection picks up the new token.
+   */
+  setAuthToken(token: string): void {
+    this.token = token;
+  }
+
   async disconnect(): Promise<void> {
     // Send session termination if we have a session
     if (this.sessionId) {
@@ -603,9 +650,11 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
         // Best-effort session cleanup
       }
     }
-    this.connected = false;
     this.sessionId = undefined;
-    this.emit("disconnected");
+    if (this.connected) {
+      this.connected = false;
+      this.emit("disconnected");
+    }
   }
 }
 
@@ -615,6 +664,8 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
 
 export class MCPManager extends EventEmitter {
   private connections = new Map<string, IMCPConnection>();
+  private configs = new Map<string, MCPServerConfig>();
+  private monitor = new MCPHealthMonitor();
 
   // ============================================================================
   // Add Server
@@ -629,11 +680,41 @@ export class MCPManager extends EventEmitter {
     const isHttp = config.transport === "http" || (config.url && !config.command);
     const connection: IMCPConnection = isHttp ? new MCPHttpConnection(config) : new MCPStdioConnection(config);
 
-    connection.on("error", (error) => this.emit("server:error", config.name, error));
+    // Store config early so monitor reconnects have config available
+    this.configs.set(config.name, config);
+
+    // Attach monitor BEFORE connect() — catches initial disconnected events
+    this.monitor.watch(config.name, connection, (name) => this.handleDead(name));
+
+    connection.on("error", (error) => {
+      this.emit("server:error", config.name, error);
+      // Bridge HTTP errors into the health monitor (no disconnected event for HTTP)
+      if (isHttp) this.monitor.handleError(config.name, error);
+    });
     connection.on("connected", () => this.emit("server:connected", config.name));
     connection.on("disconnected", () => this.emit("server:disconnected", config.name));
 
-    await connection.connect();
+    // Handle server-push tool/resource list changes
+    connection.on("notification", (msg: any) => {
+      const method = msg?.method ?? "";
+      if (method === "notifications/tools/list_changed" || method === "notifications/resources/list_changed") {
+        connection
+          .refreshCapabilities?.()
+          .then(() => {
+            this.emit("tools:changed", config.name);
+          })
+          .catch(() => {});
+      }
+    });
+
+    try {
+      await connection.connect();
+    } catch (err) {
+      // Clean up on initial connect failure so monitor doesn't linger
+      this.configs.delete(config.name);
+      this.monitor.stop(config.name);
+      throw err;
+    }
     this.connections.set(config.name, connection);
   }
 
@@ -642,10 +723,48 @@ export class MCPManager extends EventEmitter {
   // ============================================================================
 
   async removeServer(name: string): Promise<void> {
+    // Stop monitor before disconnect to prevent spurious reconnect attempts
+    this.monitor.stop(name);
     const connection = this.connections.get(name);
-    if (connection) {
-      await connection.disconnect();
+    try {
+      if (connection) {
+        await connection.disconnect();
+      }
+    } finally {
       this.connections.delete(name);
+      this.configs.delete(name);
+    }
+  }
+
+  // ============================================================================
+  // Handle Dead Server
+  // ============================================================================
+
+  /**
+   * Called by the health monitor when a server has exhausted reconnect attempts.
+   * @internal — invoked via the onDead callback registered in addServer(); not for general use.
+   */
+  handleDead(name: string): void {
+    const wasKnown = this.connections.has(name) || this.configs.has(name);
+    this.connections.delete(name);
+    this.configs.delete(name);
+    if (wasKnown) {
+      this.emit("server:dead", name);
+    }
+  }
+
+  getConfig(name: string): MCPServerConfig | undefined {
+    return this.configs.get(name);
+  }
+
+  /**
+   * Update the auth token on a live HTTP connection after an OAuth refresh.
+   * No-op if the server isn't HTTP or doesn't support token update.
+   */
+  setServerToken(name: string, token: string): void {
+    const conn = this.connections.get(name);
+    if (conn && typeof (conn as any).setAuthToken === "function") {
+      (conn as MCPHttpConnection).setAuthToken(token);
     }
   }
 
@@ -653,7 +772,7 @@ export class MCPManager extends EventEmitter {
   // Add Connection (upsert — for remote workers / external connections)
   // ============================================================================
 
-  async addConnection(connection: IMCPConnection): Promise<void> {
+  async addConnection(connection: IMCPConnection, config?: MCPServerConfig): Promise<void> {
     const existing = this.connections.get(connection.name);
     if (existing) {
       try {
@@ -666,6 +785,9 @@ export class MCPManager extends EventEmitter {
     connection.on("disconnected", () => this.emit("server:disconnected", connection.name));
     await connection.connect();
     this.connections.set(connection.name, connection);
+    if (config) {
+      this.configs.set(connection.name, config);
+    }
   }
 
   // ============================================================================
@@ -680,6 +802,7 @@ export class MCPManager extends EventEmitter {
       } catch {}
       this.connections.delete(name);
     }
+    this.configs.delete(name);
   }
 
   // ============================================================================
@@ -859,9 +982,24 @@ export class MCPManager extends EventEmitter {
   // ============================================================================
 
   async disconnectAll(): Promise<void> {
+    this.monitor.stopAll();
     for (const [_name, connection] of this.connections) {
       await connection.disconnect();
     }
     this.connections.clear();
+    this.configs.clear();
+  }
+
+  /**
+   * Per-server health status including reconnect attempt counters.
+   * Extends getServerStatuses() for the health API endpoint.
+   */
+  getHealthStatus(): Array<{ name: string; connected: boolean; tools: number; reconnectAttempts: number }> {
+    return [...this.connections.entries()].map(([name, conn]) => ({
+      name,
+      connected: conn.connected,
+      tools: conn.tools.length,
+      reconnectAttempts: this.monitor.getAttempts(name),
+    }));
   }
 }
