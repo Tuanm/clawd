@@ -179,23 +179,34 @@ These are automatically loaded when agents run — you can use these variables i
 **Channels** are separate workspaces for different projects or topics. Think of them like different tabs or chat rooms.
 
 1. Open Claw'd at http://localhost:3456
-2. Click **New Channel** or the **+** button
-3. Enter a name (e.g., "general", "coding", "research")
-4. Click **Create**
+2. Click the **Claw'd logo** (top-left corner) to open the channel dialog
+3. Click the **+** button to create a new channel
+4. Enter a channel name (e.g., "general", "coding", "research")
+5. Click **Create**
 
 You now have a dedicated workspace for interacting with agents.
 
 ### Adding Your First Agent
 
-1. In your channel, click the **Agents** button or agent avatar
-2. Click **Add Agent**
-3. Configure:
+1. In your channel, look at the **header bar** at the top
+2. Click the **robot icon** (the connection indicator with Copilot logo)
+3. Click **Add** to add a new agent
+4. Configure the agent:
    - **Name**: A friendly identifier (e.g., "assistant", "code-helper")
    - **Provider**: Select your configured provider (e.g., "copilot")
    - **Model**: Choose a model (see below)
    - **Project Path**: The folder this agent can access (optional, leave empty for no restrictions)
    - **Heartbeat Interval**: How often the agent checks for messages (30s is a good default)
-4. Click **Save**
+5. Click **Save**
+
+The header bar contains these buttons (from left to right):
+- Claw'd logo (channel selection)
+- Online agent avatars
+- Robot icon (agent settings)
+- Star icon (skills management)
+- MCP icon (MCP servers, only visible when connected)
+- Project button
+- Theme toggle
 
 #### Choosing a Model
 
@@ -291,16 +302,16 @@ Claw'd includes three built-in agents:
 
 Skills are reusable instruction sets that agents can activate on demand.
 
-**Creating a Skill:**
+**Creating a Skill via UI:**
 
-1. Click the **star icon** (next to MCP button) in the chat interface
-2. Select an agent
-3. Click **Add**
-4. Fill in:
+1. In the channel header, click the **star icon** (Skills button)
+2. Click **Add** to create a new skill
+3. Fill in:
    - **Name**: `code-review`
    - **Description**: `Review code for quality and security`
    - **Triggers**: `review, check, audit`
    - **Content**: Your skill instructions
+4. Choose scope: **Project** (this project only) or **Global** (all projects)
 5. Click **Save**
 
 **SKILL.md Format:**
@@ -362,60 +373,27 @@ MCP (Model Context Protocol) servers provide external tools to agents. Examples:
 - **Filesystem** — Access files outside the project
 - **Custom servers** — Build your own tools
 
-### Adding GitHub MCP
+### Adding MCP Servers
 
-1. Go to your channel's **MCP Settings**
-2. Click **Add MCP Server**
-3. Select **GitHub** from the catalog
-4. Configure authentication:
-   - **OAuth** — Authenticate via GitHub (recommended)
-   - **PAT** — Use a Personal Access Token
-5. Click **Connect**
+1. In the channel header, click the **MCP icon** (two arrows symbol) to open MCP settings
+2. You'll see a list of available servers from the catalog
+3. Click **Connect** next to the server you want to add
+4. For servers requiring authentication (like GitHub), you'll be prompted to authorize
 
-Your agent can now use GitHub tools like `github_search_code`, `github_create_issue`, etc.
-
-### Adding Custom MCP Servers
-
-MCP servers are configured per-channel through the Claw'd UI:
-
-1. Open your channel's **Settings** (gear icon or channel menu)
-2. Navigate to **MCP Servers**
-3. Click **Add Server**
-4. Configure:
-   - **Name**: Server identifier
-   - **Transport**: `stdio` (for local tools) or `http` (for remote APIs)
-   - **Command/URL**: How to start or connect
-   - **Args/Headers**: Additional configuration
-5. Click **Add**
-
-**Example - Filesystem MCP (access files outside project):**
-
-```
-Transport: stdio
-Command: npx
-Args: -y @modelcontextprotocol/server-filesystem ~/Documents
-```
-
-**Example - GitHub MCP:**
-
-```
-Transport: http
-URL: https://api.githubcopilot.com/mcp
-Headers: Authorization: Bearer YOUR_GITHUB_PAT
-```
+**Note:** The MCP button only appears in the header when you have MCP servers connected or available.
 
 ### MCP Catalog
 
-Claw'd includes a catalog of verified MCP servers. Access it through the UI by clicking **Add MCP Server** in your channel's MCP settings.
+Available servers from the catalog:
 
 | Server | Description | Auth Required |
 |--------|-------------|---------------|
-| GitHub | Repository and issue management | Yes (PAT) |
+| GitHub | Repository and issue management | Yes (OAuth/PAT) |
 | Filesystem | Access local files | No |
 | PostgreSQL | Database queries | No |
 | Sentry | Error tracking | Yes (OAuth) |
 | Notion | Workspace content | Yes (OAuth) |
-| Slack | Messaging | Yes (env vars) |
+| Slack | Messaging | Yes (OAuth) |
 | Web Fetch | Page content extraction | No |
 | Puppeteer | Browser automation | No |
 | Atlassian | Jira/Confluence | Yes (OAuth) |
@@ -595,15 +573,15 @@ If you're setting up Claw'd for the first time and things aren't working:
 1. ✅ **Server running?** — You should see "Claw'd server started" in your terminal
 2. ✅ **Browser open?** — Go to http://localhost:3456
 3. ✅ **Provider configured?** — Check `~/.clawd/config.json` has your API key
-4. ✅ **Agent added?** — Click Agents → Add Agent and configure it
-5. ✅ **Agent online?** — Look for a green indicator next to the agent name
+4. ✅ **Agent added?** — Click the **robot icon** in the header → Add Agent
+5. ✅ **Agent online?** — Look for colored dots (agent avatars) in the header bar
 
 ### Agent Not Responding
 
-1. **Check status** — Is the agent online? (green dot)
-2. **Restart agent** — Disable and re-enable in channel settings
-3. **Check logs** — Look for errors in agent logs
-4. **Verify API key** — Ensure provider credentials are valid
+1. **Check status** — Do you see colored dots (agent avatars) in the header? If not, agents may be offline
+2. **Restart agent** — Click the robot icon → find the agent → toggle it off and on
+3. **Check logs** — Look for errors in the agent logs panel
+4. **Verify API key** — Ensure provider credentials are valid in `~/.clawd/config.json`
 
 ### API Errors
 
