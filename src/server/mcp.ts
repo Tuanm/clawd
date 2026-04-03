@@ -5221,12 +5221,16 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
           let text = "";
           switch (name) {
             case "chat_history_search": {
+              // Auto-scope to current channel unless a specific session_id is provided.
+              // Session names follow the pattern "{channel}-{agentId}", so filtering
+              // by "{channel}-" prefix limits results to the current channel's history.
               const results = memory.search({
                 keywords: args.keywords as string[] | undefined,
                 startTime: args.start_time as number | undefined,
                 endTime: args.end_time as number | undefined,
                 role: args.role as ("user" | "assistant" | "tool") | undefined,
                 sessionId: args.session_id as string | undefined,
+                sessionNamePrefix: !args.session_id && channel ? `${channel}-` : undefined,
                 limit: (args.limit as number) || 20,
               });
               if (results.length === 0) {

@@ -15,6 +15,7 @@ import type { Message } from "../api/client";
 
 export interface MemoryQuery {
   sessionId?: string;
+  sessionNamePrefix?: string;
   startTime?: number;
   endTime?: number;
   keywords?: string[];
@@ -244,6 +245,11 @@ export class MemoryManager {
     if (query.sessionId) {
       sql += " AND m.session_id = ?";
       params.push(query.sessionId);
+    }
+
+    if (query.sessionNamePrefix) {
+      sql += " AND s.name LIKE ?";
+      params.push(query.sessionNamePrefix + "%");
     }
 
     if (query.startTime) {
