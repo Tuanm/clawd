@@ -400,14 +400,16 @@ export async function exchangeOAuthCode(
   console.log(`[mcp-oauth] Token response: status=${res.status}, body_length=${rawText.length}`);
 
   if (!res.ok) {
-    throw new Error(`Token exchange failed (${res.status}): ${rawText}`);
+    // SECURITY: Don't include rawText — may contain credentials in some provider error formats
+    throw new Error(`Token exchange failed (${res.status})`);
   }
 
   let data: any;
   try {
     data = JSON.parse(rawText);
   } catch {
-    throw new Error(`Token response not JSON: ${rawText.slice(0, 200)}`);
+    // SECURITY: Don't include rawText content in error
+    throw new Error(`Token response not JSON (length=${rawText.length})`);
   }
 
   // Handle providers that return HTTP 200 with error payloads (e.g., Slack)
