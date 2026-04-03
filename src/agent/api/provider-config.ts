@@ -10,7 +10,9 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { convertCCFormatToInternal, validateServerConfigSync } from "../../mcp-validation";
 import type {
+  CCMcpServerConfig,
   Config,
   CopilotProviderConfig,
   MCPServerConfig,
@@ -72,6 +74,14 @@ export function loadConfig(configPath?: string): Config {
     } else {
       cachedConfig = parsed as Config;
     }
+
+    // Handle mcpServers alias (CC / Claude Desktop format).
+    // Merge into mcp_servers["*"] — existing named entries always win.
+    // Read-only: never written back to disk.
+    if (parsed.mcpServers && typeof parsed.mcpServers === "object") {
+      mergeCCMcpServersAlias(cachedConfig!, parsed.mcpServers as Record<string, CCMcpServerConfig>);
+    }
+
     cachedConfigPath = filePath;
     try {
       cachedConfigMtime = statSync(filePath).mtimeMs;
@@ -197,7 +207,7 @@ export function listConfiguredProviders(): Array<{
     if (!cfg || typeof cfg !== "object") continue;
 
     // Explicit type field
-    let baseType = cfg.type as ProviderType | undefined;
+    const baseType = cfg.type as ProviderType | undefined;
     if (baseType && (BUILTIN_PROVIDERS as readonly string[]).includes(baseType)) {
       result.push({ name, type: baseType, is_custom: true });
       continue;
@@ -392,6 +402,41 @@ export { ensureKeyPoolInitialized };
 // ============================================================================
 
 /**
+ * Merge CC-format `mcpServers` alias into config.mcp_servers["*"].
+ * Existing mcp_servers["*"] entries win on name conflict.
+ * Invalid entries (per sync validation) are skipped with a console.warn.
+ */
+function mergeCCMcpServersAlias(config: Config, ccServers: Record<string, CCMcpServerConfig>): void {
+  const converted = convertCCFormatToInternal(ccServers);
+  const valid: Record<string, MCPServerConfig> = {};
+  let skipped = 0;
+
+  for (const [name, cfg] of Object.entries(converted)) {
+    const err = validateServerConfigSync(name, cfg);
+    if (err) {
+      console.warn(`[Config] mcpServers alias: skipping "${name}" — ${err}`);
+      skipped++;
+    } else {
+      valid[name] = cfg;
+    }
+  }
+
+  if (Object.keys(valid).length === 0 && skipped === 0) return;
+
+  config.mcp_servers = config.mcp_servers ?? {};
+  const existing = config.mcp_servers["*"] ?? {};
+  // existing entries win — spread alias first, then overwrite with existing
+  config.mcp_servers["*"] = { ...valid, ...existing };
+
+  const imported = Object.keys(valid).length;
+  console.warn(
+    `[Config] mcpServers alias found — merged ${imported} server(s) into mcp_servers["*"]` +
+      (skipped > 0 ? `, ${skipped} skipped (validation failure)` : "") +
+      `. Consider migrating to mcp_servers format.`,
+  );
+}
+
+/**
  * Get all MCP servers from config
  * Returns MCP servers defined in ~/.clawd/config.json under mcp_servers
  */
@@ -480,4 +525,7 @@ function writeConfigToDisk(config: Config): void {
   writeFileSync(DEFAULT_CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
   cachedConfig = config;
   cachedConfigPath = DEFAULT_CONFIG_PATH;
+  try {
+    cachedConfigMtime = statSync(DEFAULT_CONFIG_PATH).mtimeMs;
+  } catch {}
 }

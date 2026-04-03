@@ -2,13 +2,13 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { ATTACHMENTS_DIR, db } from "../database";
 import {
-  type FilterOps,
-  type ParsedData,
-  type SortSpec,
   applyFilters,
   applySortAndLimit,
+  type FilterOps,
+  type ParsedData,
   parseCsvToRows,
   parseJsonToRows,
+  type SortSpec,
 } from "./datasource-parsers";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB

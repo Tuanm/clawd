@@ -6367,6 +6367,14 @@ textarea {
   opacity: 0.6;
 }
 
+/* Catalog-only (not installed) server icon — dashed outline */
+.mcp-server-icon.catalog {
+  background: hsl(var(--text) / 4%);
+  color: var(--text-muted);
+  opacity: 0.5;
+  border: 1.5px dashed hsl(var(--text-muted) / 40%);
+}
+
 /* Error message */
 .mcp-error {
   padding: 8px 12px;

@@ -1,5 +1,5 @@
 import { type Message, updateSubspaceStatus } from "../server/database";
-import { broadcastUpdate, broadcastSpaceLocked } from "../server/websocket";
+import { broadcastSpaceLocked, broadcastUpdate } from "../server/websocket";
 import {
   atomicLockSpace,
   type CreateSpaceParams,

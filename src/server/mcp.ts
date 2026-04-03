@@ -10,6 +10,7 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getProjectAgentsDir } from "../agent/tools/registry";
 import type { SchedulerManager } from "../scheduler/manager";
 import {
   ATTACHMENTS_DIR,
@@ -26,7 +27,6 @@ import { analyzeImage, analyzeVideo, editImage, generateImage, getImageQuotaStat
 import { getOptimizedFile } from "./routes/files";
 import { getConversationHistory, getPendingMessages, postMessage } from "./routes/messages";
 import { broadcastMessage, broadcastMessageSeen, broadcastUpdate } from "./websocket";
-import { getProjectAgentsDir } from "../agent/tools/registry";
 
 // Scheduler reference (set by index.ts after creation)
 let _scheduler: SchedulerManager | null = null;

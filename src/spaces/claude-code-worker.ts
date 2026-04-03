@@ -6,19 +6,19 @@
  */
 
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import { countCustomScripts } from "../agent/plugins/custom-tool-plugin";
+import { initMemorySession, saveToMemory } from "../claude-code-memory";
+import { runSDKQuery } from "../claude-code-sdk";
+import { startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "../claude-code-tmux";
+import { formatToolDescription, hasTmux, truncateToolResult } from "../claude-code-utils";
+import { loadOAuthToken } from "../mcp-oauth";
 import { setAgentStreaming } from "../server/database";
+import { spaceProjectRoots } from "../server/mcp";
+import { getPendingMessages } from "../server/routes/messages";
 import { broadcastAgentStreaming, broadcastAgentToken, broadcastAgentToolCall } from "../server/websocket";
 import { timedFetch } from "../utils/timed-fetch";
-import { truncateToolResult, formatToolDescription, hasTmux } from "../claude-code-utils";
-import { initMemorySession, saveToMemory } from "../claude-code-memory";
-import { startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "../claude-code-tmux";
-import { runSDKQuery } from "../claude-code-sdk";
-import { loadOAuthToken } from "../mcp-oauth";
-import { spaceProjectRoots } from "../server/mcp";
 import type { Space } from "./db";
 import type { SpaceManager } from "./manager";
-import { getPendingMessages } from "../server/routes/messages";
-import { countCustomScripts } from "../agent/plugins/custom-tool-plugin";
 
 // Re-export utils for backward compatibility (main-worker, spawn-plugin import from here)
 export { hasTmux, truncateToolResult, formatToolDescription };
@@ -400,7 +400,6 @@ RULES:
           console.warn(
             `[claude-code-worker] MCP server "${name}" uses SSE transport (not supported by Claude Code SDK), skipping`,
           );
-          continue;
         } else if (cfg.transport === "http" || cfg.type === "http") {
           if (!cfg.url) {
             console.warn(`[claude-code-worker] MCP server "${name}" missing url, skipping`);

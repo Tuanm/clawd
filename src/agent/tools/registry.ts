@@ -10,6 +10,7 @@
 
 import { basename, join, resolve } from "node:path";
 import type { ToolDefinition } from "../api/client";
+import { getAgentContext, getContextAgentId, getContextChannel, getContextConfigRoot } from "../utils/agent-context";
 import {
   checkSandboxBeforeExec,
   getSandboxProjectRoot,
@@ -18,7 +19,6 @@ import {
   runInSandbox,
   wrapCommandForSandbox,
 } from "../utils/sandbox";
-import { getAgentContext, getContextAgentId, getContextChannel, getContextConfigRoot } from "../utils/agent-context";
 
 // Re-export sandbox utilities for consumers
 export {

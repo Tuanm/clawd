@@ -16,6 +16,24 @@ interface McpServer {
   oauth?: { client_id: string; scopes?: string[] };
   connected: boolean;
   tools: number;
+  /** Catalog entry ID if this server comes from the catalog (undefined = pre-configured channel server) */
+  catalogId?: string;
+  /** True for catalog servers that are available but not yet installed */
+  catalogOnly?: boolean;
+}
+
+interface CatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  logo?: string;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  url?: string;
+  requiresOAuth?: boolean;
+  envRequired?: string[];
+  envOptional?: string[];
 }
 
 interface Props {
@@ -66,17 +84,26 @@ function ServerLogo({ logo, size = 20 }: { logo?: string; size?: number }) {
 
 export default function McpDialog({ channel, isOpen, onClose }: Props) {
   const [servers, setServers] = useState<McpServer[]>([]);
+  const [catalogEntries, setCatalogEntries] = useState<CatalogEntry[]>([]);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  // Install form state (for catalog servers)
+  const [installEnv, setInstallEnv] = useState<Record<string, string>>({});
+  const [installProjectRoot, setInstallProjectRoot] = useState("");
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   // Reset state on dialog close
   useEffect(() => {
     if (!isOpen) {
       setSelectedName(null);
       setError(null);
+      setInstallEnv({});
+      setInstallProjectRoot("");
+      setInstallError(null);
     }
   }, [isOpen]);
 
@@ -92,9 +119,43 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
     async (showLoading = false) => {
       if (showLoading) setLoading(true);
       try {
-        const res = await authFetch(`${API_URL}/api/app.mcp.list?channel=${encodeURIComponent(channel)}`);
-        const data = await res.json();
-        if (data.ok) setServers(data.servers);
+        // Fetch channel servers and catalog in parallel
+        const [channelRes, catalogRes] = await Promise.all([
+          authFetch(`${API_URL}/api/app.mcp.list?channel=${encodeURIComponent(channel)}`),
+          authFetch(`${API_URL}/api/app.mcp.catalog`),
+        ]);
+        const channelData = await channelRes.json();
+        const catalogData = await catalogRes.json();
+
+        const channelServers: McpServer[] = channelData.ok ? channelData.servers : [];
+        const catalog: CatalogEntry[] = catalogData.ok ? catalogData.entries : [];
+
+        // Track which catalog IDs are already installed (by name match)
+        const installedNames = new Set(channelServers.map((s) => s.name));
+
+        // Merge: channel servers first, then catalog servers not yet installed
+        const merged: McpServer[] = [
+          ...channelServers.map((s) => ({ ...s, catalogOnly: false })),
+          ...catalog
+            .filter((c) => !installedNames.has(c.id))
+            .map((c) => ({
+              name: c.id,
+              transport: c.transport,
+              command: c.command,
+              args: c.args,
+              url: c.url,
+              enabled: false,
+              logo: c.logo,
+              oauth: c.requiresOAuth ? { client_id: "", scopes: [] } : undefined,
+              connected: false,
+              tools: 0,
+              catalogId: c.id,
+              catalogOnly: true,
+            })),
+        ];
+
+        setServers(merged);
+        setCatalogEntries(catalog);
       } catch {
       } finally {
         if (showLoading) setLoading(false);
@@ -108,7 +169,6 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
       setConnecting(true);
       setError(null);
       try {
-        // Pre-configured servers: backend looks up config by channel + name
         const res = await authFetch(`${API_URL}/api/app.mcp.add`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -139,6 +199,47 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
     [channel, loadServers],
   );
 
+  const handleInstall = useCallback(async () => {
+    const server = servers.find((s) => s.name === selectedName && s.catalogOnly);
+    if (!server?.catalogId) return;
+    setInstalling(true);
+    setInstallError(null);
+    try {
+      const env = Object.fromEntries(Object.entries(installEnv).filter(([, v]) => v !== ""));
+      const res = await authFetch(`${API_URL}/api/app.mcp.install`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel,
+          serverId: server.catalogId,
+          env: Object.keys(env).length > 0 ? env : undefined,
+          projectRoot: installProjectRoot || undefined,
+        }),
+      });
+      const data = await res.json();
+
+      if (!data.ok) {
+        setInstallError(data.error || "Install failed");
+        return;
+      }
+
+      // OAuth: redirect to auth, then refresh
+      if (data.needs_oauth && data.auth_url) {
+        window.open(data.auth_url, "_blank");
+        await loadServers();
+        return;
+      }
+
+      setInstallEnv({});
+      setInstallProjectRoot("");
+      await loadServers();
+    } catch (e: any) {
+      setInstallError(e.message || "Network error");
+    } finally {
+      setInstalling(false);
+    }
+  }, [servers, selectedName, installEnv, installProjectRoot, channel, loadServers]);
+
   const handleDisconnect = useCallback(
     async (name: string) => {
       setToggling(true);
@@ -150,6 +251,28 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
         });
         const data = await res.json();
         if (!data.ok) setError(data.error || "Disconnect failed");
+        await loadServers();
+      } catch {
+        setError("Network error");
+      } finally {
+        setToggling(false);
+      }
+    },
+    [channel, loadServers],
+  );
+
+  const handleUninstall = useCallback(
+    async (name: string) => {
+      if (!confirm(`Remove "${name}" from this channel? This cannot be undone.`)) return;
+      setToggling(true);
+      try {
+        const res = await authFetch(`${API_URL}/api/app.mcp.remove`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel, name }),
+        });
+        const data = await res.json();
+        if (!data.ok) setError(data.error || "Uninstall failed");
         await loadServers();
       } catch {
         setError("Network error");
@@ -200,11 +323,27 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 onClick={() => {
                   setSelectedName(server.name);
                   setError(null);
+                  setInstallError(null);
+                  // Pre-fill env vars when selecting a catalog server
+                  if (server.catalogOnly) {
+                    const entry = catalogEntries.find((c) => c.id === server.catalogId);
+                    if (entry) {
+                      setInstallEnv(
+                        Object.fromEntries(
+                          [...(entry.envRequired || []), ...(entry.envOptional || [])].map((k) => [k, ""]),
+                        ),
+                      );
+                    }
+                  } else {
+                    setInstallEnv({});
+                  }
                 }}
-                title={`${server.name} (${server.transport})`}
+                title={`${server.name} (${server.transport})${server.catalogOnly ? " — catalog" : ""}`}
               >
                 <span className="stream-agent-avatar-wrap">
-                  <span className={`mcp-server-icon ${server.connected ? "connected" : "disconnected"}`}>
+                  <span
+                    className={`mcp-server-icon ${server.connected ? "connected" : "disconnected"} ${server.catalogOnly ? "catalog" : ""}`}
+                  >
                     <ServerLogo logo={server.logo} size={20} />
                   </span>
                   {server.connected && <span className="stream-agent-avatar-dot" />}
@@ -267,28 +406,109 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 type="text"
                 className="agent-field-input"
                 placeholder="Status"
-                value={selectedServer.connected ? `Connected (${selectedServer.tools} tools)` : "Disconnected"}
+                value={
+                  selectedServer.catalogOnly
+                    ? "Available (not installed)"
+                    : selectedServer.connected
+                      ? `Connected (${selectedServer.tools} tools)`
+                      : "Disconnected"
+                }
                 readOnly
               />
-              <div className="agent-buttons">
-                {selectedServer.connected ? (
-                  <button
-                    className="agent-action-btn agent-action-btn--warning"
-                    onClick={() => handleDisconnect(selectedServer.name)}
-                    disabled={toggling}
-                  >
-                    {toggling ? "..." : "Disconnect"}
-                  </button>
-                ) : (
-                  <button
-                    className="agent-action-btn agent-action-btn--accent"
-                    onClick={() => handleConnect(selectedServer.name)}
-                    disabled={connecting}
-                  >
-                    {connecting ? "Connecting..." : "Connect"}
-                  </button>
-                )}
-              </div>
+
+              {/* Install form for catalog-only servers */}
+              {selectedServer.catalogOnly && (
+                <>
+                  {(() => {
+                    const entry = catalogEntries.find((c) => c.id === selectedServer.catalogId);
+                    const hasProjectRoot = entry?.args?.some((a) => a.includes("{PROJECT_ROOT}"));
+                    return (
+                      <>
+                        {entry?.envRequired?.map((key) => (
+                          <div key={key}>
+                            <label className="skills-field-label">{key}</label>
+                            <input
+                              type="text"
+                              className="agent-field-input"
+                              placeholder={`${key} (required)`}
+                              value={installEnv[key] ?? ""}
+                              onChange={(e) => setInstallEnv((prev) => ({ ...prev, [key]: e.target.value }))}
+                            />
+                          </div>
+                        ))}
+                        {entry?.envOptional?.map((key) => (
+                          <div key={key}>
+                            <label className="skills-field-label">
+                              {key} <span style={{ opacity: 0.5 }}>(optional)</span>
+                            </label>
+                            <input
+                              type="text"
+                              className="agent-field-input"
+                              placeholder={key}
+                              value={installEnv[key] ?? ""}
+                              onChange={(e) => setInstallEnv((prev) => ({ ...prev, [key]: e.target.value }))}
+                            />
+                          </div>
+                        ))}
+                        {hasProjectRoot && (
+                          <div>
+                            <label className="skills-field-label">Project Root</label>
+                            <input
+                              type="text"
+                              className="agent-field-input"
+                              placeholder="/path/to/project"
+                              value={installProjectRoot}
+                              onChange={(e) => setInstallProjectRoot(e.target.value)}
+                            />
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                  {installError && <div className="mcp-error">{installError}</div>}
+                  <div className="agent-buttons">
+                    <button
+                      className="agent-action-btn agent-action-btn--accent"
+                      onClick={handleInstall}
+                      disabled={installing}
+                    >
+                      {installing ? "Installing..." : "Install"}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {/* Connect / Disconnect / Uninstall for installed channel servers */}
+              {!selectedServer.catalogOnly && (
+                <div className="agent-buttons">
+                  {selectedServer.connected ? (
+                    <button
+                      className="agent-action-btn agent-action-btn--warning"
+                      onClick={() => handleDisconnect(selectedServer.name)}
+                      disabled={toggling}
+                    >
+                      {toggling ? "..." : "Disconnect"}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        className="agent-action-btn agent-action-btn--accent"
+                        onClick={() => handleConnect(selectedServer.name)}
+                        disabled={connecting}
+                      >
+                        {connecting ? "Connecting..." : "Connect"}
+                      </button>
+                      <button
+                        className="agent-action-btn agent-action-btn--danger"
+                        onClick={() => handleUninstall(selectedServer.name)}
+                        disabled={toggling}
+                      >
+                        {toggling ? "..." : "Uninstall"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -296,8 +516,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
           {!selectedServer && servers.length === 0 && (
             <div className="mcp-empty">
               <McpIcon size={32} />
-              <p>No MCP servers configured for this channel.</p>
-              <p style={{ fontSize: "0.85em", opacity: 0.7 }}>Configure servers in ~/.clawd/config.json</p>
+              <p>No MCP servers. Browse the catalog above to add one.</p>
             </div>
           )}
 
@@ -305,6 +524,9 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
           {!selectedServer && servers.length > 0 && (
             <div className="mcp-empty">
               <p>Select a server to view details.</p>
+              {catalogEntries.length > 0 && servers.filter((s) => s.catalogOnly).length === 0 && (
+                <p style={{ fontSize: "0.85em", opacity: 0.7 }}>All catalog servers are already installed.</p>
+              )}
             </div>
           )}
         </div>

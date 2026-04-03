@@ -12,9 +12,10 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { MCPServerConfig } from "./agent/api/providers";
 
 const TOKENS_PATH = join(homedir(), ".clawd", "mcp-oauth-tokens.json");
 
@@ -56,7 +57,13 @@ function loadTokenStore(): TokenStore {
 function saveTokenStore(store: TokenStore): void {
   const dir = join(homedir(), ".clawd");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    /* ignore — may not own dir */
+  }
   writeFileSync(TOKENS_PATH, JSON.stringify(store, null, 2), { encoding: "utf-8", mode: 0o600 });
+  chmodSync(TOKENS_PATH, 0o600);
 }
 
 export function loadOAuthToken(channel: string, serverName: string): OAuthToken | null {
@@ -100,40 +107,58 @@ export function removeOAuthToken(channel: string, serverName: string): void {
 export async function discoverOAuthMetadata(
   serverUrl: string,
   callbackUrl: string,
-  clientName = "Clawd",
+  clientName = "Claw'd",
 ): Promise<OAuthDiscoveryResult | null> {
   const origin = new URL(serverUrl).origin;
 
   // Step 1: Protected Resource Metadata (RFC 9728)
-  let authServerUrl: string;
+  let authServerUrl: string | undefined;
+  let prmError: string | undefined;
   try {
     const prm = await fetchJson(`${origin}/.well-known/oauth-protected-resource`);
-    if (!prm?.authorization_servers?.length) {
-      console.log("[mcp-oauth] No authorization_servers in protected resource metadata");
-      return null;
+    if (prm?.authorization_servers?.length) {
+      authServerUrl = prm.authorization_servers[0];
+    } else {
+      prmError = "No authorization_servers in protected resource metadata";
     }
-    authServerUrl = prm.authorization_servers[0];
   } catch (err: any) {
-    console.log(`[mcp-oauth] No protected resource metadata at ${origin}: ${err.message}`);
-    return null;
+    prmError = err.message;
   }
 
   // Step 2: Authorization Server Metadata (RFC 8414)
-  // Preserve path for tenant-isolated auth servers (e.g. https://auth.example.com/tenant1)
-  const authUrl = new URL(authServerUrl);
-  const authBase =
-    authUrl.pathname === "/" ? authUrl.origin : `${authUrl.origin}${authUrl.pathname.replace(/\/+$/, "")}`;
+  // Strategy A: If Step 1 gave us an auth server URL, use that.
+  // Strategy B: Fall back to trying .well-known/oauth-authorization-server directly
+  //             on the MCP server origin — many MCP servers (Atlassian, Sentry, Notion)
+  //             expose this endpoint directly without RFC 9728 protected resource metadata.
   let asMeta: any;
-  try {
-    // RFC 8414 §3: for path-based issuers, insert .well-known between host and path
-    const wellKnownUrl =
-      authUrl.pathname === "/"
-        ? `${authUrl.origin}/.well-known/oauth-authorization-server`
-        : `${authUrl.origin}/.well-known/oauth-authorization-server${authUrl.pathname}`;
-    asMeta = await fetchJson(wellKnownUrl);
-  } catch (err: any) {
-    console.warn(`[mcp-oauth] Failed to fetch auth server metadata from ${authBase}: ${err.message}`);
-    return null;
+  let authBase: string;
+
+  if (authServerUrl) {
+    // Use the auth server URL from RFC 9728
+    const authUrl = new URL(authServerUrl);
+    authBase = authUrl.pathname === "/" ? authUrl.origin : `${authUrl.origin}${authUrl.pathname.replace(/\/+$/, "")}`;
+    try {
+      const wellKnownUrl =
+        authUrl.pathname === "/"
+          ? `${authUrl.origin}/.well-known/oauth-authorization-server`
+          : `${authUrl.origin}/.well-known/oauth-authorization-server${authUrl.pathname}`;
+      asMeta = await fetchJson(wellKnownUrl);
+    } catch (err: any) {
+      console.warn(`[mcp-oauth] Failed to fetch auth server metadata from ${authBase}: ${err.message}`);
+      return null;
+    }
+  } else {
+    // Fallback: try .well-known/oauth-authorization-server directly on the MCP origin
+    console.log(
+      `[mcp-oauth] No protected resource metadata at ${origin} (${prmError}), trying RFC 8414 direct discovery...`,
+    );
+    authBase = origin;
+    try {
+      asMeta = await fetchJson(`${origin}/.well-known/oauth-authorization-server`);
+    } catch (err: any) {
+      console.log(`[mcp-oauth] No OAuth authorization server metadata at ${origin}: ${err.message}`);
+      return null;
+    }
   }
 
   if (!asMeta?.authorization_endpoint || !asMeta?.token_endpoint) {
@@ -436,4 +461,134 @@ export async function exchangeOAuthCode(
 
 export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// ============================================================================
+// OAuth Token Refresh
+// ============================================================================
+
+/**
+ * Module-level in-flight guard: prevents concurrent refresh races for the
+ * same channel:serverName pair.  Callers that arrive while a refresh is in
+ * progress receive the same Promise rather than firing a second request.
+ */
+const oauthRefreshInFlight = new Map<string, Promise<OAuthToken | null>>();
+
+/**
+ * Use `refresh_token` to obtain a new `access_token`.
+ * Enforces a 30-second timeout to prevent hung connections from blocking
+ * the in-flight guard indefinitely.
+ * Returns null on any failure (timeout, HTTP error, parse error).
+ */
+export async function refreshOAuthToken(
+  channel: string,
+  serverName: string,
+  refreshToken: string,
+  tokenUrl: string,
+  clientId: string,
+  clientSecret?: string,
+): Promise<OAuthToken | null> {
+  const key = `${channel}:${serverName}`;
+
+  // Coalesce concurrent callers onto the same in-flight promise
+  const inflight = oauthRefreshInFlight.get(key);
+  if (inflight) return inflight;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+
+  const promise = (async (): Promise<OAuthToken | null> => {
+    try {
+      const resp = await fetch(tokenUrl, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+          client_id: clientId,
+          ...(clientSecret ? { client_secret: clientSecret } : {}),
+        }),
+      });
+
+      if (!resp.ok) {
+        console.warn(`[mcp-oauth] refreshOAuthToken: HTTP ${resp.status} for ${key}`);
+        return null;
+      }
+
+      const token = (await resp.json()) as OAuthToken;
+      if (!token.access_token) {
+        console.warn(`[mcp-oauth] refreshOAuthToken: missing access_token in response for ${key}`);
+        return null;
+      }
+
+      // Normalise expires_at to ms timestamp
+      if ((token as any).expires_in && !token.expires_at) {
+        token.expires_at = Date.now() + (token as any).expires_in * 1000;
+      }
+
+      saveOAuthToken(channel, serverName, token);
+      console.log(`[mcp-oauth] Token refreshed for ${key}`);
+      return token;
+    } catch (err) {
+      // AbortError = timeout; sanitise to avoid leaking URLs
+      const msg = (err as Error).message?.split("http")[0]?.trim() || "unknown error";
+      console.warn(`[mcp-oauth] refreshOAuthToken failed for ${key}: ${msg}`);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+
+  oauthRefreshInFlight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    oauthRefreshInFlight.delete(key);
+  }
+}
+
+/**
+ * Load a stored OAuth token, refreshing proactively if it expires within
+ * 15 minutes (or is already expired but has a refresh_token).
+ *
+ * Returns a discriminated result so callers can distinguish:
+ *   - `"no_token"`      — no stored token at all
+ *   - `"expired"`       — token expired, no refresh_token available
+ *   - `"refresh_failed"` — had refresh_token but the refresh request failed
+ *   - undefined reason  — token is valid (fresh or just refreshed)
+ */
+export async function loadOrRefreshOAuthToken(
+  channel: string,
+  serverName: string,
+  serverConfig: MCPServerConfig,
+): Promise<{ token: string | null; reason?: "expired" | "no_token" | "refresh_failed" }> {
+  const stored = loadTokenStore()[`${channel}:${serverName}`];
+  if (!stored) return { token: null, reason: "no_token" };
+
+  const nearExpiry = stored.expires_at != null && stored.expires_at - Date.now() < 15 * 60_000;
+
+  if (stored.refresh_token && (nearExpiry || !stored.access_token)) {
+    const tokenUrl = serverConfig.oauth?.token_url;
+    const clientId = serverConfig.oauth?.client_id;
+    if (tokenUrl && clientId) {
+      const refreshed = await refreshOAuthToken(
+        channel,
+        serverName,
+        stored.refresh_token,
+        tokenUrl,
+        clientId,
+        serverConfig.oauth?.client_secret,
+      );
+      if (refreshed) return { token: refreshed.access_token };
+      return { token: null, reason: "refresh_failed" };
+    }
+  }
+
+  // Hard expiry check (no refresh_token path)
+  if (stored.expires_at != null && stored.expires_at < Date.now()) {
+    return { token: null, reason: "expired" };
+  }
+
+  return { token: stored.access_token ?? null };
 }

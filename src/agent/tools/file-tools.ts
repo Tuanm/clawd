@@ -4,7 +4,7 @@
  * Registers file read/write/search tools into the shared tool registry.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isSandboxReady, registerTool, resolveSafePath, runInSandbox, validatePath } from "./registry";
 
 // ============================================================================

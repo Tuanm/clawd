@@ -11,7 +11,7 @@ import {
 } from "./auth-fetch";
 import McpDialog, { McpIcon } from "./McpDialog";
 import MessageComposer from "./MessageComposer";
-import MessageList, { StreamOutputDialog, reinitializeMermaid } from "./MessageList";
+import MessageList, { reinitializeMermaid, StreamOutputDialog } from "./MessageList";
 import TodoDialog from "./PlanModal";
 import ProjectsDialog from "./ProjectsDialog";
 import SearchModal from "./SearchModal";

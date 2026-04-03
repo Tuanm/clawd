@@ -10,7 +10,14 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadAgentFile } from "./agent/agents/loader";
-import { getChannelMCPServers, resolveProviderBaseType } from "./agent/api/provider-config";
+import {
+  getAllChannelMCPServers,
+  getChannelMCPServers,
+  resolveProviderBaseType,
+  saveChannelMCPServer,
+} from "./agent/api/provider-config";
+import { getCatalogEntry, resolveArgs } from "./agent/mcp/catalog";
+import { validateServerConfig } from "./mcp-validation";
 import { MCPManager } from "./agent/mcp/client";
 import {
   createWorktree,
@@ -22,7 +29,7 @@ import {
 import type { AppConfig } from "./config";
 import { isWorktreeEnabled } from "./config-file";
 import { INTERNAL_SERVICE_TOKEN } from "./internal-token";
-import { loadOAuthToken } from "./mcp-oauth";
+import { loadOAuthToken, loadOrRefreshOAuthToken } from "./mcp-oauth";
 import type { SchedulerManager } from "./scheduler/manager";
 import { setAgentStreaming } from "./server/database";
 import { broadcastUpdate } from "./server/websocket";
@@ -65,6 +72,8 @@ export interface AgentConfig {
   worktreeBranch?: string;
   /** Agent file type reference (e.g., "code-reviewer") */
   agentType?: string;
+  /** Env vars available to this agent (for template resolution in MCP catalog auto-provision) */
+  env?: Record<string, string>;
 }
 
 export class WorkerManager {
@@ -77,6 +86,10 @@ export class WorkerManager {
   private channelMcp: Map<string, MCPManager> = new Map();
   /** Pending MCP setup promises to prevent double-creation on concurrent agent starts */
   private channelMcpPending: Map<string, Promise<MCPManager | null>> = new Map();
+  /** OAuth proactive refresh timer */
+  private oauthRefreshTimer?: ReturnType<typeof setInterval>;
+  /** Prevents concurrent refresh for the same channel:server key */
+  private oauthRefreshInFlight = new Set<string>();
   /** Worktree tracking: key → { path, branch, originalRoot } */
   private worktreeInfo: Map<string, { path: string; branch: string; originalRoot: string }> = new Map();
 
@@ -142,15 +155,78 @@ export class WorkerManager {
         (deferredCount > 0 ? `, ${deferredCount} deferred (inactive channels)` : ""),
     );
 
-    // Start heartbeat monitor after all agents are running
     this.startHeartbeatMonitor();
+    this.startOAuthRefreshTimer();
+  }
+
+  // ===========================================================================
+  // OAuth Proactive Refresh
+  // ===========================================================================
+
+  /** Start a repeating timer (every ~5 min) that refreshes near-expiry OAuth tokens. */
+  private startOAuthRefreshTimer(): void {
+    const jitter = Math.random() * 60_000; // ±1 min per-process jitter
+    this.oauthRefreshTimer = setInterval(
+      () => {
+        this.refreshExpiringTokens().catch(() => {});
+      },
+      5 * 60_000 + jitter,
+    );
+    // Don't prevent process exit
+    if (typeof this.oauthRefreshTimer === "object" && "unref" in this.oauthRefreshTimer) {
+      (this.oauthRefreshTimer as any).unref();
+    }
+  }
+
+  /** Iterate all configured MCP servers; refresh tokens expiring within 15 min. */
+  private async refreshExpiringTokens(): Promise<void> {
+    const allServers = getAllChannelMCPServers();
+    for (const [channel, servers] of Object.entries(allServers)) {
+      // Skip channels with no live MCPManager (not running)
+      const mcp = this.channelMcp.get(channel);
+      if (!mcp) continue;
+      // Build a set of live server names to avoid refreshing/disconnecting-removed servers
+      const liveServers = new Set(mcp.listServers());
+      for (const [name, cfg] of Object.entries(servers)) {
+        if (!cfg.oauth?.client_id) continue;
+        // Server was removed from MCPManager but still in config — skip to avoid
+        // repeated expired broadcasts every 5 min for servers that won't reconnect
+        if (!liveServers.has(name)) continue;
+        const key = `${channel}:${name}`;
+        if (this.oauthRefreshInFlight.has(key)) continue;
+        this.oauthRefreshInFlight.add(key);
+        try {
+          const { token, reason } = await loadOrRefreshOAuthToken(channel, name, cfg);
+          if (token) {
+            // Push the refreshed token into the live HTTP connection so it
+            // doesn't keep using the stale one until the next reconnect.
+            this.channelMcp.get(channel)?.setServerToken(name, token);
+          } else {
+            const msg =
+              reason === "refresh_failed"
+                ? "OAuth token refresh failed — user re-auth needed"
+                : "OAuth token expired — user re-auth needed";
+            console.warn(`[MCP OAuth] ${key}: ${msg}`);
+            broadcastUpdate(channel, { type: "mcp_oauth_expired", server: name, reason });
+          }
+        } catch (err) {
+          console.warn(`[MCP OAuth] Unexpected error refreshing ${key}:`, (err as Error).message);
+        } finally {
+          this.oauthRefreshInFlight.delete(key);
+        }
+      }
+    }
   }
 
   /** Stop all worker loops */
   async stop(): Promise<void> {
     console.log("[WorkerManager] Stopping all worker loops...");
 
-    // Stop heartbeat monitor first and wait for in-flight check to drain
+    if (this.oauthRefreshTimer) {
+      clearInterval(this.oauthRefreshTimer);
+      this.oauthRefreshTimer = undefined;
+    }
+
     this.stopHeartbeatMonitor();
     const drainStart = Date.now();
     while (this.heartbeatInProgress && Date.now() - drainStart < 2000) {
@@ -235,10 +311,30 @@ export class WorkerManager {
       return false;
     }
 
+    // Resolve project root early so auto-provision can use it
+    let effectiveProjectRoot = agent.project || this.defaultProjectRoot(agent.channel);
+
+    // Auto-provision MCP servers from agent file frontmatter BEFORE ensureChannelMcp
+    // so that newly saved servers are included when the MCPManager initializes
+    if (agent.agentType) {
+      const agentFile = loadAgentFile(agent.agentType, effectiveProjectRoot);
+      if (agentFile) {
+        const rawMcpIds = agentFile.rawFrontmatter.mcpServers;
+        if (Array.isArray(rawMcpIds) && rawMcpIds.length > 0) {
+          await this.autoProvisionAgentMcpServers(
+            agent.channel,
+            rawMcpIds as string[],
+            agent.agentId,
+            effectiveProjectRoot,
+            agentFile.rawFrontmatter.env as Record<string, string> | undefined,
+          );
+        }
+      }
+    }
+
     // Ensure channel MCP servers are running (starts on first agent in channel)
     const channelMcpManager = await this.ensureChannelMcp(agent.channel);
 
-    let effectiveProjectRoot = agent.project || this.defaultProjectRoot(agent.channel);
     let worktreePath: string | undefined;
     let worktreeBranch: string | undefined;
     const originalProjectRoot = effectiveProjectRoot;
@@ -888,6 +984,87 @@ export class WorkerManager {
       if (key.startsWith(`${channel}:`)) count++;
     }
     return count;
+  }
+
+  // ===========================================================================
+  // Agent File Auto-Provision
+  // ===========================================================================
+
+  /**
+   * Auto-provision catalog MCP servers declared in an agent file's frontmatter.
+   * Additive-only (no clobber — user config always wins).
+   * Saves entries to config and emits `mcp_auto_provisioned` channel notification.
+   * Provisioned servers persist after agent run ends (provision once, reuse).
+   */
+  private async autoProvisionAgentMcpServers(
+    channel: string,
+    catalogIds: string[],
+    agentId: string,
+    projectRoot: string,
+    env?: Record<string, string>,
+  ): Promise<void> {
+    const existing = getChannelMCPServers(channel);
+    const provisioned: Array<{ id: string; name: string; envRequired: string[] }> = [];
+
+    for (const id of catalogIds) {
+      if (typeof id !== "string") continue;
+
+      const entry = getCatalogEntry(id);
+      if (!entry) {
+        console.warn(`[WorkerManager] Auto-provision: catalog entry "${id}" not found (agent: ${agentId})`);
+        continue;
+      }
+
+      // Skip if already configured — user config wins; log if env differs
+      if (existing[entry.id] !== undefined) {
+        console.log(`[WorkerManager] Auto-provision: "${id}" already configured for channel ${channel} — skipping`);
+        continue;
+      }
+
+      // Resolve template vars ({PROJECT_ROOT} etc.)
+      let resolvedArgs: string[];
+      try {
+        resolvedArgs = resolveArgs(entry.args || [], { PROJECT_ROOT: projectRoot, ...(env || {}) });
+      } catch (err: any) {
+        console.warn(`[WorkerManager] Auto-provision: cannot resolve args for "${id}": ${err.message}`);
+        continue;
+      }
+
+      // Build minimal server config
+      const mcpConfig: any = {
+        transport: entry.transport,
+        ...(entry.logo ? { logo: entry.logo } : {}),
+        autoProvisioned: true,
+        autoProvisionedBy: agentId,
+      };
+      if (entry.transport === "stdio") {
+        mcpConfig.command = entry.command;
+        mcpConfig.args = resolvedArgs;
+        if (env && Object.keys(env).length > 0) mcpConfig.env = env;
+      } else {
+        mcpConfig.url = entry.url;
+      }
+
+      // Validate (async — includes DNS rebinding check for http)
+      try {
+        await validateServerConfig(entry.id, mcpConfig);
+      } catch (err: any) {
+        console.warn(`[WorkerManager] Auto-provision: validation failed for "${id}": ${err.message}`);
+        continue;
+      }
+
+      saveChannelMCPServer(channel, entry.id, mcpConfig);
+      provisioned.push({ id: entry.id, name: entry.name, envRequired: entry.envRequired || [] });
+      console.log(`[WorkerManager] Auto-provisioned MCP server "${id}" for channel ${channel} (agent: ${agentId})`);
+    }
+
+    // Notify UI so it can show a dismissable banner
+    if (provisioned.length > 0) {
+      broadcastUpdate(channel, {
+        type: "mcp_auto_provisioned",
+        servers: provisioned,
+      });
+    }
   }
 
   /**

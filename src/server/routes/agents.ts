@@ -8,18 +8,19 @@
 import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { getDataDir } from "../../config-file";
-import { validateBody } from "../validate";
 import {
   db,
   getAgent,
   getOrRegisterAgent,
   listAgents,
+  type Message,
   markMessagesSeen,
   setAgentSleeping,
   setAgentStreaming,
   toSlackMessage,
-  type Message,
 } from "../database";
+import { json, numParam, parseBody } from "../http-helpers";
+import { validateBody } from "../validate";
 import {
   broadcastAgentStreaming,
   broadcastAgentToken,
@@ -27,7 +28,6 @@ import {
   broadcastMessageSeen,
   broadcastUpdate,
 } from "../websocket";
-import { json, numParam, parseBody } from "../http-helpers";
 import { getPendingMessages } from "./messages";
 
 // ---------------------------------------------------------------------------

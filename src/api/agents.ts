@@ -40,6 +40,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import type { AgentFileConfig } from "../agent/agents/loader";
 import {
   clearAgentFilesCache,
   isValidAgentName,
@@ -47,12 +48,11 @@ import {
   listGlobalAgentFiles,
   loadAgentFile,
 } from "../agent/agents/loader";
-import type { AgentFileConfig } from "../agent/agents/loader";
 import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../agent/api/provider-config";
-import { isWorktreeEnabled, loadConfigFile } from "../config-file";
 import { getSkillManager } from "../agent/skills/manager";
-import type { WorkerManager } from "../worker-manager";
+import { isWorktreeEnabled, loadConfigFile } from "../config-file";
 import { broadcastUpdate } from "../server/websocket";
+import type { WorkerManager } from "../worker-manager";
 
 // ============================================================================
 // Security: Sensitive file patterns (blocked from reading)

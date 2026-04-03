@@ -8,12 +8,12 @@
  * Uses sandbox on Linux/macOS when available.
  */
 
-import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
-  IS_WINDOWS,
   getAgentContext,
   getSandboxProjectRoot,
+  IS_WINDOWS,
   isSandboxReady,
   registerTool,
   runInSandbox,

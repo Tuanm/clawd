@@ -5,10 +5,10 @@
 import Database from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Message } from "../api/client";
 import { getDataDir } from "../../config-file";
 import { runMigrations } from "../../db/migrations";
 import { memoryMigrations } from "../../db/migrations/memory-migrations";
+import type { Message } from "../api/client";
 import { smartTruncate } from "../utils/smart-truncation";
 
 // ============================================================================

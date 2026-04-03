@@ -83,6 +83,8 @@ Examples:
   process.exit(0);
 }
 
+import { timingSafeEqual } from "node:crypto";
+import { z } from "zod";
 import { keyPool } from "./agent/api/key-pool";
 import { clearConfigCache as clearProviderConfigCache, ensureKeyPoolInitialized } from "./agent/api/provider-config";
 import { applyTokenLimitOverrides } from "./agent/constants/context-limits";
@@ -98,23 +100,21 @@ import {
   getDataDir,
   hasGlobalAuth,
   isAuthEnabled,
-  isChannelAuthRequired,
   isBrowserEnabled,
+  isChannelAuthRequired,
   isWorkspacesEnabled,
   loadConfigFile,
   reloadConfigFile,
   validateApiToken,
 } from "./config-file";
-import { INTERNAL_SERVICE_TOKEN } from "./internal-token";
-import { timingSafeEqual } from "node:crypto";
 import { extensionZipSize, getExtensionZip } from "./embedded-extension";
 import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbeddedUI } from "./embedded-ui";
+import { INTERNAL_SERVICE_TOKEN } from "./internal-token";
 import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./mcp-oauth";
 import { upgradeBrowserWs } from "./server/browser-bridge";
-import { validateBody } from "./server/validate";
 import { corsHeaders, json, numParam, parseBody } from "./server/http-helpers";
+import { validateBody } from "./server/validate";
 import { WorkerManager } from "./worker-manager";
-import { z } from "zod";
 
 // Load configuration from CLI args + config file
 const config = loadConfig();
@@ -856,7 +856,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       return new Response(
         JSON.stringify({
           client_id: `${publicOrigin}/.well-known/oauth-client.json`,
-          client_name: "Clawd",
+          client_name: "Claw'd",
           redirect_uris: [`${publicOrigin}/api/mcp/oauth/callback`],
           grant_types: ["authorization_code"],
           response_types: ["code"],
