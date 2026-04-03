@@ -76,6 +76,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private heartbeatPending = false;
   private memorySessionId: string | null = null;
   private pendingTimestamps: string[] = [];
+  /** In-memory set of timestamps marked as seen but not yet processed.
+   *  Tracks messages that appeared in a poll but weren't successfully processed,
+   *  so subsequent polls can differentiate "brand-new" vs "previously seen" messages.
+   *  Does not persist across restarts (acceptable — post-restart messages appear as new). */
+  private pendingSeenTimestamps = new Set<string>();
   private forceMarkRetries = new Map<string, number>();
   private abortController: AbortController | null = null;
   private wasCancelledByHeartbeat = false;
@@ -197,12 +202,13 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             continue;
           }
 
-          let pending = this.pollForMessages();
+          let { pending, unseen, seenNotProcessed } = this.pollForMessagesWithSeen();
 
           if (pending.length === 0 && this.heartbeatPending) {
             this.heartbeatPending = false;
             this.sleeping = false;
             pending = [{ ts: String(Date.now()), user: "UHUMAN", text: "<agent_signal>[HEARTBEAT]</agent_signal>" }];
+            // Heartbeat is not a "seen" message — don't add to pendingSeenTimestamps
           }
 
           if (pending.length === 0) {
@@ -285,6 +291,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           this.lastActivityAt = Date.now();
           this.pendingTimestamps = pending.map((m: any) => m.ts);
 
+          // Track seen-but-not-processed timestamps for prompt differentiation on retry.
+          // After successful processing (or force-mark), these are removed.
+          const isContinuation = unseen.length === 0 && seenNotProcessed.length > 0;
+          if (!isContinuation) {
+            // Only add genuinely unseen timestamps to in-memory tracking.
+            // seenNotProcessed messages are already tracked from the previous poll.
+            for (const m of unseen) this.pendingSeenTimestamps.add(m.ts);
+          }
+
           // Mark messages as seen and broadcast to UI
           try {
             const tsList = pending.map((m: any) => m.ts);
@@ -328,7 +343,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
           this.wasCancelledByHeartbeat = false;
           try {
-            await this.processMessages(pending);
+            await this.processMessages(pending, unseen, seenNotProcessed);
           } catch (err: any) {
             // Always check for session corruption, even on interrupt (aborted session may be invalid)
             const msg = err.message || "";
@@ -348,6 +363,14 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             this.processing = false;
             this.processingStartedAt = null;
             this.lastActivityAt = Date.now();
+
+            // On successful completion, clear seen timestamps for the processed batch.
+            // They will be re-added if they appear in the next poll (unprocessed retry).
+            if (!interrupted) {
+              for (const ts of this.pendingTimestamps) {
+                this.pendingSeenTimestamps.delete(ts);
+              }
+            }
           }
 
           if (interrupted) {
@@ -504,13 +527,55 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     return pending;
   }
 
+  /** Poll for messages with seen/not-processed distinction for prompt labeling.
+   *  Returns all pending messages plus arrays split by seen state.
+   *  Note: pendingSeenTimestamps is in-memory only — does not persist across restarts. */
+  private pollForMessagesWithSeen(): { pending: any[]; unseen: any[]; seenNotProcessed: any[] } {
+    const { channel, agentId } = this.config;
+    const seen = db
+      .query<{ last_processed_ts: string | null; last_seen_ts: string | null }, [string, string]>(
+        `SELECT last_processed_ts, last_seen_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
+      )
+      .get(agentId, channel);
+    const lastProcessedTs = seen?.last_processed_ts || undefined;
+    const lastSeenTs = seen?.last_seen_ts || undefined;
+
+    const result = getPendingMessages(channel, lastProcessedTs, true, 50);
+    const all = ((result as any).messages || []).filter(
+      (m: any) => m.agent_id !== agentId && !(m.user === "UBOT" && !m.agent_id),
+    );
+
+    // Classify each message
+    const pending: any[] = [];
+    const unseen: any[] = [];
+    const seenNotProcessed: any[] = [];
+
+    for (const m of all) {
+      const afterProcessed = !lastProcessedTs || m.ts > lastProcessedTs;
+      if (!afterProcessed) continue;
+
+      // Check in-memory seen tracking (overrides DB last_seen_ts for retries)
+      const inMemorySeen = this.pendingSeenTimestamps.has(m.ts);
+      const dbSeen = lastSeenTs && m.ts <= lastSeenTs;
+
+      if (inMemorySeen || dbSeen) {
+        seenNotProcessed.push(m);
+      } else {
+        unseen.push(m);
+      }
+      pending.push(m);
+    }
+
+    return { pending, unseen, seenNotProcessed };
+  }
+
   /** Process messages with a pre-built prompt (used by interrupt resume path) */
   private async processMessagesWithPrompt(prompt: string, messages: any[]): Promise<void> {
     return this._runSDKTurn(prompt, messages);
   }
 
-  private async processMessages(messages: any[]): Promise<void> {
-    const prompt = this.formatPrompt(messages);
+  private async processMessages(messages: any[], unseen: any[], seenNotProcessed: any[]): Promise<void> {
+    const prompt = this.formatPromptWithSeen(unseen, seenNotProcessed);
     return this._runSDKTurn(prompt, messages);
   }
 
@@ -740,19 +805,72 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     return `[${msg.ts}] ${user}: ${text}${fileInfo}`;
   }
 
+  /** Format prompt with seen/new differentiation. Replaces formatPrompt(). */
+  private formatPromptWithSeen(unseen: any[], seenNotProcessed: any[]): string {
+    const parts: string[] = [];
+
+    // 1. Header — reflects message mix
+    if (seenNotProcessed.length > 0 && unseen.length === 0) {
+      // All messages are retries — agent previously saw but didn't finish processing
+      parts.push(`# Messages on Channel "${this.config.channel}" (continuing)\n`);
+      parts.push(`CONTINUATION REQUIRED — you did not call chat_mark_processed last turn.\n`);
+    } else if (unseen.length > 0) {
+      parts.push(`# Messages on Channel "${this.config.channel}" (poll start)\n`);
+    }
+
+    const buildChronological = (messages: any[]): string[] => {
+      if (messages.length === 0) return [];
+      const NEWEST_RESERVE = Math.min(messages.length, 5);
+      const newest = messages.slice(-NEWEST_RESERVE);
+      const older = messages.slice(0, messages.length - NEWEST_RESERVE);
+      let totalLen = 0;
+      const newestLines: string[] = [];
+      for (const msg of newest) {
+        const line = this.formatMessageLine(msg);
+        newestLines.push(line);
+        totalLen += line.length;
+      }
+      const olderLines: string[] = [];
+      for (let i = older.length - 1; i >= 0; i--) {
+        const line = this.formatMessageLine(older[i]);
+        if (totalLen + line.length > MAX_COMBINED_PROMPT_LENGTH) break;
+        olderLines.unshift(line);
+        totalLen += line.length;
+      }
+      return [...olderLines, ...newestLines];
+    };
+
+    // 2. Previously seen section (continuation case or mixed)
+    if (seenNotProcessed.length > 0) {
+      if (unseen.length > 0) {
+        parts.push(`## Previously Seen (not yet processed)\n`);
+      }
+      parts.push(...buildChronological(seenNotProcessed));
+    }
+
+    // 3. New messages section (mixed case only)
+    if (unseen.length > 0 && seenNotProcessed.length > 0) {
+      parts.push(`\n## New Messages\n`);
+    }
+
+    // 4. Unseen section (new or mixed)
+    if (unseen.length > 0) {
+      parts.push(...buildChronological(unseen));
+    }
+
+    parts.push(
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI.]`,
+    );
+    return parts.join("\n");
+  }
+
   private formatPrompt(messages: any[]): string {
     const parts: string[] = [];
-    // Label as "poll start" — these messages may include brand-new and/or
-    // previously-seen-not-processed ones (CC worker doesn't track last_seen_ts).
     parts.push(`# Messages on Channel "${this.config.channel}" (poll start)\n`);
 
-    // Reserve budget for newest messages — build from newest first,
-    // then reverse so prompt reads chronologically.
     const NEWEST_RESERVE = Math.min(messages.length, 5);
     const newest = messages.slice(-NEWEST_RESERVE);
     const older = messages.slice(0, messages.length - NEWEST_RESERVE);
-
-    // Budget: reserve space for newest messages first
     let totalLen = 0;
     const newestLines: string[] = [];
     for (const msg of newest) {
@@ -760,18 +878,13 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       newestLines.push(line);
       totalLen += line.length;
     }
-
-    // Fill remaining budget with older messages — iterate REVERSE to keep
-    // most-recent older messages (closest to the newest 5) when budget runs out
     const olderLines: string[] = [];
     for (let i = older.length - 1; i >= 0; i--) {
       const line = this.formatMessageLine(older[i]);
       if (totalLen + line.length > MAX_COMBINED_PROMPT_LENGTH) break;
-      olderLines.unshift(line); // maintain chronological order
+      olderLines.unshift(line);
       totalLen += line.length;
     }
-
-    // Combine chronologically: older first, then newest
     parts.push(...olderLines, ...newestLines);
 
     parts.push(
@@ -1097,6 +1210,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       } else {
         this.forceMarkRetries.set(ts, retries + 1);
       }
+    }
+    // Clear seen timestamps for force-marked messages
+    for (const ts of this.pendingTimestamps) {
+      this.pendingSeenTimestamps.delete(ts);
     }
     this.pendingTimestamps = [];
   }
