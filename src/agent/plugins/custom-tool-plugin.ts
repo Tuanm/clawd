@@ -89,7 +89,7 @@ const BUILTIN_TOOLS = new Set([
   "kill_agent",
   "list_agents",
   "get_agent_logs",
-  "chat_history_search",
+  "chat_search",
   "memory_summary",
   "skill_list",
   "skill_search",

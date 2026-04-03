@@ -123,8 +123,8 @@ function sectionToolUsage(ctx: PromptContext): string {
 
   rules.push("Call multiple tools in parallel when independent; sequentially when dependent");
 
-  if (hasTool(ctx, "chat_history_search")) {
-    rules.push("Use chat_history_search to recall past conversations when relevant");
+  if (hasTool(ctx, "chat_search")) {
+    rules.push("Use chat_search to recall past conversations when relevant");
   }
 
   return `# Tool Usage\n${rules.map((r) => `- ${r}`).join("\n")}`;

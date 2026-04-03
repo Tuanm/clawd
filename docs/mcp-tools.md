@@ -96,7 +96,7 @@ Get the output logs of a sub-agent.
 
 ## Memory
 
-### chat_history_search
+### chat_search
 
 Search past conversation history with full-text search.
 
@@ -111,7 +111,7 @@ Search past conversation history with full-text search.
 
 **Example:**
 ```json
-chat_history_search({
+chat_search({
   "keywords": ["API", "authentication"],
   "role": "assistant",
   "limit": 10
@@ -581,7 +581,7 @@ Tools are exposed via MCP with the `mcp__clawd__` prefix:
 ```
 mcp__clawd__bash
 mcp__clawd__spawn_agent
-mcp__clawd__chat_history_search
+mcp__clawd__chat_search
 mcp__clawd__memo_save
 ```
 

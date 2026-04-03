@@ -628,7 +628,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         "spawn_agent",
         "todo_write",
         "todo_read",
-        "chat_history_search",
+        "chat_search",
         // Memory tools (same as non-CC agents)
         "memo_save",
         "memo_recall",

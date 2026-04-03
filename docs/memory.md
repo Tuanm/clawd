@@ -10,7 +10,7 @@ Claw'd features a multi-layered memory architecture spanning three distinct stor
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 1: MemoryManager (session-level)                           │
 │  ├── Stores: chat messages via FTS5 (messages_fts)              │
-│  ├── Tools: chat_history_search, memory_summary                  │
+│  ├── Tools: chat_search, memory_summary                  │
 │  └── Purpose: Search past conversations, session summaries        │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 2: KnowledgeBase (tool output indexing)                   │
@@ -270,7 +270,7 @@ This uses the same `AgentMemoryStore.getRelevant()` method, ensuring consistency
 
 ## Tool Reference
 
-### chat_history_search
+### chat_search
 
 Search past conversation history with full-text search.
 

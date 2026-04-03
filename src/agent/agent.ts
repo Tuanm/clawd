@@ -128,7 +128,7 @@ You have access to tools defined in the tool schema — use them as needed.
 6. Always verify your changes with view/grep after editing
 7. If a task requires multiple steps, break them into kanban tasks and track progress
 8. Be concise in your responses
-8. Use chat_history_search to recall past conversations when relevant
+8. Use chat_search to recall past conversations when relevant
 9. Commands timeout after 30s - use job_submit for long-running tasks (builds, tests, installs)
 10. Activate relevant skills when working on specialized tasks
 11. Keep your kanban board updated to stay organized
@@ -1040,7 +1040,7 @@ SUMMARY:`;
     ],
     task: ["todo_write", "todo_read", "todo_update"],
     job: ["job_submit", "job_status", "job_cancel", "job_wait"],
-    memory: ["chat_history_search", "memory_summary"],
+    memory: ["chat_search", "memory_summary"],
   };
 
   /** Count of consecutive text-only responses (no tool calls) for re-expansion trigger */
