@@ -9765,3 +9765,46 @@ body,
 /* ==========================================================================
    END DARK MODE
    ========================================================================== */
+
+/* ===== Voice Input / Mic Button ===== */
+.mic-btn-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.mic-btn.mic-active {
+  color: #ef4444;
+  background: hsl(0 80% 50% / 10%);
+}
+
+.mic-btn.mic-active:hover {
+  color: #ef4444;
+  background: hsl(0 80% 50% / 15%);
+}
+
+.mic-btn.mic-active svg {
+  animation: mic-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mic-btn.mic-active svg {
+    animation: none;
+  }
+}
+
+/* voice-active: no extra visual indicator — readOnly + placeholder is sufficient */
+
+/* mic-error: hidden — errors shown via console only */
+.mic-error {
+  display: none;
+}
