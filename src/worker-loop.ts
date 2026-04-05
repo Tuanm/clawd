@@ -176,6 +176,7 @@ export class WorkerLoop implements AgentWorker {
   private running = false;
   private sleeping = false;
   private wasSleeping = false;
+  private isFirstPoll = true; // Track first poll for new-agent onboarding
   private isProcessing = false;
   private abortController: AbortController | null = null;
   private activeAgent: import("./agent/agent").Agent | null = null;
@@ -589,9 +590,14 @@ export class WorkerLoop implements AgentWorker {
             this.lastContinuationBatchHash = null;
           }
 
-          // Wakeup handling: if agent just woke from sleep with many pending messages,
-          // skip old ones and only process recent messages with conversation summary
-          if (this.wasSleeping && !isContinuation && result.pending.length > MAX_WAKEUP_MESSAGES) {
+          // Wakeup / new-agent onboarding: if agent just woke from sleep OR is brand new
+          // with many pending messages, skip old ones and only process recent with context summary
+          const isNewAgent = this.isFirstPoll && !isContinuation && result.pending.length > MAX_WAKEUP_MESSAGES;
+          this.isFirstPoll = false;
+          const shouldTruncate =
+            (this.wasSleeping || isNewAgent) && !isContinuation && result.pending.length > MAX_WAKEUP_MESSAGES;
+
+          if (shouldTruncate) {
             this.wasSleeping = false;
             const skipped = result.pending.length - MAX_WAKEUP_MESSAGES;
             const skippedMessages = result.pending.slice(0, skipped);
@@ -618,24 +624,33 @@ export class WorkerLoop implements AgentWorker {
               return `${user}: ${(m.text || "").slice(0, 200).replace(/\n/g, " ")}`;
             });
 
+            const contextLabel = isNewAgent
+              ? `[ONBOARDING] You've just been added to this channel.`
+              : `[WAKEUP] You've just woken up from sleep.`;
+            const contextDesc = isNewAgent
+              ? `This channel already has ${skipped} message(s) of prior conversation.`
+              : `While you were sleeping, ${skipped} message(s) were exchanged on this channel.`;
+
             result.pending.unshift({
               ts: "0",
               user: "UHUMAN",
               text: [
-                `[WAKEUP] You've just woken up from sleep.`,
+                contextLabel,
                 ``,
-                `While you were sleeping, ${skipped} message(s) were exchanged on this channel.`,
-                `Here is a summary of the conversation you missed (already processed — do NOT call chat_mark_processed for any of these):`,
+                contextDesc,
+                `Here is a summary of the prior conversation (already processed — do NOT call chat_mark_processed for any of these):`,
                 ``,
-                `--- Missed conversation ---`,
+                `--- Prior conversation ---`,
                 convoLines.join("\n"),
-                `--- End of missed conversation ---`,
+                `--- End of prior conversation ---`,
                 ``,
-                `Now focus ONLY on the new message(s) below. Use the missed conversation as context to understand what happened, but only respond to the new messages.`,
+                `Now focus ONLY on the new message(s) below. Use the prior conversation as context to understand what happened, but only respond to the new messages.`,
               ].join("\n"),
             } as any);
 
-            this.log(`Wakeup: skipped ${skipped} old messages, processing ${result.pending.length - 1} recent`);
+            this.log(
+              `${isNewAgent ? "New agent onboarding" : "Wakeup"}: skipped ${skipped} old messages, processing ${result.pending.length - 1} recent`,
+            );
           } else {
             this.wasSleeping = false;
           }
