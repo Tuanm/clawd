@@ -540,6 +540,22 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "invalid agent_type name" }, 400);
         }
 
+        // Clean slate: clear stale cursor and runtime state so agent starts fresh.
+        // This ensures re-added agents don't resume from an old cursor position.
+        try {
+          db.run("DELETE FROM agent_seen WHERE channel = ? AND agent_id = ?", [channel, agent_id]);
+          db.run("DELETE FROM agents WHERE channel = ? AND id = ?", [channel, agent_id]);
+        } catch {}
+
+        // Clean up any stale memory session from a previous incarnation
+        try {
+          const { SessionManager } = require("../agent/session/manager");
+          const sm = new SessionManager();
+          const sessionName = `${channel}-${agent_id.replace(/[^a-zA-Z0-9]/g, "_")}`;
+          const session = sm.getSession(sessionName);
+          if (session) sm.deleteSession(session.id);
+        } catch {}
+
         try {
           db.run(
             `INSERT INTO channel_agents (channel, agent_id, provider, model, project, active, worker_token, heartbeat_interval, agent_type)
@@ -611,8 +627,19 @@ export function registerAgentRoutes(
         // Stop the worker loop
         await workerManager.stopAgent(channel, agent_id);
 
-        // Remove from database
+        // Clean slate: remove all agent state so re-adding starts fresh
         db.run("DELETE FROM channel_agents WHERE channel = ? AND agent_id = ?", [channel, agent_id]);
+        db.run("DELETE FROM agent_seen WHERE channel = ? AND agent_id = ?", [channel, agent_id]);
+        db.run("DELETE FROM agents WHERE channel = ? AND id = ?", [channel, agent_id]);
+
+        // Clean up memory session (conversation history)
+        try {
+          const { SessionManager } = require("../agent/session/manager");
+          const sm = new SessionManager();
+          const sessionName = `${channel}-${agent_id.replace(/[^a-zA-Z0-9]/g, "_")}`;
+          const session = sm.getSession(sessionName);
+          if (session) sm.deleteSession(session.id);
+        } catch {}
 
         return json({ ok: true, channel, agent_id });
       });

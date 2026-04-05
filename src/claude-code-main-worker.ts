@@ -66,6 +66,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private running = false;
   private sleeping = false;
   private userSleeping = false; // Explicitly put to sleep by user — don't auto-wake
+  private isFirstPoll = true; // Track first poll for new-agent onboarding
   private processing = false;
   private lastActivityAt = Date.now();
   private processingStartedAt: number | null = null;
@@ -224,7 +225,13 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             continue;
           }
 
-          if (this.sleeping) {
+          // Treat first poll of a new agent OR wakeup from sleep the same way:
+          // truncate old messages and provide context summary
+          const isWakeup = this.sleeping;
+          const isNewAgent = this.isFirstPoll && pending.length > MAX_WAKEUP_MESSAGES;
+          this.isFirstPoll = false;
+
+          if (isWakeup) {
             this.sleeping = false;
             const agent = getAgent(this.config.agentId, this.config.channel);
             if (agent) {
@@ -238,57 +245,62 @@ export class ClaudeCodeMainWorker implements AgentWorker {
                 is_sleeping: false,
               } as any);
             }
+          }
 
-            // Wakeup handling: if many messages accumulated during sleep,
-            // skip old ones and only process recent messages with context
-            if (pending.length > MAX_WAKEUP_MESSAGES) {
-              const skipped = pending.length - MAX_WAKEUP_MESSAGES;
-              const skippedMessages = pending.slice(0, skipped);
-              pending = pending.slice(skipped);
+          if ((isWakeup || isNewAgent) && pending.length > MAX_WAKEUP_MESSAGES) {
+            const skipped = pending.length - MAX_WAKEUP_MESSAGES;
+            const skippedMessages = pending.slice(0, skipped);
+            pending = pending.slice(skipped);
 
-              // Mark skipped messages as processed so they don't reappear
-              const lastSkippedTs = skippedMessages[skippedMessages.length - 1].ts;
-              try {
-                db.run(
-                  `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+            // Mark skipped messages as processed so they don't reappear
+            const lastSkippedTs = skippedMessages[skippedMessages.length - 1].ts;
+            try {
+              db.run(
+                `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
                  VALUES (?, ?, ?, ?, strftime('%s', 'now'))
                  ON CONFLICT(agent_id, channel) DO UPDATE SET
                    last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
                    updated_at = strftime('%s', 'now')`,
-                  [this.config.agentId, this.config.channel, lastSkippedTs, lastSkippedTs, lastSkippedTs],
-                );
-              } catch {}
-
-              // Build a conversation summary of skipped messages
-              const convoLines: string[] = [];
-              for (const m of skippedMessages) {
-                const user = m.user === "UHUMAN" ? "Human" : m.agent_id || m.user || "unknown";
-                const text = (m.text || "").slice(0, 200).replace(/\n/g, " ");
-                convoLines.push(`${user}: ${text}`);
-              }
-              const summary = convoLines.join("\n");
-
-              pending.unshift({
-                ts: "0",
-                user: "UHUMAN",
-                text: [
-                  `[WAKEUP] You've just woken up from sleep.`,
-                  ``,
-                  `While you were sleeping, ${skipped} message(s) were exchanged on this channel.`,
-                  `Here is a summary of the conversation you missed (already processed — do NOT call chat_mark_processed for any of these):`,
-                  ``,
-                  `--- Missed conversation ---`,
-                  summary,
-                  `--- End of missed conversation ---`,
-                  ``,
-                  `Now focus ONLY on the new message(s) below. Use the missed conversation as context to understand what happened, but only respond to the new messages. If something from the missed conversation still needs your attention, the user will ask again.`,
-                ].join("\n"),
-              });
-
-              console.log(
-                `[claude-code-main] Wakeup: skipped ${skipped} old messages, processing ${pending.length - 1} recent`,
+                [this.config.agentId, this.config.channel, lastSkippedTs, lastSkippedTs, lastSkippedTs],
               );
+            } catch {}
+
+            // Build a conversation summary of skipped messages
+            const convoLines: string[] = [];
+            for (const m of skippedMessages) {
+              const user = m.user === "UHUMAN" ? "Human" : m.agent_id || m.user || "unknown";
+              const text = (m.text || "").slice(0, 200).replace(/\n/g, " ");
+              convoLines.push(`${user}: ${text}`);
             }
+            const summary = convoLines.join("\n");
+
+            const contextLabel = isNewAgent
+              ? `[ONBOARDING] You've just been added to this channel.`
+              : `[WAKEUP] You've just woken up from sleep.`;
+            const contextDesc = isNewAgent
+              ? `This channel already has ${skipped} message(s) of prior conversation.`
+              : `While you were sleeping, ${skipped} message(s) were exchanged on this channel.`;
+
+            pending.unshift({
+              ts: "0",
+              user: "UHUMAN",
+              text: [
+                contextLabel,
+                ``,
+                `${contextDesc}`,
+                `Here is a summary of the prior conversation (already processed — do NOT call chat_mark_processed for any of these):`,
+                ``,
+                `--- Prior conversation ---`,
+                summary,
+                `--- End of prior conversation ---`,
+                ``,
+                `Now focus ONLY on the new message(s) below. Use the prior conversation as context to understand what happened, but only respond to the new messages.`,
+              ].join("\n"),
+            });
+
+            console.log(
+              `[claude-code-main] ${isNewAgent ? "New agent onboarding" : "Wakeup"}: skipped ${skipped} old messages, processing ${pending.length - 1} recent`,
+            );
           }
           this.processing = true;
           this.processingStartedAt = Date.now();
