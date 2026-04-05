@@ -431,7 +431,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
               this.wasCancelledByHeartbeat = false;
               this.interruptDetected = false; // Reset so re-injections can fire on the resume turn
               try {
-                const interruptPrompt = this.formatInterruptPrompt(pending, uniqueInterruptMsgs);
+                const hadUnsentText = !this.turnChatSent && this.turnStreamText.trim().length > 0;
+                const interruptPrompt = this.formatInterruptPrompt(pending, uniqueInterruptMsgs, hadUnsentText);
                 await this.processMessagesWithPrompt(interruptPrompt, uniqueInterruptMsgs);
               } catch (err: any) {
                 if (!this.wasCancelledByHeartbeat) {
@@ -746,12 +747,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       this.persistSessionId(newSessionId);
     }
 
-    // Re-injection: if agent produced substantial text but never called chat_send_message,
+    // Re-injection: if agent produced ANY text but never called chat_send_message,
     // send one ephemeral follow-up prompt so it can deliver the response.
-    // Skip for: heartbeat turns, cancelled/aborted turns, or aborted signal.
+    // Skip for: heartbeat turns, cancelled/aborted turns, interrupted turns (resume handles it).
     if (
       !this.turnChatSent &&
-      this.turnStreamText.trim().length > 100 &&
+      this.turnStreamText.trim().length > 0 &&
       !this.wasCancelledByHeartbeat &&
       !isHeartbeatTurn &&
       !this.abortController?.signal.aborted &&
@@ -977,10 +978,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   }
 
   /** Format interrupt resume prompt with Processing/New split */
-  private formatInterruptPrompt(processingMessages: any[], newMessages: any[]): string {
+  private formatInterruptPrompt(processingMessages: any[], newMessages: any[], hadUnsentText = false): string {
     const parts: string[] = [];
     parts.push(`[INTERRUPT] New messages arrived while you were processing.`);
     parts.push(`Read them carefully — they may override your current task.\n`);
+    if (hadUnsentText) {
+      parts.push(
+        `[WARNING: Your previous turn produced text output but did NOT call \`mcp__clawd__chat_send_message\`. The human cannot see your previous response. If you still need to respond to the earlier task, call \`mcp__clawd__chat_send_message\` FIRST before processing the new messages.]\n`,
+      );
+    }
 
     // Budget: reserve space for NEW messages first (they're the reason for interrupt),
     // then fill processing context with remaining budget

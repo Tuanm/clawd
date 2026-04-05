@@ -643,6 +643,7 @@ export class WorkerLoop implements AgentWorker {
           this.isProcessing = true;
           this.processingStartedAt = Date.now();
           this.wasCancelledByHeartbeat = false;
+          let lastExecHadUnsentText = false;
 
           // Track current batch timestamps for interrupt detection
           const currentBatchTs = new Set(result.pending.map((m) => m.ts));
@@ -698,6 +699,7 @@ export class WorkerLoop implements AgentWorker {
             }
 
             const execResult = await this.executePrompt(prompt, this.sessionName);
+            lastExecHadUnsentText = !execResult.chatSent && execResult.hadStreamText;
 
             // Track whether this execution ended with an error (for heartbeat idle-agent detection)
             const output = execResult.output || "";
@@ -767,7 +769,8 @@ export class WorkerLoop implements AgentWorker {
               // infinite nesting. Further messages queue until the next while iteration.
               try {
                 const processingMsgs = isContinuation ? result.seenNotProcessed : result.pending;
-                let interruptPrompt = this.buildInterruptPrompt(processingMsgs, interruptMsgs);
+                const hadUnsentText = lastExecHadUnsentText;
+                let interruptPrompt = this.buildInterruptPrompt(processingMsgs, interruptMsgs, hadUnsentText);
                 // Hard-truncation guard (same as buildPrompt path)
                 if (interruptPrompt.length > MAX_COMBINED_PROMPT_LENGTH) {
                   const suffix = `\n\n[TRUNCATED — interrupt prompt exceeded ${MAX_COMBINED_PROMPT_LENGTH} character budget]`;
@@ -1436,7 +1439,7 @@ ${this.getActiveSubAgentReminder()}`;
   }
 
   /** Build interrupt resume prompt with Processing/New split (mirrors CC main worker) */
-  private buildInterruptPrompt(processingMessages: Message[], newMessages: any[]): string {
+  private buildInterruptPrompt(processingMessages: Message[], newMessages: any[], hadUnsentText = false): string {
     const { channel, agentId, projectRoot } = this.config;
 
     const formatMsg = (m: any) => {
@@ -1492,6 +1495,7 @@ PROJECT ROOT: ${projectRoot}
 
 [INTERRUPT] New messages arrived while you were processing.
 Read them carefully — they may override your current task.
+${hadUnsentText ? `\n[WARNING: Your previous turn produced text output but did NOT call \`chat_send_message\`. The human cannot see your previous response. If you still need to respond to the earlier task, call \`chat_send_message\` FIRST before processing the new messages.]\n` : ""}
 
 # Processing Messages on Channel "${channel}"
 
@@ -1517,7 +1521,7 @@ ${this.getActiveSubAgentReminder()}
   private async executePrompt(
     prompt: string,
     sessionName: string,
-  ): Promise<{ success: boolean; output: string; markProcessed: boolean }> {
+  ): Promise<{ success: boolean; output: string; markProcessed: boolean; chatSent: boolean; hadStreamText: boolean }> {
     const { chatApiUrl, channel, agentId, provider, model, projectRoot } = this.config;
 
     const projectHash = `${channel}_${agentId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -1736,12 +1740,12 @@ ${this.getActiveSubAgentReminder()}
 
             this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
 
-            // Re-injection: if agent produced substantial text but never called chat_send_message,
+            // Re-injection: if agent produced ANY text but never called chat_send_message,
             // send one ephemeral follow-up prompt so it can deliver the response.
             // Skip for heartbeat turns and cancelled turns.
             if (
               !turnChatSent &&
-              turnStreamText.trim().length > 100 &&
+              turnStreamText.trim().length > 0 &&
               !isHeartbeatTurn &&
               !this.wasCancelledByHeartbeat
             ) {
@@ -1771,7 +1775,13 @@ ${this.getActiveSubAgentReminder()}
             if (remoteWorkerBridge) remoteWorkerBridge.destroy();
             agent = null; // Prevent double-close in finally
 
-            return { success: true, output: result.content, markProcessed: turnMarkProcessed };
+            return {
+              success: true,
+              output: result.content,
+              markProcessed: turnMarkProcessed,
+              chatSent: turnChatSent,
+              hadStreamText: turnStreamText.trim().length > 0,
+            };
           } finally {
             // Ensure agent is always cleaned up, even on error
             this.activeAgent = null;
@@ -1787,7 +1797,7 @@ ${this.getActiveSubAgentReminder()}
           }
         } catch (error) {
           this.log(`Failed to run agent: ${error}`);
-          return { success: false, output: String(error), markProcessed: false };
+          return { success: false, output: String(error), markProcessed: false, chatSent: false, hadStreamText: false };
         }
       },
     );
