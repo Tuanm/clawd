@@ -1,4 +1,6 @@
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import useSpeechToText from "./hooks/useSpeechToText";
+import MicButton from "./MicButton";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -367,6 +369,41 @@ export default function MessageComposer({
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [text, setText] = useState("");
+
+  // Voice input state
+  const [hasUsedVoice, setHasUsedVoice] = useState(false);
+
+  const handleSpeechError = useCallback((errorCode: string) => {
+    console.warn("[Voice] Speech recognition error:", errorCode);
+  }, []);
+
+  const {
+    isListening,
+    isSupported: isSpeechSupported,
+    transcript: interimTranscript,
+    finalizedText: sessionFinalText,
+    toggleListening: rawToggleListening,
+    abortListening,
+    error: speechError,
+  } = useSpeechToText({
+    continuous: true,
+    interimResults: true,
+    onError: handleSpeechError,
+  });
+
+  // Commit accumulated voice text to textarea when user stops listening
+  const prevIsListening = useRef(false);
+  useEffect(() => {
+    if (prevIsListening.current && !isListening && sessionFinalText) {
+      setText((prev) => prev + (prev ? "\n" : "") + sessionFinalText);
+    }
+    prevIsListening.current = isListening;
+  }, [isListening, sessionFinalText]);
+
+  const toggleListening = useCallback(() => {
+    if (!hasUsedVoice) setHasUsedVoice(true);
+    rawToggleListening();
+  }, [hasUsedVoice, rawToggleListening]);
   const [composerContextMenu, setComposerContextMenu] = useState<ComposerContextMenuState | null>(null);
   const [contextMenuHasSelection, setContextMenuHasSelection] = useState(false);
   const [showToolbar, setShowToolbar] = useState(() => {
@@ -389,6 +426,9 @@ export default function MessageComposer({
 
   // Handle paste from context menu
   const handleContextMenuPaste = useCallback(async () => {
+    if (isListening) {
+      abortListening();
+    }
     try {
       const clipboardText = await navigator.clipboard.readText();
       if (clipboardText) {
@@ -413,7 +453,7 @@ export default function MessageComposer({
       textareaRef.current?.focus();
       document.execCommand("paste");
     }
-  }, [text]);
+  }, [text, isListening, abortListening]);
 
   // Handle copy from context menu
   const handleContextMenuCopy = useCallback(async () => {
@@ -446,6 +486,7 @@ export default function MessageComposer({
   // Apply markdown format to selected text
   const applyFormat = useCallback(
     (prefix: string, suffix: string) => {
+      if (isListening) return;
       const textarea = textareaRef.current;
       if (!textarea) return;
 
@@ -463,11 +504,12 @@ export default function MessageComposer({
         textarea.setSelectionRange(newPos, newPos);
       }, 0);
     },
-    [text],
+    [text, isListening],
   );
 
   // Insert markdown link
   const insertLink = useCallback(() => {
+    if (isListening) return;
     const textarea = textareaRef.current;
     if (!textarea) return;
 
@@ -489,19 +531,23 @@ export default function MessageComposer({
       const newPos = start + markdownLink.length;
       textarea.setSelectionRange(newPos, newPos);
     }, 0);
-  }, [text]);
+  }, [text, isListening]);
 
   const handleSend = useCallback(() => {
-    if (!text.trim() && attachments.length === 0) return;
+    // Build final text: committed text + any voice session text
+    const voicePart = isListening ? sessionFinalText : "";
+    if (isListening) abortListening();
+    const fullText = voicePart ? text + (text ? "\n" : "") + voicePart : text;
+    if (!fullText.trim() && attachments.length === 0) return;
 
     const files = attachments.map((a) => a.file);
-    onSend(text.trim(), files.length > 0 ? files : undefined);
+    onSend(fullText.trim(), files.length > 0 ? files : undefined);
 
     // Clear
     setText("");
     attachments.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
     setAttachments([]);
-  }, [text, attachments, onSend]);
+  }, [text, attachments, onSend, isListening, abortListening, sessionFinalText]);
 
   // Handle textarea keydown (Enter to send, Ctrl+Enter for newline)
   const handleKeyDown = useCallback(
@@ -607,7 +653,14 @@ export default function MessageComposer({
     [addFiles],
   );
 
-  const hasContent = text.trim().length > 0 || attachments.length > 0;
+  // Show: existing text + accumulated finals this session + current interim
+  const voiceText = isListening ? [sessionFinalText, interimTranscript].filter(Boolean).join(" ") : "";
+  const displayText = voiceText ? text + (text ? "\n" : "") + voiceText : text;
+
+  const hasContent =
+    text.trim().length > 0 ||
+    attachments.length > 0 ||
+    (isListening && (sessionFinalText.length > 0 || interimTranscript.length > 0));
 
   if (disabled) {
     return null;
@@ -753,12 +806,16 @@ export default function MessageComposer({
           <textarea
             ref={textareaRef}
             className="composer-raw-textarea"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
+            value={displayText}
+            onChange={(e) => {
+              if (!isListening) setText(e.target.value);
+            }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             onContextMenu={handleTextareaContextMenu}
-            placeholder="Reply..."
+            placeholder={isListening ? "Listening..." : "Reply..."}
+            readOnly={isListening}
+            aria-describedby={isListening ? "voice-status" : undefined}
           />
         )}
 
@@ -842,6 +899,12 @@ export default function MessageComposer({
             >
               {theme === "dark" ? <SunIcon /> : <MoonIcon />}
             </button>
+            <MicButton
+              isListening={isListening}
+              isSupported={isSpeechSupported}
+              onClick={toggleListening}
+              error={speechError}
+            />
             {/* Icon buttons — auto-collapses into ⋮ when container overflows */}
             {!showToolbar &&
               (searchButton || projectsButton || mcpButton || skillsButton || worktreeButton || onPlanClick) && (
@@ -886,6 +949,11 @@ export default function MessageComposer({
           </button>
         </div>
       </div>
+      {hasUsedVoice && (
+        <div id="voice-status" className="sr-only" aria-live="polite" aria-atomic="true">
+          {isListening ? "Voice input active. Speak now." : "Voice input stopped."}
+        </div>
+      )}
       <div className="composer-disclaimer">Claw'd can make mistakes. You too.</div>
 
       {/* Composer context menu */}
