@@ -640,17 +640,17 @@ export class AgentMemoryStore {
   }
 
   /** Run periodic priority decay on old unaccessed memories. */
-  decayPriorities(agentId: string): number {
+  decayPriorities(agentId: string, channel: string): number {
     this.ensureInit();
     if (!this.initialized) return 0;
 
     const result = this.db.run(
       `UPDATE agent_memories
        SET priority = MAX(0, priority - 5)
-       WHERE agent_id = ? AND priority < 80 AND priority > 0
+       WHERE agent_id = ? AND (channel = ? OR channel IS NULL) AND priority < 80 AND priority > 0
          AND last_accessed < unixepoch() - 604800
          AND access_count < 3`,
-      [agentId],
+      [agentId, channel],
     );
 
     return result.changes;
@@ -663,6 +663,7 @@ export class AgentMemoryStore {
    */
   findConsolidationCandidates(
     agentId: string,
+    channel: string,
     minCount = 400,
   ): { category: MemoryCategory; memories: AgentMemory[] }[] {
     this.ensureInit();
@@ -677,11 +678,11 @@ export class AgentMemoryStore {
       const rows = this.db
         .query(
           `SELECT * FROM agent_memories
-           WHERE agent_id = ? AND category = ? AND priority < 80
+           WHERE agent_id = ? AND (channel = ? OR channel IS NULL) AND category = ? AND priority < 80
            ORDER BY created_at ASC
            LIMIT 50`,
         )
-        .all(agentId, cat) as any[];
+        .all(agentId, channel, cat) as any[];
 
       if (rows.length >= 5) {
         groups.push({ category: cat, memories: rows.map(rowToMemory) });
@@ -819,7 +820,7 @@ export class AgentMemoryStore {
    * Get memory topic summary — list of categories and their counts/top keywords.
    * Phase 4: Used for memory hints injection (tells agent what it knows without full content).
    */
-  getMemoryHints(agentId: string): string {
+  getMemoryHints(agentId: string, channel: string): string {
     this.ensureInit();
     if (!this.initialized) return "";
 
@@ -827,11 +828,11 @@ export class AgentMemoryStore {
       .query(
         `SELECT category, COUNT(*) as cnt, GROUP_CONCAT(DISTINCT tags) as allTags
          FROM agent_memories
-         WHERE agent_id = ? AND tags != ''
+         WHERE agent_id = ? AND (channel = ? OR channel IS NULL) AND tags != ''
          GROUP BY category
          ORDER BY cnt DESC`,
       )
-      .all(agentId) as any[];
+      .all(agentId, channel) as any[];
 
     if (rows.length === 0) return "";
 
