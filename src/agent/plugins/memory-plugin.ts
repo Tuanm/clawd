@@ -333,7 +333,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
 
       // Memory hints — tell agent what topics it knows about (Phase 4)
       if (charCount < INJECTION_CAP - 200) {
-        const hints = store.getMemoryHints(agentId);
+        const hints = store.getMemoryHints(agentId, channel);
         if (hints) {
           const hintsSection = `  <memory_topics>\n${hints
             .split("\n")
@@ -394,7 +394,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
     // Priority decay every 50 turns (lightweight, no LLM)
     if (turnCount % 50 === 0 && turnCount > 10) {
       try {
-        store.decayPriorities(agentId);
+        store.decayPriorities(agentId, channel);
       } catch {}
     }
 
@@ -483,7 +483,7 @@ ${content.slice(0, 2000)}`;
     const llmClient = ctx.llmClient;
     if (!llmClient) return;
 
-    const groups = store.findConsolidationCandidates(agentId);
+    const groups = store.findConsolidationCandidates(agentId, channel);
     if (groups.length === 0) return;
 
     let merged = 0;
