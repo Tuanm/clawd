@@ -875,15 +875,15 @@ export class MCPManager extends EventEmitter {
         console.log(`[MCP] Server "${serverName}" tools: ${connection.tools.map((t) => t.name).join(", ") || "none"}`);
       }
       for (const tool of connection.tools) {
-        // Prefix external MCP tool names with serverName__ so they become
-        // mcp__clawd__{serverName}__{toolName} after CC's mcp__clawd__ prefix
-        const toolName = `${serverName}__${tool.name}`;
-
+        // Strip server prefix so the agent can call `chat_send_message` directly
+        // without needing to know the MCP server name. The server prefix is still
+        // useful for disambiguation (tool namespacing), but the agent shouldn't
+        // need it for standard tools like chat_send_message.
         definitions.push({
           type: "function",
           function: {
-            name: toolName,
-            description: `[MCP:${serverName}] ${tool.description}`,
+            name: tool.name,
+            description: tool.description,
             parameters: tool.inputSchema,
           },
         });

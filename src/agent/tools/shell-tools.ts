@@ -6,6 +6,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { bustReadOnceCache } from "../utils/read-once";
 import {
   getContextAgentId,
   getSafeWindowsShell,
@@ -21,6 +22,54 @@ import {
   validatePath,
   wrapCommandForSandbox,
 } from "./registry";
+
+// ── Helpers ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Best-effort extraction of file paths that a bash command might write to.
+ * Covers: redirects (> >>), tee, sed -i, mv/cp, cat/heredoc.
+ * This is a heuristic — false negatives possible (e.g., `$var`, `$(cmd)`).
+ */
+function extractWritablePaths(command: string): string[] {
+  const paths: string[] = [];
+
+  // Match: > path, >> path (strip trailing whitespace/newline noise)
+  const redirectRe = /(?:^|[^\\])\s*(>\s*>?\s*)([^\|&;\s\n]+)/gm;
+  for (const m of command.matchAll(redirectRe)) {
+    const path = m[2]?.trim().replace(/^['"]|['"]$/g, "");
+    if (path && !path.startsWith("/dev/")) paths.push(path);
+  }
+
+  // tee [-a] path, sed -i path, cat >path
+  const toolPathRe = /\b(?:tee(?:\s+-[a])?|sed\s+-i|cat)\s+(?:-a\s+)?([^\|&;\s]+)/gi;
+  for (const m of command.matchAll(toolPathRe)) {
+    const path = m[1]?.trim().replace(/^['"]|['"]$/g, "");
+    if (path && !path.startsWith("/dev/")) paths.push(path);
+  }
+
+  // mv src dst, cp src dst
+  const mvCpRe = /\b(?:mv|cp)\s+([^\s]+)\s+([^\s]+)/g;
+  for (const m of command.matchAll(mvCpRe)) {
+    const dst = m[2]?.trim().replace(/^['"]|['"]$/g, "");
+    if (dst && !dst.startsWith("/dev/")) paths.push(dst);
+  }
+
+  return [...new Set(paths)];
+}
+
+/**
+ * Bust the read-once cache for any file paths the bash command might have modified.
+ */
+function bustBashWriteCache(command: string): void {
+  const paths = extractWritablePaths(command);
+  for (const p of paths) {
+    try {
+      bustReadOnceCache(p);
+    } catch {
+      // Silently ignore — cache bust is best-effort
+    }
+  }
+}
 
 // ============================================================================
 // Tool: Today
@@ -192,6 +241,7 @@ registerTool(
               clearTimeout(timeoutId);
               const truncated = outputBytes >= MAX_BASH_OUTPUT ? "\n[OUTPUT TRUNCATED: exceeded 10MB limit]" : "";
               if (timedOut) {
+                bustBashWriteCache(command);
                 resolve({
                   success: false,
                   output: stdout.trim() + truncated,
@@ -202,6 +252,7 @@ registerTool(
                 return;
               }
               const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "") + truncated;
+              bustBashWriteCache(command);
               resolve({
                 success: code === 0,
                 output: sandboxNotice + (output.trim() || "(no output)"),
@@ -211,6 +262,7 @@ registerTool(
 
             proc.on("error", (err) => {
               clearTimeout(timeoutId);
+              bustBashWriteCache(command);
               resolve({
                 success: false,
                 output: "",
@@ -274,6 +326,7 @@ registerTool(
         clearTimeout(timeoutId);
         const truncated = outputBytes >= MAX_BASH_OUTPUT ? "\n[OUTPUT TRUNCATED: exceeded 10MB limit]" : "";
         if (timedOut) {
+          bustBashWriteCache(command);
           resolve({
             success: false,
             output: stdout.trim() + truncated,
@@ -284,6 +337,7 @@ registerTool(
           return;
         }
         const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "") + truncated;
+        bustBashWriteCache(command);
         resolve({
           success: code === 0,
           output: output.trim() || "(no output)",
@@ -293,6 +347,7 @@ registerTool(
 
       proc.on("error", (err) => {
         clearTimeout(timeoutId);
+        bustBashWriteCache(command);
         resolve({
           success: false,
           output: "",

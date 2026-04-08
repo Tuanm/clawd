@@ -13,9 +13,33 @@ import { type CompressResult, compressToolOutput, getToolCap } from "../utils/ou
 import type { Plugin, PluginHooks } from "./manager";
 
 // ── Keyword Stop Words (module-level for single compilation) ───────
+// Shared stop words for both code and prose — common tokens with low semantic value.
+// Using the same list for both (no separate CODE_STOP_WORDS) keeps keyword extraction
+// simple and consistent. Code-specific keywords like function/class are included here
+// because they appear in both prose ("I need a function that...") and code contexts
+// and add little semantic value when searching for relevant tool output.
+const SHARED_STOP_WORDS =
+  /^(this|that|with|from|have|been|will|were|they|then|than|also|just|more|some|only|very|each|when|what|into|error|undefined|null|true|false|void|typeof|value|result|index|data|args|name|test|spec)$/;
 
-const STOP_WORDS =
-  /^(this|that|with|from|have|been|will|were|they|then|than|also|just|more|some|only|very|each|when|what|into|function|return|const|async|await|class|export|import|string|number|boolean|object|array|error|undefined|null|true|false|void|typeof|interface|method|module|require|default|super|yield|static|extends|implements|throw|catch|finally|break|continue|switch|case|while|else|type|enum|value|result|index|length|push|slice|data|args|name|path|file|line|code|test|spec|console|stdout|stderr|process|buffer|callback|promise|resolve|reject)$/;
+/**
+ * Detect if text is primarily code (has syntax indicators) or prose.
+ */
+function isCodeContent(text: string): boolean {
+  const codeIndicators = [
+    /^(import|export|const|let|var|function|class|interface|type|enum|async|await|return|if|else|for|while|switch|case|try|catch|throw|finally)\s/m,
+    /[{}\[\]();]=>/.test(text), // braces, brackets, semicolons, arrow functions
+    /\/\*[\s\S]*?\*\/|\/\/.+/.test(text), // comments
+    /['"`][^'"`]*['"`]\s*[=:.]/.test(text), // string literals
+    /\d+\.\d+/.test(text), // numbers
+    /[A-Z][a-z]+[A-Z]/.test(text), // PascalCase
+  ];
+  return codeIndicators.filter(Boolean).length >= 2;
+}
+
+/** Get the stop words regex — shared for both code and prose */
+function getStopWords(_text: string): RegExp {
+  return SHARED_STOP_WORDS;
+}
 
 // ── Config ─────────────────────────────────────────────────────────
 
@@ -52,14 +76,15 @@ export function createContextModePlugin(config: ContextModeConfig): ContextModeP
   const MAX_RECENT_KEYWORDS = 20;
 
   function updateRecentKeywords(text: string): void {
-    // Simple TF extraction: split on non-word, keep 4+ char tokens, dedupe
+    // Use content-type-aware stop words (fix: preserve code keywords like function/class/return)
+    const stopWords = getStopWords(text);
     const words = text
       .toLowerCase()
       .split(/\W+/)
       .filter(
         (w) =>
           w.length >= 4 &&
-          !STOP_WORDS.test(w) &&
+          !stopWords.test(w) &&
           !/^\d+$/.test(w) && // filter pure numbers
           /[a-z]{2,}/.test(w), // require at least 2 consecutive letters
       );
@@ -86,38 +111,43 @@ export function createContextModePlugin(config: ContextModeConfig): ContextModeP
         };
       }
 
-      const compressed = compressToolOutput(toolName, result, config.sessionId, (sid, sourceId, tName, content) =>
-        kb.index(sid, sourceId, tName, content),
+      // Fix: Reserve snippet space BEFORE compression so intent snippets don't挤占 truncated content
+      const cap = getToolCap(toolName);
+      const snippetReserve = recentKeywords.length > 0 ? Math.min(Math.floor(cap * 0.15), 1500) : 0;
+
+      const compressed = compressToolOutput(
+        toolName,
+        result,
+        config.sessionId,
+        (sid, sourceId, tName, content) => kb.index(sid, sourceId, tName, content),
+        snippetReserve,
       );
 
       if (compressed.indexed) {
         totalIndexed++;
-        totalSaved += compressed.originalSize - compressed.compressedSize;
+        // Fix: Guard against negative savings — when under-cap content gets indexed AND a snippet is appended,
+        // compressedSize can exceed originalSize (snippet adds bytes). Only credit positive savings.
+        const delta = compressed.originalSize - compressed.compressedSize;
+        if (delta > 0) totalSaved += delta;
+      }
 
-        // 5.1: Intent-driven filtering — append relevant snippet within per-tool cap budget
-        if (recentKeywords.length > 0) {
-          try {
-            const cap = getToolCap(toolName);
-            const availableSpace = cap - compressed.result.output.length;
-            if (availableSpace > 200) {
-              // minimum useful snippet size
-              const query = recentKeywords.slice(-5).join(" ");
-              const hits = config.channel
-                ? kb.searchByChannel(query, config.channel, 1)
-                : kb.search(query, undefined, 1);
-              if (hits.length > 0 && hits[0].content.length > 0) {
-                const headerLen = 46; // length of "\n\n[Relevant excerpt matching current context]\n"
-                const snippetLen = Math.min(availableSpace - headerLen, 1500);
-                if (snippetLen > 100) {
-                  const snippet = hits[0].content.slice(0, snippetLen);
-                  compressed.result.output += `\n\n[Relevant excerpt matching current context]\n${snippet}`;
-                  compressed.compressedSize = compressed.result.output.length;
-                }
-              }
+      // 5.1: Intent-driven filtering — append relevant snippet in the pre-reserved space
+      // Runs AFTER compression (and outside the indexed check) so it can add content to under-cap results too
+      if (snippetReserve > 0) {
+        try {
+          const query = recentKeywords.slice(-5).join(" ");
+          const hits = config.channel ? kb.searchByChannel(query, config.channel, 1) : kb.search(query, undefined, 1);
+          if (hits.length > 0 && hits[0].content.length > 0) {
+            const headerLen = 46; // length of "\n\n[Relevant excerpt matching current context]\n"
+            const snippetLen = Math.min(snippetReserve - headerLen - 150, 1500);
+            if (snippetLen > 100) {
+              const snippet = hits[0].content.slice(0, snippetLen);
+              compressed.result.output += `\n\n[Relevant excerpt matching current context]\n${snippet}`;
+              compressed.compressedSize = compressed.result.output.length;
             }
-          } catch {
-            // Non-critical — intent filtering is best-effort
           }
+        } catch {
+          // Non-critical — intent filtering is best-effort
         }
       }
 
@@ -225,18 +255,28 @@ export function createContextModePlugin(config: ContextModeConfig): ContextModeP
       }
 
       // Bash commands that modify files
+      // Fix: Improved pattern catches sed (with/without -i), echo>/>>/|tee, mv/cp/rm, heredoc, python -c, node -e
       if (toolName === "bash" || toolName === "exec") {
         const cmd = args?.command || args?.cmd || "";
-        const fileModPattern = /(mv|cp|rm|sed\s+-i|git\s+(checkout|stash|reset|merge))\s+/;
-        if (fileModPattern.test(cmd)) {
-          if (/git\s+(checkout|stash|reset|merge)/.test(cmd)) {
+        const writePattern = /(?:^|\s)(?:mv|cp|rm|mkdir|tee)\s+|^[^#]*>|>>\s*|tee\s+[#\w]|sed\s+(?:[^|]|-[^i])/;
+        const gitWritePattern = /git\s+(?:checkout|stash|reset|merge|add|commit|branch|restore)/;
+        if (writePattern.test(cmd) || gitWritePattern.test(cmd)) {
+          if (gitWritePattern.test(cmd)) {
             // Broad invalidation for git ops
             kb.invalidateSession(config.sessionId);
           } else {
-            // Extract target file paths
-            const paths = cmd.match(/[\w/.~-]+\.\w+/g);
-            if (paths) {
-              for (const p of paths) kb.invalidateSource(config.sessionId, p);
+            // Extract target file paths from the command
+            // Match: file paths with extensions, paths after >, >>, |tee
+            const paths: string[] = [
+              ...(cmd.match(/[\w/.~-]+\.\w+/g) || []),
+              ...(cmd.match(/(?<=>>?\s*)[^\s|]+/g) || []),
+            ];
+            for (const p of [...new Set(paths)]) {
+              try {
+                kb.invalidateSource(config.sessionId, p);
+              } catch {
+                // Non-critical
+              }
             }
           }
         }

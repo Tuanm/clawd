@@ -72,11 +72,19 @@ export function smartTruncate(text: string, opts: SmartTruncateOptions = {}): st
   let head = text.slice(0, headSize);
   const tail = tailSize > 0 ? text.slice(-tailSize) : "";
 
-  // Code fence closure: if odd fences in assembled head+tail, close
+  // Code fence closure: handle ```, ''', and """ fences
   // Budget for "\n```" (4 chars) was already reserved via fenceReserve
-  const fenceCount = ((head + tail).match(/```/g) || []).length;
-  if (fenceCount % 2 !== 0) {
+  const combined = head + tail;
+  const tripleBacktick = (combined.match(/```/g) || []).length % 2 !== 0;
+  const tripleSingleQuote = (combined.match(/'''/g) || []).length % 2 !== 0;
+  const tripleDoubleQuote = (combined.match(/"""/g) || []).length % 2 !== 0;
+
+  if (tripleBacktick) {
     head = head + "\n```";
+  } else if (tripleSingleQuote) {
+    head = head + "\n'''";
+  } else if (tripleDoubleQuote) {
+    head = head + '\n"""';
   }
 
   return head + marker + tail;

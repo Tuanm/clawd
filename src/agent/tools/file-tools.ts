@@ -6,6 +6,9 @@
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isSandboxReady, registerTool, resolveSafePath, runInSandbox, validatePath } from "./registry";
+import { getReadOnceCache, ReadOnceCache } from "../utils/read-once";
+import { getContextSessionId } from "../utils/agent-context";
+import { ContextCompressor } from "../utils/context-compressor";
 
 // ============================================================================
 // Tool: View
@@ -157,28 +160,92 @@ registerTool(
         return { success: true, output: output || "(empty directory)" };
       }
 
-      let content = readFileSync(resolvedPath, "utf-8");
-      const lines = content.split("\n");
+      // ── Read-Once Cache + Context Compressor ─────────────────────────
+      // Cache is session-scoped (one cache per sessionId). On cache miss,
+      // reads the file and optionally strips comments via ContextCompressor.
+      const sessionId = getContextSessionId();
+      const cache = sessionId ? getReadOnceCache(sessionId) : null;
+      let rawContent: string;
+
+      if (cache) {
+        const cached = cache.read(resolvedPath, process.cwd());
+        if (cached) {
+          rawContent = cached.content;
+        } else {
+          rawContent = readFileSync(resolvedPath, "utf-8");
+          // Compress: strip comments from code files (>5 lines, not binary)
+          if (rawContent.split("\n").length > 5 && !isBinaryContent(rawContent)) {
+            try {
+              const comp = _fileCompressor.compress(rawContent, resolvedPath, stat.mtimeMs);
+              if (comp.savingsRatio > 0.05) {
+                rawContent = comp.content;
+              }
+            } catch {
+              // Compression failed — use raw content
+            }
+          }
+        }
+      } else {
+        rawContent = readFileSync(resolvedPath, "utf-8");
+      }
+
+      const lines = rawContent.split("\n");
 
       if (start_line || end_line) {
         const start = Math.max(1, start_line || 1) - 1;
         const end = Math.min(lines.length, end_line || lines.length);
         const selectedLines = lines.slice(start, end);
-        content = selectedLines.map((line, i) => `${start + i + 1}. ${line}`).join("\n");
+        rawContent = selectedLines.map((line, i) => `${start + i + 1}. ${line}`).join("\n");
       } else {
-        content = lines.map((line, i) => `${i + 1}. ${line}`).join("\n");
+        rawContent = lines.map((line, i) => `${i + 1}. ${line}`).join("\n");
       }
 
-      if (content.length > 50000) {
-        content = `${content.slice(0, 50000)}\n... (truncated)`;
+      if (rawContent.length > 50000) {
+        rawContent = `${rawContent.slice(0, 50000)}\n... (truncated)`;
       }
 
-      return { success: true, output: content };
+      return { success: true, output: rawContent };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
     }
   },
 );
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/** Quick binary check: null bytes in first 512 chars */
+function isBinaryContent(content: string): boolean {
+  const sample = content.slice(0, 512);
+  for (let i = 0; i < sample.length; i++) {
+    if (sample.charCodeAt(i) === 0) return true;
+  }
+  return false;
+}
+
+/** Module-level compressor — stateless, no session scoping needed */
+const _fileCompressor = new ContextCompressor({
+  stripBlockComments: true,
+  stripLineComments: true,
+  collapseBlankLines: true,
+  preserveShebang: true,
+  maxLinesForCompression: 5000,
+});
+
+/**
+ * Bust the read-once cache for a file path.
+ * Call this after any write operation to ensure the next view shows fresh content.
+ */
+function bustReadOnceCache(filePath: string): void {
+  const sessionId = getContextSessionId();
+  if (sessionId) {
+    try {
+      const cache = getReadOnceCache(sessionId);
+      cache.invalidate(filePath);
+    } catch {
+      // Non-critical — cache may not exist yet
+    }
+  }
+}
 
 // ============================================================================
 // Tool: Edit
@@ -243,8 +310,12 @@ registerTool(
         ]);
         if (!writeResult.success)
           return { success: false, output: "", error: writeResult.stderr || "Failed to write file" };
+        // Bust cache for sandbox write
+        bustReadOnceCache(resolvedPath);
       } else {
         writeFileSync(resolvedPath, content);
+        // Bust read-once cache so next view shows the updated content
+        bustReadOnceCache(resolvedPath);
       }
 
       return {
@@ -338,8 +409,11 @@ registerTool(
         ]);
         if (!writeResult.success)
           return { success: false, output: "", error: writeResult.stderr || "Failed to write file" };
+        // Bust cache for sandbox write
+        bustReadOnceCache(resolvedPath);
       } else {
         writeFileSync(resolvedPath, content);
+        bustReadOnceCache(resolvedPath);
       }
 
       return { success: true, output: `Applied ${edits.length} edit(s) to ${inputPath}` };
@@ -396,7 +470,8 @@ registerTool(
             error: writeResult.stderr || "Failed to create file",
           };
         }
-
+        // Bust cache for sandbox write
+        bustReadOnceCache(resolvedPath);
         return { success: true, output: `Created: ${path}` };
       }
 
@@ -406,6 +481,8 @@ registerTool(
       }
 
       writeFileSync(resolvedPath, content);
+      // Bust read-once cache so next view shows the new file
+      bustReadOnceCache(resolvedPath);
       return { success: true, output: `Created: ${path}` };
     } catch (err: any) {
       return { success: false, output: "", error: err.message };
@@ -709,6 +786,8 @@ registerTool(
     const base = basename(resolvedPath, extname(resolvedPath)).replace(/[^a-zA-Z0-9._-]/g, "_") || "converted";
     const mdPath = join(filesDir, `${base}.md`);
     await writeFile(mdPath, result.markdown, "utf-8");
+    // Bust cache for this newly created file (if it somehow already existed in cache)
+    bustReadOnceCache(mdPath);
 
     return {
       success: true,

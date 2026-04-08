@@ -3,17 +3,15 @@
  *
  * Runs in background to periodically compact old messages into summaries.
  * Uses the database as source of truth and updates session files.
+ * Checkpoints are stored in-memory with optional DB persistence for recovery.
  */
 
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FileSessionManager } from "./file-manager";
 import { SessionManager } from "./manager";
-
-// ============================================================================
-// Types
-// ============================================================================
 
 export interface SummarizerConfig {
   channel: string;
@@ -29,6 +27,8 @@ export interface SummarizerConfig {
   keepRecentCount: number;
   /** Interval in ms to check if summarization needed */
   checkInterval: number;
+  /** Optional: path to write checkpoint files (undefined = in-memory + DB recovery, Option C) */
+  checkpointFilePath?: string;
 }
 
 export interface SummaryCheckpoint {
@@ -40,15 +40,21 @@ export interface SummaryCheckpoint {
   summary: string;
 }
 
-// ============================================================================
-// Summarizer Class
-// ============================================================================
-
 export class SessionSummarizer {
   private config: SummarizerConfig;
   private fileSession: FileSessionManager;
   private intervalId?: NodeJS.Timeout;
   private isRunning = false;
+  /** Promise-based guard against concurrent checkAndSummarize() calls */
+  private processingPromise: Promise<void> | null = null;
+  /** In-memory checkpoint storage (used when file writing is disabled, Option C) */
+  private checkpoints: SummaryCheckpoint[] = [];
+  /** Maximum checkpoints to keep in memory before eviction (prevents memory leak) */
+  private readonly MAX_CHECKPOINTS = 100;
+  /** Lazy-initialized SessionManager for DB operations */
+  private _manager?: SessionManager;
+  /** Cached session name for consistent lookups */
+  private readonly _sessionName: string;
 
   constructor(
     config: Partial<SummarizerConfig> & {
@@ -60,10 +66,54 @@ export class SessionSummarizer {
     this.config = {
       messageThreshold: 50,
       keepRecentCount: 20,
-      checkInterval: 60000, // Check every 60 seconds
+      checkInterval: 60000,
       ...config,
     };
     this.fileSession = new FileSessionManager(this.config.channel, this.config.agentId);
+    this._sessionName = `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
+
+    if (!this.config.checkpointFilePath) {
+      this.restoreCheckpointsFromDb();
+    }
+  }
+
+  private get manager(): SessionManager {
+    if (!this._manager) {
+      this._manager = new SessionManager();
+    }
+    return this._manager;
+  }
+
+  /**
+   * Restore checkpoints from DB on startup (for in-memory mode)
+   */
+  private restoreCheckpointsFromDb(): void {
+    try {
+      const session = this.manager.getSession(this._sessionName);
+      if (!session) return;
+
+      const rows = this.manager.getSummarizerCheckpoints(session.id);
+      this.checkpoints = rows;
+      if (this.checkpoints.length > 0) {
+        console.log(`[Summarizer] Restored ${this.checkpoints.length} checkpoints from DB`);
+      }
+    } catch (err) {
+      console.error("[Summarizer] Failed to restore checkpoints from DB:", err);
+    }
+  }
+
+  /**
+   * Persist checkpoint to DB (for in-memory mode recovery)
+   */
+  private persistCheckpointToDb(checkpoint: SummaryCheckpoint): void {
+    try {
+      const session = this.manager.getSession(this._sessionName);
+      if (!session) return;
+
+      this.manager.saveSummarizerCheckpoint(session.id, checkpoint);
+    } catch (err) {
+      console.error("[Summarizer] Failed to persist checkpoint to DB:", err);
+    }
   }
 
   /**
@@ -76,7 +126,6 @@ export class SessionSummarizer {
     console.log(`[Summarizer] Started for ${this.config.channel}/${this.config.agentId}`);
     console.log(`[Summarizer] Threshold: ${this.config.messageThreshold}, Keep recent: ${this.config.keepRecentCount}`);
 
-    // Run immediately, then on interval
     this.checkAndSummarize();
     this.intervalId = setInterval(() => this.checkAndSummarize(), this.config.checkInterval);
   }
@@ -95,34 +144,49 @@ export class SessionSummarizer {
 
   /**
    * Check if summarization is needed and run if so
+   * Guard against concurrent execution using Promise-based queue
    */
   async checkAndSummarize(): Promise<void> {
+    // If already processing, wait for it to complete instead of racing
+    if (this.processingPromise) {
+      await this.processingPromise;
+      return;
+    }
+
+    this.processingPromise = this._doSummarize();
     try {
-      // Fetch current message count from DB (direct SQLite, no network)
+      await this.processingPromise;
+    } finally {
+      this.processingPromise = null;
+    }
+  }
+
+  /**
+   * Internal summarization logic
+   */
+  private async _doSummarize(): Promise<void> {
+    try {
       const messages = this.fetchDbMessages();
 
       if (messages.length < this.config.messageThreshold) {
-        return; // Not enough messages to warrant summarization
+        return;
       }
 
-      // Get existing checkpoints to see what's already summarized
       const lastCheckpoint = this.getLastCheckpoint();
       const lastSummarizedTs = lastCheckpoint?.toTs || "0";
 
-      // Filter to messages that haven't been summarized
       const unsummarizedMessages = messages.filter((m) => m.ts > lastSummarizedTs);
 
       if (unsummarizedMessages.length < this.config.messageThreshold - this.config.keepRecentCount) {
-        return; // Not enough new messages
+        return;
       }
 
       console.log(`[Summarizer] ${unsummarizedMessages.length} unsummarized messages, running summarization...`);
 
-      // Keep the most recent messages, summarize the rest
       const messagesToSummarize = unsummarizedMessages.slice(0, -this.config.keepRecentCount);
 
       if (messagesToSummarize.length < 10) {
-        return; // Need at least 10 messages to make a meaningful summary
+        return;
       }
 
       await this.createSummary(messagesToSummarize);
@@ -149,7 +213,7 @@ export class SessionSummarizer {
 
       // Map model-level messages to a Slack-style shape for createSummary()
       return messages.map((msg, idx) => ({
-        ts: String(idx), // ordinal index as ts for ordering / dedup
+        ts: String(idx),
         user: msg.role === "user" ? "UHUMAN" : "UBOT",
         agent_id: msg.role === "assistant" ? this.config.agentId : null,
         text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""),
@@ -161,9 +225,13 @@ export class SessionSummarizer {
   }
 
   /**
-   * Get the most recent checkpoint
+   * Get the most recent checkpoint (in-memory only, no disk reads when checkpointFilePath not set)
    */
   private getLastCheckpoint(): SummaryCheckpoint | null {
+    if (!this.config.checkpointFilePath) {
+      return this.checkpoints.length > 0 ? this.checkpoints[this.checkpoints.length - 1] : null;
+    }
+
     const sessionDir = this.fileSession.getSessionDir();
     if (!sessionDir) return null;
 
@@ -172,7 +240,6 @@ export class SessionSummarizer {
 
     const indexPath = join(checkpointsDir, "index.json");
     if (!existsSync(indexPath)) return null;
-
     try {
       const index = JSON.parse(readFileSync(indexPath, "utf-8")) as SummaryCheckpoint[];
       return index.length > 0 ? index[index.length - 1] : null;
@@ -182,20 +249,9 @@ export class SessionSummarizer {
   }
 
   /**
-   * Create a summary checkpoint from messages
+   * Create a summary checkpoint from messages (in-memory only by default, Option C)
    */
   private async createSummary(messages: any[]): Promise<void> {
-    const sessionDir = this.fileSession.getSessionDir();
-    if (!sessionDir) {
-      // Initialize session first
-      this.fileSession.getOrCreateSession("summarizer");
-    }
-
-    const dir = this.fileSession.getSessionDir()!;
-    const checkpointsDir = join(dir, "checkpoints");
-    mkdirSync(checkpointsDir, { recursive: true });
-
-    // Format messages for summarization
     const conversationText = messages
       .map((m) => {
         const role = m.user === "UHUMAN" ? "Human" : m.agent_id || "Bot";
@@ -203,12 +259,10 @@ export class SessionSummarizer {
       })
       .join("\n\n");
 
-    // Generate summary using LLM (via copilot API or simple heuristic)
     const summary = await this.generateSummary(conversationText, messages.length);
 
-    // Create checkpoint
     const checkpoint: SummaryCheckpoint = {
-      id: `checkpoint-${Date.now()}`,
+      id: `checkpoint-${Date.now()}-${randomUUID().substring(0, 8)}`,
       createdAt: new Date().toISOString(),
       fromTs: messages[0].ts,
       toTs: messages[messages.length - 1].ts,
@@ -216,39 +270,55 @@ export class SessionSummarizer {
       summary,
     };
 
-    // Save checkpoint content
-    const checkpointPath = join(checkpointsDir, `${checkpoint.id}.md`);
-    writeFileSync(
-      checkpointPath,
-      `# Checkpoint: ${checkpoint.id}\n\n` +
-        `**Created:** ${checkpoint.createdAt}\n` +
-        `**Messages:** ${checkpoint.messageCount} (${checkpoint.fromTs} to ${checkpoint.toTs})\n\n` +
-        `## Summary\n\n${summary}\n`,
-    );
-
-    // Update index
-    const indexPath = join(checkpointsDir, "index.json");
-    let index: SummaryCheckpoint[] = [];
-    if (existsSync(indexPath)) {
-      try {
-        index = JSON.parse(readFileSync(indexPath, "utf-8"));
-      } catch {}
+    // Eviction fires at > MAX_CHECKPOINTS to keep array bounded
+    if (this.checkpoints.length > this.MAX_CHECKPOINTS) {
+      this.checkpoints = this.checkpoints.slice(-Math.floor(this.MAX_CHECKPOINTS / 2));
     }
-    index.push(checkpoint);
-    writeFileSync(indexPath, JSON.stringify(index, null, 2));
+    this.checkpoints.push(checkpoint);
 
-    // Log event
-    this.fileSession.appendEvent({
-      type: "summary.created",
-      data: {
-        checkpointId: checkpoint.id,
-        messageCount: checkpoint.messageCount,
-        fromTs: checkpoint.fromTs,
-        toTs: checkpoint.toTs,
-      },
-    });
+    if (!this.config.checkpointFilePath) {
+      this.persistCheckpointToDb(checkpoint);
+    } else {
+      this.writeCheckpointToFile(checkpoint);
+    }
 
-    console.log(`[Summarizer] Created checkpoint: ${checkpoint.id} (${checkpoint.messageCount} messages)`);
+    console.log(
+      `[Summarizer] Created checkpoint: ${checkpoint.id} (${checkpoint.messageCount} messages, mode: ${this.config.checkpointFilePath ? "file" : "memory+DB"})`,
+    );
+  }
+
+  /**
+   * Write checkpoint to disk (only when file writing is explicitly enabled via checkpointFilePath)
+   * Errors are logged but not thrown - checkpoint is already safely stored in-memory
+   */
+  private writeCheckpointToFile(checkpoint: SummaryCheckpoint): void {
+    try {
+      const dir = this.config.checkpointFilePath!;
+      const checkpointsDir = join(dir, "checkpoints");
+      mkdirSync(checkpointsDir, { recursive: true });
+
+      const checkpointPath = join(checkpointsDir, `${checkpoint.id}.md`);
+      writeFileSync(
+        checkpointPath,
+        `# Checkpoint: ${checkpoint.id}\n\n` +
+          `**Created:** ${checkpoint.createdAt}\n` +
+          `**Messages:** ${checkpoint.messageCount} (${checkpoint.fromTs} to ${checkpoint.toTs})\n\n` +
+          `## Summary\n\n${checkpoint.summary}\n`,
+      );
+
+      const indexPath = join(checkpointsDir, "index.json");
+      let index: SummaryCheckpoint[] = [];
+      if (existsSync(indexPath)) {
+        try {
+          index = JSON.parse(readFileSync(indexPath, "utf-8"));
+        } catch {}
+      }
+      index.push(checkpoint);
+      writeFileSync(indexPath, JSON.stringify(index, null, 2));
+    } catch (err) {
+      // Log but don't throw - checkpoint is safely stored in-memory
+      console.error("[Summarizer] Failed to write checkpoint to disk:", err);
+    }
   }
 
   /**
@@ -256,14 +326,12 @@ export class SessionSummarizer {
    */
   private async generateSummary(conversationText: string, messageCount: number): Promise<string> {
     try {
-      // Use Copilot CLI as sidecar agent for summarization
       const summary = await this.callLLMSidecar(conversationText, messageCount);
       if (summary) return summary;
     } catch (err) {
       console.error("[Summarizer] LLM sidecar failed, using fallback:", err);
     }
 
-    // Fallback to simple heuristic if LLM fails
     return this.generateFallbackSummary(conversationText, messageCount);
   }
 
@@ -273,13 +341,11 @@ export class SessionSummarizer {
   private async callLLMSidecar(conversationText: string, messageCount: number): Promise<string | null> {
     const { CopilotClient } = await import("../api/client");
 
-    // Skip LLM if no token provided
     if (!this.config.token) {
       console.log("[Summarizer] No token provided, using fallback summary");
       return null;
     }
 
-    // Truncate conversation if too long (keep under ~8k tokens)
     const maxChars = 24000;
     const truncatedText =
       conversationText.length > maxChars
@@ -307,7 +373,7 @@ Summary:`;
       // Call our chat/completions API with provided token
       const client = new CopilotClient(this.config.token);
       const response = await client.complete({
-        model: this.config.model || "claude-sonnet-4.5", // Use same model as agent
+        model: this.config.model || "claude-sonnet-4.5",
         messages: [{ role: "user", content: prompt }],
         temperature: 0.3,
         max_tokens: 2000,
@@ -322,7 +388,6 @@ Summary:`;
         return result.trim();
       }
     } catch (err: any) {
-      // Gracefully handle API errors - don't log full stack trace
       const errMsg = err?.message || String(err);
       if (errMsg.includes("forbidden") || errMsg.includes("403")) {
         console.log("[Summarizer] Token lacks Copilot API access, using fallback");
@@ -341,7 +406,7 @@ Summary:`;
     // Extract key topics (simple heuristic: look for common patterns)
     const topics: string[] = [];
 
-    // Look for code-related discussions
+    // Check for code-related discussions
     if (
       conversationText.includes("```") ||
       conversationText.includes("function") ||
@@ -350,12 +415,12 @@ Summary:`;
       topics.push("Code implementation and debugging");
     }
 
-    // Look for file operations
+    // Check for file operations
     if (conversationText.includes(".ts") || conversationText.includes(".js") || conversationText.includes("file")) {
       topics.push("File modifications");
     }
 
-    // Look for UI discussions
+    // Check for UI discussions
     if (
       conversationText.includes("UI") ||
       conversationText.includes("component") ||
@@ -364,7 +429,7 @@ Summary:`;
       topics.push("UI/UX discussions");
     }
 
-    // Look for architecture discussions
+    // Check for architecture discussions
     if (
       conversationText.includes("architecture") ||
       conversationText.includes("design") ||
@@ -373,19 +438,17 @@ Summary:`;
       topics.push("Architecture and design decisions");
     }
 
-    // Look for bug fixes
+    // Check for bug fixes
     if (conversationText.includes("fix") || conversationText.includes("bug") || conversationText.includes("error")) {
       topics.push("Bug fixes and troubleshooting");
     }
 
-    // Build summary
     let summary = `This checkpoint covers ${messageCount} messages in the conversation.\n\n`;
 
     if (topics.length > 0) {
       summary += `**Key Topics:**\n${topics.map((t) => `- ${t}`).join("\n")}\n\n`;
     }
 
-    // Add first and last message excerpts
     const lines = conversationText.split("\n\n");
     if (lines.length > 0) {
       const firstMsg = lines[0].substring(0, 200);
@@ -398,9 +461,13 @@ Summary:`;
   }
 
   /**
-   * Get all checkpoints for context loading
+   * Get all checkpoints for context loading (in-memory only by default, Option C)
    */
   getAllCheckpoints(): SummaryCheckpoint[] {
+    if (!this.config.checkpointFilePath) {
+      return [...this.checkpoints];
+    }
+
     const sessionDir = this.fileSession.getSessionDir();
     if (!sessionDir) return [];
 
@@ -425,17 +492,12 @@ Summary:`;
   }
 }
 
-// ============================================================================
-// Standalone Sidecar Runner
-// ============================================================================
-
 /**
  * Start summarizer as a detached background process
  */
 export function startSummarizerSidecar(config: { channel: string; agentId: string; serverUrl: string }): void {
   const scriptPath = join(__dirname, "summarizer-worker.ts");
 
-  // Check if worker script exists, create if not
   if (!existsSync(scriptPath)) {
     createSummarizerWorkerScript(scriptPath);
   }

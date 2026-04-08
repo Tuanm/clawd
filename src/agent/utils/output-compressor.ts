@@ -28,6 +28,30 @@ const TOOL_CAPS: Record<string, number> = {
   web_fetch: 10240,
   tmux_capture: 8192,
   article_get: 10240,
+  // MCP tool caps (fix: MCP fell to DEFAULT_CAP=32KB, no per-tool tuning)
+  // Generic caps for tools regardless of MCP prefix (e.g., knowledge_search, browser_*)
+  knowledge_search: 4096,
+  // Browser automation tools — small text responses
+  browser_navigate: 512,
+  browser_click: 256,
+  browser_type: 256,
+  browser_scroll: 256,
+  browser_screenshot: 256,
+  browser_extract: 512,
+  browser_execute: 512,
+  browser_tabs: 256,
+  browser_handle_dialog: 256,
+  // Binary/file download — cap hard to prevent token waste
+  browser_download: 1024,
+  // MCP serverName__toolName format (e.g., clawd__knowledge_search)
+  // These get matched via getEffectiveCap() which strips server prefix
+  clawd__knowledge_search: 4096,
+  clawd__chat_get_message: 2048,
+  clawd__chat_get_history: 4096,
+  clawd__chat_poll_and_ack: 2048,
+  "chat-mcp-server__knowledge_search": 4096,
+  "chat-mcp-server__chat_get_message": 2048,
+  "chat-mcp-server__chat_get_history": 4096,
 };
 
 const DEFAULT_CAP = 32768; // 32KB for unknown tools
@@ -65,9 +89,18 @@ export type IndexFn = (sessionId: string, sourceId: string, toolName: string, co
 
 /**
  * Get the per-tool cap for a tool name.
+ * Handles MCP server__toolName format by stripping prefix and checking base name.
  */
 export function getToolCap(toolName: string): number {
-  return TOOL_CAPS[toolName] ?? DEFAULT_CAP;
+  // Check exact match first
+  if (TOOL_CAPS[toolName] !== undefined) return TOOL_CAPS[toolName]!;
+  // Strip MCP serverName__ prefix for MCP tool names
+  const sep = toolName.indexOf("__");
+  if (sep > 0) {
+    const baseName = toolName.slice(sep + 2);
+    if (TOOL_CAPS[baseName] !== undefined) return TOOL_CAPS[baseName]!;
+  }
+  return DEFAULT_CAP;
 }
 
 /**
@@ -84,26 +117,56 @@ export function isExempt(toolName: string, result: ToolResult): boolean {
 /**
  * Compress a tool result if it exceeds the per-tool cap.
  * Returns the (possibly compressed) result and indexing info.
+ *
+ * @param snippetReserve - bytes to reserve for intent-driven snippets (added AFTER compression).
+ *                          Must be reserved BEFORE truncation so snippets don't挤占 compressed content.
  */
 export function compressToolOutput(
   toolName: string,
   result: ToolResult,
   sessionId: string,
   indexFn?: IndexFn,
+  snippetReserve = 0,
 ): CompressResult {
   const output = result.output || "";
   const originalSize = output.length;
 
   // Exempt tools pass through
   if (isExempt(toolName, result)) {
-    return { result, indexed: false, originalSize, compressedSize: originalSize };
+    return {
+      result,
+      indexed: false,
+      originalSize,
+      compressedSize: originalSize,
+    };
   }
 
   const cap = getToolCap(toolName);
 
-  // Under cap — no compression needed
+  // Under cap — no compression needed (but still index for retrieval)
   if (output.length <= cap) {
-    return { result, indexed: false, originalSize, compressedSize: originalSize };
+    // Index even when under cap so intent snippets can retrieve from it
+    let indexed = false;
+    const sourceId = `${toolName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (indexFn) {
+      try {
+        indexed = indexFn(sessionId, sourceId, toolName, output);
+      } catch {
+        // C26: graceful degradation
+      }
+    }
+    // Build output: hint appended when indexed (consistent with over-cap path)
+    const hint = indexed
+      ? `\n\n[Full output indexed (source_id: ${sourceId}). Use knowledge_search('query') to retrieve specific sections.]`
+      : "";
+    const indexedOutput = output + hint;
+    return {
+      result: { ...result, output: indexedOutput },
+      indexed,
+      originalSize: output.length,
+      compressedSize: indexedOutput.length,
+      sourceId: indexed ? sourceId : undefined,
+    };
   }
 
   // Generate source ID for indexing
@@ -119,9 +182,14 @@ export function compressToolOutput(
     }
   }
 
-  // Smart truncate to cap, reserving space for retrieval hint
+  // Smart truncate to cap, reserving space for:
+  // 1. Retrieval hint (150 bytes)
+  // 2. Intent-driven snippet space (snippetReserve bytes, from context-mode-plugin)
   const hintReserve = 150;
-  const truncated = smartTruncate(output, { maxLength: Math.max(cap - hintReserve, 100) });
+  const totalReserve = hintReserve + snippetReserve;
+  const truncated = smartTruncate(output, {
+    maxLength: Math.max(cap - totalReserve, 100),
+  });
 
   // Append retrieval hint
   const hint = indexed

@@ -132,4 +132,22 @@ export const memoryMigrations: Migration[] = [
       db.exec("CREATE INDEX IF NOT EXISTS idx_am_priority ON agent_memories(agent_id, priority DESC)");
     },
   },
+  {
+    version: 3,
+    description: "add summarizer_checkpoints table for SessionSummarizer recovery",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS summarizer_checkpoints (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          from_ts TEXT NOT NULL,
+          to_ts TEXT NOT NULL,
+          message_count INTEGER NOT NULL,
+          summary TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sc_session ON summarizer_checkpoints(session_id);
+      `);
+    },
+  },
 ];
