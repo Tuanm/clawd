@@ -366,4 +366,107 @@ describe("SessionManager", () => {
       expect(msgs[1].content).toBe("second");
     });
   });
+
+  // ── 7. Summarizer checkpoint persistence ─────────────────────────────────────
+
+  describe("summarizer checkpoint persistence", () => {
+    test("saveSummarizerCheckpoint stores checkpoint metadata", () => {
+      const session = mgr.createSession("s", "m");
+      const checkpoint = {
+        id: "cp-001",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        fromTs: "0",
+        toTs: "49",
+        messageCount: 50,
+        summary: "Test summary content",
+      };
+
+      mgr.saveSummarizerCheckpoint(session.id, checkpoint);
+
+      const checkpoints = mgr.getSummarizerCheckpoints(session.id);
+      expect(checkpoints).toHaveLength(1);
+      expect(checkpoints[0].id).toBe("cp-001");
+      expect(checkpoints[0].fromTs).toBe("0");
+      expect(checkpoints[0].toTs).toBe("49");
+      expect(checkpoints[0].messageCount).toBe(50);
+      expect(checkpoints[0].summary).toBe("Test summary content");
+    });
+
+    test("getSummarizerCheckpoints returns checkpoints in chronological order", () => {
+      const session = mgr.createSession("s", "m");
+
+      // Save multiple checkpoints
+      for (let i = 0; i < 3; i++) {
+        mgr.saveSummarizerCheckpoint(session.id, {
+          id: `cp-${i}`,
+          createdAt: new Date(Date.now() + i * 1000).toISOString(),
+          fromTs: String(i * 50),
+          toTs: String((i + 1) * 50),
+          messageCount: 50,
+          summary: `Summary ${i}`,
+        });
+      }
+
+      const checkpoints = mgr.getSummarizerCheckpoints(session.id);
+      expect(checkpoints).toHaveLength(3);
+      expect(checkpoints[0].id).toBe("cp-0");
+      expect(checkpoints[1].id).toBe("cp-1");
+      expect(checkpoints[2].id).toBe("cp-2");
+    });
+
+    test("getSummarizerCheckpoints returns empty array for unknown session", () => {
+      const checkpoints = mgr.getSummarizerCheckpoints("nonexistent-session-id");
+      expect(checkpoints).toEqual([]);
+    });
+
+    test("saveSummarizerCheckpoint replaces existing checkpoint with same ID", () => {
+      const session = mgr.createSession("s", "m");
+      const checkpoint = {
+        id: "cp-replace",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        fromTs: "0",
+        toTs: "49",
+        messageCount: 50,
+        summary: "Original summary",
+      };
+
+      mgr.saveSummarizerCheckpoint(session.id, checkpoint);
+
+      // Save with same ID but different content
+      mgr.saveSummarizerCheckpoint(session.id, {
+        id: "cp-replace",
+        createdAt: "2024-01-02T00:00:00.000Z",
+        fromTs: "50",
+        toTs: "99",
+        messageCount: 50,
+        summary: "Updated summary",
+      });
+
+      const checkpoints = mgr.getSummarizerCheckpoints(session.id);
+      expect(checkpoints).toHaveLength(1);
+      expect(checkpoints[0].summary).toBe("Updated summary");
+    });
+
+    test("deleteSummarizerCheckpoints removes all checkpoints for a session", () => {
+      const session = mgr.createSession("s", "m");
+
+      // Add some checkpoints
+      for (let i = 0; i < 3; i++) {
+        mgr.saveSummarizerCheckpoint(session.id, {
+          id: `cp-${i}`,
+          createdAt: new Date().toISOString(),
+          fromTs: String(i * 50),
+          toTs: String((i + 1) * 50),
+          messageCount: 50,
+          summary: `Summary ${i}`,
+        });
+      }
+
+      // Delete them
+      mgr.deleteSummarizerCheckpoints(session.id);
+
+      const checkpoints = mgr.getSummarizerCheckpoints(session.id);
+      expect(checkpoints).toEqual([]);
+    });
+  });
 });

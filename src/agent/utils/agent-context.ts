@@ -35,6 +35,8 @@ export interface AgentContext {
   worktreeBranch?: string;
   /** Original project root before worktree (for diff base / sandbox .git mount) */
   originalProjectRoot?: string;
+  /** Session ID for read-once cache scoping */
+  sessionId?: string;
 }
 
 // AsyncLocalStorage instance - automatically propagates through async calls
@@ -126,4 +128,26 @@ export function getContextChannel(): string {
 export function getContextProvider(): string {
   const ctx = getAgentContext();
   return ctx?.provider || "";
+}
+
+/**
+ * Get the session ID from context.
+ * Returns empty string if not in a context.
+ */
+export function getContextSessionId(): string {
+  const ctx = getAgentContext();
+  return ctx?.sessionId || "";
+}
+
+/**
+ * Set the session ID in the current agent context.
+ * Call this after startSession() so that tool handlers can access sessionId.
+ * Silently no-ops if not in a context (safe to call from anywhere).
+ */
+export function setAgentSessionId(sessionId: string): void {
+  const ctx = getAgentContext();
+  if (ctx) {
+    // The store IS mutable — objects are passed by reference
+    ctx.sessionId = sessionId;
+  }
 }

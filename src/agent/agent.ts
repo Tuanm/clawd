@@ -44,7 +44,8 @@ import {
 import { getSkillManager } from "./skills/manager";
 import { type ToolPlugin, ToolPluginManager } from "./tools/plugin";
 import { executeTools, getSandboxProjectRoot, type ToolResult, toolDefinitions } from "./tools/tools";
-import { getAgentContext, getContextProjectRoot } from "./utils/agent-context";
+import { getAgentContext, getContextProjectRoot, setAgentSessionId } from "./utils/agent-context";
+import { getMicroCompactor } from "./utils/microcompaction";
 import { ContextTracker } from "./utils/context-tracker";
 import { isDebugEnabled } from "./utils/debug";
 import { smartTruncate } from "./utils/smart-truncation";
@@ -283,6 +284,7 @@ export class Agent {
   private token: string; // Store for checkpoint manager
   private contextModePlugin: ContextModePluginResult | null = null;
   private contextTracker: ContextTracker | null = null;
+  private microCompactor: ReturnType<typeof getMicroCompactor> | null = null;
   private compacting = false;
   private _workspacePluginRegistered = false;
   private _tunnelPluginRegistered = false;
@@ -427,6 +429,8 @@ export class Agent {
       return await this._doCompaction();
     } finally {
       this.compacting = false;
+      // Sync microcompactor state after any compaction (full or checkpoint)
+      this.microCompactor?.syncAfterCompaction();
     }
   }
 
@@ -1177,7 +1181,36 @@ SUMMARY:`;
     // Fires for ALL 3 tool branches (MCP, plugin, local). Gated behind contextMode.
     if (this.contextModePlugin) {
       try {
-        const compressed = this.contextModePlugin.compressToolResult(toolCall.function.name, result);
+        // Fix: JSON-parse MCP results before compression so semantic analysis works on structured data
+        // MCP tools JSON-stringify their results (agent.ts:1134,1145), obscuring content structure
+        let compressibleResult = result;
+        if (result.success && typeof result.output === "string" && result.output.length > 0) {
+          const trimmed = result.output.trim();
+          if (
+            (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+            (trimmed.startsWith("{") && trimmed.endsWith("}"))
+          ) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              // Format arrays of objects for better semantic compression, preserve plain strings
+              if (Array.isArray(parsed)) {
+                compressibleResult = {
+                  ...result,
+                  output: parsed
+                    .map((item) =>
+                      typeof item === "object" && item !== null ? JSON.stringify(item, null, 2) : String(item),
+                    )
+                    .join("\n"),
+                };
+              } else if (typeof parsed === "object" && parsed !== null) {
+                compressibleResult = { ...result, output: JSON.stringify(parsed, null, 2) };
+              }
+            } catch {
+              // Not valid JSON or already plain text — keep original
+            }
+          }
+        }
+        const compressed = this.contextModePlugin.compressToolResult(toolCall.function.name, compressibleResult);
         // Phase 4: Record compression metrics
         if (this.contextTracker) {
           const inputSize = toolCall.function.arguments?.length || 0;
@@ -1455,6 +1488,9 @@ SUMMARY:`;
   startSession(name: string): Session {
     this.session = this.sessions.getOrCreateSession(name, this.getModel());
 
+    // Propagate sessionId to AsyncLocalStorage context so tool handlers can access it
+    setAgentSessionId(this.session.id);
+
     // Initialize checkpoint manager for this session
     const sessionDir = `${homedir()}/.clawd/sessions/${this.session.id}`;
     this.checkpointManager = new CheckpointManager({
@@ -1468,6 +1504,15 @@ SUMMARY:`;
     this.currentCheckpoint = this.checkpointManager.loadLatestCheckpoint();
     if (this.currentCheckpoint && this.config.verbose) {
       console.log(`[Agent] Loaded checkpoint ${this.currentCheckpoint.number}: ${this.currentCheckpoint.title}`);
+    }
+
+    // Initialize lightweight per-turn MicroCompactor (Phase 2)
+    this.microCompactor = getMicroCompactor(sessionDir);
+    // Reset state for new sessions to avoid stale turnCount/messagesSinceCompaction
+    this.microCompactor.reset();
+    if (this.config.verbose) {
+      const state = this.microCompactor.getState();
+      console.log(`[Agent] MicroCompactor initialized (turn=${state.turnCount})`);
     }
 
     // Apply dynamic thresholds when contextMode is enabled
@@ -1883,6 +1928,8 @@ SUMMARY:`;
       role: "user",
       content: effectiveMessage,
     });
+    // Track message additions for microcompactor threshold
+    this.microCompactor?.onMessagesAdded(1);
 
     // Get tools (including MCP) - refreshed each iteration to pick up dynamic connections
     let tools = this.getTools();
@@ -1969,6 +2016,9 @@ SUMMARY:`;
             logSilentError("session.addMessage (interrupt)", err);
           }
 
+          // Notify microcompactor of new message (for threshold tracking)
+          this.microCompactor?.onMessagesAdded(1);
+
           // Notify plugins of new user message (ignore errors)
           if (this.plugins) {
             try {
@@ -2018,6 +2068,22 @@ SUMMARY:`;
         }
 
         iterations++;
+
+        // Lightweight per-turn microcompaction check (Phase 2)
+        // Safe point: after tool results pushed, before next LLM call
+        if (this.microCompactor && this.microCompactor.shouldCompact()) {
+          const result = this.microCompactor.compact(messages);
+          if (result.didCompact) {
+            // compact() trims messages in place; reassign to keep loop variable current
+            messages = result.messages;
+            if (this.config.verbose) {
+              console.log(`[Agent] MicroCompaction: removed ${result.deletedCount} messages, kept ${result.keptCount}`);
+            }
+          }
+        }
+
+        // Record turn end (resets compaction state, increments turn counter)
+        this.microCompactor?.onTurn();
 
         // Create fresh abort controller for this iteration
         this.abortController = new AbortController();
@@ -2162,6 +2228,11 @@ SUMMARY:`;
                 break;
 
               case "done":
+                // Fix: Wire recordTurnTokens() so turnsRemaining becomes accurate (was never called — turnsRemaining was always Infinity)
+                // Usage data is available in event.response?.usage
+                if (this.contextTracker && event.response?.usage?.total_tokens) {
+                  this.contextTracker.recordTurnTokens(event.response.usage.total_tokens);
+                }
                 break;
             }
           }
@@ -2537,6 +2608,9 @@ SUMMARY:`;
             tool_calls: toolCalls,
           });
 
+          // Track assistant message with tool_calls for microcompaction threshold
+          this.microCompactor?.onMessagesAdded(1);
+
           // Execute tool calls — parallel when multiple, sequential when single
           let turnToolResultChars = 0;
 
@@ -2783,6 +2857,7 @@ SUMMARY:`;
                 content: toolResultContent,
                 tool_call_id: toolCall.id,
               });
+              this.microCompactor?.onMessagesAdded(1);
             } catch {
               /* ignore */
             }

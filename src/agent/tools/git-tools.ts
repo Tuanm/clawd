@@ -10,6 +10,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { bustReadOnceCache } from "../utils/read-once";
 import {
   getAgentContext,
   getSandboxProjectRoot,
@@ -214,7 +215,25 @@ registerTool(
     const args = ["checkout"];
     if (create) args.push("-b");
     args.push(target);
-    return execGitCommand(args, path);
+    const result = await execGitCommand(args, path);
+    // Bust cache for file restores (target starts with "--" like "-- file")
+    if (result.success && target?.startsWith("--")) {
+      // Extract file paths from the restore operation
+      const filePaths = target
+        .replace(/^--\s*/, "")
+        .split("--")
+        .map((p) => p.trim())
+        .filter(Boolean);
+      for (const fp of filePaths) {
+        if (fp)
+          try {
+            bustReadOnceCache(fp);
+          } catch {
+            /* best-effort */
+          }
+      }
+    }
+    return result;
   },
 );
 
@@ -380,7 +399,23 @@ registerTool(
   async ({ path, action = "push", message }) => {
     const args = ["stash", action];
     if (action === "push" && message) args.push("-m", message);
-    return execGitCommand(args, path);
+    const result = await execGitCommand(args, path);
+    // Bust cache for stash pop (restores files from stash)
+    if (result.success && (action === "pop" || action === "apply")) {
+      // Parse output to extract modified files (best-effort)
+      const files = result.output.split("\n").filter((l) => l.includes("file:") || l.match(/\.\/[\w\-\.\/]/));
+      for (const f of files) {
+        const match = f.match(/[\.\/][\w\-\.\/]+/g);
+        if (match)
+          for (const fp of match)
+            try {
+              bustReadOnceCache(fp);
+            } catch {
+              /* best-effort */
+            }
+      }
+    }
+    return result;
   },
 );
 
@@ -399,7 +434,28 @@ registerTool(
     if (mode) args.push(`--${mode}`);
     if (target) args.push(target);
     if (file) args.push("--", file);
-    return execGitCommand(args, path);
+    const result = await execGitCommand(args, path);
+    // Bust cache for file-level reset (unstages files)
+    if (result.success) {
+      if (file) {
+        // Single file reset
+        try {
+          bustReadOnceCache(file);
+        } catch {
+          /* best-effort */
+        }
+      } else if (mode === "hard" || mode === "mixed") {
+        // Whole-repo reset modifies many files - bust entire session cache
+        try {
+          const { clearReadOnceCache } = await import("../utils/read-once");
+          const sessionId = getContextSessionId();
+          if (sessionId) clearReadOnceCache(sessionId);
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+    return result;
   },
 );
 

@@ -492,17 +492,6 @@ export class SessionManager {
 
     // Find and protect ALL tool_results for protected assistant messages
     if (allRequiredToolCallIds.size > 0) {
-      const _toolResultsToProtect = this.db
-        .query(
-          `SELECT id FROM messages 
-         WHERE session_id = ? AND id < ? AND tool_call_id IS NOT NULL`,
-        )
-        .all(sessionId, threshold.id) as {
-        id: number;
-        tool_call_id?: string;
-      }[];
-
-      // Re-query with tool_call_id to check
       const toolResultMsgs = this.db
         .query(
           `SELECT id, tool_call_id FROM messages 
@@ -623,6 +612,93 @@ export class SessionManager {
     this.clearMessages(session.id);
     console.log(`[SessionManager] Reset session "${name}"`);
     return true;
+  }
+
+  // ============================================================================
+  // Summarizer Checkpoint Persistence (for SessionSummarizer recovery)
+  // ============================================================================
+
+  /**
+   * Save a summarizer checkpoint to the database
+   */
+  saveSummarizerCheckpoint(
+    sessionId: string,
+    checkpoint: {
+      id: string;
+      createdAt: string;
+      fromTs: string;
+      toTs: string;
+      messageCount: number;
+      summary: string;
+    },
+  ): void {
+    try {
+      this.db.run(
+        `INSERT OR REPLACE INTO summarizer_checkpoints 
+         (id, session_id, from_ts, to_ts, message_count, summary, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          checkpoint.id,
+          sessionId,
+          checkpoint.fromTs,
+          checkpoint.toTs,
+          checkpoint.messageCount,
+          checkpoint.summary,
+          checkpoint.createdAt,
+        ],
+      );
+    } catch (err) {
+      console.error(`[SessionManager] Failed to save summarizer checkpoint: ${err}`);
+    }
+  }
+
+  /**
+   * Get all summarizer checkpoints for a session
+   */
+  getSummarizerCheckpoints(sessionId: string): {
+    id: string;
+    createdAt: string;
+    fromTs: string;
+    toTs: string;
+    messageCount: number;
+    summary: string;
+  }[] {
+    try {
+      const rows = this.db
+        .query("SELECT * FROM summarizer_checkpoints WHERE session_id = ? ORDER BY created_at ASC")
+        .all(sessionId) as {
+        id: string;
+        session_id: string;
+        from_ts: string;
+        to_ts: string;
+        message_count: number;
+        summary: string;
+        created_at: string;
+      }[];
+
+      return rows.map((row) => ({
+        id: row.id,
+        createdAt: row.created_at,
+        fromTs: row.from_ts,
+        toTs: row.to_ts,
+        messageCount: row.message_count,
+        summary: row.summary,
+      }));
+    } catch (err) {
+      console.error(`[SessionManager] Failed to get summarizer checkpoints: ${err}`);
+      return [];
+    }
+  }
+
+  /**
+   * Delete summarizer checkpoints for a session
+   */
+  deleteSummarizerCheckpoints(sessionId: string): void {
+    try {
+      this.db.run("DELETE FROM summarizer_checkpoints WHERE session_id = ?", [sessionId]);
+    } catch (err) {
+      console.error(`[SessionManager] Failed to delete summarizer checkpoints: ${err}`);
+    }
   }
 
   // ============================================================================
