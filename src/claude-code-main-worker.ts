@@ -424,15 +424,16 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             }
             this.pendingTimestamps = [];
 
-            // Interrupt messages already deduplicated at push time via Map
-            const uniqueInterruptMsgs = Array.from(interruptMessageMap.values());
+            // Infinite interrupt loop — each resume turn can itself be interrupted,
+            // allowing the user to redirect the agent as many times as needed.
+            let resumeProcessingMsgs: any[] = pending;
+            let resumeInterruptMsgs: any[] = Array.from(interruptMessageMap.values());
 
-            // Process interrupt messages with split prompt (Processing vs New)
-            if (uniqueInterruptMsgs.length > 0) {
+            while (resumeInterruptMsgs.length > 0 && this.running) {
               this.processing = true;
               this.processingStartedAt = Date.now();
               this.lastActivityAt = Date.now();
-              this.pendingTimestamps = uniqueInterruptMsgs.map((m: any) => m.ts);
+              this.pendingTimestamps = resumeInterruptMsgs.map((m: any) => m.ts);
 
               try {
                 markMessagesSeen(this.config.channel, this.config.agentId, this.pendingTimestamps);
@@ -441,18 +442,48 @@ export class ClaudeCodeMainWorker implements AgentWorker {
               setAgentStreaming(this.config.agentId, this.config.channel, true);
               broadcastAgentStreaming(this.config.channel, this.config.agentId, true);
 
-              // Note: No nested interrupt poller for the resume turn — intentional to prevent
-              // infinite nesting. Third corrections queue until the next while iteration.
+              // Interrupt poller for this resume turn — enables infinite chained interrupts
+              let resumeInterrupted = false;
+              const resumeInterruptMap = new Map<string, any>();
+              const resumeSeenTs = new Set(this.pendingTimestamps);
               this.wasCancelledByHeartbeat = false;
-              this.interruptDetected = false; // Reset so re-injections can fire on the resume turn
+              this.interruptDetected = false;
+              const resumePoller = setInterval(() => {
+                if (!this.processing) return;
+                try {
+                  const newPending = this.pollForMessages();
+                  const newMsgs = newPending.filter(
+                    (m: any) => !resumeSeenTs.has(m.ts) && !resumeInterruptMap.has(m.ts),
+                  );
+                  if (newMsgs.length > 0) {
+                    resumeInterrupted = true;
+                    this.interruptDetected = true;
+                    for (const m of newMsgs) resumeInterruptMap.set(m.ts, m);
+                    console.log(
+                      `[claude-code-main] Resume interrupted by ${newMsgs.length} new message(s) (ac.aborted=${this.abortController?.signal.aborted})`,
+                    );
+                    try {
+                      this.abortController?.abort();
+                    } catch (abortErr) {
+                      console.error(`[claude-code-main] AbortController.abort() threw: ${abortErr}`);
+                    }
+                  }
+                } catch (e) {
+                  console.warn(`[claude-code-main] Resume interrupt poll error: ${e}`);
+                }
+              }, 2000);
+
               try {
                 const hadUnsentText = !this.turnChatSent && this.turnStreamText.trim().length > 0;
-                const interruptPrompt = this.formatInterruptPrompt(pending, uniqueInterruptMsgs, hadUnsentText);
-                await this.processMessagesWithPrompt(interruptPrompt, uniqueInterruptMsgs);
+                const interruptPrompt = this.formatInterruptPrompt(
+                  resumeProcessingMsgs,
+                  resumeInterruptMsgs,
+                  hadUnsentText,
+                );
+                await this.processMessagesWithPrompt(interruptPrompt, resumeInterruptMsgs);
               } catch (err: any) {
                 if (!this.wasCancelledByHeartbeat) {
                   console.error(`[claude-code-main] Interrupt processing error: ${err.message}`);
-                  // Reset corrupted session on interrupt resume failures too
                   const msg = err.message || "";
                   if (
                     msg.includes("No conversation found") ||
@@ -464,23 +495,47 @@ export class ClaudeCodeMainWorker implements AgentWorker {
                   }
                 }
               } finally {
+                clearInterval(resumePoller);
                 setAgentStreaming(this.config.agentId, this.config.channel, false);
                 broadcastAgentStreaming(this.config.channel, this.config.agentId, false);
                 this.processing = false;
                 this.processingStartedAt = null;
                 this.lastActivityAt = Date.now();
               }
-              // Let forceMarkRetries accumulate naturally — don't reset counters
-              // Add size cap to prevent unbounded growth from repeated interrupts
-              if (this.forceMarkRetries.size > 500) {
-                // Evict oldest half to prevent unbounded growth while preserving recent retry counts
-                const entries = [...this.forceMarkRetries.entries()];
-                for (let i = 0; i < Math.floor(entries.length / 2); i++) {
-                  this.forceMarkRetries.delete(entries[i][0]);
+
+              if (resumeInterrupted) {
+                // Advance cursor past the resume batch and prepare for next iteration
+                const lastResumeTs = this.pendingTimestamps[this.pendingTimestamps.length - 1];
+                if (lastResumeTs) {
+                  try {
+                    db.run(
+                      `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+                     VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+                     ON CONFLICT(agent_id, channel) DO UPDATE SET
+                       last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
+                       updated_at = strftime('%s', 'now')`,
+                      [this.config.agentId, this.config.channel, lastResumeTs, lastResumeTs, lastResumeTs],
+                    );
+                  } catch {}
                 }
+                this.pendingTimestamps = [];
+                resumeProcessingMsgs = resumeInterruptMsgs;
+                resumeInterruptMsgs = Array.from(resumeInterruptMap.values());
+              } else {
+                break;
               }
-              this.forceMarkUnprocessed();
             }
+
+            // Let forceMarkRetries accumulate naturally — don't reset counters
+            // Add size cap to prevent unbounded growth from repeated interrupts
+            if (this.forceMarkRetries.size > 500) {
+              // Evict oldest half to prevent unbounded growth while preserving recent retry counts
+              const entries = [...this.forceMarkRetries.entries()];
+              for (let i = 0; i < Math.floor(entries.length / 2); i++) {
+                this.forceMarkRetries.delete(entries[i][0]);
+              }
+            }
+            this.forceMarkUnprocessed();
             continue;
           }
           this.forceMarkUnprocessed();

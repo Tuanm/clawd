@@ -384,9 +384,19 @@ registerTool(
       }
 
       // Validate all edits first (atomic — fail before any changes)
+      const seenOldStrs = new Set<string>();
       for (let i = 0; i < edits.length; i++) {
-        const { old_str } = edits[i];
+        const { old_str, new_str } = edits[i];
         if (!old_str) return { success: false, output: "", error: `Edit ${i + 1}: old_str is required` };
+        if (new_str === undefined || new_str === null)
+          return { success: false, output: "", error: `Edit ${i + 1}: new_str is required` };
+        if (seenOldStrs.has(old_str))
+          return {
+            success: false,
+            output: "",
+            error: `Edit ${i + 1}: duplicate old_str — same as a prior edit in this batch`,
+          };
+        seenOldStrs.add(old_str);
         const count = content.split(old_str).length - 1;
         if (count === 0) return { success: false, output: "", error: `Edit ${i + 1}: old_str not found in file` };
         if (count > 1)
@@ -395,7 +405,24 @@ registerTool(
 
       // Apply all edits sequentially.
       // Use split/join (NOT String.prototype.replace) to avoid $ special character corruption (Bug 6).
-      for (const { old_str, new_str } of edits) {
+      // Verify each old_str is still present before applying — a prior edit may have consumed it.
+      for (let i = 0; i < edits.length; i++) {
+        const { old_str, new_str } = edits[i];
+        const occurrences = content.split(old_str).length - 1;
+        if (occurrences === 0) {
+          return {
+            success: false,
+            output: "",
+            error: `Edit ${i + 1}: old_str not found in intermediate content — likely consumed by a prior edit. Reorder edits or split into separate calls. No changes were written.`,
+          };
+        }
+        if (occurrences > 1) {
+          return {
+            success: false,
+            output: "",
+            error: `Edit ${i + 1}: old_str appears ${occurrences} times in intermediate content — a prior edit synthesized duplicates. Reorder edits or split into separate calls. No changes were written.`,
+          };
+        }
         content = content.split(old_str).join(new_str);
       }
 
