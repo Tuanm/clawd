@@ -30,6 +30,16 @@ function PasteIcon() {
   );
 }
 
+// Select all icon for context menu
+function SelectAllIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M8 12h8M12 8v8" />
+    </svg>
+  );
+}
+
 // Context menu state
 interface ComposerContextMenuState {
   x: number;
@@ -42,12 +52,14 @@ function ComposerContextMenu({
   onClose,
   onCopy,
   onPaste,
+  onSelectAll,
   hasSelection,
 }: {
   menu: ComposerContextMenuState;
   onClose: () => void;
   onCopy: () => void;
   onPaste: () => void;
+  onSelectAll: () => void;
   hasSelection: boolean;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -73,7 +85,7 @@ function ComposerContextMenu({
   // Position menu so it doesn't overflow viewport
   const adjustedPosition = useMemo(() => {
     const menuWidth = 200;
-    const menuHeight = 88; // 2 items
+    const menuHeight = 132; // 3 items
     let x = menu.x;
     let y = menu.y;
     if (x + menuWidth > window.innerWidth) {
@@ -88,6 +100,7 @@ function ComposerContextMenu({
   const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
   const copyShortcut = isMac ? "\u2318C" : "Ctrl+C";
   const pasteShortcut = isMac ? "\u2318V" : "Ctrl+V";
+  const selectAllShortcut = isMac ? "\u2318A" : "Ctrl+A";
 
   return createPortal(
     <div ref={menuRef} className="message-context-menu" style={{ left: adjustedPosition.x, top: adjustedPosition.y }}>
@@ -115,6 +128,17 @@ function ComposerContextMenu({
         <PasteIcon />
         <span>Paste</span>
         <span className="context-menu-shortcut">{pasteShortcut}</span>
+      </button>
+      <button
+        className="context-menu-item"
+        onClick={() => {
+          onSelectAll();
+          onClose();
+        }}
+      >
+        <SelectAllIcon />
+        <span>Select all</span>
+        <span className="context-menu-shortcut">{selectAllShortcut}</span>
       </button>
     </div>,
     document.body,
@@ -454,6 +478,15 @@ export default function MessageComposer({
       document.execCommand("paste");
     }
   }, [text, isListening, abortListening]);
+
+  // Handle select all from context menu
+  const handleContextMenuSelectAll = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(0, textarea.value.length);
+    setContextMenuHasSelection(textarea.value.length > 0);
+  }, []);
 
   // Handle copy from context menu
   const handleContextMenuCopy = useCallback(async () => {
@@ -963,6 +996,7 @@ export default function MessageComposer({
           onClose={closeComposerContextMenu}
           onCopy={handleContextMenuCopy}
           onPaste={handleContextMenuPaste}
+          onSelectAll={handleContextMenuSelectAll}
           hasSelection={contextMenuHasSelection}
         />
       )}

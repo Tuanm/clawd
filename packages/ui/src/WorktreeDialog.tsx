@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
 import { ClawdAvatar } from "./MessageList";
@@ -80,31 +80,11 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [commitMsg, setCommitMsg] = useState("");
-  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarSize, setSidebarSize] = useState(280);
   const [diffKey, setDiffKey] = useState(0);
-  const moreMenuRef = useRef<HTMLDivElement>(null);
-
   const selectedAgent = agents.find((a) => a.agent_id === selectedAgentId) ?? null;
-  const stagedFiles = files.filter((f) => f.staged);
-  const hasStaged = stagedFiles.length > 0;
-  const isRunning = selectedAgent?.running ?? false;
   const hasMergeConflict = selectedAgent?.has_conflicts ?? false;
-  const canCommit = hasStaged && commitMsg.trim().length > 0 && !isRunning;
-
-  // Close more menu on outside click
-  useEffect(() => {
-    if (!showMoreMenu) return;
-    const handler = (e: MouseEvent) => {
-      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
-        setShowMoreMenu(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showMoreMenu]);
 
   // Escape key
   useEffect(() => {
@@ -207,9 +187,7 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
       setSelectedAgentId(null);
       setFiles([]);
       setSelectedFile(null);
-      setCommitMsg("");
       setError(null);
-      setShowMoreMenu(false);
     }
   }, [isOpen]);
 
@@ -270,11 +248,6 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
     const unstaged = files.filter((f) => !f.staged).map((f) => f.path);
     postAction("app.worktree.stage", { paths: unstaged });
   };
-  const handleCommit = () => {
-    if (!commitMsg.trim() || !hasStaged) return;
-    postAction("app.worktree.commit", { message: commitMsg }).then(() => setCommitMsg(""));
-  };
-  const handleApply = () => postAction("app.worktree.apply", {});
   const handleResolve = (path: string, resolution: "ours" | "theirs" | "both") =>
     postAction("app.worktree.resolve", { path, resolution });
 
@@ -424,104 +397,6 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
           {/* Error banner */}
           {error && <div className="agent-dialog-error">{error}</div>}
         </div>
-
-        {/* Bottom action bar */}
-        {selectedAgent && (
-          <div className="agent-buttons" style={{ borderTop: "1px solid hsl(var(--text) / 8%)", padding: "10px 20px" }}>
-            <input
-              type="text"
-              className="agent-field-input"
-              placeholder="Commit message..."
-              value={commitMsg}
-              onChange={(e) => setCommitMsg(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleCommit();
-              }}
-              disabled={isRunning || actionLoading}
-              style={{ flex: 1, width: "auto", padding: "6px 10px", fontSize: 13 }}
-            />
-            {/* Combined Commit / Options button with dropdown */}
-            <div className="worktree-commit-group" ref={moreMenuRef}>
-              <button
-                className="agent-action-btn agent-action-btn--accent"
-                onClick={canCommit ? handleCommit : () => setShowMoreMenu((v) => !v)}
-                disabled={actionLoading}
-                style={{ borderRadius: "8px 0 0 8px", paddingRight: 12 }}
-              >
-                {actionLoading ? "..." : canCommit ? "Commit" : "Options"}
-              </button>
-              <button
-                className="agent-action-btn agent-action-btn--accent"
-                onClick={() => setShowMoreMenu((v) => !v)}
-                disabled={actionLoading}
-                style={{
-                  borderRadius: "0 8px 8px 0",
-                  padding: "8px 6px",
-                  borderLeft: "1px solid rgba(255,255,255,0.2)",
-                }}
-              >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
-              {showMoreMenu && (
-                <div className="worktree-dropdown worktree-dropdown--up">
-                  <button
-                    onClick={() => {
-                      setShowMoreMenu(false);
-                      handleApply();
-                    }}
-                    disabled={isRunning || actionLoading}
-                  >
-                    Apply to main
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowMoreMenu(false);
-                      postAction("app.worktree.push", {});
-                    }}
-                    disabled={actionLoading}
-                  >
-                    Push to remote
-                  </button>
-                  <button disabled>Merge from...</button>
-                  <button
-                    onClick={() => {
-                      setShowMoreMenu(false);
-                      postAction("app.worktree.stash", {});
-                    }}
-                    disabled={actionLoading}
-                  >
-                    Stash
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowMoreMenu(false);
-                      postAction("app.worktree.stash_pop", {});
-                    }}
-                    disabled={actionLoading}
-                  >
-                    Stash Pop
-                  </button>
-                  {hasMergeConflict && (
-                    <button
-                      onClick={() => {
-                        setShowMoreMenu(false);
-                        postAction("app.worktree.abort", {});
-                      }}
-                      disabled={actionLoading}
-                      className="worktree-dropdown-danger"
-                    >
-                      Abort Merge
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {isRunning && <span style={{ fontSize: "11px", color: "#888", marginLeft: 8 }}>Agent is working</span>}
-          </div>
-        )}
       </div>
     </div>,
     document.body,
