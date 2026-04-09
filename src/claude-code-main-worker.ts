@@ -526,6 +526,13 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // Track whether the agent successfully sent a message this turn (CC SDK uses mcp__ prefix)
     if (toolName === "mcp__clawd__chat_send_message" && !response?.error) {
       this.turnChatSent = true;
+      // Save sent text to memory so context preamble reflects prior responses.
+      // Without this, tool-call-only turns (no text output) leave no trace in the preamble,
+      // causing the agent to re-answer 'Previously Seen' messages it already responded to.
+      const sentText = input?.text;
+      if (sentText && this.memorySessionId) {
+        saveToMemory(this.memorySessionId, "assistant", `[Sent to chat]: ${sentText}`);
+      }
     }
     // Track whether chat_mark_processed was called this turn
     if (toolName === "mcp__clawd__chat_mark_processed" && !response?.error) {
@@ -958,6 +965,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     if (seenNotProcessed.length > 0) {
       if (unseen.length > 0) {
         parts.push(`## Previously Seen (not yet processed)\n`);
+        parts.push(
+          `[NOTE: You already saw these last turn. If the conversation history above shows you responded, do NOT re-answer — just call mcp__clawd__chat_mark_processed with the latest timestamp.]\n`,
+        );
       }
       parts.push(...buildChronological(seenNotProcessed));
     }
