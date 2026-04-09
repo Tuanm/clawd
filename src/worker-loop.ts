@@ -774,18 +774,48 @@ export class WorkerLoop implements AgentWorker {
               } catch {}
             }
 
-            const interruptMsgs = Array.from(wlInterruptMessageMap.values());
-            if (interruptMsgs.length > 0) {
+            // Infinite interrupt loop — each resume turn can itself be interrupted,
+            // allowing the user to redirect the agent as many times as needed.
+            let wlResumeProcessingMsgs: Message[] = isContinuation ? result.seenNotProcessed : result.pending;
+            let wlResumeInterruptMsgs: any[] = Array.from(wlInterruptMessageMap.values());
+            let wlLastExecHadUnsentText = lastExecHadUnsentText;
+
+            while (wlResumeInterruptMsgs.length > 0 && this.running) {
               this.isProcessing = true;
               this.processingStartedAt = Date.now();
               this.wasCancelledByHeartbeat = false;
 
-              // Note: No nested interrupt poller for resume turn — intentional to prevent
-              // infinite nesting. Further messages queue until the next while iteration.
+              // Interrupt poller for this resume turn — enables infinite chained interrupts
+              let wlResumeInterrupted = false;
+              const wlResumeInterruptMap = new Map<string, any>();
+              const wlResumeSeenTs = new Set(wlResumeInterruptMsgs.map((m: any) => m.ts));
+              const wlResumePoller = setInterval(() => {
+                if (!this.isProcessing) return;
+                try {
+                  const pollResult = this.pollPendingDirect();
+                  if (!pollResult.ok) return;
+                  const newMsgs = pollResult.pending.filter(
+                    (m) => !wlResumeSeenTs.has(m.ts) && !wlResumeInterruptMap.has(m.ts),
+                  );
+                  if (newMsgs.length > 0) {
+                    wlResumeInterrupted = true;
+                    for (const m of newMsgs) wlResumeInterruptMap.set(m.ts, m);
+                    this.log(`Resume interrupted by ${newMsgs.length} new message(s)`);
+                    try {
+                      this.activeAgent?.cancel();
+                    } catch {}
+                  }
+                } catch (e) {
+                  this.log(`Resume interrupt poll error: ${e}`);
+                }
+              }, 2000);
+
               try {
-                const processingMsgs = isContinuation ? result.seenNotProcessed : result.pending;
-                const hadUnsentText = lastExecHadUnsentText;
-                let interruptPrompt = this.buildInterruptPrompt(processingMsgs, interruptMsgs, hadUnsentText);
+                let interruptPrompt = this.buildInterruptPrompt(
+                  wlResumeProcessingMsgs,
+                  wlResumeInterruptMsgs,
+                  wlLastExecHadUnsentText,
+                );
                 // Hard-truncation guard (same as buildPrompt path)
                 if (interruptPrompt.length > MAX_COMBINED_PROMPT_LENGTH) {
                   const suffix = `\n\n[TRUNCATED — interrupt prompt exceeded ${MAX_COMBINED_PROMPT_LENGTH} character budget]`;
@@ -797,6 +827,7 @@ export class WorkerLoop implements AgentWorker {
                   interruptPrompt = interruptPrompt.slice(0, cutPoint) + suffix;
                 }
                 const resumeResult = await this.executePrompt(interruptPrompt, this.sessionName);
+                wlLastExecHadUnsentText = !resumeResult.chatSent && resumeResult.hadStreamText;
                 const output = resumeResult.output || "";
                 this.lastExecutionHadError =
                   !resumeResult.success || output.includes("[Agent stopped") || output.includes("[stream error");
@@ -805,11 +836,34 @@ export class WorkerLoop implements AgentWorker {
                   this.log(`Interrupt processing error: ${err.message}`);
                 }
               } finally {
+                clearInterval(wlResumePoller);
                 this.isProcessing = false;
                 this.processingStartedAt = null;
                 this.lastActivityAt = Date.now();
                 this.stoppedPromise?.resolve();
                 this.stoppedPromise = null;
+              }
+
+              if (wlResumeInterrupted) {
+                // Advance cursor past the resume batch and prepare for next iteration
+                const lastResumeTs = wlResumeInterruptMsgs[wlResumeInterruptMsgs.length - 1]?.ts;
+                if (lastResumeTs) {
+                  try {
+                    db.run(
+                      `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+                       VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+                       ON CONFLICT(agent_id, channel) DO UPDATE SET
+                         last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), ?),
+                         updated_at = strftime('%s', 'now')`,
+                      [this.config.agentId, this.config.channel, lastResumeTs, lastResumeTs, lastResumeTs],
+                    );
+                  } catch {}
+                }
+                wlResumeProcessingMsgs = wlResumeInterruptMsgs as Message[];
+                wlResumeInterruptMsgs = Array.from(wlResumeInterruptMap.values());
+                wlLastExecHadUnsentText = false;
+              } else {
+                break;
               }
             }
             continue;
