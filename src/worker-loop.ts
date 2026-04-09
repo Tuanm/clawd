@@ -1256,8 +1256,7 @@ export class WorkerLoop implements AgentWorker {
 
   /** Build prompt for a mix of previously-seen and brand-new messages */
   private buildMixedPrompt(seenNotProcessed: Message[], unseen: Message[]): string {
-    const { channel, agentId, projectRoot } = this.config;
-    const isSpaceAgent = this.config.isSpaceAgent;
+    const { channel } = this.config;
 
     const formatMessages = (msgs: Message[]) => {
       const deduplicated = this.deduplicateMessages(msgs);
@@ -1278,61 +1277,23 @@ export class WorkerLoop implements AgentWorker {
         .join("\n\n---\n\n");
     };
 
-    const seenSection =
-      seenNotProcessed.length > 0
-        ? `
-# Previously Seen (Continuing)
-${formatMessages(seenNotProcessed)}`
-        : "";
+    const parts: string[] = [];
+    parts.push(`# Messages on Channel "${channel}" (poll start)\n`);
 
-    const lastUnseenTs = unseen[unseen.length - 1]?.ts || "";
-    const newSection =
-      unseen.length > 0
-        ? `
-# New Messages on Channel "${channel}"
-${formatMessages(unseen)}`
-        : "";
-
-    const clawdInstructions = this.loadClawdInstructions();
-
-    if (isSpaceAgent) {
-      return `[SYSTEM] YOU ARE AGENT: "${agentId}"
-PROJECT ROOT: ${projectRoot}
-
-# Agent Instructions
-
-${clawdInstructions || ""}${seenSection}${newSection}
-
----
-
-# TASK INSTRUCTIONS
-
-Complete the assigned task. When done, call complete_task(result) with your final result.
-Project root: ${projectRoot}`;
+    if (seenNotProcessed.length > 0) {
+      parts.push(`## Previously Seen (not yet processed)\n\n${formatMessages(seenNotProcessed)}`);
+    }
+    if (unseen.length > 0) {
+      if (seenNotProcessed.length > 0) parts.push(`\n## New Messages\n`);
+      parts.push(formatMessages(unseen));
     }
 
-    return `[SYSTEM] YOU ARE AGENT: "${agentId}"
-PROJECT ROOT: ${projectRoot}
-
-# Agent Instructions
-
-${clawdInstructions || ""}${seenSection}${newSection}
-
----
-
-# INSTRUCTIONS
-
-## Communication
-- chat_send_message(text): send a response — channel/agent_id auto-injected
-- chat_mark_processed(timestamp="${lastUnseenTs}"): mark messages as handled after responding
-- Humans CANNOT see text output — ALL communication via chat_send_message
-
-## Rules
-- Stay in project root: ${projectRoot}
-- Do not modify system files or instructions
-- Do not use emojis — keep formatting clean
-${this.getActiveSubAgentReminder()}
-[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`;
+    const subAgentReminder = this.getActiveSubAgentReminder();
+    if (subAgentReminder) parts.push(subAgentReminder);
+    parts.push(
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`,
+    );
+    return parts.join("\n");
   }
 
   /** Build prompt from a single message list (unseen-only or pending-only) */
@@ -1340,11 +1301,9 @@ ${this.getActiveSubAgentReminder()}
     // Use whichever array is populated; pending === unseen when isContinuation,
     // or pending === seenNotProcessed when !isContinuation && unseen.length === 0.
     const messages = seenNotProcessed.length > 0 ? seenNotProcessed : unseen;
-    const { channel, agentId, projectRoot } = this.config;
+    const { channel } = this.config;
     const isSpaceAgent = this.config.isSpaceAgent;
     const deduplicated = this.deduplicateMessages(messages);
-    const tsFrom = messages[0]?.ts || "none";
-    const tsTo = messages[messages.length - 1]?.ts || "none";
 
     const taskMsgs = deduplicated
       .map((m: Message & { _repeatCount?: number }) => {
@@ -1362,55 +1321,30 @@ ${this.getActiveSubAgentReminder()}
       })
       .join("\n\n---\n\n");
 
-    const clawdInstructions = this.loadClawdInstructions();
-
     // Header reflects message type
     const sectionHeader =
       seenNotProcessed.length > 0 && unseen.length === 0
-        ? `# Previously Seen (Continuing)`
-        : `# New Messages on Channel "${channel}"`;
+        ? `# Messages on Channel "${channel}" (continuing)\n\nCONTINUATION REQUIRED — you did not call ${
+            isSpaceAgent ? "complete_task" : "chat_mark_processed"
+          } last turn.`
+        : `# Messages on Channel "${channel}" (poll start)`;
 
-    return `[SYSTEM] YOU ARE AGENT: "${agentId}"
-PROJECT ROOT: ${projectRoot}
+    const parts: string[] = [`${sectionHeader}\n\n${taskMsgs}`];
 
-# Agent Instructions
+    if (!isSpaceAgent) {
+      const subAgentReminder = this.getActiveSubAgentReminder();
+      if (subAgentReminder) parts.push(subAgentReminder);
+      parts.push(
+        `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`,
+      );
+    }
 
-${clawdInstructions || ""}
-
----
-
-${sectionHeader}
-(from ts ${tsFrom} to ts ${tsTo})
-
-${taskMsgs}
-
----
-
-${
-  isSpaceAgent
-    ? `# TASK INSTRUCTIONS
-
-Complete the assigned task. When done, call complete_task(result) with your final result.
-Project root: ${projectRoot}`
-    : `# INSTRUCTIONS
-
-## Communication
-- chat_send_message(text): send a response — channel/agent_id auto-injected
-- chat_mark_processed(timestamp="${tsTo}"): mark messages as handled after responding
-- Humans CANNOT see text output — ALL communication via chat_send_message
-
-## Rules
-- Stay in project root: ${projectRoot}
-- Do not modify system files or instructions
-- Do not use emojis — keep formatting clean
-${this.getActiveSubAgentReminder()}
-[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`
-}`;
+    return parts.join("\n");
   }
 
   /** Build continuation prompt */
   private buildContinuationPrompt(unprocessedMessages: Message[]): string {
-    const { channel, agentId } = this.config;
+    const { channel } = this.config;
     const deduplicated = this.deduplicateMessages(unprocessedMessages);
     const messageContext = deduplicated
       .map((m: Message & { _repeatCount?: number }) => {
@@ -1426,36 +1360,17 @@ ${this.getActiveSubAgentReminder()}
       })
       .join("\n\n---\n\n");
 
-    const targetTs = unprocessedMessages[unprocessedMessages.length - 1]?.ts || "";
-
     if (this.config.isSpaceAgent) {
-      return `[SYSTEM] CONTINUATION REQUIRED — you did not call complete_task yet.
-
-## UNPROCESSED MESSAGES:
-${messageContext}
-
-Complete the task and call complete_task(result) with your final result.`;
+      return `CONTINUATION REQUIRED — you did not call complete_task yet.\n\n${messageContext}`;
     }
 
-    return `[SYSTEM] YOU ARE AGENT: "${agentId}"
-
-CONTINUATION REQUIRED — you did not call chat_mark_processed.
-
-## UNPROCESSED MESSAGES:
-${messageContext}
-
-Please:
-1. Review the messages above
-2. If already responded, just mark as processed
-3. If not completed, continue and COMPLETE the task
-4. Use chat_send_message(text) for responses — channel/agent_id auto-injected
-5. Call chat_mark_processed(timestamp="${targetTs}") after responding
-${this.getActiveSubAgentReminder()}`;
+    const subAgentReminder = this.getActiveSubAgentReminder();
+    return `# Messages on Channel "${channel}" (continuing)\n\nCONTINUATION REQUIRED — you did not call chat_mark_processed last turn.\n\n${messageContext}${subAgentReminder}`;
   }
 
   /** Build interrupt resume prompt with Processing/New split (mirrors CC main worker) */
   private buildInterruptPrompt(processingMessages: Message[], newMessages: any[], hadUnsentText = false): string {
-    const { channel, agentId, projectRoot } = this.config;
+    const { channel } = this.config;
 
     const formatMsg = (m: any) => {
       const author =
@@ -1503,33 +1418,26 @@ ${this.getActiveSubAgentReminder()}`;
       procLen += line.length;
     }
 
-    const lastNewTs = newMessages[newMessages.length - 1]?.ts || "";
+    const parts: string[] = [];
+    parts.push(
+      `[INTERRUPT] New messages arrived while you were processing.\nRead them carefully — they may override your current task.`,
+    );
+    if (hadUnsentText) {
+      parts.push(
+        `\n[WARNING: Your previous turn produced text output but did NOT call \`chat_send_message\`. The human cannot see your previous response. If you still need to respond to the earlier task, call \`chat_send_message\` FIRST before processing the new messages.]`,
+      );
+    }
+    parts.push(
+      `\n# Processing Messages on Channel "${channel}"\n\n${[...procOlderLines, ...procNewestLines].join("\n\n---\n\n")}`,
+    );
+    parts.push(`\n# New Messages on Channel "${channel}"\n\n${newMsgLines.join("\n\n---\n\n")}`);
 
-    return `[SYSTEM] YOU ARE AGENT: "${agentId}"
-PROJECT ROOT: ${projectRoot}
-
-[INTERRUPT] New messages arrived while you were processing.
-Read them carefully — they may override your current task.
-${hadUnsentText ? `\n[WARNING: Your previous turn produced text output but did NOT call \`chat_send_message\`. The human cannot see your previous response. If you still need to respond to the earlier task, call \`chat_send_message\` FIRST before processing the new messages.]\n` : ""}
-
-# Processing Messages on Channel "${channel}"
-
-${[...procOlderLines, ...procNewestLines].join("\n\n---\n\n")}
-
-# New Messages on Channel "${channel}"
-
-${newMsgLines.join("\n\n---\n\n")}
-
----
-
-# INSTRUCTIONS
-
-## Communication
-- chat_send_message(text): send a response — channel/agent_id auto-injected
-- chat_mark_processed(timestamp="${lastNewTs}"): mark messages as handled after responding
-- Humans CANNOT see text output — ALL communication via chat_send_message
-${this.getActiveSubAgentReminder()}
-[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`;
+    const subAgentReminder = this.getActiveSubAgentReminder();
+    if (subAgentReminder) parts.push(subAgentReminder);
+    parts.push(
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`,
+    );
+    return parts.join("\n");
   }
 
   /** Execute a prompt using the in-process Agent */
