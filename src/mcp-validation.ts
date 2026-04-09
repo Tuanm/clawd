@@ -13,7 +13,7 @@ import type { CCMcpServerConfig, MCPServerConfig } from "./agent/api/providers";
 // ============================================================================
 
 /** Commands allowed for stdio MCP servers */
-export const ALLOWED_COMMANDS = ["npx", "node", "bun", "python3", "python", "uvx", "docker"];
+export const ALLOWED_COMMANDS = ["npx", "node", "bun", "python3", "python", "uvx", "docker", "mcp-language-server"];
 
 /** Env keys blocked for security (injection vectors) */
 const BLOCKED_ENV_KEYS = new Set([

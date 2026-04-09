@@ -156,6 +156,51 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     popularity: 3,
     docsUrl: "https://developer.atlassian.com/platform/mcp/",
   },
+  {
+    id: "lsp-typescript",
+    name: "LSP: TypeScript / JavaScript",
+    description:
+      "Language Server Protocol for TypeScript and JavaScript: type-checking diagnostics, go-to-definition, find references, hover types, and symbol search. Shared across all agents in the channel. Requires vtsls.",
+    transport: "stdio",
+    command: "mcp-language-server",
+    args: ["--workspace", "{PROJECT_ROOT}", "--lsp", "vtsls", "--", "--stdio"],
+    installHint:
+      "Pre-installed in Docker. For local use: go install github.com/isaacphi/mcp-language-server@latest && npm install -g @vtsls/language-server typescript",
+    category: "dev",
+    official: false,
+    popularity: 4,
+    docsUrl: "https://github.com/isaacphi/mcp-language-server",
+  },
+  {
+    id: "lsp-python",
+    name: "LSP: Python",
+    description:
+      "Language Server Protocol for Python: type diagnostics, go-to-definition, find references, hover types, and symbol search. Shared across all agents in the channel. Requires pyright.",
+    transport: "stdio",
+    command: "mcp-language-server",
+    args: ["--workspace", "{PROJECT_ROOT}", "--lsp", "pyright-langserver", "--", "--stdio"],
+    installHint:
+      "Pre-installed in Docker. For local use: go install github.com/isaacphi/mcp-language-server@latest && pip install pyright",
+    category: "dev",
+    official: false,
+    popularity: 3,
+    docsUrl: "https://github.com/isaacphi/mcp-language-server",
+  },
+  {
+    id: "lsp-go",
+    name: "LSP: Go",
+    description:
+      "Language Server Protocol for Go: type diagnostics, go-to-definition, find references, hover types, and symbol search. Shared across all agents in the channel. Requires gopls.",
+    transport: "stdio",
+    command: "mcp-language-server",
+    args: ["--workspace", "{PROJECT_ROOT}", "--lsp", "gopls"],
+    installHint:
+      "Pre-installed in Docker. For local use: go install github.com/isaacphi/mcp-language-server@latest && go install golang.org/x/tools/gopls@latest",
+    category: "dev",
+    official: false,
+    popularity: 3,
+    docsUrl: "https://github.com/isaacphi/mcp-language-server",
+  },
 ];
 
 /** Look up a single catalog entry by ID. */
