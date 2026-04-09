@@ -20,28 +20,10 @@ export default function MicButton({ isListening, isSupported, onClick, error }: 
         title={error || label}
         type="button"
       >
-        {isListening ? (
-          /* Filled mic — active/recording */
-          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path d="M8 10a2 2 0 0 0 2-2V4a2 2 0 1 0-4 0v4a2 2 0 0 0 2 2z" />
-            <path d="M12 8a1 1 0 0 0-2 0 2 2 0 0 1-4 0 1 1 0 0 0-2 0 4 4 0 0 0 3 3.87V13H6v1h4v-1H9v-1.13A4 4 0 0 0 12 8z" />
-          </svg>
-        ) : (
-          /* Simple outline mic — idle */
-          <svg
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <rect x="6" y="2" width="4" height="7" rx="2" />
-            <path d="M12 8a4 4 0 0 1-8 0" />
-            <path d="M8 12v2M6.5 14h3" />
-          </svg>
-        )}
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="5.5" y="1.5" width="5" height="7" rx="2.5" fill="currentColor" />
+          <path d="M4 8.5a4 4 0 0 0 8 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
       </button>
       {error && (
         <span className="mic-error" role="alert">
