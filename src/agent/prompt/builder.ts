@@ -178,7 +178,8 @@ function sectionChat(ctx: PromptContext): string {
 - Do NOT reply in streaming text — your text output is never delivered to users; call ${p}chat_send_message instead
 - Wrap copiable content (commands, code, URLs, paths) in markdown code blocks
 - On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, never mention heartbeats in chat
-- If ${p}chat_send_message fails, RETRY immediately`;
+- If ${p}chat_send_message fails, RETRY immediately
+- The prompt may contain two message sections: \`## Previously Seen (not yet processed)\` (messages you saw last turn but didn't finish processing) and \`## New Messages\` (brand-new messages). Call ${p}chat_mark_processed for messages in BOTH sections once handled`;
 }
 
 // ============================================================================
