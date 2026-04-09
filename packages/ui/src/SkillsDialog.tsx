@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
 import { ClawdAvatar } from "./MessageList";
+import { useInputContextMenu, InputContextMenu } from "./InputContextMenu";
 
 const API_URL = "";
 
@@ -66,6 +67,9 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
   const [deleting, setDeleting] = useState(false);
 
   const nameInputRef = useRef<HTMLInputElement>(null);
+
+  // Context menu for text inputs
+  const { menu: inputMenu, hasSelection: inputHasSelection, isEditable: inputIsEditable, handleContextMenu: handleInputContextMenu, closeMenu: closeInputMenu, handleCopy: handleInputCopy, handleCut: handleInputCut, handleSelectAll: handleInputSelectAll } = useInputContextMenu();
 
   useEffect(() => {
     if (!isOpen || !channel) return;
@@ -377,6 +381,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
                     className="agent-field-input"
                     placeholder="skill-name (kebab-case)"
                     value={editName}
+                    onContextMenu={handleInputContextMenu}
                     onChange={(e) => setEditName(e.target.value)}
                   />
                 </>
@@ -386,6 +391,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
                 className="agent-field-input"
                 placeholder="Brief description"
                 value={editDescription}
+                onContextMenu={handleInputContextMenu}
                 onChange={(e) => setEditDescription(e.target.value)}
                 maxLength={200}
               />
@@ -394,6 +400,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
                 className="agent-field-input"
                 placeholder="keyword1, keyword2, ..."
                 value={editTriggers}
+                onContextMenu={handleInputContextMenu}
                 onChange={(e) => setEditTriggers(e.target.value)}
               />
               <label className="skills-field-label">Argument Hint</label>
@@ -401,12 +408,14 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
                 className="agent-field-input"
                 placeholder="[optional arg hint]"
                 value={editArgumentHint}
+                onContextMenu={handleInputContextMenu}
                 onChange={(e) => setEditArgumentHint(e.target.value)}
               />
               <label className="skills-field-label">Content</label>
               <textarea
                 className="agent-file-editor"
                 value={editContent}
+                onContextMenu={handleInputContextMenu}
                 onChange={(e) => setEditContent(e.target.value)}
                 placeholder="Skill instructions (markdown)..."
               />
@@ -435,6 +444,17 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
             </div>
           </div>
         </div>
+      )}
+      {inputMenu && (
+        <InputContextMenu
+          menu={inputMenu}
+          onClose={closeInputMenu}
+          hasSelection={inputHasSelection}
+          isEditable={inputIsEditable}
+          onCopy={handleInputCopy}
+          onCut={handleInputCut}
+          onSelectAll={handleInputSelectAll}
+        />
       )}
     </div>,
     document.body,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
 import { ClawdAvatar } from "./MessageList";
+import { useInputContextMenu, InputContextMenu } from "./InputContextMenu";
 
 const API_URL = "";
 
@@ -169,6 +170,9 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const [newHeartbeat, setNewHeartbeat] = useState(0);
   const [newAgentType, setNewAgentType] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // Context menu for text inputs
+  const { menu: inputMenu, hasSelection: inputHasSelection, isEditable: inputIsEditable, handleContextMenu: handleInputContextMenu, closeMenu: closeInputMenu, handleCopy: handleInputCopy, handleCut: handleInputCut, handleSelectAll: handleInputSelectAll } = useInputContextMenu();
 
   // Edit state for existing agent fields
   const [editProvider, setEditProvider] = useState("");
@@ -684,6 +688,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 placeholder="Name"
                 value={selectedAgent.agent_id}
                 readOnly
+                onContextMenu={handleInputContextMenu}
               />
               <label className="skills-field-label">Type</label>
               <CustomSelect
@@ -714,6 +719,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 className="agent-field-input"
                 placeholder="Model"
                 value={editModel}
+                onContextMenu={handleInputContextMenu}
                 onChange={(e) => {
                   setEditModel(e.target.value);
                   setFieldsDirty(
@@ -728,6 +734,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   className="agent-field-input"
                   placeholder={`~/.clawd/projects/${channel}`}
                   value={editProject}
+                  onContextMenu={handleInputContextMenu}
                   onChange={(e) => {
                     setEditProject(e.target.value);
                     setFieldsDirty(
@@ -869,6 +876,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 }
                 value={editWorkerToken}
                 disabled={clearWorkerToken}
+                onContextMenu={handleInputContextMenu}
                 onChange={(e) => {
                   setEditWorkerToken(e.target.value);
                   setFieldsDirty(
@@ -889,6 +897,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 className="agent-field-input agent-identity-input"
                 placeholder="Identity — describe this agent's role, personality, and responsibilities"
                 value={identity}
+                onContextMenu={handleInputContextMenu}
                 onChange={(e) => {
                   setIdentity(e.target.value);
                   setIdentityDirty(e.target.value !== savedIdentity);
@@ -940,6 +949,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 placeholder="Name"
                 value={newName}
                 pattern="[^:]+"
+                onContextMenu={handleInputContextMenu}
                 title="Agent name cannot contain colons"
                 onChange={(e) => setNewName(e.target.value.replace(/:/g, ""))}
                 onKeyDown={(e) => {
@@ -973,6 +983,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 className="agent-field-input"
                 placeholder="Model"
                 value={newModel}
+                onContextMenu={handleInputContextMenu}
                 onChange={(e) => setNewModel(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleAddAgent();
@@ -985,6 +996,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                   className="agent-field-input"
                   placeholder={`~/.clawd/projects/${channel}`}
                   value={newProject}
+                  onContextMenu={handleInputContextMenu}
                   onChange={(e) => setNewProject(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleAddAgent();
@@ -1061,6 +1073,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 type="password"
                 placeholder="Worker token (optional)"
                 value={newWorkerToken}
+                onContextMenu={handleInputContextMenu}
                 onChange={(e) => setNewWorkerToken(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleAddAgent();
@@ -1079,6 +1092,17 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           {error && <div className="agent-dialog-error">{error}</div>}
         </div>
       </div>
+      {inputMenu && (
+        <InputContextMenu
+          menu={inputMenu}
+          onClose={closeInputMenu}
+          hasSelection={inputHasSelection}
+          isEditable={inputIsEditable}
+          onCopy={handleInputCopy}
+          onCut={handleInputCut}
+          onSelectAll={handleInputSelectAll}
+        />
+      )}
     </div>,
     document.body,
   );

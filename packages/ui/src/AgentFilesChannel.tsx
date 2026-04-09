@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
 import { ClawdAvatar } from "./MessageList";
+import { useInputContextMenu, InputContextMenu } from "./InputContextMenu";
 
 const API_URL = "";
 
@@ -71,6 +72,9 @@ export default function AgentFilesChannel() {
   const [saving, setSaving] = useState(false);
   const [saveWarning, setSaveWarning] = useState<string | null>(null);
   const saveWarningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Context menu for text inputs
+  const { menu: inputMenu, hasSelection: inputHasSelection, isEditable: inputIsEditable, handleContextMenu: handleInputContextMenu, closeMenu: closeInputMenu, handleCopy: handleInputCopy, handleCut: handleInputCut, handleSelectAll: handleInputSelectAll } = useInputContextMenu();
 
   const loadAgents = useCallback(async () => {
     setError(null);
@@ -310,6 +314,7 @@ export default function AgentFilesChannel() {
                       className="agent-field-input"
                       placeholder="agent-name (kebab-case)"
                       value={editName}
+                      onContextMenu={handleInputContextMenu}
                       onChange={(e) => setEditName(e.target.value)}
                       autoFocus
                     />
@@ -319,6 +324,7 @@ export default function AgentFilesChannel() {
                 <textarea
                   className="agent-file-editor"
                   value={editContent}
+                  onContextMenu={handleInputContextMenu}
                   onChange={(e) => setEditContent(e.target.value)}
                   readOnly={!editEditable}
                   placeholder="---\nname: my-agent\ndescription: ...\n---\n# System prompt..."
@@ -352,6 +358,17 @@ export default function AgentFilesChannel() {
           </div>,
           document.body,
         )}
+      {inputMenu && (
+        <InputContextMenu
+          menu={inputMenu}
+          onClose={closeInputMenu}
+          hasSelection={inputHasSelection}
+          isEditable={inputIsEditable}
+          onCopy={handleInputCopy}
+          onCut={handleInputCut}
+          onSelectAll={handleInputSelectAll}
+        />
+      )}
     </>
   );
 }

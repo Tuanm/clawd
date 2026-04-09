@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
 import { ClawdAvatar } from "./MessageList";
+import { useInputContextMenu, InputContextMenu } from "./InputContextMenu";
 
 const API_URL = "";
 
@@ -65,6 +66,9 @@ export default function SkillFilesChannel() {
   const [editContent, setEditContent] = useState("");
   const [editEditable, setEditEditable] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  // Context menu for text inputs
+  const { menu: inputMenu, hasSelection: inputHasSelection, isEditable: inputIsEditable, handleContextMenu: handleInputContextMenu, closeMenu: closeInputMenu, handleCopy: handleInputCopy, handleCut: handleInputCut, handleSelectAll: handleInputSelectAll } = useInputContextMenu();
 
   const loadSkills = useCallback(async () => {
     setError(null);
@@ -305,6 +309,7 @@ export default function SkillFilesChannel() {
                       className="agent-field-input"
                       placeholder="skill-name (kebab-case)"
                       value={editName}
+                      onContextMenu={handleInputContextMenu}
                       onChange={(e) => setEditName(e.target.value)}
                       autoFocus
                     />
@@ -315,6 +320,7 @@ export default function SkillFilesChannel() {
                   className="agent-field-input"
                   placeholder="Brief description"
                   value={editDescription}
+                  onContextMenu={handleInputContextMenu}
                   onChange={(e) => setEditDescription(e.target.value)}
                   readOnly={!editable}
                   maxLength={200}
@@ -324,6 +330,7 @@ export default function SkillFilesChannel() {
                   className="agent-field-input"
                   placeholder="keyword1, keyword2, ..."
                   value={editTriggers}
+                  onContextMenu={handleInputContextMenu}
                   onChange={(e) => setEditTriggers(e.target.value)}
                   readOnly={!editable}
                 />
@@ -331,6 +338,7 @@ export default function SkillFilesChannel() {
                 <textarea
                   className="agent-file-editor"
                   value={editContent}
+                  onContextMenu={handleInputContextMenu}
                   onChange={(e) => setEditContent(e.target.value)}
                   readOnly={!editable}
                   placeholder="Skill instructions (markdown)..."
@@ -364,6 +372,17 @@ export default function SkillFilesChannel() {
           </div>,
           document.body,
         )}
+      {inputMenu && (
+        <InputContextMenu
+          menu={inputMenu}
+          onClose={closeInputMenu}
+          hasSelection={inputHasSelection}
+          isEditable={inputIsEditable}
+          onCopy={handleInputCopy}
+          onCut={handleInputCut}
+          onSelectAll={handleInputSelectAll}
+        />
+      )}
     </>
   );
 }
