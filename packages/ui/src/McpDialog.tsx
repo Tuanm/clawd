@@ -2,6 +2,7 @@ import DOMPurify from "dompurify";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
+import { useInputContextMenu, InputContextMenu } from "./InputContextMenu";
 
 const API_URL = "";
 
@@ -95,6 +96,9 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
   const [installProjectRoot, setInstallProjectRoot] = useState("");
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+
+  // Context menu for text inputs
+  const { menu: inputMenu, hasSelection: inputHasSelection, isEditable: inputIsEditable, handleContextMenu: handleInputContextMenu, closeMenu: closeInputMenu, handleCopy: handleInputCopy, handleCut: handleInputCut, handleSelectAll: handleInputSelectAll } = useInputContextMenu();
 
   // Reset state on dialog close
   useEffect(() => {
@@ -368,6 +372,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 placeholder="Name"
                 value={selectedServer.name}
                 readOnly
+                onContextMenu={handleInputContextMenu}
               />
               <label className="skills-field-label">Transport</label>
               <input
@@ -376,6 +381,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                 placeholder="Type"
                 value={selectedServer.transport}
                 readOnly
+                onContextMenu={handleInputContextMenu}
               />
               {selectedServer.command && (
                 <>
@@ -386,6 +392,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                     placeholder="Command"
                     value={`${selectedServer.command} ${selectedServer.args?.join(" ") || ""}`}
                     readOnly
+                    onContextMenu={handleInputContextMenu}
                   />
                 </>
               )}
@@ -398,6 +405,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                     placeholder="URL"
                     value={selectedServer.url}
                     readOnly
+                    onContextMenu={handleInputContextMenu}
                   />
                 </>
               )}
@@ -414,6 +422,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                       : "Disconnected"
                 }
                 readOnly
+                onContextMenu={handleInputContextMenu}
               />
 
               {/* Install form for catalog-only servers */}
@@ -432,6 +441,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                               className="agent-field-input"
                               placeholder={`${key} (required)`}
                               value={installEnv[key] ?? ""}
+                              onContextMenu={handleInputContextMenu}
                               onChange={(e) => setInstallEnv((prev) => ({ ...prev, [key]: e.target.value }))}
                             />
                           </div>
@@ -446,6 +456,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                               className="agent-field-input"
                               placeholder={key}
                               value={installEnv[key] ?? ""}
+                              onContextMenu={handleInputContextMenu}
                               onChange={(e) => setInstallEnv((prev) => ({ ...prev, [key]: e.target.value }))}
                             />
                           </div>
@@ -458,6 +469,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
                               className="agent-field-input"
                               placeholder="/path/to/project"
                               value={installProjectRoot}
+                              onContextMenu={handleInputContextMenu}
                               onChange={(e) => setInstallProjectRoot(e.target.value)}
                             />
                           </div>
@@ -531,6 +543,17 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
           )}
         </div>
       </div>
+      {inputMenu && (
+        <InputContextMenu
+          menu={inputMenu}
+          onClose={closeInputMenu}
+          hasSelection={inputHasSelection}
+          isEditable={inputIsEditable}
+          onCopy={handleInputCopy}
+          onCut={handleInputCut}
+          onSelectAll={handleInputSelectAll}
+        />
+      )}
     </div>,
     document.body,
   );

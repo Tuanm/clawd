@@ -1,7 +1,8 @@
-import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import useSpeechToText from "./hooks/useSpeechToText";
 import MicButton from "./MicButton";
 import { createPortal } from "react-dom";
+import { InputContextMenu } from "./InputContextMenu";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
@@ -10,139 +11,10 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { markdownSanitizeSchema } from "./sanitize-schema";
 
-// Copy icon for context menu
-function CopyIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
-// Paste icon for context menu
-function PasteIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
-      <rect x="8" y="2" width="8" height="4" rx="1" ry="1" />
-    </svg>
-  );
-}
-
-// Select all icon for context menu
-function SelectAllIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <path d="M8 12h8M12 8v8" />
-    </svg>
-  );
-}
-
 // Context menu state
 interface ComposerContextMenuState {
   x: number;
   y: number;
-}
-
-// Context menu component for composer
-function ComposerContextMenu({
-  menu,
-  onClose,
-  onCopy,
-  onPaste,
-  onSelectAll,
-  hasSelection,
-}: {
-  menu: ComposerContextMenuState;
-  onClose: () => void;
-  onCopy: () => void;
-  onPaste: () => void;
-  onSelectAll: () => void;
-  hasSelection: boolean;
-}) {
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  // Close on click outside or Escape
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handleClick);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [onClose]);
-
-  // Position menu so it doesn't overflow viewport
-  const adjustedPosition = useMemo(() => {
-    const menuWidth = 200;
-    const menuHeight = 132; // 3 items
-    let x = menu.x;
-    let y = menu.y;
-    if (x + menuWidth > window.innerWidth) {
-      x = window.innerWidth - menuWidth - 8;
-    }
-    if (y + menuHeight > window.innerHeight) {
-      y = window.innerHeight - menuHeight - 8;
-    }
-    return { x, y };
-  }, [menu.x, menu.y]);
-
-  const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
-  const copyShortcut = isMac ? "\u2318C" : "Ctrl+C";
-  const pasteShortcut = isMac ? "\u2318V" : "Ctrl+V";
-  const selectAllShortcut = isMac ? "\u2318A" : "Ctrl+A";
-
-  return createPortal(
-    <div ref={menuRef} className="message-context-menu" style={{ left: adjustedPosition.x, top: adjustedPosition.y }}>
-      <button
-        className={`context-menu-item${!hasSelection ? " disabled" : ""}`}
-        onClick={() => {
-          if (hasSelection) {
-            onCopy();
-            onClose();
-          }
-        }}
-        disabled={!hasSelection}
-      >
-        <CopyIcon />
-        <span>Copy</span>
-        <span className="context-menu-shortcut">{copyShortcut}</span>
-      </button>
-      <button
-        className="context-menu-item"
-        onClick={() => {
-          onPaste();
-          onClose();
-        }}
-      >
-        <PasteIcon />
-        <span>Paste</span>
-        <span className="context-menu-shortcut">{pasteShortcut}</span>
-      </button>
-      <button
-        className="context-menu-item"
-        onClick={() => {
-          onSelectAll();
-          onClose();
-        }}
-      >
-        <SelectAllIcon />
-        <span>Select all</span>
-        <span className="context-menu-shortcut">{selectAllShortcut}</span>
-      </button>
-    </div>,
-    document.body,
-  );
 }
 
 interface AttachmentFile {
@@ -503,6 +375,29 @@ export default function MessageComposer({
       textarea.focus();
       document.execCommand("copy");
     }
+  }, [text]);
+
+  // Handle cut from context menu: copy selection to clipboard + remove from state
+  const handleContextMenuCut = useCallback(async () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    if (start === end) return;
+    const selectedText = text.substring(start, end);
+    try {
+      await navigator.clipboard.writeText(selectedText);
+    } catch {
+      textarea.focus();
+      document.execCommand("copy");
+    }
+    setText(text.substring(0, start) + text.substring(end));
+    // Restore cursor position after state update
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        textareaRef.current.setSelectionRange(start, start);
+      }
+    });
   }, [text]);
 
   const closeComposerContextMenu = useCallback(() => {
@@ -991,13 +886,15 @@ export default function MessageComposer({
 
       {/* Composer context menu */}
       {composerContextMenu && (
-        <ComposerContextMenu
+        <InputContextMenu
           menu={composerContextMenu}
           onClose={closeComposerContextMenu}
           onCopy={handleContextMenuCopy}
+          onCut={handleContextMenuCut}
           onPaste={handleContextMenuPaste}
           onSelectAll={handleContextMenuSelectAll}
           hasSelection={contextMenuHasSelection}
+          isEditable={!isListening}
         />
       )}
     </div>
