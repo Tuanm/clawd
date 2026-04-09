@@ -67,16 +67,18 @@ This is the primary tool for agents to receive messages. It:
 Args:
   - channel (string): Channel ID (e.g., "chat-task", "general")
   - agent_id (string): Agent identifier (default: "default")
-  - include_bot (boolean): Include bot messages for context (default: true)
+  - include_bot (boolean): Include bot/worker messages in pending (default: false)
+  - limit (number): Max pending messages to return (default: 20, max: 100)
+  - offset (number): Skip first N pending messages for pagination (default: 0)
 
 Returns JSON:
 {
   "ok": true,
-  "messages": [...],           // All messages (for context)
-  "pending": [...],            // UHUMAN messages needing processing
+  "pending": [...],            // Unprocessed messages needing action
   "last_seen_ts": "...",       // Timestamp marked as seen
   "last_processed_ts": "...",  // Last processed timestamp
-  "count": number              // Number of pending messages
+  "count": number,             // Total pending count (before limit/offset)
+  "has_more": boolean          // True if more pending messages exist beyond this page
 }
 
 CRITICAL: If count > 0, you MUST process each message in "pending" array:
@@ -92,8 +94,18 @@ re-processing on restart. Use this for polling loops. Call every 2-10 seconds.`,
       properties: {
         include_bot: {
           type: "boolean",
-          description: "Include bot messages for context understanding",
-          default: true,
+          description: "Include bot/worker messages in pending (default: false)",
+          default: false,
+        },
+        limit: {
+          type: "number",
+          description: "Max pending messages to return (default: 20, max: 100)",
+          default: 20,
+        },
+        offset: {
+          type: "number",
+          description: "Skip first N pending messages for pagination (default: 0)",
+          default: 0,
         },
       },
       required: [],
@@ -1591,7 +1603,9 @@ async function executeToolCall(
       case "chat_poll_and_ack": {
         const channel = args.channel as string;
         const agentId = (args.agent_id as string) || "default";
-        const includeBot = args.include_bot !== false;
+        const includeBot = args.include_bot === true;
+        const limit = Math.min(Math.max(1, (args.limit as number) || 20), 100);
+        const offset = Math.max(0, (args.offset as number) || 0);
 
         // Get agent's last processed timestamp (for filtering pending)
         const agentState = db
@@ -1602,8 +1616,8 @@ async function executeToolCall(
 
         let lastProcessedTs = agentState?.last_processed_ts;
 
-        // Get all messages (for context)
-        const allResult = getPendingMessages(channel, undefined, includeBot);
+        // Get all messages (for seen-marking and context)
+        const allResult = getPendingMessages(channel, undefined, true);
         const messages = allResult.messages || [];
 
         // IMPORTANT: If this is a new agent (no last_processed_ts), auto-initialize
@@ -1626,15 +1640,16 @@ async function executeToolCall(
         }
 
         // Filter pending = messages from others after last_processed_ts
-        // Include UHUMAN and UWORKER-* messages (scheduler, sub-agents, etc.)
-        // Exclude UBOT messages from other agents (already in context) and self-messages
-        const pending = messages.filter(
+        // Always include UHUMAN; optionally include UWORKER-* and other UBOT agents
+        const allPending = messages.filter(
           (m: { user: string; ts: string; agent_id?: string }) =>
             (m.user === "UHUMAN" ||
-              m.user.startsWith("UWORKER-") ||
-              (m.user === "UBOT" && m.agent_id && m.agent_id !== agentId)) &&
+              (includeBot &&
+                (m.user.startsWith("UWORKER-") || (m.user === "UBOT" && m.agent_id && m.agent_id !== agentId)))) &&
             (!lastProcessedTs || m.ts > lastProcessedTs),
         );
+        const totalPending = allPending.length;
+        const pending = allPending.slice(offset, offset + limit);
 
         // Mark ALL messages as SEEN immediately, also update last_poll_ts
         if (messages.length > 0) {
@@ -1678,33 +1693,7 @@ async function executeToolCall(
           );
         }
 
-        // Add seen_by to each message
-        const messagesWithSeenBy = messages.map((m: { ts: string; user: string; text?: string }) => {
-          const seenBy = getMessageSeenBy(channel, m.ts);
-          // Get avatar color for each agent who saw the message
-          const seenByWithColors = seenBy.map((aid) => {
-            const agent = getAgent(aid, channel);
-            return {
-              agent_id: aid,
-              avatar_color: agent?.avatar_color || "#D97853",
-            };
-          });
-          return { ...m, seen_by: seenByWithColors };
-        });
-
-        // Estimate tokens for context length warning
-        // Rough estimate: 1 token ≈ 4 characters (for English text)
-        // Conservative: 3.5 chars/token to catch edge cases earlier
-        const estimateTokens = (text: string): number => Math.ceil(text.length / 3.5);
-        const totalChars = messages.reduce((sum: number, m: { text?: string }) => sum + (m.text?.length || 0), 0);
-        const estimatedTokens = estimateTokens(JSON.stringify(messagesWithSeenBy));
-        const TOKEN_WARNING_THRESHOLD = 50000; // Warn at 50k estimated tokens
-        const TOKEN_CRITICAL_THRESHOLD = 70000; // Critical at 70k
-
-        const shouldCompact = estimatedTokens > TOKEN_WARNING_THRESHOLD;
-        const compactUrgent = estimatedTokens > TOKEN_CRITICAL_THRESHOLD;
-
-        // Add seen_by to pending messages as well
+        // Add seen_by to pending messages
         const pendingWithSeenBy = pending.map((m: { ts: string; text?: string }) => {
           const seenBy = getMessageSeenBy(channel, m.ts);
           const seenByWithColors = seenBy.map((aid) => {
@@ -1718,10 +1707,6 @@ async function executeToolCall(
         });
 
         // Truncate message text for agent context
-        const truncatedMessages = messagesWithSeenBy.map((m) => ({
-          ...m,
-          text: truncateForAgent(m.text),
-        }));
         const truncatedPending = pendingWithSeenBy.map((m) => ({
           ...m,
           text: truncateForAgent(m.text),
@@ -1730,21 +1715,13 @@ async function executeToolCall(
         resultText = JSON.stringify(
           {
             ok: true,
-            messages: truncatedMessages,
             pending: truncatedPending,
             last_seen_ts: messages.length > 0 ? messages[messages.length - 1].ts : null,
             last_processed_ts: lastProcessedTs,
-            count: pending.length,
-            // Token estimation for context management
-            estimated_tokens: estimatedTokens,
-            total_chars: totalChars,
-            should_compact: shouldCompact,
-            compact_urgent: compactUrgent,
-            ...(shouldCompact && {
-              compact_hint: compactUrgent
-                ? "[CRITICAL] Context approaching limit! Run /compact NOW to summarize and clear old messages."
-                : "[WARNING] Context is getting long. Consider running /compact soon to free up space.",
-            }),
+            count: totalPending,
+            has_more: offset + limit < totalPending,
+            ...(offset > 0 && { offset }),
+            ...(limit !== 20 && { limit }),
           },
           null,
           2,
