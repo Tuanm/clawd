@@ -88,6 +88,20 @@ RUN NODE_VERSION=$(curl -fsSL https://nodejs.org/download/release/latest-v22.x/ 
 COPY --from=builder /usr/local/bin/bun /usr/local/bin/bun
 RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx
 
+# Go toolchain (minimal — enables go-based MCP tools)
+ARG GO_VERSION=1.24.2
+RUN ARCH=$(dpkg --print-architecture) && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" | tar xz -C /usr/local
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# mcp-language-server (LSP → MCP bridge for LSP catalog entries)
+RUN GOPATH=/tmp/gobuild go install github.com/isaacphi/mcp-language-server@latest && \
+    mv /tmp/gobuild/bin/mcp-language-server /usr/local/bin/ && \
+    rm -rf /tmp/gobuild
+
+# vtsls (TypeScript/JS language server for LSP: TypeScript catalog entry)
+RUN npm install -g @vtsls/language-server typescript
+
 RUN useradd -m -s /bin/bash clawd \
     && mkdir -p /home/clawd/.clawd/bin \
     && chown -R clawd:clawd /home/clawd

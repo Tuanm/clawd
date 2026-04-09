@@ -679,7 +679,7 @@ export function registerMcpServerRoutes(
           return json({ ok: false, error: "projectRoot required for this server" }, 400);
         }
 
-        // Resolve template vars in args — pass both projectRoot and env vars as template vars
+        // Resolve template vars in args — projectRoot and env vars.
         let resolvedArgs: string[];
         try {
           resolvedArgs = resolveArgs(entry.args || [], {
