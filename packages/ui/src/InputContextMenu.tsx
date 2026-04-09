@@ -55,6 +55,8 @@ export interface InputContextMenuProps {
   onSelectAll: () => void;
   /** If provided, a Paste item is shown (composer-specific) */
   onPaste?: () => void;
+  /** Set to false to hide the Select All item (default: true) */
+  showSelectAll?: boolean;
 }
 
 export function InputContextMenu({
@@ -66,6 +68,7 @@ export function InputContextMenu({
   onCut,
   onSelectAll,
   onPaste,
+  showSelectAll = true,
 }: InputContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -110,7 +113,10 @@ export function InputContextMenu({
       <button
         className={`context-menu-item${!hasSelection ? " disabled" : ""}`}
         onClick={() => {
-          if (hasSelection) { onCopy(); onClose(); }
+          if (hasSelection) {
+            onCopy();
+            onClose();
+          }
         }}
         disabled={!hasSelection}
       >
@@ -124,7 +130,10 @@ export function InputContextMenu({
         <button
           className={`context-menu-item${!hasSelection ? " disabled" : ""}`}
           onClick={() => {
-            if (hasSelection) { onCut(); onClose(); }
+            if (hasSelection) {
+              onCut();
+              onClose();
+            }
           }}
           disabled={!hasSelection}
         >
@@ -138,7 +147,10 @@ export function InputContextMenu({
       {onPaste && (
         <button
           className="context-menu-item"
-          onClick={() => { onPaste!(); onClose(); }}
+          onClick={() => {
+            onPaste!();
+            onClose();
+          }}
         >
           <PasteIcon />
           <span>Paste</span>
@@ -147,14 +159,19 @@ export function InputContextMenu({
       )}
 
       {/* Select All */}
-      <button
-        className="context-menu-item"
-        onClick={() => { onSelectAll(); onClose(); }}
-      >
-        <SelectAllIcon />
-        <span>Select all</span>
-        <span className="context-menu-shortcut">{selectAllShortcut}</span>
-      </button>
+      {showSelectAll && (
+        <button
+          className="context-menu-item"
+          onClick={() => {
+            onSelectAll();
+            onClose();
+          }}
+        >
+          <SelectAllIcon />
+          <span>Select all</span>
+          <span className="context-menu-shortcut">{selectAllShortcut}</span>
+        </button>
+      )}
     </div>,
     document.body,
   );
@@ -184,18 +201,15 @@ export function useInputContextMenu(): UseInputContextMenuResult {
   const [isEditable, setIsEditable] = useState(true);
   const activeEl = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
 
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const el = e.currentTarget;
-      activeEl.current = el;
-      setHasSelection(el.selectionStart !== el.selectionEnd);
-      setIsEditable(!(el as HTMLInputElement).readOnly);
-      setMenu({ x: e.clientX, y: e.clientY });
-    },
-    [],
-  );
+  const handleContextMenu = useCallback((e: React.MouseEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.currentTarget;
+    activeEl.current = el;
+    setHasSelection(el.selectionStart !== el.selectionEnd);
+    setIsEditable(!(el as HTMLInputElement).readOnly);
+    setMenu({ x: e.clientX, y: e.clientY });
+  }, []);
 
   const closeMenu = useCallback(() => setMenu(null), []);
 

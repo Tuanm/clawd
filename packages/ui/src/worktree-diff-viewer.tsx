@@ -1,6 +1,8 @@
 import Prism from "prismjs";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
+import { InputContextMenu } from "./InputContextMenu";
 
 const API_URL = "";
 const MAX_DIFF_LINES = 5000;
@@ -183,6 +185,29 @@ export default function WorktreeDiffViewer({ channel, agentId, file, source, onR
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [fetched, setFetched] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [diffMenu, setDiffMenu] = useState<{ x: number; y: number } | null>(null);
+  const [diffMenuHasSelection, setDiffMenuHasSelection] = useState(false);
+
+  const handleDiffContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const sel = window.getSelection();
+    setDiffMenuHasSelection(!!(sel && sel.toString().length > 0));
+    setDiffMenu({ x: e.clientX, y: e.clientY });
+  }, []);
+
+  const handleDiffCopy = useCallback(() => {
+    document.execCommand("copy");
+  }, []);
+
+  const handleDiffSelectAll = useCallback(() => {
+    if (!scrollRef.current) return;
+    const range = document.createRange();
+    range.selectNodeContents(scrollRef.current);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    setDiffMenuHasSelection(true);
+  }, []);
 
   const language = file ? detectLanguage(file) : "plaintext";
 
@@ -257,40 +282,56 @@ export default function WorktreeDiffViewer({ channel, agentId, file, source, onR
   }
 
   return (
-    <div className="diff-viewer">
-      <div className="diff-viewer-header">
-        <span className="diff-viewer-file">{file}</span>
-        <span className="diff-viewer-source">{source}</span>
-      </div>
-      <div className="diff-scroll" ref={scrollRef}>
-        <div className="diff-hunks">
-          {hunks.map((hunk) => (
-            <HunkView
-              key={hunk.hunk_hash}
-              hunk={hunk}
-              language={language}
-              source={source}
-              channel={channel}
-              agentId={agentId}
-              file={file}
-              onHunkAction={handleHunkAction}
-              actionPending={actionPending}
-              onActionStart={setActionPending}
-              onActionEnd={() => setActionPending(null)}
-              onError={setError}
-              onOpenInProjects={onOpenInProjects}
-            />
-          ))}
+    <>
+      <div className="diff-viewer">
+        <div className="diff-viewer-header">
+          <span className="diff-viewer-file">{file}</span>
+          <span className="diff-viewer-source">{source}</span>
         </div>
-        {truncated && !showFull && (
-          <div className="diff-truncated">
-            <span>Diff truncated at {MAX_DIFF_LINES} lines.</span>
-            <button className="diff-show-full-btn" onClick={() => setShowFull(true)}>
-              Show full diff
-            </button>
+        <div className="diff-scroll" ref={scrollRef} onContextMenu={handleDiffContextMenu}>
+          <div className="diff-hunks">
+            {hunks.map((hunk) => (
+              <HunkView
+                key={hunk.hunk_hash}
+                hunk={hunk}
+                language={language}
+                source={source}
+                channel={channel}
+                agentId={agentId}
+                file={file}
+                onHunkAction={handleHunkAction}
+                actionPending={actionPending}
+                onActionStart={setActionPending}
+                onActionEnd={() => setActionPending(null)}
+                onError={setError}
+                onOpenInProjects={onOpenInProjects}
+              />
+            ))}
           </div>
-        )}
+          {truncated && !showFull && (
+            <div className="diff-truncated">
+              <span>Diff truncated at {MAX_DIFF_LINES} lines.</span>
+              <button className="diff-show-full-btn" onClick={() => setShowFull(true)}>
+                Show full diff
+              </button>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+      {diffMenu &&
+        createPortal(
+          <InputContextMenu
+            menu={diffMenu}
+            onClose={() => setDiffMenu(null)}
+            hasSelection={diffMenuHasSelection}
+            isEditable={false}
+            onCopy={handleDiffCopy}
+            onCut={() => {}}
+            onSelectAll={handleDiffSelectAll}
+            showSelectAll={false}
+          />,
+          document.body,
+        )}
+    </>
   );
 }

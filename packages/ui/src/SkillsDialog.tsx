@@ -69,7 +69,16 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   // Context menu for text inputs
-  const { menu: inputMenu, hasSelection: inputHasSelection, isEditable: inputIsEditable, handleContextMenu: handleInputContextMenu, closeMenu: closeInputMenu, handleCopy: handleInputCopy, handleCut: handleInputCut, handleSelectAll: handleInputSelectAll } = useInputContextMenu();
+  const {
+    menu: inputMenu,
+    hasSelection: inputHasSelection,
+    isEditable: inputIsEditable,
+    handleContextMenu: handleInputContextMenu,
+    closeMenu: closeInputMenu,
+    handleCopy: handleInputCopy,
+    handleCut: handleInputCut,
+    handleSelectAll: handleInputSelectAll,
+  } = useInputContextMenu();
 
   useEffect(() => {
     if (!isOpen || !channel) return;
