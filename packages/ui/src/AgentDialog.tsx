@@ -172,7 +172,16 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const [saving, setSaving] = useState(false);
 
   // Context menu for text inputs
-  const { menu: inputMenu, hasSelection: inputHasSelection, isEditable: inputIsEditable, handleContextMenu: handleInputContextMenu, closeMenu: closeInputMenu, handleCopy: handleInputCopy, handleCut: handleInputCut, handleSelectAll: handleInputSelectAll } = useInputContextMenu();
+  const {
+    menu: inputMenu,
+    hasSelection: inputHasSelection,
+    isEditable: inputIsEditable,
+    handleContextMenu: handleInputContextMenu,
+    closeMenu: closeInputMenu,
+    handleCopy: handleInputCopy,
+    handleCut: handleInputCut,
+    handleSelectAll: handleInputSelectAll,
+  } = useInputContextMenu();
 
   // Edit state for existing agent fields
   const [editProvider, setEditProvider] = useState("");

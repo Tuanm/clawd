@@ -68,7 +68,16 @@ export default function SkillFilesChannel() {
   const [saving, setSaving] = useState(false);
 
   // Context menu for text inputs
-  const { menu: inputMenu, hasSelection: inputHasSelection, isEditable: inputIsEditable, handleContextMenu: handleInputContextMenu, closeMenu: closeInputMenu, handleCopy: handleInputCopy, handleCut: handleInputCut, handleSelectAll: handleInputSelectAll } = useInputContextMenu();
+  const {
+    menu: inputMenu,
+    hasSelection: inputHasSelection,
+    isEditable: inputIsEditable,
+    handleContextMenu: handleInputContextMenu,
+    closeMenu: closeInputMenu,
+    handleCopy: handleInputCopy,
+    handleCut: handleInputCut,
+    handleSelectAll: handleInputSelectAll,
+  } = useInputContextMenu();
 
   const loadSkills = useCallback(async () => {
     setError(null);

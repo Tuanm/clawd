@@ -74,7 +74,16 @@ export default function AgentFilesChannel() {
   const saveWarningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Context menu for text inputs
-  const { menu: inputMenu, hasSelection: inputHasSelection, isEditable: inputIsEditable, handleContextMenu: handleInputContextMenu, closeMenu: closeInputMenu, handleCopy: handleInputCopy, handleCut: handleInputCut, handleSelectAll: handleInputSelectAll } = useInputContextMenu();
+  const {
+    menu: inputMenu,
+    hasSelection: inputHasSelection,
+    isEditable: inputIsEditable,
+    handleContextMenu: handleInputContextMenu,
+    closeMenu: closeInputMenu,
+    handleCopy: handleInputCopy,
+    handleCut: handleInputCut,
+    handleSelectAll: handleInputSelectAll,
+  } = useInputContextMenu();
 
   const loadAgents = useCallback(async () => {
     setError(null);

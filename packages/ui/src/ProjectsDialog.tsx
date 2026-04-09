@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
 import { ClawdAvatar } from "./MessageList";
+import { InputContextMenu } from "./InputContextMenu";
 import "prismjs/components/prism-typescript";
 import "prismjs/components/prism-javascript";
 import "prismjs/components/prism-jsx";
@@ -265,6 +266,31 @@ export default function ProjectsDialog({ channel, isOpen, onClose, initialAgentI
   const [sidebarSize, setSidebarSize] = useState(280);
   const contentRef = useRef<HTMLDivElement>(null);
 
+  // Context menu for file viewer (read-only — Copy + Select All only)
+  const [fileMenu, setFileMenu] = useState<{ x: number; y: number } | null>(null);
+  const [fileMenuHasSelection, setFileMenuHasSelection] = useState(false);
+
+  const handleFileContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const sel = window.getSelection();
+    setFileMenuHasSelection(!!(sel && sel.toString().length > 0));
+    setFileMenu({ x: e.clientX, y: e.clientY });
+  }, []);
+
+  const handleFileCopy = useCallback(() => {
+    document.execCommand("copy");
+  }, []);
+
+  const handleFileSelectAll = useCallback(() => {
+    if (!contentRef.current) return;
+    const range = document.createRange();
+    range.selectNodeContents(contentRef.current);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    setFileMenuHasSelection(true);
+  }, []);
+
   // Load agents when dialog opens
   useEffect(() => {
     if (!isOpen || !channel) return;
@@ -500,7 +526,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose, initialAgentI
 
   if (!isOpen) return null;
 
-  return createPortal(
+  const portal = createPortal(
     <div className="stream-dialog-overlay" onClick={onClose}>
       <div className="stream-dialog projects-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
@@ -662,7 +688,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose, initialAgentI
                         {selectedFile.truncated && " (truncated)"}
                       </span>
                     </div>
-                    <div className="projects-file-content" ref={contentRef}>
+                    <div className="projects-file-content" ref={contentRef} onContextMenu={handleFileContextMenu}>
                       <table className="code-lines">
                         <tbody>
                           {selectedFile.content.split("\n").map((line, i) => (
@@ -688,5 +714,22 @@ export default function ProjectsDialog({ channel, isOpen, onClose, initialAgentI
       </div>
     </div>,
     document.body,
+  );
+
+  return (
+    <>
+      {portal}
+      {fileMenu && (
+        <InputContextMenu
+          menu={fileMenu}
+          onClose={() => setFileMenu(null)}
+          hasSelection={fileMenuHasSelection}
+          isEditable={false}
+          onCopy={handleFileCopy}
+          onCut={() => {}}
+          onSelectAll={handleFileSelectAll}
+        />
+      )}
+    </>
   );
 }
