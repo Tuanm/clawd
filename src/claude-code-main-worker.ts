@@ -14,6 +14,7 @@ import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgent
 import { type AgentMemory, extractKeywords, getAgentMemoryStore } from "./agent/memory/agent-memory";
 import { buildDynamicSystemPrompt, type PromptContext } from "./agent/prompt/builder";
 import { initMemorySession, saveToMemory } from "./claude-code-memory";
+import { buildContextPreamble } from "./agent/session/context-injector";
 import { runSDKQuery } from "./claude-code-sdk";
 import { formatToolDescription, truncateToolResult } from "./claude-code-utils";
 
@@ -94,6 +95,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private turnStreamText = "";
   // Memory injection: last keywords from user message for relevance scoring
   private lastKeywords: string[] = [];
+  private get memorySessionName(): string {
+    return `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
+  }
 
   constructor(config: ClaudeCodeMainConfig) {
     this.config = config;
@@ -191,8 +195,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     this.userSleeping = false;
     try {
       this.restoreSessionId();
-      const sessionName = `${this.config.channel}-${this.config.agentId.replace(/[^a-zA-Z0-9]/g, "_")}`;
-      this.memorySessionId = initMemorySession(sessionName, this.config.model);
+      this.memorySessionId = initMemorySession(this.memorySessionName, this.config.model);
 
       console.log(
         `[claude-code-main] Started: ${this.config.channel}:${this.config.agentId}` +
@@ -607,7 +610,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   /** Process messages with a pre-built prompt (used by interrupt resume path) */
   private async processMessagesWithPrompt(prompt: string, messages: any[]): Promise<void> {
-    return this._runSDKTurn(prompt, messages);
+    // isNewTurn=false: interrupt resume continues the same-turn CC session (keep resume:)
+    return this._runSDKTurn(prompt, messages, false);
   }
 
   private async processMessages(messages: any[], unseen: any[], seenNotProcessed: any[]): Promise<void> {
@@ -615,7 +619,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     return this._runSDKTurn(prompt, messages);
   }
 
-  private async _runSDKTurn(prompt: string, messages: any[]): Promise<void> {
+  private async _runSDKTurn(prompt: string, messages: any[], isNewTurn = true): Promise<void> {
+    // On a new turn, discard the previous CC session so context comes from our
+    // SQLite store rather than the unbounded ~/.claude/projects/ history.
+    if (isNewTurn) this.sessionId = null;
+
+    // Build context preamble BEFORE saveToMemory so the current message is not
+    // included in the history (getRecentMessagesCompact reads the same DB).
+    const contextPreamble = isNewTurn ? buildContextPreamble(this.memorySessionName) : "";
+
     saveToMemory(this.memorySessionId, "user", prompt);
 
     this.abortController = new AbortController();
@@ -704,8 +716,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     this.turnMarkProcessed = false;
     this.turnStreamText = "";
 
+    // contextPreamble was computed above (before saveToMemory) to exclude the
+    // current message from the injected history.
+    const promptWithContext = contextPreamble ? `${contextPreamble}\n\n${prompt}` : prompt;
+
     const sdkOpts = {
-      prompt,
+      prompt: promptWithContext,
       model: model || "sonnet",
       cwd: this.config.projectRoot,
       providerName: this.config.provider,
@@ -718,7 +734,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         },
       },
       mcpServers: this.buildMcpServers(),
-      resume: this.sessionId || undefined,
+      // New turns start fresh (context injected via preamble above).
+      // Interrupt resumes and re-injections within the same turn continue via sessionId.
+      resume: isNewTurn ? undefined : this.sessionId || undefined,
       abortController: this.abortController,
       yolo: this.config.yolo ?? false,
       // Custom CC providers (not the built-in "claude-code") must use mcp__clawd__web_search /

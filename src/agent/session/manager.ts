@@ -71,7 +71,7 @@ let _defaultSessionManager: SessionManager | null = null;
 
 export class SessionManager {
   private db: Database;
-  private _sessionUpdateTimes = new Map<number, number>(); // per-session debounce
+  private _sessionUpdateTimes = new Map<string, number>(); // per-session debounce
 
   constructor(dbPath?: string) {
     const defaultPath = join(getDataDir(), "memory.db");
@@ -271,7 +271,9 @@ export class SessionManager {
    * This is optimized for resuming sessions without blowing up context size.
    */
   getRecentMessagesCompact(sessionId: string, limit = 50, maxContentLength = 8000): Message[] {
-    // Fetch more messages since we'll be filtering many out
+    // Fetch more messages since we'll be filtering many out.
+    // +1 extra to account for summary row (created_at=0) which is always oldest and
+    // would otherwise be dropped by slice(-limit) when session has >= limit regular messages.
     const rows = this.db
       .query(
         `SELECT * FROM (
@@ -282,9 +284,10 @@ export class SessionManager {
         ORDER BY created_at DESC, id DESC LIMIT ?
       ) ORDER BY created_at ASC, id ASC`,
       )
-      .all(sessionId, limit * 2) as StoredMessage[];
+      .all(sessionId, limit * 2 + 1) as StoredMessage[];
 
-    const messages: Message[] = [];
+    const summaryMessages: Message[] = []; // created_at=0 compaction summaries — always kept
+    const regularMessages: Message[] = [];
 
     for (const row of rows) {
       // Skip assistant messages that only have tool_calls (no content)
@@ -302,16 +305,22 @@ export class SessionManager {
         });
       }
 
-      // For assistant messages with tool_calls, only keep the content (strip tool_calls)
-      messages.push({
+      const msg: Message = {
         role: row.role as Message["role"],
         content,
         // Intentionally omit tool_calls to keep history clean
-      });
+      };
+
+      // Compaction summary rows have created_at=0 — pin them to the front
+      if (row.created_at === 0) {
+        summaryMessages.push(msg);
+      } else {
+        regularMessages.push(msg);
+      }
     }
 
-    // Return only the most recent 'limit' messages
-    return messages.slice(-limit);
+    // Return summary rows (always) + most recent 'limit' regular messages
+    return [...summaryMessages, ...regularMessages.slice(-limit)];
   }
 
   /**
