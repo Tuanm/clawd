@@ -157,6 +157,30 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     docsUrl: "https://developer.atlassian.com/platform/mcp/",
   },
   {
+    id: "graphify",
+    name: "Graphify",
+    description:
+      "Query a knowledge graph of your codebase: BFS/DFS traversal, community clusters, hub nodes, shortest paths. Run /graphify first to build the graph.",
+    transport: "stdio",
+    command: "uvx",
+    args: [
+      "--with",
+      "mcp",
+      "--from",
+      "graphifyy",
+      "python",
+      "-m",
+      "graphify.serve",
+      "{PROJECT_ROOT}/graphify-out/graph.json",
+    ],
+    installHint:
+      "Requires uv — install from https://docs.astral.sh/uv/\nRun /graphify in Claw'd to build the codebase graph before querying.",
+    category: "dev",
+    official: false,
+    popularity: 3,
+    docsUrl: "https://github.com/safishamsi/graphify",
+  },
+  {
     id: "lsp-typescript",
     name: "LSP: TypeScript / JavaScript",
     description:

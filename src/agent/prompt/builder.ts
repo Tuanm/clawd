@@ -51,6 +51,7 @@ function hasTool(ctx: PromptContext, ...names: string[]): boolean {
 const hasGitTools = (ctx: PromptContext) => hasTool(ctx, "git_status", "git_commit");
 const hasSpawnAgent = (ctx: PromptContext) => hasTool(ctx, "spawn_agent");
 const hasTaskTools = (ctx: PromptContext) => hasTool(ctx, "todo_write", "todo_read");
+const hasSkillTools = (ctx: PromptContext) => hasTool(ctx, "skill_activate", "skill_list") || !!ctx.mcpPrefix;
 
 // ============================================================================
 // Section: Identity
@@ -298,6 +299,31 @@ You have a personal Todo list to track multi-step work. Skip for quick single-tu
 }
 
 // ============================================================================
+// Section: Skills (conditional — only if skill tools available)
+// ============================================================================
+
+function sectionSkills(ctx: PromptContext): string {
+  const p = ctx.mcpPrefix || "";
+  if (ctx.mcpPrefix) {
+    // Claude Code SDK agents: native Skill tool + mcp__clawd__skill_* MCP tools both available
+    return `# Skills
+Check available skills with the Skill tool or \`${p}skill_list\` before invoking one.
+
+- \`Skill(skill: "name", args: "...")\` — invoke a skill (Claude Code native tool, preferred)
+- \`${p}skill_activate(name, args)\` — same as above via MCP
+- \`${p}skill_list()\` — list all installed skills
+- \`${p}skill_search(query)\` — find a skill by topic
+- \`${p}skill_create(name, description, content)\` — create a new skill
+- \`${p}skill_delete(name)\` — remove a skill`;
+  }
+  // Non-CC agents: only mcp skill_ tools (no native Skill tool)
+  return `# Skills
+- \`${p}skill_list()\` — list all installed skills
+- \`${p}skill_search(query)\` — find a skill by topic
+- \`${p}skill_activate(name, args)\` — invoke a skill`;
+}
+
+// ============================================================================
 // Section: Artifacts (main agents only)
 // ============================================================================
 
@@ -413,6 +439,9 @@ export function buildDynamicSystemPrompt(ctx: PromptContext): string {
       sections.push(sectionTasks(ctx));
     }
     sections.push(sectionArtifacts());
+    if (hasSkillTools(ctx)) {
+      sections.push(sectionSkills(ctx));
+    }
   }
 
   if (ctx.browserEnabled) {
