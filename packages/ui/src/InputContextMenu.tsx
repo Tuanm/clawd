@@ -193,6 +193,7 @@ export interface UseInputContextMenuResult {
   closeMenu: () => void;
   handleCopy: () => void;
   handleCut: () => void;
+  handlePaste: () => void;
   handleSelectAll: () => void;
 }
 
@@ -233,6 +234,18 @@ export function useInputContextMenu(): UseInputContextMenuResult {
     document.execCommand("cut");
   }, []);
 
+  const handlePaste = useCallback(async () => {
+    const el = activeEl.current;
+    if (!el) return;
+    el.focus();
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) document.execCommand("insertText", false, text);
+    } catch {
+      document.execCommand("paste");
+    }
+  }, []);
+
   const handleSelectAll = useCallback(() => {
     const el = activeEl.current;
     if (!el) return;
@@ -241,5 +254,15 @@ export function useInputContextMenu(): UseInputContextMenuResult {
     setHasSelection(el.value.length > 0);
   }, []);
 
-  return { menu, hasSelection, isEditable, handleContextMenu, closeMenu, handleCopy, handleCut, handleSelectAll };
+  return {
+    menu,
+    hasSelection,
+    isEditable,
+    handleContextMenu,
+    closeMenu,
+    handleCopy,
+    handleCut,
+    handlePaste,
+    handleSelectAll,
+  };
 }

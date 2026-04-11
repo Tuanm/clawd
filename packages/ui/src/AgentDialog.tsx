@@ -180,6 +180,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
     closeMenu: closeInputMenu,
     handleCopy: handleInputCopy,
     handleCut: handleInputCut,
+    handlePaste: handleInputPaste,
     handleSelectAll: handleInputSelectAll,
   } = useInputContextMenu();
 
@@ -1109,6 +1110,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           isEditable={inputIsEditable}
           onCopy={handleInputCopy}
           onCut={handleInputCut}
+          onPaste={handleInputPaste}
           onSelectAll={handleInputSelectAll}
         />
       )}

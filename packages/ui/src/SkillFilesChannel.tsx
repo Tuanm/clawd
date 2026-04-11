@@ -76,6 +76,7 @@ export default function SkillFilesChannel() {
     closeMenu: closeInputMenu,
     handleCopy: handleInputCopy,
     handleCut: handleInputCut,
+    handlePaste: handleInputPaste,
     handleSelectAll: handleInputSelectAll,
   } = useInputContextMenu();
 
@@ -389,6 +390,7 @@ export default function SkillFilesChannel() {
           isEditable={inputIsEditable}
           onCopy={handleInputCopy}
           onCut={handleInputCut}
+          onPaste={handleInputPaste}
           onSelectAll={handleInputSelectAll}
         />
       )}
