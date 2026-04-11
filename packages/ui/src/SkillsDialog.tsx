@@ -77,6 +77,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
     closeMenu: closeInputMenu,
     handleCopy: handleInputCopy,
     handleCut: handleInputCut,
+    handlePaste: handleInputPaste,
     handleSelectAll: handleInputSelectAll,
   } = useInputContextMenu();
 
@@ -462,6 +463,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
           isEditable={inputIsEditable}
           onCopy={handleInputCopy}
           onCut={handleInputCut}
+          onPaste={handleInputPaste}
           onSelectAll={handleInputSelectAll}
         />
       )}
