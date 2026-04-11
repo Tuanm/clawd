@@ -1,6 +1,6 @@
 # Memory System
 
-Claw'd features a multi-layered memory architecture spanning three distinct stores, each serving different purposes. The system operates through four automatic phases: extraction, compaction harvest, consolidation, and reflection.
+Claw'd features a multi-layered memory architecture spanning four stores, each serving different purposes. The top three layers handle raw storage and retrieval; the fourth layer (wiki) compiles those memories into synthesized knowledge articles. The `MemoryPlugin` orchestrates four automatic phases: extraction, compaction harvest, consolidation, and reflection — plus background wiki compilation.
 
 ## Architecture Overview
 
@@ -10,7 +10,7 @@ Claw'd features a multi-layered memory architecture spanning three distinct stor
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 1: MemoryManager (session-level)                           │
 │  ├── Stores: chat messages via FTS5 (messages_fts)              │
-│  ├── Tools: chat_search, memory_summary                  │
+│  ├── Tools: chat_search, memory_summary                         │
 │  └── Purpose: Search past conversations, session summaries        │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 2: KnowledgeBase (tool output indexing)                   │
@@ -22,10 +22,15 @@ Claw'd features a multi-layered memory architecture spanning three distinct stor
 │  ├── Stores: Structured memories (facts, preferences, etc.)     │
 │  ├── Tools: memo_save, memo_recall, memo_delete, memo_pin       │
 │  └── Purpose: Persistent per-agent/per-channel memory            │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 4: Wiki Memory System (LLM-compiled knowledge base)       │
+│  ├── Stores: agent_wiki articles clustered from Layer 3 memories │
+│  ├── Tools: wiki_note (stage notes for next compilation)        │
+│  └── Purpose: Dense synthesized knowledge injected each turn     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-All three stores share the same SQLite database at `~/.clawd/data/memory.db` (migrated from legacy `~/.clawd/memory.db`).
+All four stores share the same SQLite database at `~/.clawd/data/memory.db` (migrated from legacy `~/.clawd/memory.db`).
 
 ---
 
@@ -124,6 +129,9 @@ Persistent memory system for individual agents with automatic extraction, consol
 - `mergeMemories()` — LLM-powered memory consolidation
 - `getMemoryHints()` — Topic summary for agent awareness
 - `updateEffectiveness()` — Reflection-driven priority adjustment
+- `getAllForCompilation(agentId, channel)` — All non-pinned memories for wiki compilation (no access-count bump)
+- `getUpdatedSince(agentId, channel, sinceTs)` — Memories updated after a timestamp (incremental wiki recompilation)
+- `markWikiArticlesDirty(memoryIds)` — Set `last_compiled_at = 0` on wiki articles that reference given memory IDs
 
 ### Scoped Storage
 
@@ -133,7 +141,111 @@ Memories support two scopes:
 
 ---
 
-## 4. Memory Plugin — Auto-Extraction & Injection
+## 4. Wiki Memory System
+
+**Files:** `src/agent/memory/wiki-compiler.ts`, `src/agent/plugins/memory-plugin.ts`
+
+The wiki system compiles the flat pool of `agent_memories` (Layer 3) into dense, LLM-synthesized articles stored in `agent_wiki`. Articles are injected into each turn's system prompt as a navigable knowledge base — complementing raw memories with synthesized context.
+
+### How It Works
+
+```
+agent_memories (Layer 3)
+       │
+       ▼
+  1. Keyword extraction per memory
+       │
+       ▼
+  2. Co-occurrence graph → union-find clustering
+     (edge if 2+ shared keywords; max cluster size: 30)
+       │
+       ▼
+  3. Batched LLM prompt (5 clusters per call)
+     → JSON array: [{ clusterIdx, topic, summary, content }]
+       │
+       ▼
+  4. UPSERT into agent_wiki (topic is unique key per agent+channel)
+     + update wiki_memory_refs join table
+       │
+       ▼
+  5. FTS5 index maintained by INSERT/UPDATE/DELETE triggers
+```
+
+### Compilation Triggers
+
+The `MemoryPlugin` manages wiki compilation fire-and-forget (never blocks agent responses):
+
+| Trigger | Condition |
+|---|---|
+| **Bootstrap** | Memory count ≥ 50 AND `lastCompilationTs === 0` AND turn 1 or turn%25 |
+| **Incremental** | `lastCompilationTs > 0` AND (memory count ≥ 1,600 OR turn%200 === 0) AND turn%25 |
+| **Stagger** | 2-second delay before each run; waits for consolidation if running |
+
+**Restart safety**: `lastCompilationTs` is seeded from `MAX(last_compiled_at)` in the DB on startup — no full recompile after restart.
+
+### Full vs. Incremental Compilation
+
+| Mode | When | What it processes |
+|---|---|---|
+| `compile()` | First time (`lastCompilationTs === 0`) | All memories in the channel |
+| `compileIncremental()` | Subsequent runs | Only clusters containing memories whose `updated_at > last_compiled_at` on their referenced wiki article, plus newly absorbed pending notes |
+
+Both modes call `absorbPendingNotes()` first to flush `wiki_pending_notes` → `agent_memories` before clustering.
+
+### System Prompt Injection
+
+Each turn, `getSystemContext()` in the memory plugin injects (hard-capped at 4,000 chars total):
+
+```xml
+<agent_memory>
+  <!-- existing memory sections (session_dna, pinned_rules, relevant, memory_topics) -->
+
+  <wiki_toc>
+    Authentication — OAuth flow, token refresh, session expiry
+    API Endpoints — base URL, auth headers, rate limits
+    ... (up to 20 entries)
+  </wiki_toc>
+
+  <wiki_articles>
+    ### Authentication
+    ... (FTS5-matched article content, up to 2 articles per turn) ...
+  </wiki_articles>
+</agent_memory>
+```
+
+- **`<wiki_toc>`** — always injected if any articles exist (topic + one-line summary)
+- **`<wiki_articles>`** — only injected when `lastKeywords` match articles via FTS5 search
+- Both sections respect the 4,000 char cap; truncated gracefully if needed
+
+### WikiCompiler API
+
+**Class:** `WikiCompiler` (`src/agent/memory/wiki-compiler.ts`)
+
+| Method | Description |
+|---|---|
+| `compile(agentId, channel, llmClient, model, store)` | Full compilation from all memories |
+| `compileIncremental(agentId, channel, llmClient, model, store)` | Compile only stale/dirty articles |
+| `absorbPendingNotes(agentId, channel, store)` | Flush `wiki_pending_notes` → `agent_memories` |
+| `getTOC(agentId, channel)` | Return up to 20 `{topic, summary, updatedAt}` entries |
+| `getArticles(agentId, channel, topics)` | Fetch articles by topic name |
+| `search(agentId, channel, query, limit)` | FTS5 search with LIKE fallback |
+| `stagePendingNote(agentId, channel, content, topicHint?)` | Queue note for next compilation |
+| `getLastCompilationTs(agentId, channel)` | Seed `lastCompilationTs` on startup |
+| `getArticleCount(agentId, channel)` | Check whether a bootstrap or incremental run is needed |
+
+### Dirty-Marking
+
+Wiki articles are automatically marked dirty (set `last_compiled_at = 0`) when their source memories change:
+
+- `AgentMemoryStore.save()` — on dedup merge (content updated)
+- `AgentMemoryStore.delete()` — before ref cleanup
+- `AgentMemoryStore.pin()` / `unpin()` — on priority change
+- `AgentMemoryStore.evict()` — before eviction
+- `AgentMemoryStore.mergeMemories()` — before consolidation delete
+
+---
+
+## 5. Memory Plugin — Auto-Extraction & Injection
 
 **File:** `src/agent/plugins/memory-plugin.ts`
 
@@ -246,7 +358,7 @@ Query expansion uses a static synonym map for better recall:
 
 ---
 
-## 5. CC Main Agent Integration
+## 6. CC Main Agent Integration
 
 **File:** `src/claude-code-main-worker.ts`
 
@@ -269,6 +381,17 @@ This uses the same `AgentMemoryStore.getRelevant()` method, ensuring consistency
 ---
 
 ## Tool Reference
+
+### wiki_note
+
+Stage a note for wiki integration. Use instead of `memo_save` when adding rich context to an existing wiki topic (e.g. code snippets, multi-line explanations, cross-references). The note is absorbed into `agent_memories` and folded into the wiki at the next compilation cycle.
+
+| Parameter    | Type   | Description                                      |
+|--------------|--------|--------------------------------------------------|
+| `content`    | string | Note content (max 3,000 chars)                   |
+| `topic_hint` | string | Optional: target wiki topic (e.g. "Authentication") |
+
+---
 
 ### chat_search
 
@@ -349,6 +472,56 @@ Update the agent's identity/role file for behavioral guidance.
 ---
 
 ## Database Schema
+
+### agent_wiki
+
+```sql
+CREATE TABLE agent_wiki (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id         TEXT    NOT NULL,
+  channel          TEXT    NOT NULL,
+  topic            TEXT    NOT NULL,
+  summary          TEXT    NOT NULL DEFAULT '',
+  content          TEXT    NOT NULL,
+  memory_ids       TEXT    NOT NULL DEFAULT '[]',  -- JSON cache of wiki_memory_refs
+  source_count     INTEGER NOT NULL DEFAULT 0,
+  version          INTEGER NOT NULL DEFAULT 1,
+  created_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+  last_compiled_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE UNIQUE INDEX uidx_aw_topic ON agent_wiki(agent_id, channel, lower(topic));
+CREATE VIRTUAL TABLE agent_wiki_fts USING fts5(
+  topic, content, content='agent_wiki', content_rowid='id',
+  tokenize='porter unicode61'
+);
+```
+
+### wiki_memory_refs
+
+```sql
+CREATE TABLE wiki_memory_refs (
+  wiki_id   INTEGER NOT NULL REFERENCES agent_wiki(id) ON DELETE CASCADE,
+  memory_id INTEGER NOT NULL,
+  added_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (wiki_id, memory_id)
+);
+```
+
+### wiki_pending_notes
+
+```sql
+CREATE TABLE wiki_pending_notes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    TEXT    NOT NULL,
+  channel     TEXT    NOT NULL,
+  topic_hint  TEXT,
+  content     TEXT    NOT NULL,
+  priority    INTEGER NOT NULL DEFAULT 50,
+  created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+);
+```
 
 ### agent_memories
 
@@ -447,6 +620,19 @@ memo_recall({
   "category": "fact"
 })
 ```
+
+### Wiki Note
+
+Stage rich context to be compiled into an article:
+
+```json
+wiki_note({
+  "content": "The auth middleware validates JWT tokens via RS256. Token expiry is 1 hour. Refresh tokens live 30 days.",
+  "topic_hint": "Authentication"
+})
+```
+
+The note is queued in `wiki_pending_notes` and absorbed into `agent_memories` at the next compilation cycle.
 
 ### Knowledge Retrieval
 
