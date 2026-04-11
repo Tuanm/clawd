@@ -143,6 +143,7 @@ export class AgentMemoryStore {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA busy_timeout = 30000");
     this.db.exec("PRAGMA synchronous = NORMAL");
+    this.db.exec("PRAGMA foreign_keys = ON");
     const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
     this.db.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`);
     this.db.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`);
@@ -157,6 +158,49 @@ export class AgentMemoryStore {
     } catch (err) {
       console.error("[AgentMemory] Init failed:", err);
     }
+  }
+
+  /**
+   * Expose the underlying Database handle for WikiCompiler.
+   * WikiCompiler shares this connection — do NOT open a second one.
+   */
+  getMemoryDb(): Database {
+    this.ensureInit();
+    return this.db;
+  }
+
+  /**
+   * Fetch all non-pinned memories for wiki compilation.
+   * No access_count bump — read-only for compilation purposes.
+   */
+  getAllForCompilation(agentId: string, channel: string): AgentMemory[] {
+    this.ensureInit();
+    if (!this.initialized) return [];
+    const rows = this.db
+      .query(
+        `SELECT * FROM agent_memories
+         WHERE agent_id = ? AND (channel = ? OR channel IS NULL) AND priority < 80
+         ORDER BY category, priority DESC, updated_at DESC`,
+      )
+      .all(agentId, channel) as any[];
+    return rows.map(rowToMemory);
+  }
+
+  /**
+   * Memories updated after a timestamp — for incremental wiki compilation.
+   */
+  getUpdatedSince(agentId: string, channel: string, sinceTs: number): AgentMemory[] {
+    this.ensureInit();
+    if (!this.initialized) return [];
+    const rows = this.db
+      .query(
+        `SELECT * FROM agent_memories
+         WHERE agent_id = ? AND (channel = ? OR channel IS NULL)
+           AND updated_at > ? AND priority < 80
+         ORDER BY updated_at DESC`,
+      )
+      .all(agentId, channel, sinceTs) as any[];
+    return rows.map(rowToMemory);
   }
 
   // ── Save ───────────────────────────────────────────────────────
@@ -189,6 +233,10 @@ export class AgentMemoryStore {
         `UPDATE agent_memories SET content = ?, priority = ?, tags = ?, updated_at = unixepoch(), access_count = access_count + 1 WHERE id = ?`,
         [content, priority, tags, similar.id],
       );
+      // Fix 8: mark wiki articles dirty since content changed
+      try {
+        this.markWikiArticlesDirty([similar.id]);
+      } catch {}
       return {
         id: similar.id,
         warning: `Updated existing memory #${similar.id} (similar content found)`,
@@ -318,8 +366,23 @@ export class AgentMemoryStore {
     this.ensureInit();
     if (!this.initialized) return false;
 
-    const result = this.db.run("DELETE FROM agent_memories WHERE id = ? AND agent_id = ?", [id, agentId]);
-    return result.changes > 0;
+    const txn = this.db.transaction(() => {
+      const result = this.db.run("DELETE FROM agent_memories WHERE id = ? AND agent_id = ?", [id, agentId]);
+      if (result.changes > 0) {
+        // Mark wiki articles dirty before cleaning up refs (refs still exist at this point)
+        this.markWikiArticlesDirty([id]);
+        // Clean up wiki refs for deleted memory
+        this.cleanupWikiRefsForMemories([id]);
+      }
+      return result.changes > 0;
+    });
+
+    try {
+      return txn();
+    } catch {
+      // Wiki tables may not exist yet (pre-migration)
+      return false;
+    }
   }
 
   // ── Find Similar (dedup) ───────────────────────────────────────
@@ -569,22 +632,37 @@ export class AgentMemoryStore {
     const count = this.getCount(agentId);
     if (count < MAX_MEMORIES_PER_AGENT) return;
 
-    // Delete least-accessed non-pinned memories first (never evict priority >= 80)
     const toDelete = count - MAX_MEMORIES_PER_AGENT + 10; // Free up 10 slots
-    this.db.run(
-      `DELETE FROM agent_memories WHERE id IN (
-        SELECT id FROM agent_memories
-        WHERE agent_id = ? AND priority < 80
-        ORDER BY
-          CASE WHEN source = 'auto' THEN 0 ELSE 1 END,
-          priority ASC,
-          access_count ASC,
-          last_accessed ASC
-        LIMIT ?
-      )`,
-      [agentId, toDelete],
-    );
-    // Optimize FTS5 index after bulk deletes to prevent query degradation
+
+    // Capture evicted IDs before deletion (for wiki ref cleanup)
+    const evictedRows = this.db
+      .query(
+        `SELECT id FROM agent_memories
+         WHERE agent_id = ? AND priority < 80
+         ORDER BY
+           CASE WHEN source = 'auto' THEN 0 ELSE 1 END,
+           priority ASC,
+           access_count ASC,
+           last_accessed ASC
+         LIMIT ?`,
+      )
+      .all(agentId, toDelete) as Array<{ id: number }>;
+    const evictedIds = evictedRows.map((r) => r.id);
+
+    if (evictedIds.length === 0) return;
+
+    const placeholders = evictedIds.map(() => "?").join(",");
+    this.db.transaction(() => {
+      // Queue affected wiki articles for recompilation before eviction
+      this.markWikiArticlesDirty(evictedIds);
+      this.db.run(`DELETE FROM agent_memories WHERE id IN (${placeholders}) AND agent_id = ? AND priority < 80`, [
+        ...evictedIds,
+        agentId,
+      ]);
+      this.cleanupWikiRefsForMemories(evictedIds);
+    })();
+
+    // Optimize FTS5 index after bulk deletes
     try {
       this.db.run(`INSERT INTO agent_memories_fts(agent_memories_fts) VALUES('optimize')`);
     } catch {}
@@ -613,6 +691,13 @@ export class AgentMemoryStore {
       [id, agentId],
     );
 
+    // Fix 15: mark wiki articles dirty after pin (content/priority changed)
+    if (result.changes > 0) {
+      try {
+        this.markWikiArticlesDirty([id]);
+      } catch {}
+    }
+
     return result.changes > 0
       ? { success: true }
       : {
@@ -630,6 +715,13 @@ export class AgentMemoryStore {
       "UPDATE agent_memories SET priority = 60, updated_at = unixepoch() WHERE id = ? AND agent_id = ? AND priority >= 80",
       [id, agentId],
     );
+
+    // Fix 15: mark wiki articles dirty after unpin
+    if (result.changes > 0) {
+      try {
+        this.markWikiArticlesDirty([id]);
+      } catch {}
+    }
 
     return result.changes > 0
       ? { success: true }
@@ -731,38 +823,57 @@ export class AgentMemoryStore {
       )
       .get(...mergeIds, agentId) as { channel: string | null } | null;
 
-    // Delete originals (only non-pinned)
-    this.db.run(`DELETE FROM agent_memories WHERE id IN (${placeholders}) AND agent_id = ? AND priority < 80`, [
-      ...mergeIds,
-      agentId,
-    ]);
-
-    // Insert consolidated memory preserving aggregated values
     const priority = Math.min(79, stats.maxPriority || 50);
     const effectiveness = stats.maxEffectiveness ?? 0.5;
     const tags = extractKeywords(mergedContent).slice(0, 5).join(",");
     const mergedChannel = channelRow?.channel ?? null;
-    const stmt = this.db.prepare(`
-      INSERT INTO agent_memories (agent_id, channel, category, content, source, priority, tags, effectiveness, access_count)
-      VALUES (?, ?, ?, ?, 'auto', ?, ?, ?, ?)
-    `);
-    const result = stmt.run(
-      agentId,
-      mergedChannel,
-      category,
-      mergedContent,
-      priority,
-      tags,
-      effectiveness,
-      stats.totalAccess || 0,
-    );
+
+    // Fix 2: wrap DELETE + cleanup + INSERT in a transaction
+    const txn = this.db.transaction((): number => {
+      // Mark affected wiki articles dirty before deleting source memories
+      this.markWikiArticlesDirty(mergeIds);
+
+      // Delete originals (only non-pinned)
+      this.db.run(`DELETE FROM agent_memories WHERE id IN (${placeholders}) AND agent_id = ? AND priority < 80`, [
+        ...mergeIds,
+        agentId,
+      ]);
+
+      // Fix 9: clean up dangling wiki refs for deleted memories
+      this.cleanupWikiRefsForMemories(mergeIds);
+
+      // Insert consolidated memory preserving aggregated values
+      const stmt = this.db.prepare(`
+        INSERT INTO agent_memories (agent_id, channel, category, content, source, priority, tags, effectiveness, access_count)
+        VALUES (?, ?, ?, ?, 'auto', ?, ?, ?, ?)
+      `);
+      const result = stmt.run(
+        agentId,
+        mergedChannel,
+        category,
+        mergedContent,
+        priority,
+        tags,
+        effectiveness,
+        stats.totalAccess || 0,
+      );
+
+      return Number(result.lastInsertRowid);
+    });
+
+    let newId: number;
+    try {
+      newId = txn();
+    } catch {
+      return { id: null };
+    }
 
     // Optimize FTS5 index after bulk deletes from merge
     try {
       this.db.run(`INSERT INTO agent_memories_fts(agent_memories_fts) VALUES('optimize')`);
     } catch {}
 
-    return { id: Number(result.lastInsertRowid) };
+    return { id: newId };
   }
 
   /**
@@ -851,6 +962,72 @@ export class AgentMemoryStore {
     }
 
     return hints.join("\n");
+  }
+
+  /**
+   * Remove wiki_memory_refs for deleted memory IDs.
+   * Called after eviction or merge. Also refreshes source_count cache.
+   */
+  private cleanupWikiRefsForMemories(memoryIds: number[]): void {
+    if (memoryIds.length === 0) return;
+    try {
+      // Check if wiki tables exist
+      const exists = this.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wiki_memory_refs'").get();
+      if (!exists) return;
+
+      const placeholders = memoryIds.map(() => "?").join(",");
+
+      // Find affected wiki article IDs before deleting refs
+      const affectedRows = this.db
+        .query(`SELECT DISTINCT wiki_id FROM wiki_memory_refs WHERE memory_id IN (${placeholders})`)
+        .all(...memoryIds) as Array<{ wiki_id: number }>;
+
+      if (affectedRows.length === 0) return;
+      const affectedWikiIds = affectedRows.map((r) => r.wiki_id);
+
+      // Delete stale refs
+      this.db.run(`DELETE FROM wiki_memory_refs WHERE memory_id IN (${placeholders})`, memoryIds);
+
+      // Refresh source_count on affected articles
+      for (const wikiId of affectedWikiIds) {
+        this.db.run(
+          `UPDATE agent_wiki
+           SET
+             memory_ids   = (SELECT COALESCE(json_group_array(memory_id), '[]') FROM wiki_memory_refs WHERE wiki_id = ?),
+             source_count = (SELECT COUNT(*) FROM wiki_memory_refs WHERE wiki_id = ?)
+           WHERE id = ?`,
+          [wikiId, wikiId, wikiId],
+        );
+      }
+    } catch {
+      // Wiki tables may not exist yet (pre-migration)
+    }
+  }
+
+  /**
+   * Mark wiki articles dirty (last_compiled_at = 0) for articles that reference
+   * any of the given memory IDs. Called before merging to queue recompilation.
+   */
+  private markWikiArticlesDirty(memoryIds: number[]): void {
+    if (memoryIds.length === 0) return;
+    try {
+      const exists = this.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wiki_memory_refs'").get();
+      if (!exists) return;
+
+      const placeholders = memoryIds.map(() => "?").join(",");
+      const affectedRows = this.db
+        .query(`SELECT DISTINCT wiki_id FROM wiki_memory_refs WHERE memory_id IN (${placeholders})`)
+        .all(...memoryIds) as Array<{ wiki_id: number }>;
+
+      if (affectedRows.length === 0) return;
+      const affectedWikiIds = affectedRows.map((r) => r.wiki_id);
+
+      // Set last_compiled_at = 0 to queue for recompilation
+      const wikiPlaceholders = affectedWikiIds.map(() => "?").join(",");
+      this.db.run(`UPDATE agent_wiki SET last_compiled_at = 0 WHERE id IN (${wikiPlaceholders})`, affectedWikiIds);
+    } catch {
+      // Wiki tables may not exist yet
+    }
   }
 
   // ── Close ──────────────────────────────────────────────────────

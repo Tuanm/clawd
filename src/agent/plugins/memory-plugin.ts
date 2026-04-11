@@ -18,6 +18,8 @@ import {
 import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
 import type { ToolResult } from "../tools/tools";
 import type { Plugin, PluginContext, PluginHooks } from "./manager";
+import { WikiCompiler } from "../memory/wiki-compiler";
+import type { WikiArticle, WikiTOCEntry } from "../memory/wiki-compiler";
 
 // ── Config ─────────────────────────────────────────────────────────
 
@@ -71,9 +73,13 @@ const SECRET_PATTERNS = [
 
 export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResult {
   const store = config.dbPath ? new AgentMemoryStore(config.dbPath) : getAgentMemoryStore();
+  const wiki = new WikiCompiler(store.getMemoryDb());
   const { agentId, channel, projectRoot } = config;
   let turnCount = 0;
   let extractionFailures = 0;
+  let wikiCompilationRunning = false;
+  // Seed from DB on startup so restarts don't force a full recompile
+  let lastCompilationTs = wiki.getLastCompilationTs(agentId, channel);
 
   // ── Tool Handlers ──────────────────────────────────────────────
 
@@ -119,7 +125,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
   }
 
   async function handleMemoRecall(args: Record<string, any>): Promise<ToolResult> {
-    const results = store.recall({
+    const memoryResults = store.recall({
       agentId,
       channel,
       query: args.query,
@@ -129,25 +135,37 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
       includeGlobal: true,
     });
 
-    if (results.length === 0) {
+    // Also search wiki articles when a query is provided
+    const wikiResults: WikiArticle[] = args.query ? wiki.search(agentId, channel, String(args.query), 3) : [];
+
+    if (memoryResults.length === 0 && wikiResults.length === 0) {
       return {
         success: true,
         output: args.query ? `No memories found matching "${args.query}"` : "No memories saved yet",
       };
     }
 
-    const lines = results.map((m) => {
-      const age = formatAge(m.createdAt);
-      const scope = m.channel ? "" : " [agent-wide]";
-      const pin = m.priority >= 80 ? " 📌" : "";
-      return `#${m.id} [${m.category}] (${age}${scope}${pin}): ${m.content}`;
-    });
+    const parts: string[] = [];
 
-    const header = args.query
-      ? `Found ${results.length} memories matching "${args.query}":`
-      : `Recent ${results.length} memories:`;
+    if (memoryResults.length > 0) {
+      const lines = memoryResults.map((m) => {
+        const age = formatAge(m.createdAt);
+        const scope = m.channel ? "" : " [agent-wide]";
+        const pin = m.priority >= 80 ? " 📌" : "";
+        return `#${m.id} [${m.category}] (${age}${scope}${pin}): ${m.content}`;
+      });
+      const header = args.query
+        ? `Found ${memoryResults.length} memories matching "${args.query}":`
+        : `Recent ${memoryResults.length} memories:`;
+      parts.push(`${header}\n${lines.join("\n")}`);
+    }
 
-    return { success: true, output: `${header}\n${lines.join("\n")}` };
+    if (wikiResults.length > 0) {
+      const wikiLines = wikiResults.map((a) => `[wiki] **${a.topic}**\n${a.content}`).join("\n\n");
+      parts.push(`Wiki articles (${wikiResults.length}):\n${wikiLines}`);
+    }
+
+    return { success: true, output: parts.join("\n\n---\n\n") };
   }
 
   async function handleMemoDelete(args: Record<string, any>): Promise<ToolResult> {
@@ -271,9 +289,24 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
   // ── Auto-Injection (getSystemContext) ──────────────────────────
 
   async function getSystemContext(ctx: PluginContext): Promise<string | null> {
+    // Separate try-catch blocks so wiki failure never drops memories (and vice versa)
+    let memories: AgentMemory[] = [];
     try {
-      const memories = store.getRelevant(agentId, channel, lastKeywords, MAX_RECENT, MAX_RELEVANT);
-      if (memories.length === 0 && compactionCount === 0) return null;
+      memories = store.getRelevant(agentId, channel, lastKeywords, MAX_RECENT, MAX_RELEVANT);
+    } catch {
+      // Silent fail — memories unavailable; continue without them
+    }
+
+    let toc: WikiTOCEntry[] = [];
+    try {
+      toc = wiki.getTOC(agentId, channel);
+    } catch {
+      // Silent fail — wiki unavailable; continue without it
+    }
+
+    try {
+      const hasWiki = toc.length > 0;
+      if (memories.length === 0 && compactionCount === 0 && !hasWiki) return null;
 
       // Build actually-injected IDs list during rendering
       const actuallyInjectedIds: number[] = [];
@@ -314,6 +347,49 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
         output += "  </pinned_rules>\n";
       }
 
+      // ── L0: Wiki TOC ──────────────────────────────────────────────
+
+      if (hasWiki) {
+        const tocHeader = "  <wiki_toc>\n";
+        const tocFooter = "  </wiki_toc>\n";
+        let tocSection = tocHeader;
+        let tocChars = tocHeader.length + tocFooter.length;
+        for (const e of toc) {
+          const line = `    - **${e.topic}**: ${e.summary}\n`;
+          if (charCount + tocChars + line.length > INJECTION_CAP) break;
+          tocSection += line;
+          tocChars += line.length;
+        }
+        if (tocSection.length > tocHeader.length) {
+          tocSection += tocFooter;
+          output += tocSection;
+          charCount += tocSection.length;
+        }
+      }
+
+      // ── L1: Relevant wiki articles via FTS5 ──────────────────────
+      if (hasWiki && lastKeywords.length > 0) {
+        const query = lastKeywords.slice(0, 8).join(" ");
+        const articles = wiki.search(agentId, channel, query, 2);
+        if (articles.length > 0) {
+          let articleSection = "  <wiki_articles>\n";
+          let artChars = articleSection.length + 20; // closing tag: "  </wiki_articles>\n" = 20 chars
+          let includedArticleCount = 0; // Fix 17: replace dead lastInjectedWikiIds Set
+          for (const art of articles) {
+            const block = `  ### ${art.topic}\n${art.content}\n\n`;
+            if (charCount + artChars + block.length > INJECTION_CAP) break;
+            articleSection += block;
+            artChars += block.length;
+            includedArticleCount++;
+          }
+          if (includedArticleCount > 0) {
+            articleSection += "  </wiki_articles>\n";
+            output += articleSection;
+            charCount += articleSection.length;
+          }
+        }
+      }
+
       // Relevant + recent section
       if (others.length > 0) {
         output += "  <relevant>\n";
@@ -352,7 +428,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
       // Silent fail — don't break agent loop
       return null;
     }
-  }
+  } // end getSystemContext
 
   // Track recent keywords for injection relevance
   let lastKeywords: string[] = [];
@@ -367,12 +443,22 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
   async function onAgentResponse(response: any, ctx: PluginContext): Promise<void> {
     turnCount++;
 
+    // Hoist a single getCount() for all 25-turn (and first-turn) checks
+    let memCount = 0;
+    if (turnCount === 1 || turnCount % 25 === 0) {
+      memCount = store.getCount(agentId);
+    }
+
     // Volume-triggered consolidation — event-driven with cooldown
     // Check count only every 25 turns to avoid per-turn DB query
     if (turnCount % 25 === 0) {
-      const memoryCount = store.getCount(agentId);
-      const needsConsolidation = memoryCount >= MEMORY_CAP_THRESHOLD || turnCount % 200 === 0;
-      if (needsConsolidation && !consolidationRunning && turnCount - lastConsolidationTurn >= CONSOLIDATION_COOLDOWN) {
+      const needsConsolidation = memCount >= MEMORY_CAP_THRESHOLD || turnCount % 200 === 0;
+      if (
+        needsConsolidation &&
+        !consolidationRunning &&
+        !wikiCompilationRunning &&
+        turnCount - lastConsolidationTurn >= CONSOLIDATION_COOLDOWN
+      ) {
         lastConsolidationTurn = turnCount;
         consolidationRunning = true;
         consolidateMemories(ctx)
@@ -382,6 +468,49 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
           });
       }
     }
+
+    // ── Wiki compilation triggers ──────────────────────────────────
+    // Bootstrap: first time memory count crosses 50
+    if (turnCount === 1 || turnCount % 25 === 0) {
+      // Bootstrap compile when first 50 memories reached
+      if (memCount >= 50 && lastCompilationTs === 0 && !wikiCompilationRunning && !consolidationRunning) {
+        wikiCompilationRunning = true;
+        compileWiki(ctx)
+          .catch(() => {})
+          .finally(() => {
+            wikiCompilationRunning = false;
+          });
+      }
+    }
+
+    // Piggyback on the 25-turn checkpoint
+    if (turnCount % 25 === 0 && !wikiCompilationRunning) {
+      const needsWiki = memCount >= MEMORY_CAP_THRESHOLD || turnCount % 200 === 0;
+      if (needsWiki) {
+        if (!consolidationRunning) {
+          // No active consolidation — start wiki directly with 2s stagger
+          wikiCompilationRunning = true;
+          Promise.resolve()
+            .then(() => sleep(2000))
+            .then(() => compileWiki(ctx))
+            .catch(() => {})
+            .finally(() => {
+              wikiCompilationRunning = false;
+            });
+        } else {
+          // Wait for consolidation to finish before wiki
+          wikiCompilationRunning = true;
+          waitForConsolidation()
+            .then(() => sleep(2000))
+            .then(() => compileWiki(ctx))
+            .catch(() => {})
+            .finally(() => {
+              wikiCompilationRunning = false;
+            });
+        }
+      }
+    }
+
     // Note: turnCount % 200 is already handled above (200 is divisible by 25)
 
     // Reflection every 100 turns (staggered with consolidation)
@@ -703,6 +832,58 @@ ${condensed.join("\n")}`,
     }
   }
 
+  // ── Wiki Helpers ───────────────────────────────────────────────
+
+  async function compileWiki(ctx: PluginContext): Promise<void> {
+    const llmClient = ctx.llmClient;
+    if (!llmClient) return;
+
+    const model = config.memoryModel || llmClient.model;
+    const now = Math.floor(Date.now() / 1000);
+
+    try {
+      let result;
+      const hasArticles = wiki.getArticleCount(agentId, channel) > 0;
+      if (lastCompilationTs > 0 && hasArticles) {
+        result = await wiki.compileIncremental(agentId, channel, llmClient, model, store);
+      } else {
+        result = await wiki.compile(agentId, channel, llmClient, model, store);
+      }
+      lastCompilationTs = now;
+      if (result.created + result.updated > 0) {
+        console.log(
+          `[Wiki] compiled: +${result.created} new, ~${result.updated} updated, ` +
+            `${result.errors} errors in ${result.durationMs}ms`,
+        );
+      }
+    } catch (err) {
+      console.warn("[Wiki] Compilation failed:", err);
+    }
+  }
+
+  function waitForConsolidation(intervalMs = 500, timeoutMs = 60_000): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!consolidationRunning) {
+        resolve();
+        return;
+      }
+      const start = Date.now();
+      const id = setInterval(() => {
+        if (!consolidationRunning) {
+          clearInterval(id);
+          resolve();
+        } else if (Date.now() - start > timeoutMs) {
+          clearInterval(id);
+          reject(new Error("consolidation timeout"));
+        }
+      }, intervalMs);
+    });
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   // ── Plugin Hooks ───────────────────────────────────────────────
 
   const pluginHooks: PluginHooks = {
@@ -838,6 +1019,37 @@ ${condensed.join("\n")}`,
           },
           required: ["content"],
           handler: handleIdentityUpdate,
+        },
+        {
+          name: "wiki_note",
+          description:
+            "Stage a note for wiki integration. Use instead of memo_save when adding rich context to an existing wiki topic (e.g. code snippet, multi-line explanation, cross-reference). Folded into the wiki at the next compilation cycle.",
+          parameters: {
+            content: {
+              type: "string",
+              description: "Note content (markdown, multi-line OK). Max 3000 chars.",
+            },
+            topic_hint: {
+              type: "string",
+              description:
+                'Optional: which wiki topic this belongs to (e.g. "Authentication"). Helps the compiler route it correctly.',
+            },
+          },
+          required: ["content"],
+          handler: async (args: Record<string, any>): Promise<ToolResult> => {
+            const content = String(args.content || "").trim();
+            if (!content) return { success: false, output: "", error: "Content required" };
+            if (content.length > 3000) return { success: false, output: "", error: "Max 3000 chars" };
+            const topicHint = args.topic_hint ? String(args.topic_hint).slice(0, 100) : undefined;
+            const staged = wiki.stagePendingNote(agentId, channel, content, topicHint);
+            if (!staged) {
+              return { success: false, output: "", error: "Failed to stage wiki note (DB error)" };
+            }
+            return {
+              success: true,
+              output: `Note staged for wiki on topic "${topicHint || "general"}". It will be folded into the wiki at the next compilation cycle.`,
+            };
+          },
         },
       ];
     },

@@ -8,6 +8,15 @@
  *
  * v2 — add priority, tags, effectiveness columns to agent_memories
  *       (previously applied via inline try/catch in agent-memory.ts)
+ *
+ * v3 — add summarizer_checkpoints table for SessionSummarizer recovery
+ *
+ * v4 — LLM wiki layer: agent_wiki, wiki_memory_refs, agent_wiki_fts, wiki_pending_notes
+ *
+ * v5 — wiki index fixes:
+ *       - uidx_aw_topic: drop + recreate as case-insensitive unique index on lower(topic)
+ *       - aw_au trigger: add WHEN guard to prevent spurious FTS mutations on unrelated column updates
+ *       - idx_aw_updated: covering index for getTOC ORDER BY updated_at DESC
  */
 
 import type { Migration } from "../migrations";
@@ -147,6 +156,116 @@ export const memoryMigrations: Migration[] = [
           created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_sc_session ON summarizer_checkpoints(session_id);
+      `);
+    },
+  },
+  {
+    version: 4,
+    description: "LLM wiki layer: agent_wiki, wiki_memory_refs, agent_wiki_fts, wiki_pending_notes",
+    up: (db) => {
+      db.exec(`
+        -- agent_wiki: compiled wiki articles (always channel-scoped)
+        CREATE TABLE IF NOT EXISTS agent_wiki (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          agent_id         TEXT    NOT NULL,
+          channel          TEXT    NOT NULL,
+          topic            TEXT    NOT NULL,
+          summary          TEXT    NOT NULL,
+          content          TEXT    NOT NULL
+                             CHECK(length(content) BETWEEN 100 AND 4000),
+          memory_ids       TEXT    NOT NULL DEFAULT '[]',
+          source_count     INTEGER NOT NULL DEFAULT 0,
+          version          INTEGER NOT NULL DEFAULT 1,
+          created_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+          last_compiled_at INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_aw_agent_channel ON agent_wiki(agent_id, channel);
+        CREATE INDEX IF NOT EXISTS idx_aw_last_compiled ON agent_wiki(agent_id, channel, last_compiled_at);
+        -- uidx_aw_topic replaced by case-insensitive uidx_aw_topic_lower (see migration v5)
+        -- CREATE UNIQUE INDEX IF NOT EXISTS uidx_aw_topic ON agent_wiki(agent_id, channel, topic);
+        CREATE INDEX IF NOT EXISTS idx_aw_topic_lower ON agent_wiki(agent_id, channel, lower(topic));
+        CREATE UNIQUE INDEX IF NOT EXISTS uidx_aw_topic_lower ON agent_wiki(agent_id, channel, lower(topic));
+
+        -- wiki_memory_refs: join table — source of truth for memory→article mapping
+        CREATE TABLE IF NOT EXISTS wiki_memory_refs (
+          wiki_id   INTEGER NOT NULL REFERENCES agent_wiki(id) ON DELETE CASCADE,
+          memory_id INTEGER NOT NULL,
+          added_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+          PRIMARY KEY (wiki_id, memory_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_wmr_memory ON wiki_memory_refs(memory_id);
+
+        -- FTS5 virtual table for wiki topic + content search
+        CREATE VIRTUAL TABLE IF NOT EXISTS agent_wiki_fts USING fts5(
+          topic, content,
+          content='agent_wiki',
+          content_rowid='id',
+          tokenize='porter unicode61'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS aw_ai AFTER INSERT ON agent_wiki BEGIN
+          INSERT INTO agent_wiki_fts(rowid, topic, content)
+            VALUES (new.id, new.topic, new.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS aw_ad AFTER DELETE ON agent_wiki BEGIN
+          INSERT INTO agent_wiki_fts(agent_wiki_fts, rowid, topic, content)
+            VALUES ('delete', old.id, old.topic, old.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS aw_au AFTER UPDATE ON agent_wiki BEGIN
+          INSERT INTO agent_wiki_fts(agent_wiki_fts, rowid, topic, content)
+            VALUES ('delete', old.id, old.topic, old.content);
+          INSERT INTO agent_wiki_fts(rowid, topic, content)
+            VALUES (new.id, new.topic, new.content);
+        END;
+
+        -- wiki_pending_notes: staged write-back from wiki_note tool
+        CREATE TABLE IF NOT EXISTS wiki_pending_notes (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          agent_id    TEXT    NOT NULL,
+          channel     TEXT    NOT NULL,
+          topic_hint  TEXT,
+          content     TEXT    NOT NULL,
+          priority    INTEGER NOT NULL DEFAULT 45,
+          created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_wpn_agent ON wiki_pending_notes(agent_id, channel, created_at);
+      `);
+    },
+  },
+  {
+    version: 5,
+    description: "wiki index fixes: case-insensitive topic index, aw_au WHEN guard, getTOC covering index",
+    up: (db) => {
+      db.exec(`
+        -- Dedup existing rows with case-variant topics before creating unique index
+        DELETE FROM agent_wiki WHERE id NOT IN (
+          SELECT MIN(id) FROM agent_wiki GROUP BY agent_id, channel, lower(topic)
+        );
+
+        -- Fix uidx_aw_topic: make unique index case-insensitive (was case-sensitive)
+        DROP INDEX IF EXISTS uidx_aw_topic;
+        DROP INDEX IF EXISTS uidx_aw_topic_lower;
+        DROP INDEX IF EXISTS idx_aw_topic_lower;
+        CREATE UNIQUE INDEX uidx_aw_topic ON agent_wiki(agent_id, channel, lower(topic));
+
+        -- Fix aw_au trigger: add WHEN guard to prevent spurious FTS mutations
+        -- when unrelated columns (e.g. memory_ids, source_count) are updated
+        DROP TRIGGER IF EXISTS aw_au;
+        CREATE TRIGGER aw_au AFTER UPDATE ON agent_wiki
+        WHEN old.topic IS NOT new.topic OR old.content IS NOT new.content
+        BEGIN
+          INSERT INTO agent_wiki_fts(agent_wiki_fts, rowid, topic, content)
+            VALUES ('delete', old.id, old.topic, old.content);
+          INSERT INTO agent_wiki_fts(rowid, topic, content)
+            VALUES (new.id, new.topic, new.content);
+        END;
+
+        -- Covering index for getTOC ORDER BY updated_at DESC
+        CREATE INDEX IF NOT EXISTS idx_aw_updated ON agent_wiki(agent_id, channel, updated_at DESC);
       `);
     },
   },
