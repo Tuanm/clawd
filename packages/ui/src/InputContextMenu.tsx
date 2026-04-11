@@ -108,7 +108,13 @@ export function InputContextMenu({
   const selectAllShortcut = isMac ? "⌘A" : "Ctrl+A";
 
   return createPortal(
-    <div ref={menuRef} className="message-context-menu" style={{ left: adjustedPosition.x, top: adjustedPosition.y }}>
+    <div
+      ref={menuRef}
+      className="message-context-menu"
+      style={{ left: adjustedPosition.x, top: adjustedPosition.y }}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
       {/* Copy */}
       <button
         className={`context-menu-item${!hasSelection ? " disabled" : ""}`}
