@@ -18,7 +18,7 @@
    - [Agent Class & Reasoning Loop](#62-agent-class--reasoning-loop)
    - [Token Management & Context Compaction](#63-token-management--context-compaction)
    - [Plugin System](#64-plugin-system)
-   - [Memory System](#65-memory-system)
+   - [Memory & Wiki System](#65-memory-system)
    - [Heartbeat Monitor](#66-heartbeat-monitor)
    - [Stream Timeouts (State-Based)](#67-stream-timeouts-state-based)
    - [Model Tiering & Tool Filtering](#68-model-tiering--tool-filtering)
@@ -178,7 +178,7 @@ clawd/
 │   │   │   └── memory-tools.ts # Memory recall/save
 │   │   ├── plugins/            # All plugins (chat, browser, workspace, tunnel, etc.)
 │   │   ├── session/            # Session manager, checkpoints, summarizer
-│   │   ├── memory/             # memory.ts, knowledge-base.ts, agent-memory.ts
+│   │   ├── memory/             # memory.ts, knowledge-base.ts, agent-memory.ts, wiki-compiler.ts
 │   │   ├── mcp/                # MCP client connections
 │   │   └── utils/              # sandbox.ts, agent-context.ts
 │   ├── db/                     # Unified migration system
@@ -684,7 +684,7 @@ interface Plugin {
 
 ### 6.5 Memory System
 
-The memory system uses three separate stores, each serving distinct retrieval needs:
+The memory system uses four separate stores, each serving distinct retrieval needs:
 
 ```mermaid
 flowchart LR
@@ -706,8 +706,15 @@ flowchart LR
         AMSC["Priority decay + effectiveness scoring"]
     end
 
+    subgraph WK["Wiki System (wiki-compiler.ts)"]
+        WKA["Keyword clustering → LLM articles"]
+        WKB["agent_wiki FTS5 search"]
+        WKC["TOC + article injection per turn"]
+    end
+
     MM --> KB
     KB --> AMS
+    AMS --> WK
 ```
 
 **MemoryManager** (`src/agent/memory/memory.ts`): Manages session chat history with FTS5 full-text search. Stores raw conversation in `memory.db → messages`. Subject to context compaction at token thresholds.
@@ -721,7 +728,16 @@ flowchart LR
 - **lesson**: Learned lessons ("don't modify tests")
 - **correction**: Corrected errors ("was broken, fixed by...")
 
-Supports priority decay, effectiveness scoring, auto-extraction via LLM, and memory consolidation (Phase 3).
+Supports priority decay, effectiveness scoring, auto-extraction via LLM, and memory consolidation.
+
+**WikiCompiler** (`src/agent/memory/wiki-compiler.ts`): Compiles `agent_memories` into LLM-synthesized wiki articles stored in `agent_wiki`. Articles are injected into the system prompt as `<wiki_toc>` (up to 20 topic entries) and `<wiki_articles>` (FTS5-matched content), hard-capped at 4,000 chars. Compilation is fire-and-forget — never blocks agent responses.
+
+- **Bootstrap**: triggers when memory count ≥ 50 and no prior compilation exists
+- **Incremental**: recompiles only articles whose source memories changed since `last_compiled_at`
+- **Restart-safe**: `lastCompilationTs` seeded from DB on startup via `getLastCompilationTs()`
+- **Scoped**: all data isolated by `agent_id` + `channel`
+
+See [`docs/memory.md`](./memory.md#4-wiki-memory-system) for full details.
 
 ### 6.6 MCP Tool Architecture
 
