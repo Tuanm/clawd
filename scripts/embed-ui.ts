@@ -11,11 +11,13 @@
  * Usage: bun run scripts/embed-ui.ts
  */
 
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { extname, join, relative } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, extname, join, relative } from "node:path";
 
 const UI_DIST = join(import.meta.dir, "..", "packages", "ui", "dist");
 const OUTPUT = join(import.meta.dir, "..", "src", "embedded", "ui.ts");
+
+mkdirSync(dirname(OUTPUT), { recursive: true });
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",

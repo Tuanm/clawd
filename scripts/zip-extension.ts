@@ -11,7 +11,7 @@
  */
 
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import JSZip from "jszip";
 
 const EXT_DIR = join(import.meta.dir, "..", "packages", "browser-extension");
@@ -22,6 +22,7 @@ const EXCLUDE = new Set(["README.md", ".DS_Store"]);
 const EXCLUDE_DIRS = new Set([".git", "node_modules"]);
 
 mkdirSync(join(import.meta.dir, "..", "dist"), { recursive: true });
+mkdirSync(dirname(TS_OUTPUT), { recursive: true });
 
 // Recursively add files to zip
 function addDir(zip: JSZip, dirPath: string, baseDir: string): void {
