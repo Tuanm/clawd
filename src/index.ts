@@ -40,6 +40,7 @@ import { extensionZipSize, getExtensionZip } from "./embedded/extension";
 import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbeddedUI } from "./embedded/ui";
 import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./server/mcp/oauth";
 import { upgradeBrowserWs } from "./server/browser-bridge";
+import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import { corsHeaders, json, numParam, parseBody } from "./server/http-helpers";
 import { validateBody } from "./server/validate";
 import { postToChannel } from "./utils/api-client";
@@ -555,6 +556,11 @@ const server = Bun.serve({
         return new Response("Browser features not enabled", { status: 403 });
       }
       return upgradeBrowserWs(req, server);
+    }
+
+    // Remote worker WebSocket bridge
+    if (path === "/worker/ws") {
+      return upgradeRemoteWorkerWs(req, server);
     }
 
     // Browser file transfer API (extension uploads/downloads files via chat server)
