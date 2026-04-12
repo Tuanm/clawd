@@ -13,9 +13,9 @@ import {
   queryModelStats,
   queryRecentStats,
   querySummary,
-} from "../../analytics";
+} from "../../shared/analytics";
 import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
-import type { ToolResult } from "../tools/tools";
+import type { ToolResult } from "../tools/definitions";
 
 // ── GitHub Copilot SVG Logo ──────────────────────────────────────────
 
@@ -64,8 +64,8 @@ export function createCopilotAnalyticsPlugin(channel: string): ToolPlugin {
       });
 
       return { success: true, output: `Copilot Usage Summary (${granularity}):\n${lines.join("\n")}` };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -84,8 +84,8 @@ export function createCopilotAnalyticsPlugin(channel: string): ToolPlugin {
       });
 
       return { success: true, output: `Model Usage:\n${lines.join("\n")}` };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -104,8 +104,8 @@ export function createCopilotAnalyticsPlugin(channel: string): ToolPlugin {
       });
 
       return { success: true, output: `API Key Usage:\n${lines.join("\n")}` };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -123,8 +123,8 @@ export function createCopilotAnalyticsPlugin(channel: string): ToolPlugin {
           `Premium Requests: ${stats.premiumRequests.toFixed(1)}\n` +
           `Avg Latency: ${stats.avgLatencyMs ? Math.round(stats.avgLatencyMs) + "ms" : "n/a"}`,
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -151,8 +151,8 @@ export function createCopilotAnalyticsPlugin(channel: string): ToolPlugin {
         success: true,
         output: `Copilot Calls (${opts.offset + 1}-${opts.offset + calls.length} of ${total}):\n${lines.join("\n")}`,
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 

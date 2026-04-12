@@ -1,14 +1,14 @@
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
-import useSpeechToText from "./hooks/useSpeechToText";
-import MicButton from "./MicButton";
 import { createPortal } from "react-dom";
-import { InputContextMenu } from "./InputContextMenu";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import useSpeechToText from "./hooks/useSpeechToText";
+import { InputContextMenu } from "./InputContextMenu";
+import MicButton from "./MicButton";
 import { markdownSanitizeSchema } from "./sanitize-schema";
 
 // Context menu state

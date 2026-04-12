@@ -10,7 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { convertCCFormatToInternal, validateServerConfigSync } from "../../mcp-validation";
+import { convertCCFormatToInternal, validateServerConfigSync } from "./mcp-validation";
 import type {
   CCMcpServerConfig,
   Config,

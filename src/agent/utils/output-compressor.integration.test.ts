@@ -6,9 +6,9 @@
  * UTF-16 surrogate pairs, null/undefined input, compressedSize consistency.
  */
 
-import { describe, expect, test, vi } from "vitest";
-import { compressToolOutput, getToolCap, isExempt } from "./output-compressor";
+import { describe, expect, mock, test } from "bun:test";
 import type { ToolResult } from "./output-compressor";
+import { compressToolOutput, getToolCap, isExempt } from "./output-compressor";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -17,7 +17,7 @@ function makeOutput(n: number, char = "x"): string {
 }
 
 function mockIndexFn() {
-  return vi.fn((_sessionId: string, _sourceId: string, _toolName: string, _content: string) => true);
+  return mock((_sessionId: string, _sourceId: string, _toolName: string, _content: string) => true);
 }
 
 // ── 1. compressToolOutput across various tool types ─────────────────
@@ -397,7 +397,7 @@ describe("compressToolOutput — UTF-16 surrogate pair safety", () => {
 
 describe("compressToolOutput — malformed input handling", () => {
   test("null output (as null) is treated as empty string", () => {
-    // @ts-ignore — intentional type violation for integration test
+    // @ts-expect-error — intentional type violation for integration test
     const result: ToolResult = { success: true, output: null };
     const compressed = compressToolOutput("bash", result, "session1");
     expect(compressed.originalSize).toBe(0);
@@ -406,7 +406,7 @@ describe("compressToolOutput — malformed input handling", () => {
   });
 
   test("undefined output is treated as empty string", () => {
-    // @ts-ignore
+    // @ts-expect-error
     const result: ToolResult = { success: true, output: undefined };
     const compressed = compressToolOutput("grep", result, "session1");
     expect(compressed.originalSize).toBe(0);

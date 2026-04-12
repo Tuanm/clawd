@@ -21,9 +21,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { realpathSync } from "node:fs";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { getContextSessionId } from "./agent-context";
 

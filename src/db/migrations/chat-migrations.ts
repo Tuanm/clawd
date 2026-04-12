@@ -1,6 +1,10 @@
 /**
  * Migrations for chat.db
  *
+ * ⚠️  Version numbering: chat-migrations uses versions 1–49.
+ * agents-migrations.ts (also applied to chat.db) uses versions 50–99.
+ * Keep this range in sync when adding new migrations to either file.
+ *
  * v1 — initial schema: users, channels, messages, files, agent_seen, summaries,
  *       agent_status, agents, message_seen, articles, copilot_calls,
  *       artifact_actions, spaces (consolidated from initDatabase() in database.ts)

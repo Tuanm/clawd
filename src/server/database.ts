@@ -1,7 +1,8 @@
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { getDataDir } from "../config-file";
+import { getDataDir } from "../config/config-file";
+import { createDatabase } from "../db/factory";
 import { runMigrations } from "../db/migrations";
 import { chatMigrations } from "../db/migrations/chat-migrations";
 
@@ -35,19 +36,9 @@ export function getDb(): Database {
     // instance.  We commit to _db only after PRAGMAs succeed so that the Proxy
     // resolves correctly when initDatabase() calls back through it, then roll
     // back on any error so the next caller can retry cleanly.
-    const newDb = new Database(DB_PATH, { strict: true });
-
-    // Set busy_timeout FIRST to avoid SQLITE_BUSY errors
-    newDb.exec("PRAGMA busy_timeout = 5000"); // 5 second timeout
-
-    // Enable WAL mode for better concurrent read/write performance
-    newDb.exec("PRAGMA journal_mode = WAL");
-    newDb.exec("PRAGMA synchronous = NORMAL");
-    // Use conservative cache/mmap for container deployments
-    const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
-    newDb.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`); // 8MB (container) or 64MB (desktop)
-    newDb.exec("PRAGMA temp_store = MEMORY");
-    newDb.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`); // Disable mmap in containers
+    // createDatabase applies: busy_timeout(5s), WAL, synchronous NORMAL,
+    // cache_size, temp_store MEMORY, mmap_size (all container-aware)
+    const newDb = createDatabase(DB_PATH, { busyTimeout: 5000, foreignKeys: false, strict: true });
 
     // Commit before initDatabase() so the Proxy resolves to newDb when
     // initDatabase() calls back through db.exec() / db.prepare().
@@ -720,13 +711,45 @@ export function renameChannel(oldChannel: string, newChannel: string) {
     db.run(`UPDATE agent_seen SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
     results.push(`agent_seen: ${oldChannel} -> ${newChannel}`);
 
-    // Update channel_agents
+    // Update agent_status
+    db.run(`UPDATE agent_status SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`agent_status: ${oldChannel} -> ${newChannel}`);
+
+    // Update agents
+    db.run(`UPDATE agents SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`agents: ${oldChannel} -> ${newChannel}`);
+
+    // Update message_seen
+    db.run(`UPDATE message_seen SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`message_seen: ${oldChannel} -> ${newChannel}`);
+
+    // Update summaries
+    db.run(`UPDATE summaries SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`summaries: ${oldChannel} -> ${newChannel}`);
+
+    // Update articles
+    db.run(`UPDATE articles SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`articles: ${oldChannel} -> ${newChannel}`);
+
+    // Update spaces
+    db.run(`UPDATE spaces SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`spaces: ${oldChannel} -> ${newChannel}`);
+
+    // Update artifact_actions
+    db.run(`UPDATE artifact_actions SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`artifact_actions: ${oldChannel} -> ${newChannel}`);
+
+    // Update channel_agents (optional — table may not exist in older DBs)
     try {
       db.run(`UPDATE channel_agents SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
       results.push(`channel_agents: ${oldChannel} -> ${newChannel}`);
     } catch {
       // Table may not exist in older DBs
     }
+
+    // Update copilot_calls
+    db.run(`UPDATE copilot_calls SET channel = ? WHERE channel = ?`, [newChannel, oldChannel]);
+    results.push(`copilot_calls: ${oldChannel} -> ${newChannel}`);
   })();
 
   return results;
@@ -1013,51 +1036,69 @@ const WORKER_COLOR = "#333333"; // Black for workers
 
 // Get or register an agent, auto-assigning avatar color
 export function getOrRegisterAgent(agentId: string, channel: string, isWorker: boolean = false): Agent {
-  // Check if agent already exists
-  const existing = db
-    .query<Agent, [string, string]>(`SELECT * FROM agents WHERE id = ? AND channel = ?`)
-    .get(agentId, channel);
+  // Wrap in a transaction to prevent check-then-insert race under concurrent access.
+  // INSERT OR IGNORE handles any remaining duplicate after the SELECT (e.g. two
+  // transactions that both saw no existing row before entering here).
+  return db.transaction((): Agent => {
+    const existing = db
+      .query<Agent, [string, string]>(`SELECT * FROM agents WHERE id = ? AND channel = ?`)
+      .get(agentId, channel);
 
-  if (existing) {
-    return existing;
-  }
+    if (existing) {
+      return existing;
+    }
 
-  // Assign color
-  let avatarColor: string;
-  if (isWorker || agentId.startsWith("UWORKER-")) {
-    avatarColor = WORKER_COLOR;
-  } else {
-    // Get existing agents to find next available color
-    const existingAgents = db
-      .query<{ avatar_color: string }, [string]>(`SELECT avatar_color FROM agents WHERE channel = ? AND is_worker = 0`)
-      .all(channel);
+    // Assign color
+    const isWorkerAgent = isWorker || agentId.startsWith("UWORKER-");
+    let avatarColor: string;
+    if (isWorkerAgent) {
+      avatarColor = WORKER_COLOR;
+    } else {
+      // Get existing agents to find next available color
+      const existingAgents = db
+        .query<{ avatar_color: string }, [string]>(
+          `SELECT avatar_color FROM agents WHERE channel = ? AND is_worker = 0`,
+        )
+        .all(channel);
 
-    const usedColors = new Set(existingAgents.map((a) => a.avatar_color));
-    avatarColor =
-      AVATAR_COLORS.find((c) => !usedColors.has(c)) || AVATAR_COLORS[existingAgents.length % AVATAR_COLORS.length];
-  }
+      const usedColors = new Set(existingAgents.map((a) => a.avatar_color));
+      avatarColor =
+        AVATAR_COLORS.find((c) => !usedColors.has(c)) || AVATAR_COLORS[existingAgents.length % AVATAR_COLORS.length];
+    }
 
-  // Register agent
-  const now = Math.floor(Date.now() / 1000);
-  db.run(`INSERT INTO agents (id, channel, avatar_color, is_worker, joined_at) VALUES (?, ?, ?, ?, ?)`, [
-    agentId,
-    channel,
-    avatarColor,
-    isWorker || agentId.startsWith("UWORKER-") ? 1 : 0,
-    now,
-  ]);
+    const now = Math.floor(Date.now() / 1000);
+    const isWorkerFlag = isWorkerAgent ? 1 : 0;
 
-  return {
-    id: agentId,
-    channel,
-    avatar_color: avatarColor,
-    display_name: null,
-    is_worker: isWorker || agentId.startsWith("UWORKER-") ? 1 : 0,
-    is_sleeping: 0,
-    is_streaming: 0,
-    streaming_started_at: null,
-    joined_at: now,
-  };
+    // INSERT OR IGNORE prevents a unique-constraint error if two concurrent
+    // transactions both passed the SELECT above before either committed.
+    db.run(`INSERT OR IGNORE INTO agents (id, channel, avatar_color, is_worker, joined_at) VALUES (?, ?, ?, ?, ?)`, [
+      agentId,
+      channel,
+      avatarColor,
+      isWorkerFlag,
+      now,
+    ]);
+
+    // Re-read the row so we return the authoritative DB state (handles IGNORE case)
+    const inserted = db
+      .query<Agent, [string, string]>(`SELECT * FROM agents WHERE id = ? AND channel = ?`)
+      .get(agentId, channel);
+
+    if (inserted) return inserted;
+
+    // Fallback (should not happen in practice)
+    return {
+      id: agentId,
+      channel,
+      avatar_color: avatarColor,
+      display_name: null,
+      is_worker: isWorkerFlag,
+      is_sleeping: 0,
+      is_streaming: 0,
+      streaming_started_at: null,
+      joined_at: now,
+    };
+  })();
 }
 
 // List all agents in a channel (with dynamic is_sleeping calculation)

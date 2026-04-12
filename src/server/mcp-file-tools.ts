@@ -722,8 +722,8 @@ async function toolFileGrep(args: Record<string, unknown>, projectRoot: string):
   let regex: RegExp;
   try {
     regex = new RegExp(pattern, caseInsensitive ? "im" : "m");
-  } catch (e: any) {
-    return mcpError(`Invalid regex pattern: ${e.message}`);
+  } catch (e: unknown) {
+    return mcpError(`Invalid regex pattern: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Collect files to search
@@ -849,7 +849,7 @@ export async function executeMcpFileTool(
       default:
         return mcpError(`Unknown file tool: ${name}`);
     }
-  } catch (err: any) {
-    return mcpError(`Unexpected error in ${name}: ${err?.message || String(err)}`);
+  } catch (err: unknown) {
+    return mcpError(`Unexpected error in ${name}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

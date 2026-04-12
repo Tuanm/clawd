@@ -1,7 +1,7 @@
 /**
  * Scheduler Manager — singleton that manages the tick loop and job lifecycle
  */
-import type { AppConfig } from "../config";
+import type { AppConfig } from "../config/config";
 import {
   type CreateJobParams,
   closeDb,
@@ -358,8 +358,8 @@ export class SchedulerManager {
       resetErrors(job.id);
       this.checkCompletion(job);
       purgeOldRuns(job.id);
-    } catch (err: any) {
-      completeRun(runId, "error", err.message);
+    } catch (err: unknown) {
+      completeRun(runId, "error", err instanceof Error ? err.message : String(err));
       // Don't re-throw — handleJobError is called here, not in outer .catch()
       this.handleJobError(job, err);
     }
@@ -388,9 +388,9 @@ export class SchedulerManager {
       resetErrors(job.id);
       this.checkCompletion(job);
       purgeOldRuns(job.id);
-    } catch (err: any) {
+    } catch (err: unknown) {
       const wasAborted = controller.signal.aborted;
-      const errMsg = err.message || String(err);
+      const errMsg = err instanceof Error ? err.message : String(err);
       const status = wasAborted && controller.signal.reason === "timeout" ? "timeout" : "error";
       completeRun(runId, status, errMsg);
       this.handleJobError(job, err, wasAborted);
@@ -422,9 +422,9 @@ export class SchedulerManager {
       resetErrors(job.id);
       this.checkCompletion(job);
       purgeOldRuns(job.id);
-    } catch (err: any) {
+    } catch (err: unknown) {
       const wasAborted = controller.signal.aborted;
-      const errMsg = err.message || String(err);
+      const errMsg = err instanceof Error ? err.message : String(err);
       const status = wasAborted && controller.signal.reason === "timeout" ? "timeout" : "error";
       completeRun(runId, status, errMsg);
       this.handleJobError(job, err, wasAborted);

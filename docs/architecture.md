@@ -1,6 +1,6 @@
 # Claw'd Architecture Reference
 
-> Last updated: 2026-04-03
+> Last updated: 2026-04-12
 
 ---
 
@@ -29,12 +29,12 @@
    - [Agent Loop Optimizations](#74-agent-loop-optimizations)
    - [Memory Architecture Improvements](#75-memory-architecture-improvements)
 8. [Browser Extension](#8-browser-extension)
-   - [Architecture Overview](#71-architecture-overview)
-   - [Normal Mode (CDP)](#72-normal-mode-cdp)
-   - [Stealth Mode (Anti-Bot)](#73-stealth-mode-anti-bot)
-   - [Anti-Detection Shield](#74-anti-detection-shield)
-   - [Distribution](#75-distribution)
-   - [Artifact Rendering Pipeline](#76-artifact-rendering-pipeline)
+   - [Architecture Overview](#81-architecture-overview)
+   - [Normal Mode (CDP)](#82-normal-mode-cdp)
+   - [Stealth Mode (Anti-Bot)](#83-stealth-mode-anti-bot)
+   - [Anti-Detection Shield](#84-anti-detection-shield)
+   - [Distribution](#85-distribution)
+   - [Artifact Rendering Pipeline](#86-artifact-rendering-pipeline)
 9. [Sub-Agent System (Spaces & Claude Agent SDK)](#9-sub-agent-system-spaces)
    - [Space Lifecycle](#91-space-lifecycle)
    - [Claude Agent SDK](#92-claude-agent-sdk)
@@ -46,16 +46,16 @@
 11. [Remote Worker Bridge](#11-remote-worker-bridge)
 12. [WebSocket Events](#12-websocket-events)
 13. [API Reference](#13-api-reference)
-    - [Chat APIs](#121-chat-apis)
-    - [File APIs](#122-file-apis)
-    - [Reaction APIs](#123-reaction-apis)
-    - [Agent Streaming APIs](#124-agent-streaming-apis)
-    - [Agent Management APIs](#125-agent-management-apis)
-    - [App Management APIs](#126-app-management-apis)
-    - [Project Browser APIs](#127-project-browser-apis)
-    - [Analytics APIs](#128-analytics-apis)
-    - [Task Management APIs](#129-task-management-apis)
-    - [Special Endpoints](#1210-special-endpoints)
+    - [Chat APIs](#131-chat-apis)
+    - [File APIs](#132-file-apis)
+    - [Reaction APIs](#133-reaction-apis)
+    - [Agent Streaming APIs](#134-agent-streaming-apis)
+    - [Agent Management APIs](#135-agent-management-apis)
+    - [App Management APIs](#136-app-management-apis)
+    - [Project Browser APIs](#137-project-browser-apis)
+    - [Analytics APIs](#138-analytics-apis)
+    - [Task Management APIs](#139-task-management-apis)
+    - [Special Endpoints](#1310-special-endpoints)
 14. [LLM Provider System](#14-llm-provider-system)
 15. [Chat UI](#15-chat-ui)
 16. [Build System](#16-build-system)
@@ -63,6 +63,11 @@
 18. [Configuration Reference](#18-configuration-reference)
     - [config.json Schema](#181-configjson-schema)
     - [System Files & Directories](#182-system-files--directories)
+19. [Codebase Refactor — April 2026](#19-codebase-refactor--april-2026)
+    - [Workspace Feature Removal](#191-workspace-feature-removal-phase-2)
+    - [MCP Server Restructure](#192-mcp-server-restructure-phase-5)
+    - [Source Directory Reorganization](#193-source-directory-reorganization-phase-6)
+    - [Error Handling Patterns](#194-error-handling-patterns-phase-7)
 
 ---
 
@@ -133,7 +138,7 @@ flowchart TD
 ### Data Flow Summary
 
 1. **User → Server**: HTTP requests hit `/api/*` routes; WebSocket at `/ws` for real-time events
-2. **Server → Database**: Two SQLite databases — `chat.db` for chat state, `memory.db` for LLM sessions
+2. **Server → Database**: Four SQLite databases — `chat.db` for chat state, `memory.db` for LLM memory, `kanban.db` for task management, `scheduler.db` for scheduled jobs
 3. **Server → Agent Loop**: Worker manager starts one `WorkerLoop` per agent, polling every 200ms
 4. **Agent → LLM**: Streaming calls to configured provider (Copilot, OpenAI, Anthropic, Ollama, Minimax)
 5. **Agent → Tools**: Plugin system executes tool calls; results flow back into the LLM loop
@@ -150,11 +155,22 @@ flowchart TD
 clawd/
 ├── src/                        # Main server + agent system
 │   ├── index.ts                # Server entry point (HTTP/WS/routes)
-│   ├── config.ts               # CLI config parser
-│   ├── config-file.ts          # ~/.clawd/config.json loader; auth helpers, hot-reload
 │   ├── internal-token.ts       # Ephemeral INTERNAL_SERVICE_TOKEN (generated at startup)
 │   ├── worker-loop.ts          # Per-agent polling loop
 │   ├── worker-manager.ts       # Multi-agent orchestrator
+│   ├── config/                 # Configuration loading & schema
+│   │   ├── config.ts           # CLI config parser
+│   │   ├── config-file.ts      # ~/.clawd/config.json loader; auth helpers, hot-reload
+│   │   └── index.ts            # Public config exports
+│   ├── claude-code/            # Claude Code / Agent SDK integration
+│   │   ├── sdk.ts              # Agent SDK wrapper
+│   │   ├── main-worker.ts      # Claude Code process management
+│   │   ├── memory.ts           # Memory bridge for Claude Code sessions
+│   │   └── tmux.ts             # tmux session management
+│   ├── embedded/               # Embedded binary assets
+│   │   ├── ui.ts               # Embedded React UI loader
+│   │   ├── cli.ts              # Embedded CLI binary
+│   │   └── extension.ts        # Embedded browser extension
 │   ├── utils/
 │   │   └── pattern.ts          # matchesPattern() — glob matching (* wildcard, ? literal)
 │   ├── server/
@@ -199,7 +215,6 @@ clawd/
 │   │   ├── manager.ts          # Scheduler tick loop
 │   │   ├── runner.ts           # Job executor (creates sub-spaces)
 │   │   └── parse-schedule.ts   # Natural language schedule parser
-│   └── api/                    # Agent management, articles, MCP servers
 ├── packages/
 │   ├── ui/                     # React SPA (Vite + TypeScript)
 │   │   └── src/
@@ -207,13 +222,17 @@ clawd/
 │   │       ├── MessageList.tsx # Messages + StreamOutputDialog
 │   │       ├── auth-fetch.ts   # Per-channel token storage + authFetch() wrapper
 │   │       └── styles.css      # All styles
-│   └── browser-extension/      # Chrome MV3 extension
-│       ├── manifest.json       # Extension manifest
-│       └── src/
-│           ├── service-worker.js # Command dispatcher (~2700 lines)
-│           ├── content-script.js # DOM extraction
-│           ├── shield.js       # Anti-detection patches
-│           └── offscreen.js    # WS connection maintainer
+│   ├── browser-extension/      # Chrome MV3 extension
+│   │   ├── manifest.json       # Extension manifest
+│   │   └── src/
+│   │       ├── service-worker.js # Command dispatcher (~2700 lines)
+│   │       ├── content-script.js # DOM extraction
+│   │       ├── shield.js       # Anti-detection patches
+│   │       └── offscreen.js    # WS connection maintainer
+│   └── remote-worker/          # Standalone remote worker clients
+│       ├── typescript/         # TypeScript implementation (Bun/Node.js)
+│       ├── python/             # Python implementation (zero-dependency)
+│       └── java/               # Java implementation (Java 21+)
 ├── scripts/                    # Build utilities
 │   ├── embed-ui.ts             # Embeds UI into binary
 │   └── zip-extension.ts        # Packs extension into binary
@@ -227,8 +246,8 @@ clawd/
 | File | Purpose |
 |------|---------|
 | `src/index.ts` | HTTP server, WebSocket handler, route registration |
-| `src/config.ts` | CLI argument parser (--port, --host, --yolo, --debug) |
-| `src/config-file.ts` | Loads and validates `~/.clawd/config.json`; exposes `isChannelAuthRequired()`, `validateApiToken()`, `hasGlobalAuth()` |
+| `src/config/config.ts` | CLI argument parser (--port, --host, --yolo, --debug) |
+| `src/config/config-file.ts` | Loads and validates `~/.clawd/config.json`; exposes `isChannelAuthRequired()`, `validateApiToken()`, `hasGlobalAuth()` |
 | `src/internal-token.ts` | Generates ephemeral `INTERNAL_SERVICE_TOKEN` at startup (never persisted, never exposed externally) |
 | `src/utils/pattern.ts` | `matchesPattern(value, pattern)` — glob matching with `*` wildcard (`?` treated as literal) |
 | `src/worker-loop.ts` | Per-agent polling loop (200ms interval) |
@@ -289,7 +308,7 @@ The MCP `chat_send_message` tool calls `broadcastMessage()` immediately after in
 
 ## 5. Database Schema
 
-Claw'd uses two separate SQLite databases, both in WAL mode for concurrent read/write.
+Claw'd uses four separate SQLite databases, all in WAL mode for concurrent read/write.
 
 ### 5.1 chat.db — Chat & Agent State
 
@@ -424,7 +443,7 @@ This is the primary database for all chat, agent, and scheduling state.
 
 ### 5.2 memory.db — Agent Session Memory
 
-**Location**: `~/.clawd/memory.db`
+**Location**: `~/.clawd/data/memory.db`
 
 This database stores all LLM session context, knowledge retrieval data, and long-term
 agent memories.
@@ -513,6 +532,7 @@ Each migration is a `{ version, description, up(db) }` object. Migrations run at
 | `src/db/migrations/scheduler-migrations.ts` | scheduler.db |
 | `src/db/migrations/kanban-migrations.ts` | kanban.db |
 | `src/db/migrations/skills-cache-migrations.ts` | skills-cache.db |
+| `src/db/migrations/agents-migrations.ts` | agents tables in chat.db |
 
 ---
 
@@ -676,7 +696,6 @@ interface Plugin {
 | Plugin | File | Purpose |
 |--------|------|---------|
 | `browser-plugin` | `plugins/browser-plugin.ts` | Browser automation tools via extension bridge |
-| `workspace-plugin` | `plugins/workspace-plugin.ts` | File system and project workspace tools |
 | `context-mode-plugin` | `plugins/context-mode-plugin.ts` | Toggle between action and context-only modes |
 | `state-persistence-plugin` | `plugins/state-persistence-plugin.ts` | Save/restore agent state across restarts |
 | `tunnel-plugin` | `plugins/tunnel-plugin.ts` | Expose local services via tunnels |
@@ -1104,7 +1123,7 @@ executes. It patches browser APIs to prevent detection of automation:
 The browser extension is **not installed from a store**. Instead:
 
 1. `scripts/zip-extension.ts` packs the extension directory into a zip archive
-2. The zip is base64-encoded and embedded into `src/embedded-extension.ts`
+2. The zip is base64-encoded and embedded into `src/embedded/extension.ts`
 3. At runtime, the server serves the zip at `/browser/extension`
 4. Users download and load it as an unpacked extension in Chrome
 
@@ -1383,7 +1402,7 @@ Uses `sandbox-exec` with Seatbelt profiles:
 
 Multi-agent file isolation via git worktrees. When enabled, each agent in a channel gets its own isolated working directory with a dedicated branch (`clawd/{randomId}`), enabling concurrent edits without conflicts.
 
-**Files**: `src/agent/workspace/worktree.ts` (lifecycle), `src/api/worktree.ts` (18 REST endpoints), `src/worker-manager.ts` (DB persistence), UI components (WorktreeDialog, worktree-diff-viewer, worktree-file-list)
+**Files**: `src/agent/workspace/worktree.ts` (lifecycle), `src/server/routes/worktree.ts` (18 REST endpoints), `src/worker-manager.ts` (DB persistence), UI components (WorktreeDialog, worktree-diff-viewer, worktree-file-list)
 
 #### Worktree Lifecycle
 
@@ -1662,13 +1681,13 @@ flowchart LR
     end
 
     subgraph CS["Claw'd Server"]
-        RWB["RemoteWorkerBridge"]
+        WS["WebSocket handler"]
         TH["SHA256 token hash"]
         CA["Channel authz"]
     end
 
     RM -->|"WebSocket\n(connect)"| CS
-    RM -->|"worker:registered event"| RWB
+    RM -->|"worker:registered event"| WS
     CS -->|"WebSocket\n(commands)"| RM
 ```
 
@@ -1676,14 +1695,14 @@ flowchart LR
 
 1. A `worker_token` is configured in `channel_agents` for a specific agent+channel
 2. Remote worker connects via WebSocket with the token
-3. `RemoteWorkerBridge` hashes the token (SHA256) and validates it
+3. The server hashes the token (SHA256) and validates it against the configured `worker_token`
 4. Worker registers its available tools
 5. Tools from the remote worker appear **alongside local tools** in the agent's toolset
 6. Workers can be limited to **specific channels** for authorization
 
 ### 11.1 Windows PowerShell Remote Worker
 
-**Files**: `packages/clawd-worker/typescript/remote-worker.ts`, `packages/clawd-worker/python/remote_worker.py`, `packages/clawd-worker/java/RemoteWorker.java`
+**Files**: `packages/remote-worker/typescript/remote-worker.ts`, `packages/remote-worker/python/remote_worker.py`, `packages/remote-worker/java/RemoteWorker.java`
 
 Remote worker scripts support cross-platform execution with special handling for Windows:
 
@@ -2155,8 +2174,8 @@ The build process compiles everything into a single self-contained binary.
 flowchart TD
     Start["bun run build"]
     S1["1. Vite builds UI\npackages/ui/ → packages/ui/dist/"]
-    S2["2. embed-ui.ts\npackages/ui/dist/ → base64 → src/embedded-ui.ts"]
-    S3["3. zip-extension.ts\npackages/browser-extension/ → zip → base64 → src/embedded-extension.ts"]
+    S2["2. embed-ui.ts\npackages/ui/dist/ → base64 → src/embedded/ui.ts"]
+    S3["3. zip-extension.ts\npackages/browser-extension/ → zip → base64 → src/embedded/extension.ts"]
     S4["4. bun build --compile\nsrc/index.ts → dist/clawd (single binary)"]
 
     Start --> S1 --> S2 --> S3 --> S4
@@ -2211,7 +2230,7 @@ The Dockerfile uses a two-stage build for minimal image size:
 # compose.yaml
 services:
   clawd:
-    image: ghcr.io/Tuanm/clawd:latest
+    image: ghcr.io/clawd-pilot/clawd:latest
     build: .
     restart: unless-stopped
     ports:
@@ -2237,7 +2256,7 @@ inside the container needs to create namespaces, which AppArmor and seccomp bloc
 
 ### 17.0 Hot-Reload
 
-`src/config-file.ts` watches `~/.clawd/config.json` via `fs.watch`. When the file is saved,
+`src/config/config-file.ts` watches `~/.clawd/config.json` via `fs.watch`. When the file is saved,
 the config cache is automatically invalidated (200ms debounce). Changes to providers, model
 settings, browser auth tokens, and all other browser-side settings apply on the next request
 **without a server restart**.
@@ -2364,9 +2383,9 @@ settings, browser auth tokens, and all other browser-side settings apply on the 
 ├── data/
 │   ├── chat.db          # Chat messages, agents, channels, spaces
 │   ├── kanban.db        # Tasks, plans, phases
+│   ├── memory.db        # Agent session memory, knowledge base, long-term memories
 │   ├── scheduler.db     # Scheduled jobs
 │   └── attachments/     # Uploaded files & generated images
-├── memory.db            # Agent session memory, knowledge base, long-term memories
 └── mcp-oauth-tokens.json # OAuth tokens for external MCP server connections
 ```
 
@@ -2381,5 +2400,128 @@ settings, browser auth tokens, and all other browser-side settings apply on the 
 | `data/chat.db` | All chat state — messages, agents, channels, spaces |
 | `data/scheduler.db` | Scheduled jobs and execution state |
 | `data/attachments/` | File storage for uploads and generated images |
-| `memory.db` | LLM session history, knowledge base, long-term agent memories |
+| `data/memory.db` | LLM session history, knowledge base, long-term agent memories |
 | `mcp-oauth-tokens.json` | Cached OAuth tokens for authenticated MCP server connections |
+
+---
+
+## 19. Codebase Refactor — April 2026
+
+> Last updated: 2026-04-12
+
+This section documents structural changes made during the April 2026 multi-phase refactor.
+
+---
+
+### 19.1 Workspace Feature Removal (Phase 2)
+
+**Removed packages:**
+- `packages/workspace-mcp/` — workspace-scoped MCP server (unused)
+
+**Note:** `packages/clawd-worker/` was renamed to `packages/remote-worker/` — it contains standalone remote worker scripts (TypeScript, Python, Java) that users download to connect remote machines.
+
+**Rationale:** The workspace-mcp package was an architectural experiment that was never deployed. Removing it reduces build complexity and eliminates dead code paths.
+
+**Impact:** No runtime behavior change. The remote worker scripts are standalone and have no imports from the main codebase.
+
+---
+
+### 19.2 MCP Server Restructure (Phase 5)
+
+The MCP endpoint handling was extracted from a monolithic file into `src/server/mcp/`:
+
+```
+src/server/mcp/
+├── protocol.ts        # MCP protocol framing (initialize, capabilities)
+├── tool-defs.ts       # Static tool definitions (schema + metadata)
+├── execute.ts         # Tool execution dispatcher
+├── agent-handler.ts   # Agent-scoped tool handlers
+├── space-handler.ts   # Space-scoped tool handlers
+├── oauth.ts           # OAuth token storage & refresh for MCP connections
+├── shared.ts          # Shared types (ToolCall, ToolResult, McpContext)
+└── tools/             # Individual tool implementations
+```
+
+**Why:** The original `src/server/mcp.ts` grew to 1200+ lines mixing protocol, definitions, and execution. The new structure enables independent testing of tool handlers and makes adding new MCP tools straightforward.
+
+**Entry point:** `src/server/mcp.ts` (now a thin router) imports from `src/server/mcp/`.
+
+---
+
+### 19.3 Source Directory Reorganization (Phase 6)
+
+Three new top-level groupings were introduced under `src/`:
+
+#### `src/claude-code/` — Claude Code & Agent SDK
+
+Consolidates all files related to the Claude Code CLI subprocess and Anthropic Agent SDK:
+
+| File | Purpose |
+|------|---------|
+| `sdk.ts` | Agent SDK client wrapper, session management |
+| `main-worker.ts` | Claude Code process spawn, stdout/stderr handling |
+| `memory.ts` | Memory bridge between Claw'd and Claude Code sessions |
+| `tmux.ts` | tmux session lifecycle (create, attach, kill) |
+| `utils.ts` | Path resolution, permission helpers |
+| `index.ts` | Public exports |
+
+#### `src/embedded/` — Binary Asset Loaders
+
+Consolidates the three embedded asset entry points:
+
+| File | Purpose |
+|------|---------|
+| `ui.ts` | Serves embedded React SPA from compiled bytes |
+| `cli.ts` | Exposes embedded CLI binary for extraction |
+| `extension.ts` | Serves embedded browser extension zip |
+| `index.ts` | Public exports |
+
+**Note:** `src/embedded/ui.ts` is a build artifact (generated by `scripts/embed-ui.ts`) and is not committed to source control.
+
+#### `src/config/` — Configuration
+
+Consolidates runtime config loading:
+
+| File | Purpose |
+|------|---------|
+| `config.ts` | CLI argument parser; merges `--host`/`--port`/`--debug`/`--yolo` flags with `~/.clawd/config.json` settings |
+| `config-file.ts` | Read/write `~/.clawd/config.json`, schema validation |
+| `index.ts` | Public exports (`getConfig`, `watchConfig`) |
+
+---
+
+### 19.4 Error Handling Patterns (Phase 7)
+
+All typed errors are defined in `src/errors.ts` and follow a consistent class hierarchy:
+
+```typescript
+// Base
+class ClawdError extends Error {
+  readonly code: string
+  readonly statusCode: number
+}
+
+// Subtypes
+class NotFoundError extends ClawdError       // 404
+class ValidationError extends ClawdError     // 400
+class AuthError extends ClawdError           // 401/403
+class AgentError extends ClawdError          // 500 (agent loop failures)
+class ToolError extends ClawdError           // 500 (tool execution failures)
+```
+
+**Conventions:**
+- Route handlers catch `ClawdError` and serialize via `{ error: { code, message } }`
+- Agent loop propagates `AgentError` to the worker manager for retry/backoff decisions
+- Tool plugins return `ToolError` on execution failure — never throw raw `Error`
+- Unknown errors are wrapped in `ClawdError` with `code: "INTERNAL_ERROR"` before response
+
+**HTTP mapping:**
+
+| Error class | HTTP status |
+|-------------|-------------|
+| `NotFoundError` | 404 |
+| `ValidationError` | 400 |
+| `AuthError` | 401 or 403 |
+| `AgentError` | 500 |
+| `ToolError` | 500 |
+| Unknown | 500 |

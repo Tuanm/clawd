@@ -46,7 +46,7 @@ Chrome Extension (packages/browser-extension/)
 | **Agent System** | Multi-agent orchestration, reasoning loop | `src/worker-loop.ts`, `src/agent/` |
 | **Database** | SQLite (chat.db, memory.db, kanban.db) | `src/server/database.ts` |
 | **Browser Automation** | Chrome extension bridge + 26 tools | `packages/browser-extension/`, `src/server/browser-bridge.ts` |
-| **Git Worktree** | Isolated worktrees for multi-agent channels, diff/commit UI | `src/api/worktree.ts`, `src/agent/workspace/worktree.ts`, `packages/ui/WorktreeDialog.tsx` |
+| **Git Worktree** | Isolated worktrees for multi-agent channels, diff/commit UI | `src/server/routes/worktree.ts`, `src/agent/workspace/worktree.ts`, `packages/ui/WorktreeDialog.tsx` |
 | **Sub-Agents** | Parallel task delegation (Spaces) | `src/spaces/` |
 | **Scheduler** | Cron/interval/once jobs | `src/scheduler/` |
 | **UI** | React SPA with artifacts, websocket handling | `packages/ui/` |
@@ -59,8 +59,9 @@ Chrome Extension (packages/browser-extension/)
 clawd/
 ├── src/                              # Main application
 │   ├── index.ts                      # Server entry point (HTTP/WS, route handlers in src/server/routes/)
-│   ├── config.ts                     # CLI flag parser
-│   ├── config-file.ts                # ~/.clawd/config.json loader; channel-scoped auth helpers; fs.watch hot-reload (200ms debounce)
+│   ├── config/
+│   │   ├── config.ts                 # CLI flag parser
+│   │   └── config-file.ts            # ~/.clawd/config.json loader; channel-scoped auth helpers; fs.watch hot-reload (200ms debounce)
 │   ├── internal-token.ts             # INTERNAL_SERVICE_TOKEN — ephemeral, generated at startup, never persisted
 │   ├── worker-loop.ts                # Per-agent polling loop (200ms)
 │   ├── worker-manager.ts             # Multi-agent orchestrator + heartbeat monitor
@@ -72,7 +73,7 @@ clawd/
 │   │   ├── http-helpers.ts           # Shared HTTP utilities (json, requireAuth, etc.)
 │   │   ├── validate.ts               # validateBody<T>(schema, body) — Zod validation helper
 │   │   ├── browser-bridge.ts         # Browser extension WS bridge
-│   │   ├── remote-worker.ts          # Remote worker bridge; timing-safe glob token validation
+│   │   ├── mcp/                      # MCP server (protocol, tool defs, execution)
 │   │   └── routes/                   # API route modules (agents.ts, analytics.ts, messages.ts, …)
 │   ├── db/                           # Unified migration system
 │   │   ├── migrations.ts             # runMigrations(db, migrations, strategy) — PRAGMA user_version
@@ -100,11 +101,10 @@ clawd/
 │   │   ├── plugins/                  # All plugins (chat, browser, workspace, tunnel, etc.)
 │   │   ├── session/                  # Session manager, checkpoints, summarizer
 │   │   │   └── manager.test.ts       # Session compaction tests (ordering bug fix: created_at ASC, id ASC)
-│   │   ├── memory/                   # session.ts, knowledge-base.ts, agent-memory.ts
+│   │   ├── memory/                   # memory.ts, knowledge-base.ts, agent-memory.ts
 │   │   ├── workspace/                # Git isolated mode for multi-agent channels
 │   │   │   ├── worktree.ts           # Worktree lifecycle, diff/commit/merge/hunk operations
-│   │   │   ├── index.ts              # Workspace plugin entry
-│   │   │   └── pool.ts               # Worktree pool management
+│   │   │   └── index.ts              # Workspace plugin entry
 │   │   ├── mcp/                      # MCP client connections
 │   │   └── utils/                    # sandbox.ts, debug, context helpers
 │   ├── spaces/                       # Sub-agent system
@@ -115,8 +115,13 @@ clawd/
 │   │   ├── manager.ts                # Tick loop (10s interval)
 │   │   ├── runner.ts                 # Job executor
 │   │   └── parse-schedule.ts         # Natural language parser
-│   ├── analytics/                    # API call tracking (Copilot)
-│   └── api/                          # Agent registration, MCP, articles
+│   ├── claude-code/                  # Claude Code SDK integration
+│   │   ├── sdk.ts                    # Claude Agent SDK wrapper
+│   │   ├── main-worker.ts           # Claude Code process management
+│   │   └── memory.ts                # Memory bridge for Claude Code sessions
+│   └── embedded/                     # Build-generated embedded assets
+│       ├── ui.ts                     # Embedded React UI (base64)
+│       └── extension.ts             # Embedded browser extension (base64)
 ├── packages/
 │   ├── ui/                           # React SPA (Vite)
 │   │   ├── src/
@@ -146,7 +151,7 @@ clawd/
 │   │       ├── offscreen.js          # Persistent WS connection
 │   │       ├── popup.js              # Extension UI
 │   │       └── shield.js             # Anti-detection patches
-│   └── clawd-worker/                 # Remote worker implementations
+│   └── remote-worker/                # Remote worker implementations
 │       ├── typescript/remote-worker.ts # Bun/Node.js client
 │       ├── python/remote_worker.py    # Zero-dependency Python client
 │       └── java/RemoteWorker.java     # Zero-dependency Java client
@@ -447,7 +452,7 @@ Agents delegate work via `spawn_agent(task, agent="code-reviewer")`:
 - **Sub-agent tools** — Limited to `complete_task`, `chat_mark_processed`, `get_environment`, `today` (no chat_send_message)
 
 **Constraints:**
-- Max 5 concurrent spaces per channel
+- Max 9 concurrent spaces per channel
 - Max 20 concurrent spaces globally
 - Circuit breaker: fail after 10 consecutive heartbeats with no progress
 
@@ -820,8 +825,8 @@ Anthropic beta header for cache hits:
 ### Build Pipeline
 
 1. **Vite build** — React SPA → `packages/ui/dist/`
-2. **embed-ui.ts** — Base64 embeds UI into `src/embedded-ui.ts`
-3. **zip-extension.ts** — Packs extension → `src/embedded-extension.ts`
+2. **embed-ui.ts** — Base64 embeds UI into `src/embedded/ui.ts`
+3. **zip-extension.ts** — Packs extension → `src/embedded/extension.ts`
 4. **build-helper.ts** — Cross-platform build utilities (JSZip replaces system zip, handles file operations)
 5. **bun build --compile** — Produces single binary `dist/clawd`
 
@@ -933,8 +938,8 @@ Main configuration file at `~/.clawd/config.json`:
 │   ├── chat.db                 # Chat state
 │   ├── kanban.db               # Tasks/plans
 │   ├── scheduler.db            # Scheduled jobs
-│   └── attachments/            # File uploads
-├── memory.db                   # LLM sessions & memories
+│   ├── attachments/            # File uploads
+│   └── memory.db               # LLM sessions & memories
 └── mcp-oauth-tokens.json       # OAuth token cache
 ```
 
@@ -954,7 +959,7 @@ Main configuration file at `~/.clawd/config.json`:
 
 ### Config Caching
 
-Config cache auto-refreshes on file mtime change (`src/config-file.ts`):
+Config cache auto-refreshes on file mtime change (`src/config/config-file.ts`):
 - No server restart needed for config updates
 - Atomic file I/O for consistency
 - Backward compatibility with legacy config formats
@@ -1215,7 +1220,7 @@ Documented in docs/brainstorm-* files:
 ### Install & Build
 
 ```sh
-git clone https://github.com/Tuanm/clawd.git
+git clone https://github.com/clawd-pilot/clawd.git
 cd clawd
 bun install
 bun run build

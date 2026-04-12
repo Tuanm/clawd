@@ -75,8 +75,8 @@ registerTool(
         success: true,
         output: `Found ${results.length} messages:\n\n${formatted}`,
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -114,8 +114,8 @@ Key Topics: ${summary.keyTopics.join(", ") || "None detected"}
 Summary: ${summary.summary}`;
 
       return { success: true, output };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );

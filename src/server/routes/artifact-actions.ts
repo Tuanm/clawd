@@ -181,8 +181,8 @@ export async function handleArtifactAction(req: ArtifactActionRequest, user: str
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 0, ?)`,
       [actionRowId, message_ts, channel, action_id, valuesStr, valueHash, user, handler, handlerConfig, now],
     );
-  } catch (err: any) {
-    if (err?.message?.includes("UNIQUE")) {
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message.includes("UNIQUE")) {
       // Exact duplicate (same user + same values) — idempotent success
       return { ok: true, action_id, status: "completed" };
     }
@@ -296,10 +296,10 @@ export async function handleArtifactAction(req: ArtifactActionRequest, user: str
         user: "UBOT",
         subtype: "artifact_action",
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       postMessage({
         channel,
-        text: `**Tool \`${toolId}\` error:** ${e.message}`,
+        text: `**Tool \`${toolId}\` error:** ${e instanceof Error ? e.message : String(e)}`,
         user: "UBOT",
         subtype: "artifact_action",
       });

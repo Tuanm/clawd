@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { getEnvVar, loadConfigFile } from "../config-file";
+import { getEnvVar, loadConfigFile } from "../config/config-file";
 
 // ============================================================================
 // Constants
@@ -98,7 +98,7 @@ function saveUsage(data: UsageData): boolean {
     renameSync(USAGE_TMP_FILE, USAGE_FILE);
     return true;
   } catch (err) {
-    console.error("[clawd] Warning: Failed to save usage data:", (err as Error).message);
+    console.error("[clawd] Warning: Failed to save usage data:", err instanceof Error ? err.message : String(err));
     try {
       if (existsSync(USAGE_TMP_FILE)) rmSync(USAGE_TMP_FILE);
     } catch {

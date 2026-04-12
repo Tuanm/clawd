@@ -7,18 +7,6 @@ import {
   handleBrowserWsOpen,
 } from "./browser-bridge";
 import { getAgent, getMessageSeenBy, type Message, type SlackMessage, toSlackMessage } from "./database";
-import {
-  handleRemoteWorkerWsClose,
-  handleRemoteWorkerWsMessage,
-  handleRemoteWorkerWsOpen,
-  type RemoteWorkerWsData,
-} from "./remote-worker";
-import {
-  handleWorkspaceWsClose,
-  handleWorkspaceWsMessage,
-  handleWorkspaceWsOpen,
-  type WorkspaceWsData,
-} from "./routes/workspace-proxy";
 
 /** Chat WebSocket data (regular connections) */
 interface ChatWebSocketData {
@@ -27,7 +15,7 @@ interface ChatWebSocketData {
   channel?: string;
 }
 
-export type WebSocketData = ChatWebSocketData | WorkspaceWsData | BrowserWsData | RemoteWorkerWsData;
+export type WebSocketData = ChatWebSocketData | BrowserWsData;
 
 const clients = new Set<ServerWebSocket<ChatWebSocketData>>();
 // Track multi-channel subscriptions per client (ws.data can only hold simple types)
@@ -39,16 +27,8 @@ function wsDebug(...args: unknown[]) {
 }
 
 export function handleWebSocketOpen(ws: ServerWebSocket<WebSocketData>) {
-  if (ws.data.type === "workspace-novnc") {
-    handleWorkspaceWsOpen(ws as ServerWebSocket<WorkspaceWsData>);
-    return;
-  }
   if (ws.data.type === "browser-extension") {
     handleBrowserWsOpen(ws as ServerWebSocket<BrowserWsData>);
-    return;
-  }
-  if (ws.data.type === "remote-worker") {
-    handleRemoteWorkerWsOpen(ws as ServerWebSocket<RemoteWorkerWsData>);
     return;
   }
   const chatWs = ws as ServerWebSocket<ChatWebSocketData>;
@@ -58,16 +38,8 @@ export function handleWebSocketOpen(ws: ServerWebSocket<WebSocketData>) {
 }
 
 export function handleWebSocketClose(ws: ServerWebSocket<WebSocketData>) {
-  if (ws.data.type === "workspace-novnc") {
-    handleWorkspaceWsClose(ws as ServerWebSocket<WorkspaceWsData>);
-    return;
-  }
   if (ws.data.type === "browser-extension") {
     handleBrowserWsClose(ws as ServerWebSocket<BrowserWsData>);
-    return;
-  }
-  if (ws.data.type === "remote-worker") {
-    handleRemoteWorkerWsClose(ws as ServerWebSocket<RemoteWorkerWsData>);
     return;
   }
   const chatWs = ws as ServerWebSocket<ChatWebSocketData>;
@@ -87,16 +59,8 @@ function isSubscribed(ws: ServerWebSocket<ChatWebSocketData>, channel: string): 
 }
 
 export function handleWebSocketMessage(ws: ServerWebSocket<WebSocketData>, message: string | Buffer) {
-  if (ws.data.type === "workspace-novnc") {
-    handleWorkspaceWsMessage(ws as ServerWebSocket<WorkspaceWsData>, message);
-    return;
-  }
   if (ws.data.type === "browser-extension") {
     handleBrowserWsMessage(ws as ServerWebSocket<BrowserWsData>, message);
-    return;
-  }
-  if (ws.data.type === "remote-worker") {
-    handleRemoteWorkerWsMessage(ws as ServerWebSocket<RemoteWorkerWsData>, message);
     return;
   }
   const chatWs = ws as ServerWebSocket<ChatWebSocketData>;

@@ -5,11 +5,12 @@
  * Database location: DATA_DIR/kanban.db (same directory as chat.db)
  */
 
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { getDataDir } from "../../config-file";
+import { getDataDir } from "../../config/config-file";
+import { createDatabase } from "../../db/factory";
 import { runMigrations } from "../../db/migrations";
 import { kanbanMigrations } from "../../db/migrations/kanban-migrations";
 
@@ -105,112 +106,114 @@ function getKanbanDb(): Database {
   }
 
   const dbPath = join(DATA_DIR, "kanban.db");
-  kanbanDb = new Database(dbPath);
+  const newDb = createDatabase(dbPath, { foreignKeys: true });
 
-  // WAL mode for better concurrency
-  kanbanDb.exec("PRAGMA journal_mode = WAL");
-  kanbanDb.exec("PRAGMA busy_timeout = 30000");
-  kanbanDb.exec("PRAGMA synchronous = NORMAL");
-
-  // Ensure tables exist
-  kanbanDb.exec(`
-    CREATE TABLE IF NOT EXISTS tasks (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      description TEXT,
-      status TEXT DEFAULT 'todo',
-      priority TEXT DEFAULT 'P2',
-      tags TEXT,
-      created_at INTEGER,
-      started_at INTEGER,
-      completed_at INTEGER,
-      due_at INTEGER,
-      agent_id TEXT,
-      claimed_by TEXT,
-      attachments TEXT DEFAULT '[]',
-      comments TEXT DEFAULT '[]'
-    )
-  `);
-
-  // Migration: Add claimed_by column if it doesn't exist
   try {
-    kanbanDb.exec(`ALTER TABLE tasks ADD COLUMN claimed_by TEXT`);
-  } catch {
-    // Column already exists, ignore
+    // Ensure tables exist
+    newDb.exec(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT DEFAULT 'todo',
+        priority TEXT DEFAULT 'P2',
+        tags TEXT,
+        created_at INTEGER,
+        started_at INTEGER,
+        completed_at INTEGER,
+        due_at INTEGER,
+        agent_id TEXT,
+        claimed_by TEXT,
+        attachments TEXT DEFAULT '[]',
+        comments TEXT DEFAULT '[]'
+      )
+    `);
+
+    // Migration: Add claimed_by column if it doesn't exist
+    try {
+      newDb.exec(`ALTER TABLE tasks ADD COLUMN claimed_by TEXT`);
+    } catch {
+      // Column already exists, ignore
+    }
+
+    // Migration: Add channel column if it doesn't exist
+    try {
+      newDb.exec(`ALTER TABLE tasks ADD COLUMN channel TEXT`);
+    } catch {
+      /* Column already exists */
+    }
+    newDb.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_channel ON tasks(channel)`);
+
+    newDb.exec(`
+      CREATE TABLE IF NOT EXISTS plans (
+        id TEXT PRIMARY KEY,
+        channel TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT DEFAULT 'draft',
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        agent_in_charge TEXT
+      )
+    `);
+
+    newDb.exec(`
+      CREATE TABLE IF NOT EXISTS phases (
+        id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        order_index INTEGER NOT NULL,
+        status TEXT DEFAULT 'pending',
+        agent_in_charge TEXT,
+        started_at INTEGER,
+        completed_at INTEGER,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+      )
+    `);
+
+    newDb.exec(`
+      CREATE TABLE IF NOT EXISTS plan_tasks (
+        plan_id TEXT NOT NULL,
+        phase_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        PRIMARY KEY (plan_id, task_id),
+        FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE,
+        FOREIGN KEY (phase_id) REFERENCES phases(id) ON DELETE CASCADE,
+        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create indexes
+    newDb.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id)`);
+    newDb.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`);
+    newDb.exec(`CREATE INDEX IF NOT EXISTS idx_plans_channel ON plans(channel)`);
+    newDb.exec(`CREATE INDEX IF NOT EXISTS idx_phases_plan ON phases(plan_id)`);
+
+    // Todos table (per-agent, per-channel)
+    newDb.exec(`
+      CREATE TABLE IF NOT EXISTS todos (
+        id TEXT PRIMARY KEY,
+        channel TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        order_index INTEGER DEFAULT 0,
+        created_at INTEGER NOT NULL
+      )
+    `);
+    newDb.exec(`CREATE INDEX IF NOT EXISTS idx_todos_agent_channel ON todos(agent_id, channel)`);
+
+    // Run versioned migrations to track future schema changes
+    runMigrations(newDb, kanbanMigrations);
+
+    kanbanDb = newDb;
+  } catch (err) {
+    newDb.close();
+    throw err;
   }
-
-  // Migration: Add channel column if it doesn't exist
-  try {
-    kanbanDb.exec(`ALTER TABLE tasks ADD COLUMN channel TEXT`);
-  } catch {
-    /* Column already exists */
-  }
-  kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_channel ON tasks(channel)`);
-
-  kanbanDb.exec(`
-    CREATE TABLE IF NOT EXISTS plans (
-      id TEXT PRIMARY KEY,
-      channel TEXT NOT NULL,
-      title TEXT NOT NULL,
-      description TEXT,
-      status TEXT DEFAULT 'draft',
-      created_by TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      agent_in_charge TEXT
-    )
-  `);
-
-  kanbanDb.exec(`
-    CREATE TABLE IF NOT EXISTS phases (
-      id TEXT PRIMARY KEY,
-      plan_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      description TEXT,
-      order_index INTEGER NOT NULL,
-      status TEXT DEFAULT 'pending',
-      agent_in_charge TEXT,
-      started_at INTEGER,
-      completed_at INTEGER,
-      created_at INTEGER NOT NULL,
-      FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
-    )
-  `);
-
-  kanbanDb.exec(`
-    CREATE TABLE IF NOT EXISTS plan_tasks (
-      plan_id TEXT NOT NULL,
-      phase_id TEXT NOT NULL,
-      task_id TEXT NOT NULL,
-      PRIMARY KEY (plan_id, task_id),
-      FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE,
-      FOREIGN KEY (phase_id) REFERENCES phases(id) ON DELETE CASCADE,
-      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-    )
-  `);
-
-  // Create indexes
-  kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id)`);
-  kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`);
-  kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_plans_channel ON plans(channel)`);
-  kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_phases_plan ON phases(plan_id)`);
-
-  // Todos table (per-agent, per-channel)
-  kanbanDb.exec(`
-    CREATE TABLE IF NOT EXISTS todos (
-      id TEXT PRIMARY KEY,
-      channel TEXT NOT NULL,
-      agent_id TEXT NOT NULL,
-      content TEXT NOT NULL,
-      status TEXT DEFAULT 'pending',
-      order_index INTEGER DEFAULT 0,
-      created_at INTEGER NOT NULL
-    )
-  `);
-  kanbanDb.exec(`CREATE INDEX IF NOT EXISTS idx_todos_agent_channel ON todos(agent_id, channel)`);
-
-  // Run versioned migrations to track future schema changes
-  runMigrations(kanbanDb, kanbanMigrations);
 
   return kanbanDb;
 }
@@ -264,7 +267,7 @@ export function listTasks(
 
 export function getTask(taskId: string): Task | null {
   const db = getKanbanDb();
-  const row = db.query("SELECT * FROM tasks WHERE id = ? OR id LIKE ?").get(taskId, `%${taskId}%`);
+  const row = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId);
   return row ? parseTask(row) : null;
 }
 
@@ -478,7 +481,7 @@ export function listPlans(channel?: string): Plan[] {
 export function getPlan(planId: string): PlanWithPhases | null {
   const db = getKanbanDb();
 
-  const plan = db.query("SELECT * FROM plans WHERE id = ? OR id LIKE ?").get(planId, `%${planId}%`) as Plan | null;
+  const plan = db.query("SELECT * FROM plans WHERE id = ?").get(planId) as Plan | null;
   if (!plan) return null;
 
   const phases = db.query("SELECT * FROM phases WHERE plan_id = ? ORDER BY order_index").all(plan.id) as Phase[];
@@ -544,7 +547,7 @@ export function createPlan(data: {
 
 export function updatePlan(planId: string, updates: Partial<Plan>): Plan | null {
   const db = getKanbanDb();
-  const plan = db.query("SELECT * FROM plans WHERE id = ? OR id LIKE ?").get(planId, `%${planId}%`) as Plan | null;
+  const plan = db.query("SELECT * FROM plans WHERE id = ?").get(planId) as Plan | null;
   if (!plan) return null;
 
   const allowedFields = ["title", "description", "status", "agent_in_charge"];
@@ -566,7 +569,7 @@ export function updatePlan(planId: string, updates: Partial<Plan>): Plan | null 
 
 export function deletePlan(planId: string): boolean {
   const db = getKanbanDb();
-  const plan = db.query("SELECT * FROM plans WHERE id = ? OR id LIKE ?").get(planId, `%${planId}%`) as Plan | null;
+  const plan = db.query("SELECT * FROM plans WHERE id = ?").get(planId) as Plan | null;
   if (!plan) return false;
 
   db.query("DELETE FROM plans WHERE id = ?").run(plan.id);
@@ -586,34 +589,35 @@ export function addPhase(
   },
 ): Phase | null {
   const db = getKanbanDb();
-  const plan = db.query("SELECT * FROM plans WHERE id = ? OR id LIKE ?").get(planId, `%${planId}%`) as Plan | null;
+  const plan = db.query("SELECT * FROM plans WHERE id = ?").get(planId) as Plan | null;
   if (!plan) return null;
-
-  // Get next order index
-  const maxOrder = db.query("SELECT MAX(order_index) as max FROM phases WHERE plan_id = ?").get(plan.id) as {
-    max: number | null;
-  };
-  const orderIndex = (maxOrder?.max ?? -1) + 1;
 
   const id = `phase_${randomUUID().slice(0, 8)}`;
   const now = Date.now();
 
-  db.query(
-    `
-    INSERT INTO phases (id, plan_id, name, description, order_index, status, agent_in_charge, created_at)
-    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
-  `,
-  ).run(id, plan.id, data.name, data.description || null, orderIndex, data.agent_in_charge || null, now);
+  db.transaction(() => {
+    const maxOrder = db.query("SELECT MAX(order_index) as max FROM phases WHERE plan_id = ?").get(plan.id) as {
+      max: number | null;
+    };
+    const orderIndex = (maxOrder?.max ?? -1) + 1;
 
-  // Update plan timestamp
-  db.query("UPDATE plans SET updated_at = ? WHERE id = ?").run(now, plan.id);
+    db.query(
+      `
+      INSERT INTO phases (id, plan_id, name, description, order_index, status, agent_in_charge, created_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+    `,
+    ).run(id, plan.id, data.name, data.description || null, orderIndex, data.agent_in_charge || null, now);
+
+    // Update plan timestamp
+    db.query("UPDATE plans SET updated_at = ? WHERE id = ?").run(now, plan.id);
+  })();
 
   return db.query("SELECT * FROM phases WHERE id = ?").get(id) as Phase;
 }
 
 export function updatePhase(phaseId: string, updates: Partial<Phase>): Phase | null {
   const db = getKanbanDb();
-  const phase = db.query("SELECT * FROM phases WHERE id = ? OR id LIKE ?").get(phaseId, `%${phaseId}%`) as Phase | null;
+  const phase = db.query("SELECT * FROM phases WHERE id = ?").get(phaseId) as Phase | null;
   if (!phase) return null;
 
   const allowedFields = ["name", "description", "status", "agent_in_charge", "order_index"];
@@ -650,7 +654,7 @@ export function updatePhase(phaseId: string, updates: Partial<Phase>): Phase | n
 
 export function deletePhase(phaseId: string): boolean {
   const db = getKanbanDb();
-  const phase = db.query("SELECT * FROM phases WHERE id = ? OR id LIKE ?").get(phaseId, `%${phaseId}%`) as Phase | null;
+  const phase = db.query("SELECT * FROM phases WHERE id = ?").get(phaseId) as Phase | null;
   if (!phase) return false;
 
   db.query("DELETE FROM phases WHERE id = ?").run(phase.id);
@@ -660,7 +664,7 @@ export function deletePhase(phaseId: string): boolean {
 
 export function getPhaseWithTasks(phaseId: string): { phase: Phase; tasks: Task[] } | null {
   const db = getKanbanDb();
-  const phase = db.query("SELECT * FROM phases WHERE id = ? OR id LIKE ?").get(phaseId, `%${phaseId}%`) as Phase | null;
+  const phase = db.query("SELECT * FROM phases WHERE id = ?").get(phaseId) as Phase | null;
   if (!phase) return null;
 
   const tasks = db
@@ -686,13 +690,13 @@ export function linkTaskToPhase(planId: string, phaseId: string, taskId: string)
   const db = getKanbanDb();
 
   // Verify all exist
-  const plan = db.query("SELECT id FROM plans WHERE id = ? OR id LIKE ?").get(planId, `%${planId}%`) as {
+  const plan = db.query("SELECT id FROM plans WHERE id = ?").get(planId) as {
     id: string;
   } | null;
-  const phase = db.query("SELECT id FROM phases WHERE id = ? OR id LIKE ?").get(phaseId, `%${phaseId}%`) as {
+  const phase = db.query("SELECT id FROM phases WHERE id = ?").get(phaseId) as {
     id: string;
   } | null;
-  const task = db.query("SELECT id FROM tasks WHERE id = ? OR id LIKE ?").get(taskId, `%${taskId}%`) as {
+  const task = db.query("SELECT id FROM tasks WHERE id = ?").get(taskId) as {
     id: string;
   } | null;
 
@@ -714,10 +718,10 @@ export function linkTaskToPhase(planId: string, phaseId: string, taskId: string)
 export function unlinkTaskFromPlan(planId: string, taskId: string): boolean {
   const db = getKanbanDb();
 
-  const plan = db.query("SELECT id FROM plans WHERE id = ? OR id LIKE ?").get(planId, `%${planId}%`) as {
+  const plan = db.query("SELECT id FROM plans WHERE id = ?").get(planId) as {
     id: string;
   } | null;
-  const task = db.query("SELECT id FROM tasks WHERE id = ? OR id LIKE ?").get(taskId, `%${taskId}%`) as {
+  const task = db.query("SELECT id FROM tasks WHERE id = ?").get(taskId) as {
     id: string;
   } | null;
 
@@ -818,7 +822,7 @@ export function listChannelTodos(channel: string): Array<{ agent_id: string; ite
 export function getTasksForPlan(planId: string): { phase: Phase; tasks: Task[] }[] {
   const db = getKanbanDb();
 
-  const plan = db.query("SELECT id FROM plans WHERE id = ? OR id LIKE ?").get(planId, `%${planId}%`) as {
+  const plan = db.query("SELECT id FROM plans WHERE id = ?").get(planId) as {
     id: string;
   } | null;
   if (!plan) return [];

@@ -14,8 +14,8 @@
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
-import type { ToolResult } from "../tools/tools.js";
+import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
+import type { ToolResult } from "../tools/definitions";
 
 export class BrowserPlugin implements ToolPlugin {
   readonly name = "browser";
@@ -811,8 +811,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -857,8 +857,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -893,8 +893,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -923,8 +923,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -943,8 +943,8 @@ export class BrowserPlugin implements ToolPlugin {
         output = output.slice(0, 50000) + "\n\n... (truncated at 50KB)";
       }
       return { success: true, output };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -963,8 +963,8 @@ export class BrowserPlugin implements ToolPlugin {
         success: true,
         output: JSON.stringify(result, null, 2),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1045,8 +1045,8 @@ export class BrowserPlugin implements ToolPlugin {
         output = output.slice(0, 50_000) + "\n\n... (truncated at 50KB)";
       }
       return { success: true, output };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1070,8 +1070,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1093,8 +1093,8 @@ export class BrowserPlugin implements ToolPlugin {
         success: true,
         output: JSON.stringify({ hovered: true, element: result.element, tab_id: result.tabId }, null, 2),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1114,8 +1114,8 @@ export class BrowserPlugin implements ToolPlugin {
         success: true,
         output: JSON.stringify({ moved: true, position: result.position, tab_id: result.tabId }, null, 2),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1142,8 +1142,8 @@ export class BrowserPlugin implements ToolPlugin {
         success: true,
         output: JSON.stringify({ dragged: true, from: result.from, to: result.to, tab_id: result.tabId }, null, 2),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1164,8 +1164,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1190,8 +1190,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1219,8 +1219,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1245,8 +1245,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1265,8 +1265,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1296,8 +1296,8 @@ export class BrowserPlugin implements ToolPlugin {
           2,
         ),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1306,8 +1306,8 @@ export class BrowserPlugin implements ToolPlugin {
     try {
       const result = await sendBrowserCommand("frames", { tabId: args.tab_id });
       return { success: true, output: JSON.stringify(result, null, 2) };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1329,8 +1329,8 @@ export class BrowserPlugin implements ToolPlugin {
         tabId: args.tab_id,
       });
       return { success: true, output: JSON.stringify(result, null, 2) };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1348,8 +1348,8 @@ export class BrowserPlugin implements ToolPlugin {
         tabId: args.tab_id,
       });
       return { success: true, output: JSON.stringify(result, null, 2) };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1363,8 +1363,8 @@ export class BrowserPlugin implements ToolPlugin {
 
       // Extension now auto-uploads to chat server for wait/latest — result has file_id directly
       return { success: true, output: JSON.stringify(result, null, 2) };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1378,8 +1378,8 @@ export class BrowserPlugin implements ToolPlugin {
         tabId: args.tab_id,
       });
       return { success: true, output: JSON.stringify(result, null, 2) };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1396,8 +1396,8 @@ export class BrowserPlugin implements ToolPlugin {
         tabId: args.tab_id,
       });
       return { success: true, output: JSON.stringify(result, null, 2) };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1424,8 +1424,8 @@ export class BrowserPlugin implements ToolPlugin {
         tabId: args.tab_id,
       });
       return { success: true, output: JSON.stringify(result, null, 2) };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1446,8 +1446,8 @@ export class BrowserPlugin implements ToolPlugin {
         tabId: args.tab_id,
       });
       return { success: true, output: JSON.stringify(result, null, 2) };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 

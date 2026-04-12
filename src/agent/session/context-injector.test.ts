@@ -18,8 +18,8 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Message } from "../api/client";
-import { SessionManager } from "./manager";
 import { buildContextPreamble } from "./context-injector";
+import { SessionManager } from "./manager";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 

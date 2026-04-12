@@ -16,7 +16,7 @@ import JSZip from "jszip";
 
 const EXT_DIR = join(import.meta.dir, "..", "packages", "browser-extension");
 const ZIP_OUTPUT = join(import.meta.dir, "..", "dist", "browser-extension.zip");
-const TS_OUTPUT = join(import.meta.dir, "..", "src", "embedded-extension.ts");
+const TS_OUTPUT = join(import.meta.dir, "..", "src", "embedded", "extension.ts");
 
 const EXCLUDE = new Set(["README.md", ".DS_Store"]);
 const EXCLUDE_DIRS = new Set([".git", "node_modules"]);

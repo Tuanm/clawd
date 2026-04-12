@@ -3,7 +3,7 @@
  */
 
 import { resolveProviderBaseType } from "../agent/api/provider-config";
-import type { AppConfig } from "../config";
+import type { AppConfig } from "../config/config";
 import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots } from "../server/mcp";
 import {
   ClaudeCodeSpaceWorker,
@@ -12,6 +12,7 @@ import {
 } from "../spaces/claude-code-worker";
 import type { SpaceManager } from "../spaces/manager";
 import type { SpaceWorkerManager } from "../spaces/worker";
+import { postToChannel } from "../utils/api-client";
 import { timedFetch } from "../utils/timed-fetch";
 import type { ScheduledJob } from "./db";
 import type { SchedulerManager } from "./manager";
@@ -69,8 +70,6 @@ export function initRunner(config: RunnerConfig): void {
     });
 
     // 2. Post preview card to main channel
-    const cardCtrl = new AbortController();
-    const cardTimer = setTimeout(() => cardCtrl.abort(), 10000);
     const cardRes = await timedFetch(`${appConfig.chatApiUrl}/api/chat.postMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -90,7 +89,7 @@ export function initRunner(config: RunnerConfig): void {
           channel: space.channel,
         }),
       }),
-    }).finally(() => clearTimeout(cardTimer));
+    });
     if (cardRes.ok) {
       const cardData = (await cardRes.json()) as any;
       if (cardData.ts) spaceManager.updateCardTs(space.id, cardData.ts);
@@ -132,7 +131,9 @@ export function initRunner(config: RunnerConfig): void {
       spaceCompleteCallbacks.set(space.id, (result: string) => {
         const won = spaceManager.completeSpace(space.id, result);
         if (won) {
-          postToChannel(appConfig.chatApiUrl, job.channel, result, agentConfig.agentId).catch(() => {});
+          postToChannel(appConfig.chatApiUrl, job.channel, result, agentConfig.agentId).catch((err) => {
+            console.error("[runner] postToChannel (complete) failed:", err);
+          });
           wrappedResolve(result);
           ccWorker.stop();
         }
@@ -159,10 +160,10 @@ export function initRunner(config: RunnerConfig): void {
               reject(new Error("Claude Code exited without calling complete_task"));
             }
           })
-          .catch((err) => {
+          .catch((err: unknown) => {
             if (!ccSettled) {
               ccSettled = true;
-              spaceManager.failSpace(space.id, (err as Error).message);
+              spaceManager.failSpace(space.id, err instanceof Error ? err.message : String(err));
               reject(err);
             }
           })
@@ -190,7 +191,9 @@ export function initRunner(config: RunnerConfig): void {
       const status = isTimeout ? "timed_out" : "failed";
       const won = isTimeout ? spaceManager.timeoutSpace(space.id) : spaceManager.failSpace(space.id, String(reason));
       if (won) {
-        postToChannel(appConfig.chatApiUrl, job.channel, `Space ${status}: ${sanitizedTitle}`, "Cron").catch(() => {});
+        postToChannel(appConfig.chatApiUrl, job.channel, `Space ${status}: ${sanitizedTitle}`, "Cron").catch((err) => {
+          console.error("[runner] postToChannel (abort) failed:", err);
+        });
       }
       spaceWorkerManager.stopSpaceWorker(space.id);
     };
@@ -204,9 +207,11 @@ export function initRunner(config: RunnerConfig): void {
     } catch (err) {
       if (!settled) {
         settled = true;
-        const won = spaceManager.failSpace(space.id, (err as Error).message);
+        const won = spaceManager.failSpace(space.id, err instanceof Error ? err.message : String(err));
         if (won) {
-          postToChannel(appConfig.chatApiUrl, job.channel, `Space failed: ${sanitizedTitle}`, "Cron").catch(() => {});
+          postToChannel(appConfig.chatApiUrl, job.channel, `Space failed: ${sanitizedTitle}`, "Cron").catch((e) => {
+            console.error("[runner] postToChannel (fail) failed:", e);
+          });
         }
         spaceWorkerManager.stopSpaceWorker(space.id);
       }
@@ -239,7 +244,7 @@ export function initRunner(config: RunnerConfig): void {
       try {
         if (controller.signal.aborted) throw new Error("Aborted before execution");
         result = await executeToolFn(toolName, toolArgs, job.channel);
-      } catch (err: any) {
+      } catch (err: unknown) {
         // Update card to failed
         if (cardTs) {
           await updateToolResultCard(appConfig.chatApiUrl, job.channel, cardTs, {
@@ -247,7 +252,7 @@ export function initRunner(config: RunnerConfig): void {
             description,
             status: "failed",
             args: toolArgs,
-            error: err.message || String(err),
+            error: err instanceof Error ? err.message : String(err),
             job_id: job.id,
           });
         }
@@ -274,26 +279,6 @@ export function initRunner(config: RunnerConfig): void {
   }
 }
 
-async function postToChannel(apiUrl: string, channel: string, text: string, agentId: string): Promise<void> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 10000);
-  const res = await fetch(`${apiUrl}/api/chat.postMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      channel,
-      text,
-      user: "UBOT",
-      agent_id: agentId,
-    }),
-    signal: ctrl.signal,
-  }).finally(() => clearTimeout(timer));
-
-  if (!res.ok) {
-    throw new Error(`Failed to post message: ${res.status}`);
-  }
-}
-
 interface ToolResultCard {
   tool_name: string;
   description: string;
@@ -305,10 +290,8 @@ interface ToolResultCard {
 }
 
 async function postToolResultCard(apiUrl: string, channel: string, card: ToolResultCard): Promise<string | null> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
-    const res = await fetch(`${apiUrl}/api/chat.postMessage`, {
+    const res = await timedFetch(`${apiUrl}/api/chat.postMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -319,8 +302,7 @@ async function postToolResultCard(apiUrl: string, channel: string, card: ToolRes
         subtype: "tool_result",
         tool_result_json: JSON.stringify(card),
       }),
-      signal: ctrl.signal,
-    }).finally(() => clearTimeout(timer));
+    });
     if (res.ok) {
       const data = (await res.json()) as any;
       return data.ts || null;
@@ -332,10 +314,8 @@ async function postToolResultCard(apiUrl: string, channel: string, card: ToolRes
 }
 
 async function updateToolResultCard(apiUrl: string, channel: string, ts: string, card: ToolResultCard): Promise<void> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
-    await fetch(`${apiUrl}/api/chat.update`, {
+    await timedFetch(`${apiUrl}/api/chat.update`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -344,8 +324,7 @@ async function updateToolResultCard(apiUrl: string, channel: string, ts: string,
         text: "",
         tool_result_json: JSON.stringify(card),
       }),
-      signal: ctrl.signal,
-    }).finally(() => clearTimeout(timer));
+    });
   } catch {
     // Best-effort
   }

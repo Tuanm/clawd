@@ -4,10 +4,10 @@
  * edge cases, non-TS files, nested comments, performance
  */
 
-import { describe, expect, test, beforeEach } from "bun:test";
-import { ContextCompressor, getContextCompressor, clearContextCompressor } from "./context-compressor";
-import { mkdirSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ContextCompressor, clearContextCompressor, getContextCompressor } from "./context-compressor";
 
 // ── Test Fixtures ───────────────────────────────────────────────────
 
@@ -811,7 +811,7 @@ describe("performance with large files", () => {
     const compressor = new ContextCompressor({ maxLinesForCompression: 10000 });
     // Use fewer lines + blank lines to ensure compression actually happens
     // Blank lines get collapsed, reducing total content length
-    let lines: string[] = [];
+    const lines: string[] = [];
     for (let i = 0; i < 50; i++) {
       lines.push(`const line${i} = ${i}; /* block comment ${i} */ // line comment ${i}`);
       lines.push(""); // blank line - will be collapsed

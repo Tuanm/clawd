@@ -138,8 +138,8 @@
 
 **Files:**
 - `src/agent/workspace/worktree.ts` — Lifecycle, diff parsing, hunk operations
-- `src/api/worktree.ts` — 18 REST endpoints
-- `src/config-file.ts` — `worktree` bool/string[] and `author` config
+- `src/server/routes/worktree.ts` — 18 REST endpoints
+- `src/config/config-file.ts` — `worktree` bool/string[] and `author` config
 
 ### 3. Browser Automation (26 Tools)
 
@@ -213,7 +213,7 @@
 - **Full reset**: If still over critical, generate LLM summary (4K tokens) + clear history
 
 **Files:**
-- `src/agent/memory/` (session.ts, knowledge-base.ts, agent-memory.ts)
+- `src/agent/memory/` (memory.ts, knowledge-base.ts, agent-memory.ts)
 - `src/agent/session/summarizer.ts`
 
 ### 6. Sub-Agent System (Spaces)
@@ -226,7 +226,7 @@
 - Auto-cleanup after completion or timeout (default 300s, configurable to 600s)
 
 **Constraints:**
-- Max 5 concurrent spaces per channel
+- Max 9 concurrent spaces per channel
 - Max 20 concurrent spaces globally
 - Auto-fail after 10 consecutive heartbeats with no progress
 
@@ -311,7 +311,7 @@
   - Non-git projects skip git worktree isolation (but Git dialog still works for direct repos)
   - Author handling: git local config preferred, `config.author` as Co-Authored-By or main author
   - Sandbox mounts original `.git/` read-only; worktree path is projectRoot
-- **Files Involved**: `src/agent/workspace/worktree.ts`, `src/api/worktree.ts`, `src/config-file.ts`, UI components
+- **Files Involved**: `src/agent/workspace/worktree.ts`, `src/server/routes/worktree.ts`, `src/config/config-file.ts`, UI components
 
 #### FR-3: Browser Automation
 - **Requirement**: Agents can control Chrome browser remotely
@@ -354,7 +354,7 @@
   - `complete_task(result)` returns work to parent
   - Auto-cleanup after timeout or completion
   - `list_agents(type="running")` shows spawned sub-agents
-  - Max 5 concurrent spaces per channel, 20 globally
+  - Max 9 concurrent spaces per channel, 20 globally
   - Auto-fail circuit breaker (10 consecutive heartbeats)
 - **Files Involved**: `src/spaces/`
 
@@ -419,7 +419,7 @@
   - `.clawd/` directory blocked in sandbox
   - Original `.git/` mounted read-only
   - Artifact sanitization (DOMPurify + rehype-sanitize)
-- **Files Involved**: `src/agent/utils/sandbox.ts`, `src/api/worktree.ts`
+- **Files Involved**: `src/agent/utils/sandbox.ts`, `src/server/routes/worktree.ts`
 
 #### NFR-5: Scalability
 - **Requirement**: Support large codebases and long conversations
@@ -605,7 +605,7 @@
 
 ## Support & Community
 
-- **Repository**: https://github.com/Tuanm/clawd
+- **Repository**: https://github.com/clawd-pilot/clawd
 - **Documentation**: `docs/` directory
 - **Issues**: GitHub Issues for bugs and feature requests
 - **Contributing**: PRs welcome; follow `docs/code-standards.md`

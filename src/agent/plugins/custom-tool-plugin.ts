@@ -13,7 +13,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { extname, join } from "path";
 import type { ToolContext, ToolParameter, ToolPlugin, ToolRegistration } from "../tools/plugin";
-import type { ToolResult } from "../tools/tools";
+import type { ToolResult } from "../tools/definitions";
 import { getContextProjectRoot } from "../utils/agent-context";
 import { runInSandbox } from "../utils/sandbox";
 

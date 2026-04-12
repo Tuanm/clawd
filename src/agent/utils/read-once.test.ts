@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ReadOnceCache, clearReadOnceCache, getReadOnceCache } from "./read-once";
+import { clearReadOnceCache, getReadOnceCache, ReadOnceCache } from "./read-once";
 
 // Use a temp directory for file system tests
 const TEST_DIR = join("/tmp", "read-once-test-" + Date.now());

@@ -234,7 +234,13 @@ class KeyPool {
     if (!wasInitialized) {
       this.restore();
       // Periodic persist
-      setInterval(() => this.flushToDisk().catch(() => {}), 60_000).unref();
+      setInterval(
+        () =>
+          this.flushToDisk().catch((err) => {
+            console.error("[key-pool] flushToDisk failed:", err);
+          }),
+        60_000,
+      ).unref();
       // Daily budget reset check (runs every minute, resets on 1st of month UTC)
       setInterval(() => this.checkCycleReset(), 60_000).unref();
       // Quota sync from GitHub API
@@ -562,7 +568,9 @@ class KeyPool {
   async syncAllQuotas(): Promise<void> {
     for (const key of this.keys) {
       if (key.permanent) continue;
-      await this.syncKeyQuota(key).catch(() => {}); // best-effort
+      await this.syncKeyQuota(key).catch((err) => {
+        console.error("[key-pool] syncKeyQuota failed:", err);
+      }); // best-effort
     }
   }
 
@@ -621,7 +629,9 @@ class KeyPool {
     if (this.persistTimer) clearTimeout(this.persistTimer);
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      this.flushToDisk().catch(() => {});
+      this.flushToDisk().catch((err) => {
+        console.error("[key-pool] flushToDisk (debounce) failed:", err);
+      });
     }, 500); // debounce 500ms
     // .unref() so this timer doesn't delay clean process exit
     (this.persistTimer as NodeJS.Timeout).unref?.();

@@ -2,14 +2,19 @@
  * Tests for AgentMemoryStore — wiki-related paths.
  *
  * Covers: mergeMemories, delete, save (dedup UPDATE path), pin, unpin,
- *         getAllForCompilation, and getMemoryDb.
+ *         getAllForCompilation, getMemoryDb, setupConcurrency, getUpdatedSince.
  *
  * Uses ":memory:" SQLite for zero-filesystem, zero-side-effect isolation.
+ *
+ * Regression tests:
+ *   [BUG-C] mergeMemories() atomicity: wrapped in db.transaction so that if the INSERT
+ *           fails after the DELETE, originals are NOT lost (transaction rolled back).
+ *           cleanupWikiRefsForMemories() is also called inside the same transaction.
  */
 
+import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AgentMemoryStore } from "./agent-memory";
-import type Database from "bun:sqlite";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -219,6 +224,30 @@ describe("unpin()", () => {
   });
 });
 
+// ── setupConcurrency ──────────────────────────────────────────────────────────
+
+describe("setupConcurrency", () => {
+  test("WAL journal mode is requested (may return 'memory' for :memory: DBs)", () => {
+    const row = db.query("PRAGMA journal_mode").get() as any;
+    expect(["wal", "memory"]).toContain(row.journal_mode);
+  });
+
+  test("busy_timeout is set to 30 000 ms", () => {
+    const row = db.query("PRAGMA busy_timeout").get() as any;
+    expect(row.timeout).toBe(30000);
+  });
+
+  test("foreign_keys pragma IS enabled — ON DELETE CASCADE fires", () => {
+    const row = db.query("PRAGMA foreign_keys").get() as any;
+    expect(row.foreign_keys).toBe(1);
+  });
+
+  test("agent_wiki table exists after ensureInit (migration v4 applied)", () => {
+    const row = db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_wiki'").get();
+    expect(row).not.toBeNull();
+  });
+});
+
 // ── mergeMemories ─────────────────────────────────────────────────────────────
 
 describe("mergeMemories()", () => {
@@ -290,5 +319,89 @@ describe("mergeMemories()", () => {
 
     // Wiki article should be marked dirty
     expect(getLastCompiledAt(db, wikiId)).toBe(0);
+  });
+
+  test("[BUG-C] regression: cleanupWikiRefsForMemories runs inside transaction — refs removed only if merge succeeds", () => {
+    // Verifies that cleanupWikiRefsForMemories is called within the same transaction as the DELETE+INSERT.
+    // If INSERT fails (FTS table dropped), both DELETE and cleanup must be rolled back.
+    const memId1 = insertRawMemory(db, AGENT, CHAN, "TypeScript language static types compile");
+    const memId2 = insertRawMemory(db, AGENT, CHAN, "TypeScript interfaces generics type safety");
+
+    const wikiId = insertWikiArticle(db, AGENT, CHAN, "TypeScript Guide");
+    linkRef(db, wikiId, memId1);
+    linkRef(db, wikiId, memId2);
+
+    // Drop FTS table to cause INSERT trigger to fail, which rolls back the entire transaction
+    db.exec("DROP TABLE agent_memories_fts");
+
+    const result = store.mergeMemories(
+      AGENT,
+      [memId1, memId2],
+      "TypeScript provides static types for JavaScript development",
+      "fact",
+    );
+
+    // Merge failed — should return null
+    expect(result.id).toBeNull();
+
+    // Originals must still exist (DELETE rolled back)
+    const m1 = db.query("SELECT id FROM agent_memories WHERE id = ?").get(memId1) as any;
+    const m2 = db.query("SELECT id FROM agent_memories WHERE id = ?").get(memId2) as any;
+    expect(m1).not.toBeNull();
+    expect(m2).not.toBeNull();
+
+    // Refs must still exist (cleanupWikiRefsForMemories rolled back with the transaction)
+    const refs = db
+      .query("SELECT COUNT(*) as c FROM wiki_memory_refs WHERE memory_id IN (?, ?)")
+      .get(memId1, memId2) as any;
+    expect(refs.c).toBe(2);
+  });
+});
+
+// ── getUpdatedSince() ─────────────────────────────────────────────────────────
+
+describe("getUpdatedSince()", () => {
+  test("returns memories updated after the given timestamp", () => {
+    const past = Math.floor(Date.now() / 1000) - 3600;
+    store.save({ agentId: AGENT, channel: CHAN, content: "Recent memory content here for testing" });
+    const results = store.getUpdatedSince(AGENT, CHAN, past);
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  test("excludes memories updated before the threshold", () => {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    store.save({ agentId: AGENT, channel: CHAN, content: "Old memory content for testing purposes" });
+    const results = store.getUpdatedSince(AGENT, CHAN, future);
+    expect(results).toHaveLength(0);
+  });
+
+  test("excludes pinned memories (priority >= 80)", () => {
+    const { id } = store.save({ agentId: AGENT, channel: CHAN, content: "Pinned memory updated since test" });
+    store.pin(id!, AGENT);
+    const past = Math.floor(Date.now() / 1000) - 3600;
+    const results = store.getUpdatedSince(AGENT, CHAN, past);
+    const pinned = results.filter((m) => m.priority >= 80);
+    expect(pinned).toHaveLength(0);
+  });
+
+  test("includes channel IS NULL (global) memories", () => {
+    const past = Math.floor(Date.now() / 1000) - 3600;
+    store.save({ agentId: AGENT, channel: null, content: "Global memory updated since test content" });
+    store.save({ agentId: AGENT, channel: CHAN, content: "Channel memory updated since test" });
+    const results = store.getUpdatedSince(AGENT, CHAN, past);
+    const globalMems = results.filter((m) => m.channel === null);
+    expect(globalMems).toHaveLength(1);
+    const channelMems = results.filter((m) => m.channel === CHAN);
+    expect(channelMems).toHaveLength(1);
+  });
+
+  test("returns memories in descending updated_at order", () => {
+    const past = Math.floor(Date.now() / 1000) - 3600;
+    store.save({ agentId: AGENT, channel: CHAN, content: "Ordering memory one content here" });
+    store.save({ agentId: AGENT, channel: CHAN, content: "Ordering memory two content here" });
+    const results = store.getUpdatedSince(AGENT, CHAN, past);
+    if (results.length >= 2) {
+      expect(results[0].updatedAt).toBeGreaterThanOrEqual(results[1].updatedAt);
+    }
   });
 });

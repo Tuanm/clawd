@@ -15,7 +15,7 @@ import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 
 const UI_DIST = join(import.meta.dir, "..", "packages", "ui", "dist");
-const OUTPUT = join(import.meta.dir, "..", "src", "embedded-ui.ts");
+const OUTPUT = join(import.meta.dir, "..", "src", "embedded", "ui.ts");
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",

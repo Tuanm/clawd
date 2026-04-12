@@ -93,7 +93,14 @@ export class SpaceWorkerManager {
         agentId: agentConfig.agentId,
         model: agentConfig.model,
         provider: agentConfig.provider,
-        projectRoot: agentConfig.project || this.config.projectRoot,
+        projectRoot:
+          agentConfig.project ||
+          this.config.projectRoot ||
+          (() => {
+            throw new Error(
+              `[WorkerLoop] projectRoot is required but not found for agent ${agentConfig.agentId}. Ensure channel_agents.project is set.`,
+            );
+          })(),
         chatApiUrl: this.config.chatApiUrl,
         debug: this.config.debug,
         yolo: this.config.yolo,

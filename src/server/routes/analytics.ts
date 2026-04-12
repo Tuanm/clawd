@@ -14,7 +14,7 @@ import {
   queryModelStats,
   queryRecentStats,
   querySummary,
-} from "../../analytics";
+} from "../../shared/analytics";
 import { json, numParam } from "../http-helpers";
 
 export function handleAnalyticsRoutes(req: Request, url: URL, path: string): Response | null {

@@ -60,7 +60,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/Tuanm/clawd.git
+git clone https://github.com/clawd-pilot/clawd.git
 cd clawd
 
 # Install dependencies and build
@@ -347,14 +347,14 @@ Use `grep` to find common issues:
 
 **Skill Directories:**
 
-Skills are loaded from 4 directories. Higher priority (lower number) overrides lower priority:
+Skills are loaded from 4 directories. Higher-priority directories override lower ones (same-name skills):
 
 | Priority | Path | Scope |
 |----------|------|-------|
-| 1 (highest) | `{project}/.clawd/skills/` | Project (Claw'd) |
-| 2 | `{project}/.claude/skills/` | Project (Claude Code) |
-| 3 | `~/.clawd/skills/` | Global (Claw'd) |
-| 4 (lowest) | `~/.claude/skills/` | Global (Claude Code) |
+| 4 (highest) | `{project}/.clawd/skills/` | Project (Claw'd) |
+| 3 | `{project}/.claude/skills/` | Project (Claude Code) |
+| 2 | `~/.clawd/skills/` | Global (Claw'd) |
+| 1 (lowest) | `~/.claude/skills/` | Global (Claude Code) |
 
 > **Note:** Within each scope (project/global), Claw'd skills take priority over Claude Code skills.
 
@@ -409,16 +409,16 @@ Remote workers let agents execute tools on other machines.
 
 ```bash
 # On the remote machine
-git clone https://github.com/Tuanm/clawd.git
+git clone https://github.com/clawd-pilot/clawd.git
 cd clawd
-CLAWD_WORKER_TOKEN=your-token bun packages/clawd-worker/typescript/remote-worker.ts \
+CLAWD_WORKER_TOKEN=your-token bun packages/remote-worker/typescript/remote-worker.ts \
   --server wss://your-server.com
 ```
 
 **Setup (Python):**
 
 ```bash
-python3 packages/clawd-worker/python/remote_worker.py \
+python3 packages/remote-worker/python/remote_worker.py \
   --server wss://your-server.com
 ```
 

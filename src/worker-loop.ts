@@ -16,19 +16,21 @@ import { createProvider } from "./agent/api/factory";
 import { type ClawdChatConfig, createClawdChatPlugin, createClawdChatToolPlugin } from "./agent/plugins/clawd-chat";
 import { createCopilotAnalyticsPlugin } from "./agent/plugins/copilot-analytics-plugin";
 import { createMemoryPlugin, isMemoryEnabled } from "./agent/plugins/memory-plugin";
-import { RemoteWorkerBridge } from "./agent/plugins/remote-worker-bridge";
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 import type { PromptContext } from "./agent/prompt/builder";
-import { runWithAgentContext, setProjectHash, toolDefinitions } from "./agent/tools/tools";
+import { runWithAgentContext, setProjectHash, toolDefinitions } from "./agent/tools/definitions";
 import { setDebug } from "./agent/utils/debug";
 import { initializeSandbox } from "./agent/utils/sandbox";
 import { smartTruncate } from "./agent/utils/smart-truncation";
-import { loadConfigFile } from "./config-file";
+import { loadConfigFile } from "./config/config-file";
 import { db, getAgent, getOrRegisterAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
 import { getPendingMessages, postMessage } from "./server/routes/messages";
 import { broadcastAgentStreaming, broadcastAgentToken, broadcastUpdate } from "./server/websocket";
 import type { TrackedSpace } from "./spaces/spawn-plugin";
+import { createLogger } from "./utils/logger";
 import { timedFetch } from "./utils/timed-fetch";
+
+const logger = createLogger("WorkerLoop");
 
 // Session size limits (in estimated tokens) — tuned for 128k model context windows.
 // WARNING threshold triggers compaction; CRITICAL triggers emergency reset.
@@ -255,7 +257,9 @@ export class WorkerLoop implements AgentWorker {
       if (this.isProcessing && this.activeAgent) {
         try {
           this.activeAgent.cancel();
-        } catch {}
+        } catch {
+          // Intentionally swallowed — cancel() during stop is best-effort; loop exits regardless
+        }
       }
     } else {
       if (this.sleeping) this.wasSleeping = true;
@@ -327,7 +331,9 @@ export class WorkerLoop implements AgentWorker {
     if (this.activeAgent) {
       try {
         this.activeAgent.cancel();
-      } catch {}
+      } catch {
+        // Intentionally swallowed — cancel() during session reset is best-effort
+      }
     }
     // Delete the session via the SessionManager singleton to avoid
     // opening a second SQLite connection (which risks SQLITE_BUSY
@@ -375,7 +381,9 @@ export class WorkerLoop implements AgentWorker {
     if (this.activeAgent) {
       try {
         this.activeAgent.cancel();
-      } catch {}
+      } catch {
+        // Intentionally swallowed — cancel() during shutdown is best-effort
+      }
     }
     // Wait for processing to finish (max 3s)
     if (this.isProcessing) {
@@ -393,7 +401,9 @@ export class WorkerLoop implements AgentWorker {
     try {
       const { TunnelPlugin } = await import("./agent/plugins/tunnel-plugin");
       TunnelPlugin.destroyAll();
-    } catch {}
+    } catch {
+      // Intentionally swallowed — TunnelPlugin cleanup is best-effort on shutdown
+    }
   }
 
   // ===========================================================================
@@ -463,7 +473,9 @@ export class WorkerLoop implements AgentWorker {
     if (this.ws) {
       try {
         this.ws.close();
-      } catch {}
+      } catch {
+        // Intentionally swallowed — WebSocket close during teardown is best-effort
+      }
       this.ws = null;
     }
   }
@@ -615,7 +627,9 @@ export class WorkerLoop implements AgentWorker {
                      updated_at = strftime('%s', 'now')`,
                   [this.config.agentId, this.config.channel, lastSkippedTs, lastSkippedTs, lastSkippedTs],
                 );
-              } catch {}
+              } catch {
+                // Intentionally swallowed — best-effort lastSkippedTs persistence; polling continues regardless
+              }
             }
 
             // Build conversation summary
@@ -682,7 +696,9 @@ export class WorkerLoop implements AgentWorker {
                 // Cancel the active agent
                 try {
                   this.activeAgent?.cancel();
-                } catch {}
+                } catch {
+                  // Intentionally swallowed — cancel() during interrupt detection is best-effort
+                }
               }
             } catch (e) {
               // Polling errors during interrupt detection are non-fatal
@@ -771,7 +787,9 @@ export class WorkerLoop implements AgentWorker {
                      updated_at = strftime('%s', 'now')`,
                   [this.config.agentId, this.config.channel, lastBatchTs, lastBatchTs, lastBatchTs],
                 );
-              } catch {}
+              } catch {
+                // Intentionally swallowed — best-effort lastBatchTs cursor advance; loop continues regardless
+              }
             }
 
             // Infinite interrupt loop — each resume turn can itself be interrupted,
@@ -803,7 +821,9 @@ export class WorkerLoop implements AgentWorker {
                     this.log(`Resume interrupted by ${newMsgs.length} new message(s)`);
                     try {
                       this.activeAgent?.cancel();
-                    } catch {}
+                    } catch {
+                      // Intentionally swallowed — cancel() during resume interrupt is best-effort
+                    }
                   }
                 } catch (e) {
                   this.log(`Resume interrupt poll error: ${e}`);
@@ -831,9 +851,10 @@ export class WorkerLoop implements AgentWorker {
                 const output = resumeResult.output || "";
                 this.lastExecutionHadError =
                   !resumeResult.success || output.includes("[Agent stopped") || output.includes("[stream error");
-              } catch (err: any) {
+              } catch (err: unknown) {
                 if (!this.wasCancelledByHeartbeat) {
-                  this.log(`Interrupt processing error: ${err.message}`);
+                  const msg = err instanceof Error ? err.message : String(err);
+                  this.log(`Interrupt processing error: ${msg}`);
                 }
               } finally {
                 clearInterval(wlResumePoller);
@@ -857,7 +878,9 @@ export class WorkerLoop implements AgentWorker {
                          updated_at = strftime('%s', 'now')`,
                       [this.config.agentId, this.config.channel, lastResumeTs, lastResumeTs, lastResumeTs],
                     );
-                  } catch {}
+                  } catch {
+                    // Intentionally swallowed — best-effort lastResumeTs cursor advance; loop continues regardless
+                  }
                 }
                 wlResumeProcessingMsgs = wlResumeInterruptMsgs as Message[];
                 wlResumeInterruptMsgs = Array.from(wlResumeInterruptMap.values());
@@ -1303,7 +1326,7 @@ export class WorkerLoop implements AgentWorker {
         .join("\n");
       return `\n\n<system-reminder>${activeSpaces.length} sub-agent${activeSpaces.length > 1 ? "s are" : " is"} currently running. They will report back when done — do not start work that overlaps their tasks. Use list_agents to check status, get_agent_report(agent_id) to read results.\n${agentList}</system-reminder>`;
     } catch (err) {
-      console.warn(`[worker-loop] getActiveSubAgentReminder error: ${err}`);
+      logger.warn(`getActiveSubAgentReminder error: ${err}`);
       return "";
     }
   }
@@ -1596,7 +1619,6 @@ export class WorkerLoop implements AgentWorker {
 
           // Create agent
           let agent: Agent | null = null;
-          let remoteWorkerBridge: RemoteWorkerBridge | undefined;
           try {
             const llmProvider = createProvider(provider, model);
             agent = new Agent(llmProvider, agentConfig);
@@ -1685,7 +1707,9 @@ export class WorkerLoop implements AgentWorker {
                           avatar_color: agent.avatar_color,
                         };
                     }
-                  } catch {}
+                  } catch {
+                    // Intentionally swallowed — agent metadata lookup is best-effort for spawn plugin
+                  }
                   return null;
                 },
                 this.trackedSpaces,
@@ -1698,13 +1722,6 @@ export class WorkerLoop implements AgentWorker {
                 },
                 toolPlugin: spawnPlugin,
               });
-            }
-
-            // Create remote worker bridge if agent has a worker token
-            if (this.config.workerToken) {
-              this.log(`Creating RemoteWorkerBridge (token: ${this.config.workerToken.slice(0, 4)}***)`);
-              remoteWorkerBridge = new RemoteWorkerBridge(agent.getMcpManager(), channel, this.config.workerToken);
-              await remoteWorkerBridge.init();
             }
 
             // Run the agent with the prompt (wrapped in call context for analytics)
@@ -1749,7 +1766,6 @@ export class WorkerLoop implements AgentWorker {
             }
 
             await agent.close();
-            if (remoteWorkerBridge) remoteWorkerBridge.destroy();
             agent = null; // Prevent double-close in finally
 
             return {
@@ -1762,14 +1778,12 @@ export class WorkerLoop implements AgentWorker {
           } finally {
             // Ensure agent is always cleaned up, even on error
             this.activeAgent = null;
-            if (remoteWorkerBridge) {
-              remoteWorkerBridge.destroy();
-              remoteWorkerBridge = undefined;
-            }
             if (agent) {
               try {
                 await agent.close();
-              } catch {}
+              } catch {
+                // Intentionally swallowed — agent.close() during teardown is best-effort
+              }
             }
           }
         } catch (error) {
@@ -1806,7 +1820,9 @@ export class WorkerLoop implements AgentWorker {
     if (existsSync(globalPath)) {
       try {
         contexts.push(readFileSync(globalPath, "utf-8"));
-      } catch {}
+      } catch {
+        // Intentionally swallowed — global CLAWD.md may not be readable; context injection is best-effort
+      }
     }
 
     // 2. Project CLAWD.md from {projectRoot}/CLAWD.md
@@ -1814,7 +1830,9 @@ export class WorkerLoop implements AgentWorker {
     if (existsSync(projectPath) && projectPath !== globalPath) {
       try {
         contexts.push(`## Project-Specific Instructions\n\n${readFileSync(projectPath, "utf-8")}`);
-      } catch {}
+      } catch {
+        // Intentionally swallowed — project CLAWD.md may not be readable; context injection is best-effort
+      }
     }
 
     // 3. Agent type instructions (from agentFileConfig — set for sub-agents or channel agents with agent_type)
@@ -1859,7 +1877,9 @@ export class WorkerLoop implements AgentWorker {
         const { agentId, channel } = this.config;
         const success = setAgentStreaming(agentId, channel, false);
         if (success) broadcastAgentStreaming(channel, agentId, false);
-      } catch {}
+      } catch {
+        // Intentionally swallowed — streaming state clear on shutdown is best-effort
+      }
       return;
     }
     try {
@@ -1879,7 +1899,9 @@ export class WorkerLoop implements AgentWorker {
         },
         3000,
       );
-    } catch {}
+    } catch {
+      // Intentionally swallowed — remote streaming state clear on shutdown is best-effort
+    }
   }
 
   /** Truncate long text with UTF-16 surrogate safety and markdown fence closure */
@@ -1892,7 +1914,7 @@ export class WorkerLoop implements AgentWorker {
 
   /** Log with prefix */
   private log(msg: string): void {
-    console.log(`[Worker ${this.config.channel}:${this.config.agentId}] ${msg}`);
+    logger.info(`[${this.config.channel}:${this.config.agentId}] ${msg}`);
   }
 }
 

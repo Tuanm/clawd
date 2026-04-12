@@ -134,8 +134,8 @@ export const memoryMigrations: Migration[] = [
       ]) {
         try {
           db.exec(sql);
-        } catch (e: any) {
-          if (!String(e?.message).includes("duplicate column")) throw e;
+        } catch (e: unknown) {
+          if (!String(e instanceof Error ? e.message : e).includes("duplicate column")) throw e;
         }
       }
       db.exec("CREATE INDEX IF NOT EXISTS idx_am_priority ON agent_memories(agent_id, priority DESC)");

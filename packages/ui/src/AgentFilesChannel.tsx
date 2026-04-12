@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
+import { InputContextMenu, useInputContextMenu } from "./InputContextMenu";
 import { ClawdAvatar } from "./MessageList";
-import { useInputContextMenu, InputContextMenu } from "./InputContextMenu";
 
 const API_URL = "";
 

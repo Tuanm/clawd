@@ -1,4 +1,5 @@
-export * from "./container.js";
-export * from "./gateway.js";
-export * from "./pool.js";
-export * from "./worktree.js";
+/**
+ * Workspace barrel — exports worktree utilities only.
+ * Container/gateway/pool features removed in Phase 2 refactoring.
+ */
+export * from "./worktree";

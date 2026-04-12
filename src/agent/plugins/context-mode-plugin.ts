@@ -8,7 +8,7 @@
 
 import { KnowledgeBase } from "../memory/knowledge-base";
 import type { ToolContext, ToolPlugin, ToolRegistration } from "../tools/plugin";
-import type { ToolResult } from "../tools/tools";
+import type { ToolResult } from "../tools/definitions";
 import { type CompressResult, compressToolOutput, getToolCap } from "../utils/output-compressor";
 import type { Plugin, PluginHooks } from "./manager";
 
@@ -27,7 +27,7 @@ const SHARED_STOP_WORDS =
 function isCodeContent(text: string): boolean {
   const codeIndicators = [
     /^(import|export|const|let|var|function|class|interface|type|enum|async|await|return|if|else|for|while|switch|case|try|catch|throw|finally)\s/m,
-    /[{}\[\]();]=>/.test(text), // braces, brackets, semicolons, arrow functions
+    /[{}[\]();]=>/.test(text), // braces, brackets, semicolons, arrow functions
     /\/\*[\s\S]*?\*\/|\/\/.+/.test(text), // comments
     /['"`][^'"`]*['"`]\s*[=:.]/.test(text), // string literals
     /\d+\.\d+/.test(text), // numbers

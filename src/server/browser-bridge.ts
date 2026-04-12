@@ -20,7 +20,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { ServerWebSocket } from "bun";
-import { getAllBrowserTokens, getChannelsForToken, isBrowserAuthRequired } from "../config-file";
+import { getAllBrowserTokens, getChannelsForToken, isBrowserAuthRequired } from "../config/config-file";
 
 // ============================================================================
 // Types

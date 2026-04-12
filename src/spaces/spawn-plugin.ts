@@ -8,7 +8,7 @@
 import { type AgentFileConfig, listAgentFiles, loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
 import { resolveProviderBaseType } from "../agent/api/provider-config";
 import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
-import type { ToolResult } from "../agent/tools/tools";
+import type { ToolResult } from "../agent/tools/definitions";
 import { getOrRegisterAgent } from "../server/database";
 import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots } from "../server/mcp";
 import { timedFetch } from "../utils/timed-fetch";
@@ -21,6 +21,13 @@ import {
 } from "./claude-code-worker";
 import type { SpaceManager } from "./manager";
 import type { SpaceWorkerManager } from "./worker";
+import {
+  DEFAULT_SPAWN_AGENT_COLOR,
+  DEFAULT_SPAWN_TIMEOUT_SECONDS,
+  MAX_ACTIVE_SUB_AGENTS,
+  MAX_CONTEXT_LENGTH,
+  SPACE_EVICTION_MS,
+} from "../agent/constants/spaces";
 
 /**
  * Build the disallowedTools list for a CC sub-agent.
@@ -87,7 +94,9 @@ export function createSpawnAgentPlugin(
     .then((cfg) => {
       if (cfg?.project) _cachedProjectRoot = cfg.project;
     })
-    .catch(() => {});
+    .catch((err) => {
+      console.error("[SpawnPlugin] getAgentConfig failed:", err);
+    });
 
   return {
     name: "spawn-agent-spaces",
@@ -338,7 +347,7 @@ export function createSpawnAgentPlugin(
     }
 
     // Limit active sub-agents per channel to prevent resource exhaustion
-    const MAX_ACTIVE_SUB_AGENTS = 9;
+    // MAX_ACTIVE_SUB_AGENTS imported from constants
     const activeSpaces = spaceManager
       .listSpaces(config.channel, "active")
       .filter((s) => s.source === "spawn_agent" || s.source === "claude_code");
@@ -355,12 +364,19 @@ export function createSpawnAgentPlugin(
       if (!agentConfig) {
         return { success: false, output: "", error: `No agent configured for channel ${config.channel}` };
       }
-      if (agentConfig.project) _cachedProjectRoot = agentConfig.project;
+      if (!agentConfig.project) {
+        return {
+          success: false,
+          output: "",
+          error: `[SpawnPlugin] projectRoot is required but not found for channel ${config.channel}. Ensure channel_agents.project is set.`,
+        };
+      }
+      _cachedProjectRoot = agentConfig.project;
 
       // Load agent file config — explicit agent= param, or default to "general"
       const agentName = (args.agent as string) || "general";
       let agentFileConfig: AgentFileConfig | null = null;
-      const projectRoot = agentConfig.project || "";
+      const projectRoot = agentConfig.project;
       agentFileConfig = loadAgentFile(agentName, projectRoot);
       if (!agentFileConfig) {
         return { success: false, output: "", error: `Agent file "${agentName}" not found` };
@@ -385,9 +401,9 @@ export function createSpawnAgentPlugin(
         title: sanitizedTitle,
         description: task.slice(0, 500),
         agent_id: subAgentId,
-        agent_color: agentConfig.avatar_color || "#6366f1",
+        agent_color: agentConfig.avatar_color || DEFAULT_SPAWN_AGENT_COLOR,
         source: "spawn_agent",
-        timeout_seconds: 600,
+        timeout_seconds: DEFAULT_SPAWN_TIMEOUT_SECONDS,
       });
 
       // Register sub-agent in parent channel so avatar color resolves for messages
@@ -422,7 +438,9 @@ export function createSpawnAgentPlugin(
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             channel: space.space_channel,
-            text: context ? `**Context:**\n${surrogateSlice(context, 4000)}\n\n**Task:** ${task}` : `**Task:** ${task}`,
+            text: context
+              ? `**Context:**\n${surrogateSlice(context, MAX_CONTEXT_LENGTH)}\n\n**Task:** ${task}`
+              : `**Task:** ${task}`,
             user: "UBOT",
             agent_id: config.agentId,
           }),
@@ -465,7 +483,14 @@ export function createSpawnAgentPlugin(
           model: effectiveModel,
           agentId: subAgentId,
           apiUrl: config.apiUrl,
-          projectRoot: _cachedProjectRoot || agentConfig.project || undefined,
+          projectRoot:
+            _cachedProjectRoot ||
+            agentConfig.project ||
+            (() => {
+              throw new Error(
+                `[SpawnPlugin] projectRoot is required but not found for channel ${config.channel}. Ensure channel_agents.project is set.`,
+              );
+            })(),
           spaceManager,
           resolve: wrappedResolve,
           onComplete: () => unregisterClaudeCodeWorker(space.id),
@@ -491,7 +516,9 @@ export function createSpawnAgentPlugin(
                 user: subAgentId,
                 agent_id: subAgentId,
               }),
-            }).catch(() => {});
+            }).catch((err) => {
+              console.error("[SpawnPlugin] chat.postMessage (complete) failed:", err);
+            });
             wrappedResolve(result);
             ccWorker.stop();
           }
@@ -542,9 +569,10 @@ export function createSpawnAgentPlugin(
             { ...agentConfig, agentId: subAgentId, provider: effectiveProvider, model: effectiveModel },
             agentFileConfig || undefined,
           );
-        } catch (workerErr: any) {
-          spaceManager.failSpace(space.id, workerErr.message);
-          return { success: false, output: "", error: `Failed to start worker: ${workerErr.message}` };
+        } catch (workerErr: unknown) {
+          const workerErrMsg = workerErr instanceof Error ? workerErr.message : String(workerErr);
+          spaceManager.failSpace(space.id, workerErrMsg);
+          return { success: false, output: "", error: `Failed to start worker: ${workerErrMsg}` };
         }
       }
 
@@ -573,7 +601,9 @@ export function createSpawnAgentPlugin(
               user: subAgentId,
               agent_id: subAgentId,
             }),
-          }).catch(() => {});
+          }).catch((err) => {
+            console.error("[SpawnPlugin] chat.postMessage (abort) failed:", err);
+          });
         }
         spaceWorkerManager.stopSpaceWorker(space.id);
       };
@@ -598,15 +628,15 @@ export function createSpawnAgentPlugin(
           tracked.status = "completed";
           tracked.result = summary;
         })
-        .catch((err) => {
+        .catch((err: unknown) => {
           if (!settled) {
             settled = true;
             clearTimeout(timer);
             // Update DB and card on failure
-            spaceManager.failSpace(spaceId, (err as Error).message);
+            spaceManager.failSpace(spaceId, err instanceof Error ? err.message : String(err));
           }
           tracked.status = "failed";
-          tracked.error = (err as Error).message;
+          tracked.error = err instanceof Error ? err.message : String(err);
         })
         .finally(() => {
           controller.signal.removeEventListener("abort", onAbort);
@@ -614,7 +644,7 @@ export function createSpawnAgentPlugin(
           // Kill the sub-agent immediately
           spaceManager.cleanupSpaceAgents(space.id);
           // Evict from memory after 30 minutes (DB fallback still works)
-          const evictTimer = setTimeout(() => trackedSpaces.delete(spaceId), 30 * 60 * 1000);
+          const evictTimer = setTimeout(() => trackedSpaces.delete(spaceId), SPACE_EVICTION_MS);
           if (typeof evictTimer === "object" && "unref" in evictTimer) (evictTimer as any).unref();
           // Store so retask_agent can cancel this eviction
           const t = trackedSpaces.get(spaceId);
@@ -634,16 +664,16 @@ export function createSpawnAgentPlugin(
             "Sub-agent started and working independently. Do NOT wait — continue with other tasks. The sub-agent will report back when done. Use list_agents(type='running') to check status or get_agent_report(agent_id) to read results.",
         }),
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       // If a space was created before the error, mark it as failed to prevent orphans
       try {
         const activeSpaces = spaceManager.listSpaces(config.channel, "active");
         const orphan = activeSpaces.find((s) => s.description === task.slice(0, 500));
-        if (orphan) spaceManager.failSpace(orphan.id, err.message);
+        if (orphan) spaceManager.failSpace(orphan.id, err instanceof Error ? err.message : String(err));
       } catch {
         /* best-effort cleanup */
       }
-      return { success: false, output: "", error: err.message };
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -680,7 +710,7 @@ export function createSpawnAgentPlugin(
     }
 
     // Check max-9 limit before retasking (resetSpace sets status back to 'active')
-    const MAX_ACTIVE_SUB_AGENTS = 9;
+    // MAX_ACTIVE_SUB_AGENTS imported from constants
     const activeSpaces = spaceManager
       .listSpaces(config.channel, "active")
       .filter((s) => s.source === "spawn_agent" || s.source === "claude_code");
@@ -762,7 +792,14 @@ export function createSpawnAgentPlugin(
           model: retaskModel,
           agentId: subAgentId,
           apiUrl: config.apiUrl,
-          projectRoot: _cachedProjectRoot || agentConfig.project || undefined,
+          projectRoot:
+            _cachedProjectRoot ||
+            agentConfig.project ||
+            (() => {
+              throw new Error(
+                `[SpawnPlugin] projectRoot is required but not found for channel ${config.channel} (retask). Ensure channel_agents.project is set.`,
+              );
+            })(),
           spaceManager,
           resolve: wrappedResolve,
           onComplete: () => unregisterClaudeCodeWorker(space.id),
@@ -787,7 +824,9 @@ export function createSpawnAgentPlugin(
                 user: subAgentId,
                 agent_id: subAgentId,
               }),
-            }).catch(() => {});
+            }).catch((err) => {
+              console.error("[SpawnPlugin] chat.postMessage (retask complete) failed:", err);
+            });
             wrappedResolve(result);
             ccWorker.stop();
           }
@@ -819,9 +858,10 @@ export function createSpawnAgentPlugin(
             { ...agentConfig, agentId: subAgentId, provider: retaskProvider, model: retaskModel },
             tracked.agentFileConfig,
           );
-        } catch (workerErr: any) {
-          spaceManager.failSpace(space.id, workerErr.message);
-          return { success: false, output: "", error: `Failed to start worker: ${workerErr.message}` };
+        } catch (workerErr: unknown) {
+          const workerErrMsg = workerErr instanceof Error ? workerErr.message : String(workerErr);
+          spaceManager.failSpace(space.id, workerErrMsg);
+          return { success: false, output: "", error: `Failed to start worker: ${workerErrMsg}` };
         }
       }
 
@@ -850,7 +890,9 @@ export function createSpawnAgentPlugin(
               user: subAgentId,
               agent_id: subAgentId,
             }),
-          }).catch(() => {});
+          }).catch((err) => {
+            console.error("[SpawnPlugin] chat.postMessage (retask abort) failed:", err);
+          });
         }
         spaceWorkerManager.stopSpaceWorker(space.id);
       };
@@ -872,20 +914,20 @@ export function createSpawnAgentPlugin(
           tracked.status = "completed";
           tracked.result = summary;
         })
-        .catch((err) => {
+        .catch((err: unknown) => {
           if (!settled) {
             settled = true;
             clearTimeout(timer);
-            spaceManager.failSpace(agentId, (err as Error).message);
+            spaceManager.failSpace(agentId, err instanceof Error ? err.message : String(err));
           }
           tracked.status = "failed";
-          tracked.error = (err as Error).message;
+          tracked.error = err instanceof Error ? err.message : String(err);
         })
         .finally(() => {
           controller.signal.removeEventListener("abort", onAbort);
           spaceWorkerManager.stopSpaceWorker(space.id);
           spaceManager.cleanupSpaceAgents(space.id);
-          const evictTimer = setTimeout(() => trackedSpaces.delete(agentId), 30 * 60 * 1000);
+          const evictTimer = setTimeout(() => trackedSpaces.delete(agentId), SPACE_EVICTION_MS);
           if (typeof evictTimer === "object" && "unref" in evictTimer) (evictTimer as any).unref();
           const t = trackedSpaces.get(agentId);
           if (t) t.evictionTimer = evictTimer;
@@ -901,8 +943,8 @@ export function createSpawnAgentPlugin(
           message: "Sub-agent retasked. It will respond directly to this channel when done.",
         }),
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   }
 }

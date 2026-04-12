@@ -9,16 +9,15 @@
  * - Interrupt on full messages only (not streaming responses)
  */
 
-import { timedFetch as _sharedTimedFetch } from "../../../utils/timed-fetch";
+import { timedFetch as _timedFetch } from "../../../utils/timed-fetch";
 import type { ToolPlugin, ToolRegistration } from "../../tools/plugin";
-import { setChatApiUrl, setCurrentAgentId, setCurrentChannel } from "../../tools/tools";
+import { setChatApiUrl, setCurrentAgentId, setCurrentChannel } from "../../tools/definitions";
 import { getContextProjectRoot } from "../../utils/agent-context";
 import type { Plugin, PluginContext } from "../manager";
 
-// Module-scoped wrapper with 15s default for chat API calls (longer than the shared 10s default
-// because chat plugin calls include streaming setup and file uploads that need more headroom).
+// 15 s default — chat plugin calls include streaming setup and file uploads.
 const timedFetch = (url: string, options: RequestInit = {}, ms = 15000): Promise<Response> =>
-  _sharedTimedFetch(url, options, ms);
+  _timedFetch(url, options, ms);
 
 // ============================================================================
 // Types
@@ -836,7 +835,9 @@ LONG-TERM MEMORY:
 
       async onToolCall(name: string, args: any, _ctx: PluginContext) {
         // Refresh streaming heartbeat so stale-streaming cleanup doesn't clear us during long tool executions
-        setAgentStreaming(true).catch(() => {});
+        setAgentStreaming(true).catch((err) => {
+          console.error("[ClawdChat] setAgentStreaming failed:", err);
+        });
         // Stream tool call to chat UI
         await streamToolCall(name, args, "started");
       },
@@ -1072,12 +1073,12 @@ chat_send_message_with_files(
                 success: result.ok === true,
                 output: JSON.stringify(result, null, 2),
               };
-            } catch (err: any) {
+            } catch (err: unknown) {
               return {
                 success: false,
                 output: JSON.stringify({
                   ok: false,
-                  error: `Upload error: ${err.message}`,
+                  error: `Upload error: ${err instanceof Error ? err.message : String(err)}`,
                 }),
               };
             }

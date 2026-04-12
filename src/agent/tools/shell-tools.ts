@@ -34,14 +34,14 @@ function extractWritablePaths(command: string): string[] {
   const paths: string[] = [];
 
   // Match: > path, >> path (strip trailing whitespace/newline noise)
-  const redirectRe = /(?:^|[^\\])\s*(>\s*>?\s*)([^\|&;\s\n]+)/gm;
+  const redirectRe = /(?:^|[^\\])\s*(>\s*>?\s*)([^|&;\s\n]+)/gm;
   for (const m of command.matchAll(redirectRe)) {
     const path = m[2]?.trim().replace(/^['"]|['"]$/g, "");
     if (path && !path.startsWith("/dev/")) paths.push(path);
   }
 
   // tee [-a] path, sed -i path, cat >path
-  const toolPathRe = /\b(?:tee(?:\s+-[a])?|sed\s+-i|cat)\s+(?:-a\s+)?([^\|&;\s]+)/gi;
+  const toolPathRe = /\b(?:tee(?:\s+-[a])?|sed\s+-i|cat)\s+(?:-a\s+)?([^|&;\s]+)/gi;
   for (const m of command.matchAll(toolPathRe)) {
     const path = m[1]?.trim().replace(/^['"]|['"]$/g, "");
     if (path && !path.startsWith("/dev/")) paths.push(path);
@@ -176,8 +176,9 @@ registerTool(
           success: true,
           output: `Background job started: ${jobId}\nUse job_status(job_id="${jobId}") to check output.`,
         };
-      } catch (err: any) {
-        return { success: false, output: "", error: `Failed to start background job: ${err.message}` };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { success: false, output: "", error: `Failed to start background job: ${message}` };
       }
     }
     let workDir = cwd ? resolveSafePath(cwd) : undefined;
@@ -270,11 +271,12 @@ registerTool(
               });
             });
           });
-        } catch (sandboxErr: any) {
+        } catch (sandboxErr: unknown) {
+          const message = sandboxErr instanceof Error ? sandboxErr.message : String(sandboxErr);
           return {
             success: false,
             output: "",
-            error: `Sandbox wrapping failed: ${sandboxErr.message}`,
+            error: `Sandbox wrapping failed: ${message}`,
           };
         }
       }
@@ -411,8 +413,9 @@ if (isTmuxAvailable()) {
           success: true,
           output: `Job submitted: ${jobId}\nName: ${name}\nUse job_status or job_logs with this ID to check progress.`,
         };
-      } catch (err: any) {
-        return { success: false, output: "", error: err.message };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { success: false, output: "", error: message };
       }
     },
   );
@@ -483,8 +486,9 @@ if (isTmuxAvailable()) {
           .join("\n");
 
         return { success: true, output: formatted };
-      } catch (err: any) {
-        return { success: false, output: "", error: err.message };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { success: false, output: "", error: message };
       }
     },
   );
@@ -518,8 +522,9 @@ if (isTmuxAvailable()) {
             error: `Could not cancel job ${job_id} (not running or not found)`,
           };
         }
-      } catch (err: any) {
-        return { success: false, output: "", error: err.message };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { success: false, output: "", error: message };
       }
     },
   );
@@ -569,8 +574,9 @@ if (isTmuxAvailable()) {
             error: `Job status: ${job.status}`,
           };
         }
-      } catch (err: any) {
-        return { success: false, output: "", error: err.message };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { success: false, output: "", error: message };
       }
     },
   );
@@ -608,8 +614,9 @@ if (isTmuxAvailable()) {
           success: true,
           output: `Job: ${job.name} [${job.status.toUpperCase()}]\nCommand: ${job.command}\n\n--- Output ---\n${logs || "(no output yet)"}`,
         };
-      } catch (err: any) {
-        return { success: false, output: "", error: err.message };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { success: false, output: "", error: message };
       }
     },
   );
@@ -696,8 +703,9 @@ if (isTmuxAvailable()) {
       const sessions = listResult.success ? listResult.output.split("\n").filter(Boolean) : [];
       const sessionExists = sessions.includes(session);
 
-      // Build the command - cd to workdir first
-      const cdCmd = `cd "${workDir}" && ${command}`;
+      // Build the command - cd to workdir first (single-quote escape workDir to prevent injection)
+      const escapedDir = workDir.replace(/'/g, "'\\''");
+      const cdCmd = `cd '${escapedDir}' && ${command}`;
 
       if (!sessionExists) {
         // Create new session and send command
@@ -785,6 +793,9 @@ if (isTmuxAvailable()) {
     },
     ["session"],
     async ({ session }) => {
+      if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
+        return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
+      }
       const socket = getTmuxSocket();
 
       const result = await execTmux(["-L", socket, "kill-session", "-t", session]);
@@ -812,6 +823,9 @@ if (isTmuxAvailable()) {
     },
     ["session"],
     async ({ session, clear = false }) => {
+      if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
+        return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
+      }
       const socket = getTmuxSocket();
 
       // Capture pane content
@@ -852,6 +866,9 @@ if (isTmuxAvailable()) {
     },
     ["session", "keys"],
     async ({ session, keys }) => {
+      if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
+        return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
+      }
       const socket = getTmuxSocket();
 
       // Convert special key notation
@@ -893,6 +910,12 @@ if (isTmuxAvailable()) {
     },
     ["session"],
     async ({ session, window, command }) => {
+      if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
+        return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
+      }
+      if (window && !/^[a-zA-Z0-9_-]+$/.test(window)) {
+        return { success: false, error: "Window name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
+      }
       const socket = getTmuxSocket();
 
       const args = ["-L", socket, "new-window", "-t", session];
@@ -928,6 +951,12 @@ if (isTmuxAvailable()) {
     },
     ["session", "window"],
     async ({ session, window }) => {
+      if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
+        return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
+      }
+      if (!/^[a-zA-Z0-9_-]+$/.test(String(window))) {
+        return { success: false, error: "Window name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
+      }
       const socket = getTmuxSocket();
 
       const result = await execTmux(["-L", socket, "kill-window", "-t", `${session}:${window}`]);

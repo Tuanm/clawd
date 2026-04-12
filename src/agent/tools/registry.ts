@@ -9,6 +9,7 @@
  */
 
 import { basename, join, resolve } from "node:path";
+import { timedFetch as _timedFetch } from "../../utils/timed-fetch";
 import type { ToolDefinition } from "../api/client";
 import { getAgentContext, getContextAgentId, getContextChannel, getContextConfigRoot } from "../utils/agent-context";
 import {
@@ -86,7 +87,7 @@ export interface ApiResponse {
 
 export interface ChatResponse extends ApiResponse {
   ts?: string;
-  messages?: any[];
+  messages?: Record<string, unknown>[];
 }
 
 export interface TaskResponse extends ApiResponse {
@@ -258,11 +259,9 @@ export function setChatApiUrl(url: string) {
   chatApiUrl = url;
 }
 
-/** Fetch with timeout to prevent hangs on self-calls to localhost */
+/** Fetch with timeout to prevent hangs on self-calls to localhost (15 s default). */
 export function toolFetch(url: string, options: RequestInit = {}, ms = 15000): Promise<Response> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+  return _timedFetch(url, options, ms);
 }
 
 /** Get the context-aware channel (agent context takes priority over global) */

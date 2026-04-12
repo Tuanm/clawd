@@ -12,8 +12,8 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import type { ToolPlugin, ToolRegistration } from "../tools/plugin.js";
-import type { ToolResult } from "../tools/tools.js";
+import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
+import type { ToolResult } from "../tools/definitions";
 
 // ============================================================================
 // Types
@@ -142,11 +142,11 @@ export class TunnelPlugin implements ToolPlugin {
           message: `Tunnel created. Public URL: ${publicUrl}`,
         }),
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       return {
         success: false,
         output: "",
-        error: `Failed to create tunnel: ${err?.message || err}`,
+        error: `Failed to create tunnel: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
   }

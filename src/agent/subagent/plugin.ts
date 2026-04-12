@@ -84,7 +84,7 @@ export interface PluginResult {
 // Plugin Manager
 // ============================================================================
 
-export class PluginManager {
+export class SubAgentPluginManager {
   private plugins: SubAgentPlugin[] = [];
 
   constructor(plugins?: SubAgentPlugin[]) {

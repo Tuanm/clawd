@@ -266,7 +266,7 @@ registerTool(
 
     if (isWorktree && message) {
       // Isolated branch mode: handle author/co-author
-      const { getAuthorConfig } = await import("../../config-file");
+      const { getAuthorConfig } = await import("../../config/config-file");
       const { hasGitUserConfig } = await import("../workspace/worktree");
       const cwd = path || ctx.projectRoot;
       const author = getAuthorConfig();
@@ -403,9 +403,9 @@ registerTool(
     // Bust cache for stash pop (restores files from stash)
     if (result.success && (action === "pop" || action === "apply")) {
       // Parse output to extract modified files (best-effort)
-      const files = result.output.split("\n").filter((l) => l.includes("file:") || l.match(/\.\/[\w\-\.\/]/));
+      const files = result.output.split("\n").filter((l) => l.includes("file:") || l.match(/\.\/[\w\-./]/));
       for (const f of files) {
-        const match = f.match(/[\.\/][\w\-\.\/]+/g);
+        const match = f.match(/[./][\w\-./]+/g);
         if (match)
           for (const fp of match)
             try {
