@@ -562,8 +562,8 @@ export function createAgentBusPlugin(config: AgentBusConfig): AgentBusPluginResu
             try {
               const result = bus.agentRegister(args.capabilities, args.metadata);
               return { success: true, output: result };
-            } catch (err: any) {
-              return { success: false, output: "", error: err.message };
+            } catch (err: unknown) {
+              return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
             }
           },
         },
@@ -590,8 +590,8 @@ export function createAgentBusPlugin(config: AgentBusConfig): AgentBusPluginResu
                 status: args.status,
               });
               return { success: true, output: result };
-            } catch (err: any) {
-              return { success: false, output: "", error: err.message };
+            } catch (err: unknown) {
+              return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
             }
           },
         },
@@ -623,8 +623,8 @@ export function createAgentBusPlugin(config: AgentBusConfig): AgentBusPluginResu
             try {
               const result = bus.agentSend(args.to, args.type, args.payload, args.request_id);
               return { success: true, output: result };
-            } catch (err: any) {
-              return { success: false, output: "", error: err.message };
+            } catch (err: unknown) {
+              return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
             }
           },
         },
@@ -647,8 +647,8 @@ export function createAgentBusPlugin(config: AgentBusConfig): AgentBusPluginResu
             try {
               const result = bus.agentReceive(args.limit, args.type);
               return { success: true, output: result };
-            } catch (err: any) {
-              return { success: false, output: "", error: err.message };
+            } catch (err: unknown) {
+              return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
             }
           },
         },
@@ -671,8 +671,8 @@ export function createAgentBusPlugin(config: AgentBusConfig): AgentBusPluginResu
             try {
               const result = bus.agentPublish(args.topic, args.data);
               return { success: true, output: result };
-            } catch (err: any) {
-              return { success: false, output: "", error: err.message };
+            } catch (err: unknown) {
+              return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
             }
           },
         },
@@ -691,8 +691,8 @@ export function createAgentBusPlugin(config: AgentBusConfig): AgentBusPluginResu
             try {
               const result = bus.agentSubscribe(args.topic);
               return { success: true, output: result };
-            } catch (err: any) {
-              return { success: false, output: "", error: err.message };
+            } catch (err: unknown) {
+              return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
             }
           },
         },
@@ -723,8 +723,8 @@ export function createAgentBusPlugin(config: AgentBusConfig): AgentBusPluginResu
             try {
               const result = await bus.agentRequest(args.to, args.action, args.params || {}, args.timeout || 30000);
               return { success: true, output: result };
-            } catch (err: any) {
-              return { success: false, output: "", error: err.message };
+            } catch (err: unknown) {
+              return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
             }
           },
         },

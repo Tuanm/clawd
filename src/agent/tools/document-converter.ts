@@ -419,8 +419,13 @@ export async function convertToMarkdown(filePath: string, maxLength: number = 5_
   let fileStat: Awaited<ReturnType<typeof fsStat>>;
   try {
     fileStat = await fsStat(filePath);
-  } catch (err: any) {
-    return { success: false, markdown: "", format: "unknown", error: `File not found: ${err.message}` };
+  } catch (err: unknown) {
+    return {
+      success: false,
+      markdown: "",
+      format: "unknown",
+      error: `File not found: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
   if (!fileStat.isFile()) {
@@ -439,8 +444,13 @@ export async function convertToMarkdown(filePath: string, maxLength: number = 5_
   let data: Buffer;
   try {
     data = Buffer.from(await readFile(filePath));
-  } catch (err: any) {
-    return { success: false, markdown: "", format: "unknown", error: `Read failed: ${err.message}` };
+  } catch (err: unknown) {
+    return {
+      success: false,
+      markdown: "",
+      format: "unknown",
+      error: `Read failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
   // Binary guard (for text-expected formats)
@@ -518,8 +528,13 @@ export async function convertToMarkdown(filePath: string, maxLength: number = 5_
       }
 
       return { success: true, markdown, format };
-    } catch (err: any) {
-      return { success: false, markdown: "", format, error: `Conversion failed: ${err.message}` };
+    } catch (err: unknown) {
+      return {
+        success: false,
+        markdown: "",
+        format,
+        error: `Conversion failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
   };
 

@@ -1,0 +1,26 @@
+name: Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install
+      - name: Run tests (isolated)
+        run: |
+          # Run each test file individually to avoid bun mock.module() contamination
+          failed=0
+          for f in $(find src -name "*.test.ts" | sort); do
+            if ! bun test "$f"; then
+              failed=1
+              echo "FAILED: $f"
+            fi
+          done
+          exit $failed
+      - name: Build UI
+        run: bun run build:ui
+      - name: Build server
+        run: bun run build:server

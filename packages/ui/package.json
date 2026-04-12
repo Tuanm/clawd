@@ -1,5 +1,5 @@
 {
-  "name": "chat-ui",
+  "name": "@clawd/ui",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -14,9 +14,8 @@
     "@tiptap/extension-placeholder": "^3.18.0",
     "@tiptap/react": "^3.18.0",
     "@tiptap/starter-kit": "^3.18.0",
-    "@types/dompurify": "^3.2.0",
-    "@types/prismjs": "^1.26.5",
     "dompurify": "^3.3.3",
+    "hast-util-sanitize": "^5.0.2",
     "katex": "^0.16.28",
     "mermaid": "^11.12.2",
     "prismjs": "^1.30.0",
@@ -31,6 +30,8 @@
     "remark-math": "^6.0.0"
   },
   "devDependencies": {
+    "@types/dompurify": "^3.2.0",
+    "@types/prismjs": "^1.26.5",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",

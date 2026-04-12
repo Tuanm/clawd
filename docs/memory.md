@@ -360,7 +360,7 @@ Query expansion uses a static synonym map for better recall:
 
 ## 6. CC Main Agent Integration
 
-**File:** `src/claude-code-main-worker.ts`
+**File:** `src/claude-code/main-worker.ts`
 
 The main Claude Code agent integrates memory via `loadMemoryContext()`:
 

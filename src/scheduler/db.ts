@@ -3,7 +3,7 @@
  */
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
-import { getDataDir } from "../config-file";
+import { getDataDir } from "../config/config-file";
 import { runMigrations } from "../db/migrations";
 import { schedulerMigrations } from "../db/migrations/scheduler-migrations";
 
@@ -13,14 +13,24 @@ let _db: Database | null = null;
 
 function getDb(): Database {
   if (!_db) {
-    _db = new Database(DB_PATH, { strict: true });
-    _db.exec("PRAGMA busy_timeout = 5000");
-    _db.exec("PRAGMA journal_mode = WAL");
-    _db.exec("PRAGMA synchronous = NORMAL");
-    _db.exec("PRAGMA cache_size = -8000"); // 8MB cache
-    _db.exec("PRAGMA temp_store = MEMORY");
-    runMigrations(_db, schedulerMigrations);
-    initSchema(_db);
+    const newDb = new Database(DB_PATH, { strict: true });
+    try {
+      newDb.exec("PRAGMA busy_timeout = 5000");
+      newDb.exec("PRAGMA journal_mode = WAL");
+      newDb.exec("PRAGMA synchronous = NORMAL");
+      newDb.exec("PRAGMA foreign_keys = ON"); // enforce FK + ON DELETE CASCADE for job_runs
+      newDb.exec("PRAGMA cache_size = -8000"); // 8MB cache
+      newDb.exec("PRAGMA temp_store = MEMORY");
+      runMigrations(newDb, schedulerMigrations);
+      initSchema(newDb);
+      // Commit only after all PRAGMAs and migrations succeed
+      _db = newDb;
+    } catch (err) {
+      // Null out _db so the next caller can retry cleanly
+      _db = null;
+      newDb.close();
+      throw err;
+    }
   }
   return _db;
 }

@@ -2,7 +2,7 @@
  * SessionSummarizer Tests - Option C: In-memory checkpoint storage
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { SessionSummarizer, type SummaryCheckpoint } from "./summarizer";
 
 describe("SessionSummarizer - Option C: In-memory checkpoints", () => {
@@ -83,21 +83,21 @@ describe("SessionSummarizer - Option C: In-memory checkpoints", () => {
 
   describe("start/stop lifecycle", () => {
     it("should start without errors", () => {
-      vi.spyOn(summarizer as any, "fetchDbMessages").mockReturnValue([]);
+      spyOn(summarizer as any, "fetchDbMessages").mockReturnValue([]);
 
       expect(() => summarizer.start()).not.toThrow();
       summarizer.stop();
     });
 
     it("should stop without errors after starting", () => {
-      vi.spyOn(summarizer as any, "fetchDbMessages").mockReturnValue([]);
+      spyOn(summarizer as any, "fetchDbMessages").mockReturnValue([]);
 
       summarizer.start();
       expect(() => summarizer.stop()).not.toThrow();
     });
 
     it("should not start twice if already running", () => {
-      vi.spyOn(summarizer as any, "fetchDbMessages").mockReturnValue([]);
+      spyOn(summarizer as any, "fetchDbMessages").mockReturnValue([]);
 
       summarizer.start();
       const firstIntervalId = (summarizer as any).intervalId;
@@ -118,7 +118,7 @@ describe("SessionSummarizer - Option C: In-memory checkpoints", () => {
         text: `Message ${i}`,
       }));
 
-      vi.spyOn(summarizer as any, "fetchDbMessages").mockReturnValue(mockMessages);
+      spyOn(summarizer as any, "fetchDbMessages").mockReturnValue(mockMessages);
 
       await summarizer.checkAndSummarize();
 
@@ -223,7 +223,7 @@ describe("SessionSummarizer - Concurrent execution guard", () => {
       checkpointFilePath: "/tmp/concurrency-test",
     });
 
-    const doSummarizeSpy = vi.spyOn(summarizer as any, "_doSummarize").mockResolvedValue(undefined);
+    const doSummarizeSpy = spyOn(summarizer as any, "_doSummarize").mockResolvedValue(undefined);
 
     (summarizer as any).processingPromise = Promise.resolve();
 
@@ -231,7 +231,7 @@ describe("SessionSummarizer - Concurrent execution guard", () => {
 
     expect(doSummarizeSpy).not.toHaveBeenCalled();
 
-    vi.restoreAllMocks();
+    mock.restore();
   });
 
   it("should execute _doSummarize when no processingPromise is set", async () => {
@@ -242,7 +242,7 @@ describe("SessionSummarizer - Concurrent execution guard", () => {
       checkpointFilePath: "/tmp/concurrency-test",
     });
 
-    const doSummarizeSpy = vi.spyOn(summarizer as any, "_doSummarize").mockResolvedValue(undefined);
+    const doSummarizeSpy = spyOn(summarizer as any, "_doSummarize").mockResolvedValue(undefined);
 
     await summarizer.checkAndSummarize();
 
@@ -250,7 +250,7 @@ describe("SessionSummarizer - Concurrent execution guard", () => {
 
     expect((summarizer as any).processingPromise).toBeNull();
 
-    vi.restoreAllMocks();
+    mock.restore();
   });
 });
 
@@ -402,7 +402,7 @@ describe("SessionSummarizer - DB persistence round-trip", () => {
       checkInterval: 60000,
     });
 
-    const persistSpy = vi.spyOn(summarizer as any, "persistCheckpointToDb");
+    const persistSpy = spyOn(summarizer as any, "persistCheckpointToDb");
 
     const checkpoint = {
       id: "test-checkpoint-123",
@@ -417,7 +417,7 @@ describe("SessionSummarizer - DB persistence round-trip", () => {
 
     expect(persistSpy).toHaveBeenCalledWith(checkpoint);
 
-    vi.restoreAllMocks();
+    mock.restore();
   });
 
   it("should handle DB errors gracefully during restore", () => {

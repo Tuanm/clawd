@@ -5,10 +5,10 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { isSandboxReady, registerTool, resolveSafePath, runInSandbox, validatePath } from "./registry";
-import { getReadOnceCache, ReadOnceCache } from "../utils/read-once";
 import { getContextSessionId } from "../utils/agent-context";
 import { ContextCompressor } from "../utils/context-compressor";
+import { getReadOnceCache, ReadOnceCache } from "../utils/read-once";
+import { isSandboxReady, registerTool, resolveSafePath, runInSandbox, validatePath } from "./registry";
 
 // ============================================================================
 // Tool: View
@@ -205,8 +205,8 @@ registerTool(
       }
 
       return { success: true, output: rawContent };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -322,8 +322,8 @@ registerTool(
         success: true,
         output: replace_all ? `File updated: ${path} (${count} replacements)` : `File updated: ${path}`,
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -444,8 +444,8 @@ registerTool(
       }
 
       return { success: true, output: `Applied ${edits.length} edit(s) to ${inputPath}` };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -511,8 +511,8 @@ registerTool(
       // Bust read-once cache so next view shows the new file
       bustReadOnceCache(resolvedPath);
       return { success: true, output: `Created: ${path}` };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -635,8 +635,8 @@ registerTool(
     let regex: RegExp;
     try {
       regex = new RegExp(pattern, flags);
-    } catch (e: any) {
-      return { success: false, output: "", error: `Invalid regex: ${e.message}` };
+    } catch (e: unknown) {
+      return { success: false, output: "", error: `Invalid regex: ${e instanceof Error ? e.message : String(e)}` };
     }
 
     // Collect files
@@ -769,8 +769,8 @@ registerTool(
         output += `\n... (limited to ${head_limit} results)`;
       }
       return { success: true, output };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );

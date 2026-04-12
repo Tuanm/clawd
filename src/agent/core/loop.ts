@@ -11,7 +11,7 @@
 
 import { EventEmitter } from "node:events";
 import type { CompletionResponse, Message, ToolCall, ToolDefinition } from "../api/client";
-import type { ToolResult } from "../tools/tools";
+import type { ToolResult } from "../tools/definitions";
 import { isDebugEnabled } from "../utils/debug";
 
 // ============================================================================
@@ -335,13 +335,13 @@ export class AgenticLoop extends EventEmitter {
 
       await this.hooks.onComplete?.(result);
       return result;
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.status = "failed";
       this.emit("status", this.status);
 
       const result: LoopResult = {
         success: false,
-        error: error.message || String(error),
+        error: error instanceof Error ? error.message : String(error),
         iterations: this.iterations,
         toolCalls: this.toolCallCount,
       };
@@ -378,8 +378,8 @@ export function parseToolArguments(argsString: string | undefined): { args: Reco
   try {
     const args = JSON.parse(argsString || "{}");
     return { args };
-  } catch (err: any) {
-    return { args: {}, error: `Failed to parse arguments: ${err.message}` };
+  } catch (err: unknown) {
+    return { args: {}, error: `Failed to parse arguments: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 

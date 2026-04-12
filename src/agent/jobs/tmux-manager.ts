@@ -31,7 +31,7 @@ import { join } from "node:path";
 function getJobsDir(): string {
   // Try to use project-scoped directory
   try {
-    const { getProjectJobsDir } = require("../tools/tools");
+    const { getProjectJobsDir } = require("../tools/definitions");
     return getProjectJobsDir();
   } catch {
     // Fallback if tools module not loaded yet
@@ -100,7 +100,7 @@ function tmuxCmd(args: string): string {
 function execTmux(args: string): string {
   try {
     return execSync(tmuxCmd(args), { encoding: "utf8", timeout: 5000 }).trim();
-  } catch (_err: any) {
+  } catch (_err: unknown) {
     // tmux returns error if server not running or session not found
     return "";
   }
@@ -170,13 +170,14 @@ exit $EXIT_CODE
     // Start tmux session running the script
     try {
       execSync(tmuxCmd(`new-session -d -s "${sessionName}" "${scriptFile}"`), { encoding: "utf8", timeout: 5000 });
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Clean up on failure
       try {
         unlinkSync(metaFile);
         unlinkSync(scriptFile);
       } catch {}
-      throw new Error(`Failed to start job: ${err.message}`);
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to start job: ${message}`);
     }
 
     return id;
@@ -194,7 +195,12 @@ exit $EXIT_CODE
       return undefined;
     }
 
-    const meta: JobMeta = JSON.parse(readFileSync(metaFile, "utf8"));
+    let meta: JobMeta;
+    try {
+      meta = JSON.parse(readFileSync(metaFile, "utf8"));
+    } catch {
+      return undefined;
+    }
     const sessionName = `${JOB_PREFIX}${id}`;
     const exitFile = join(jobDir, "exit_code");
 

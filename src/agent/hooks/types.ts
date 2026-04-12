@@ -6,7 +6,7 @@
  */
 
 import { homedir } from "node:os";
-import type { ToolResult } from "../tools/tools";
+import type { ToolResult } from "../tools/definitions";
 
 // ============================================================================
 // Configuration Types (from hooks.json)

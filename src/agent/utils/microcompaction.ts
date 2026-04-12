@@ -23,8 +23,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import type { Message } from "../api/client";
 import type { ScoredMessage } from "../session/message-scoring";
-import { scoreMessages } from "../session/message-scoring";
-import { compressMessage } from "../session/message-scoring";
+import { compressMessage, scoreMessages } from "../session/message-scoring";
 
 /**
  * Per-session microstate — tracks compaction metadata without touching the DB.

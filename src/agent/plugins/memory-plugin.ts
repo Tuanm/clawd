@@ -15,11 +15,11 @@ import {
   getAgentMemoryStore,
   type MemoryCategory,
 } from "../memory/agent-memory";
-import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
-import type { ToolResult } from "../tools/tools";
-import type { Plugin, PluginContext, PluginHooks } from "./manager";
-import { WikiCompiler } from "../memory/wiki-compiler";
 import type { WikiArticle, WikiTOCEntry } from "../memory/wiki-compiler";
+import { WikiCompiler } from "../memory/wiki-compiler";
+import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
+import type { ToolResult } from "../tools/definitions";
+import type { Plugin, PluginContext, PluginHooks } from "./manager";
 
 // ── Config ─────────────────────────────────────────────────────────
 
@@ -277,11 +277,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
         success: true,
         output: `Identity updated (${trimmed.length} chars). Changes take effect on next iteration.`,
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
       return {
         success: false,
         output: "",
-        error: `Failed to update identity: ${err.message}`,
+        error: `Failed to update identity: ${message}`,
       };
     }
   }
@@ -462,7 +463,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
         lastConsolidationTurn = turnCount;
         consolidationRunning = true;
         consolidateMemories(ctx)
-          .catch(() => {})
+          .catch((err) => {
+            console.error("[memory-plugin] consolidateMemories failed:", err);
+          })
           .finally(() => {
             consolidationRunning = false;
           });
@@ -476,7 +479,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
       if (memCount >= 50 && lastCompilationTs === 0 && !wikiCompilationRunning && !consolidationRunning) {
         wikiCompilationRunning = true;
         compileWiki(ctx)
-          .catch(() => {})
+          .catch((err) => {
+            console.error("[memory-plugin] compileWiki (bootstrap) failed:", err);
+          })
           .finally(() => {
             wikiCompilationRunning = false;
           });
@@ -493,7 +498,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
           Promise.resolve()
             .then(() => sleep(2000))
             .then(() => compileWiki(ctx))
-            .catch(() => {})
+            .catch((err) => {
+              console.error("[memory-plugin] compileWiki (staggered) failed:", err);
+            })
             .finally(() => {
               wikiCompilationRunning = false;
             });
@@ -503,7 +510,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
           waitForConsolidation()
             .then(() => sleep(2000))
             .then(() => compileWiki(ctx))
-            .catch(() => {})
+            .catch((err) => {
+              console.error("[memory-plugin] compileWiki (post-consolidation) failed:", err);
+            })
             .finally(() => {
               wikiCompilationRunning = false;
             });
@@ -515,8 +524,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
 
     // Reflection every 100 turns (staggered with consolidation)
     if (turnCount % 100 === 0 && turnCount > 10 && turnCount !== lastConsolidationTurn) {
-      reflectOnMemories(ctx).catch(() => {
-        /* best-effort */
+      reflectOnMemories(ctx).catch((err) => {
+        console.error("[memory-plugin] reflectOnMemories failed:", err);
       });
     }
 
@@ -548,7 +557,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig): MemoryPluginResu
     if (SECRET_PATTERNS.some((p) => p.test(content))) return;
 
     // Fire-and-forget async extraction
-    extractMemories(content, ctx).catch(() => {
+    extractMemories(content, ctx).catch((err) => {
+      console.error("[memory-plugin] extractMemories failed:", err);
       extractionFailures++;
     });
   }

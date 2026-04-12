@@ -2,11 +2,12 @@
  * Memory System - Search, Filter, and Summarize Past Conversations
  */
 
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getDataDir } from "../../config-file";
+import { getDataDir } from "../../config/config-file";
+import { createDatabase } from "../../db/factory";
 import type { Message } from "../api/client";
 
 // ============================================================================
@@ -176,22 +177,8 @@ export class MemoryManager {
     if (!dbPath && !existsSync(newDefault) && existsSync(oldDefault)) {
       resolvedPath = oldDefault; // use legacy location until user migrates
     }
-    this.db = new Database(resolvedPath);
-    this.setupConcurrency();
+    this.db = createDatabase(resolvedPath, { foreignKeys: false });
     this.init();
-  }
-
-  private setupConcurrency() {
-    // Enable WAL mode for better concurrent read/write
-    this.db.exec("PRAGMA journal_mode = WAL");
-    // Wait up to 30 seconds for locks (increased from 5s)
-    this.db.exec("PRAGMA busy_timeout = 30000");
-    // Balanced sync mode
-    this.db.exec("PRAGMA synchronous = NORMAL");
-    // Increase cache size for better performance
-    const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
-    this.db.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`);
-    this.db.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`);
   }
 
   private init() {
@@ -463,7 +450,8 @@ export class MemoryManager {
 
     // Delete old messages and insert summary
     const oldIds = oldMessages.map((m) => m.id);
-    this.db.run(`DELETE FROM messages WHERE id IN (${oldIds.join(",")})`);
+    const placeholders = oldIds.map(() => "?").join(",");
+    this.db.run(`DELETE FROM messages WHERE id IN (${placeholders})`, oldIds);
 
     this.db.run(
       `

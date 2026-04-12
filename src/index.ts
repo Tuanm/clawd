@@ -11,79 +11,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, extname, join } from "node:path";
-import { parseArgs } from "node:util";
+// --help and unknown-option errors are handled inside loadConfig() (config.ts).
+// That call is the first executable line below, so it exits before any DB init.
 
-// Check for --help BEFORE importing other modules (to avoid database initialization)
-let parsedArgs: ReturnType<typeof parseArgs>;
-try {
-  parsedArgs = parseArgs({
-    args: Bun.argv.slice(2),
-    options: {
-      host: { type: "string" },
-      port: { type: "string", short: "p" },
-      "no-open-browser": { type: "boolean" },
-      help: { type: "boolean", short: "h" },
-      debug: { type: "boolean" },
-      yolo: { type: "boolean" },
-    },
-    allowPositionals: false,
-  });
-} catch (error: any) {
-  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
-    const match = error.message?.match(/Unknown option '(.+?)'/);
-    const unknownOpt = match ? match[1] : "unknown";
-    console.error(`Error: Unknown option '${unknownOpt}'`);
-    console.error("");
-    console.log(`Claw'd App
-
-Usage: clawd [options]
-
-Options:
-  --host <host>               Server host (default: 0.0.0.0)
-  -p, --port <port>           Server port (default: 3456)
-  --no-open-browser           Don't open browser on startup
-  --yolo                      Disable sandbox restrictions for agents
-  --debug                     Enable debug logging
-  -h, --help                  Show this help message
-
-  Settings can also be configured in ~/.clawd/config.json.
-  CLI flags take precedence over config file values.
-
-Examples:
-  clawd
-  clawd --host localhost --port 8080
-  clawd --no-open-browser --debug
-`);
-    process.exit(1);
-  }
-  throw error;
-}
-
-if (parsedArgs.values.help) {
-  console.log(`Claw'd App
-
-Usage: clawd [options]
-
-Options:
-  --host <host>               Server host (default: 0.0.0.0)
-  -p, --port <port>           Server port (default: 3456)
-  --no-open-browser           Don't open browser on startup
-  --yolo                      Disable sandbox restrictions for agents
-  --debug                     Enable debug logging
-  -h, --help                  Show this help message
-
-  Settings can also be configured in ~/.clawd/config.json.
-  CLI flags take precedence over config file values.
-
-Examples:
-  clawd
-  clawd --host localhost --port 8080
-  clawd --no-open-browser --debug
-`);
-  process.exit(0);
-}
-
-import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { keyPool } from "./agent/api/key-pool";
 import { clearConfigCache as clearProviderConfigCache, ensureKeyPoolInitialized } from "./agent/api/provider-config";
@@ -91,29 +21,30 @@ import { applyTokenLimitOverrides } from "./agent/constants/context-limits";
 import { getSessionManager } from "./agent/session/manager";
 import { setDebug } from "./agent/utils/debug";
 // Now import modules (database will initialize)
-import { registerAgentRoutes } from "./api/agents";
-import { registerArticleRoutes } from "./api/articles";
-import { getPublicOrigin, registerMcpServerRoutes } from "./api/mcp-servers";
-import { registerWorktreeRoutes } from "./api/worktree";
-import { loadConfig, validateConfig } from "./config";
+import { registerAgentRoutes } from "./server/routes/agents";
+import { registerArticleRoutes } from "./server/routes/articles";
+import { getPublicOrigin, registerMcpServerRoutes } from "./server/routes/mcp-servers";
+import { registerWorktreeRoutes } from "./server/routes/worktree";
+import { loadConfig, validateConfig } from "./config/config";
 import {
   getDataDir,
   hasGlobalAuth,
   isAuthEnabled,
   isBrowserEnabled,
   isChannelAuthRequired,
-  isWorkspacesEnabled,
   loadConfigFile,
   reloadConfigFile,
   validateApiToken,
-} from "./config-file";
-import { extensionZipSize, getExtensionZip } from "./embedded-extension";
-import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbeddedUI } from "./embedded-ui";
-import { INTERNAL_SERVICE_TOKEN } from "./internal-token";
-import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./mcp-oauth";
+} from "./config/config-file";
+import { extensionZipSize, getExtensionZip } from "./embedded/extension";
+import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbeddedUI } from "./embedded/ui";
+import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./server/mcp/oauth";
 import { upgradeBrowserWs } from "./server/browser-bridge";
 import { corsHeaders, json, numParam, parseBody } from "./server/http-helpers";
 import { validateBody } from "./server/validate";
+import { postToChannel } from "./utils/api-client";
+import { createLogger, setLogLevel } from "./utils/logger";
+import { timedFetch } from "./utils/timed-fetch";
 import { WorkerManager } from "./worker-manager";
 
 // Load configuration from CLI args + config file
@@ -122,7 +53,10 @@ const config = loadConfig();
 // Enable debug mode if configured
 if (config.debug) {
   setDebug(true);
+  setLogLevel("debug");
 }
+
+const logger = createLogger("clawd");
 
 // Validate config
 if (!validateConfig(config)) {
@@ -137,14 +71,8 @@ if (!validateConfig(config)) {
   }
 }
 
-// @ts-expect-error — Bun text imports; TypeScript cannot resolve non-TS assets
-import REMOTE_WORKER_JAVA from "../packages/clawd-worker/java/RemoteWorker.java" with { type: "text" };
-// @ts-expect-error — Bun text imports; TypeScript cannot resolve non-TS assets
-import REMOTE_WORKER_PY from "../packages/clawd-worker/python/remote_worker.py" with { type: "text" };
-// @ts-expect-error — Bun text import; remote-worker.ts has no default export
-import REMOTE_WORKER_TS from "../packages/clawd-worker/typescript/remote-worker.ts" with { type: "text" };
-import type { ToolResult } from "./agent/tools/tools";
-import { tools as builtinTools } from "./agent/tools/tools";
+import type { ToolResult } from "./agent/tools/definitions";
+import { tools as builtinTools } from "./agent/tools/definitions";
 import { SchedulerManager } from "./scheduler/manager";
 import { initRunner } from "./scheduler/runner";
 // ============================================================================
@@ -165,8 +93,6 @@ import {
   setMcpScheduler,
   setMcpWorkerManager,
 } from "./server/mcp";
-// Workspace modules are dynamically imported only when needed (see isWorkspacesEnabled checks)
-import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import { handleAgentStatusRoutes } from "./server/routes/agents";
 import { handleAnalyticsRoutes } from "./server/routes/analytics";
 import { getArtifactActions, handleArtifactAction } from "./server/routes/artifact-actions";
@@ -256,44 +182,10 @@ const PORT = config.port;
 
 // Database is initialized at module load time in database.ts (before prepared statements)
 
-// Lazy-loaded read-only connection to memory.db (for agent thoughts API)
-import { Database } from "bun:sqlite";
-
-let _memoryDb: InstanceType<typeof Database> | null = null;
-function getMemoryDb(): InstanceType<typeof Database> {
-  if (!_memoryDb) {
-    const memPath = join(getDataDir(), "memory.db");
-    _memoryDb = new Database(memPath, { readonly: true });
-    _memoryDb.exec("PRAGMA journal_mode = WAL");
-    _memoryDb.exec("PRAGMA busy_timeout = 5000");
-  }
-  return _memoryDb;
-}
-
-// Always clean up orphaned workspace containers on startup (even if workspaces is now disabled,
-// containers may exist from when it was enabled). Only reconcile ports if currently enabled.
-import("./agent/workspace/container.js")
-  .then(({ cleanupOrphanedWorkspaces, reconcilePortsFromDocker }) =>
-    cleanupOrphanedWorkspaces()
-      .catch((err: unknown) => {
-        console.warn("[startup] cleanupOrphanedWorkspaces failed:", err);
-      })
-      .then(() => {
-        if (isWorkspacesEnabled()) {
-          return reconcilePortsFromDocker().catch((err: unknown) => {
-            console.warn("[startup] reconcilePortsFromDocker failed unexpectedly:", err);
-          });
-        }
-      }),
-  )
-  .catch((err: unknown) => {
-    console.warn("[startup] workspace module import failed:", err);
-  });
-
 // Run channel ID migration on startup (normalizes legacy C-prefixed IDs to names)
 const migrated = migrateChannelIds();
 if (migrated.length > 0) {
-  console.log(`[Migration] Normalized ${migrated.length} channel ID(s):`, migrated);
+  logger.info(`Migration: normalized ${migrated.length} channel ID(s):`, migrated);
 }
 
 // Rename reserved channel names that conflict with management routes
@@ -301,7 +193,7 @@ for (const reserved of ["agents", "skills"]) {
   const exists = db.query("SELECT id FROM channels WHERE id = ?").get(reserved) as { id: string } | null;
   if (exists) {
     renameChannel(reserved, `${reserved}-space`);
-    console.warn(`[Migration] Renamed reserved channel "${reserved}" to "${reserved}-space"`);
+    logger.warn(`Migration: renamed reserved channel "${reserved}" to "${reserved}-space"`);
   }
 }
 
@@ -332,11 +224,7 @@ initRunner({
   spaceWorkerManager,
   getAgentConfig: async (channel: string) => {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 10000);
-      const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`, {
-        signal: ctrl.signal,
-      }).finally(() => clearTimeout(timer));
+      const res = await timedFetch(`${config.chatApiUrl}/api/app.agents.list`);
       const data = (await res.json()) as any;
       if (data.ok && Array.isArray(data.agents)) {
         const agent = data.agents.find((a: any) => a.channel === channel && a.active !== false);
@@ -359,11 +247,11 @@ initRunner({
     if (handler) {
       try {
         return await handler(args);
-      } catch (err: any) {
+      } catch (err: unknown) {
         return {
           success: false,
           output: "",
-          error: err.message || String(err),
+          error: err instanceof Error ? err.message : String(err),
         };
       }
     }
@@ -435,7 +323,7 @@ const getUiDir = (): string | null => {
   const cwdPath = join(process.cwd(), "dist", "ui");
   if (existsSync(cwdPath)) return cwdPath;
 
-  console.warn("[clawd] Warning: UI directory not found and no embedded UI available");
+  logger.warn("UI directory not found and no embedded UI available");
   return null;
 };
 
@@ -560,8 +448,8 @@ async function handleBrowserFileRequest(req: Request, url: URL, path: string): P
       }
       const result = await uploadFile(file, "browser", undefined, "UBROWSER");
       return json(result, result.ok ? 200 : 413);
-    } catch (err: any) {
-      console.error("[ERROR] file upload:", err);
+    } catch (err: unknown) {
+      logger.error("File upload error:", err);
       return json({ ok: false, error: "Internal server error" }, 500);
     }
   }
@@ -596,57 +484,9 @@ async function handleBrowserFileRequest(req: Request, url: URL, path: string): P
 }
 
 // ============================================================================
-// Auth helpers
+// Auth helpers — delegated to middleware.ts (single source of truth)
 // ============================================================================
-
-/**
- * Extract token from Authorization header (Bearer or raw) or null.
- * IMPORTANT: Never log the raw Authorization header or returned token value.
- * If debug logging is added, redact it: header.replace(/\S+$/, "[REDACTED]")
- */
-function extractToken(req: Request): string | null {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader) return null;
-  // Case-insensitive "Bearer " prefix (HTTP spec allows any case)
-  if (authHeader.toLowerCase().startsWith("bearer ")) return authHeader.slice(7);
-  return authHeader; // raw token
-}
-
-/**
- * Extract token from query param — only for WebSocket upgrades.
- * IMPORTANT: Never log url.href or url.toString() — the token is visible in the query string.
- * If debug logging is added, redact it: work on a copy with url.searchParams.delete("token").
- */
-function extractWsToken(url: URL): string | null {
-  return url.searchParams.get("token");
-}
-
-function isInternalToken(token: string | null): boolean {
-  if (!token || token.length !== INTERNAL_SERVICE_TOKEN.length) return false;
-  try {
-    return timingSafeEqual(Buffer.from(token, "utf8"), Buffer.from(INTERNAL_SERVICE_TOKEN, "utf8"));
-  } catch {
-    return false;
-  }
-}
-
-async function handleAuthChannel(req: Request, url: URL): Promise<Response> {
-  if (req.method === "GET") {
-    const channel = url.searchParams.get("channel") || "";
-    return json({ ok: true, requires_auth: isChannelAuthRequired(channel) });
-  }
-  if (req.method === "POST") {
-    const body = await parseBody(req);
-    const { channel, token } = body;
-    if (!channel || !token) {
-      return json({ ok: false, error: "channel and token required" }, 400);
-    }
-    // Never accept the internal service token from external callers
-    if (isInternalToken(String(token))) return json({ ok: false });
-    return json({ ok: validateApiToken(String(token), String(channel)) });
-  }
-  return json({ ok: false, error: "Method not allowed" }, 405);
-}
+import { extractToken, extractWsToken, isInternalToken, handleAuthChannel, validateApiKey } from "./server/middleware";
 
 // ============================================================================
 // Server
@@ -711,7 +551,7 @@ const server = Bun.serve({
     // Browser extension WebSocket bridge (only when browser enabled)
     if (path === "/browser/ws") {
       if (!isBrowserEnabled()) {
-        console.log("[browser-bridge] Rejected /browser/ws — browser feature not enabled");
+        logger.info("browser-bridge: rejected /browser/ws — browser feature not enabled");
         return new Response("Browser features not enabled", { status: 403 });
       }
       return upgradeBrowserWs(req, server);
@@ -725,93 +565,12 @@ const server = Bun.serve({
       return handleBrowserFileRequest(req, url, path);
     }
 
-    // Remote worker WebSocket upgrade
-    if (path === "/worker/ws") {
-      return upgradeRemoteWorkerWs(req, server);
-    }
-
-    // Remote worker script download
-    const scriptMatch = path.match(/^\/worker\/remote-script\/(python|typescript|ts|py|java)$/);
-    if (scriptMatch) {
-      const lang = scriptMatch[1];
-      const scriptMap: Record<string, { content: string; name: string; ct: string }> = {
-        python: {
-          content: REMOTE_WORKER_PY,
-          name: "remote_worker.py",
-          ct: "text/x-python",
-        },
-        py: {
-          content: REMOTE_WORKER_PY,
-          name: "remote_worker.py",
-          ct: "text/x-python",
-        },
-        typescript: {
-          content: REMOTE_WORKER_TS,
-          name: "remote-worker.ts",
-          ct: "text/typescript",
-        },
-        ts: {
-          content: REMOTE_WORKER_TS,
-          name: "remote-worker.ts",
-          ct: "text/typescript",
-        },
-        java: {
-          content: REMOTE_WORKER_JAVA,
-          name: "RemoteWorker.java",
-          ct: "text/x-java-source",
-        },
-      };
-      const info = scriptMap[lang];
-      return new Response(info.content, {
-        headers: {
-          "Content-Type": info.ct,
-          "Content-Disposition": `attachment; filename="${info.name}"`,
-        },
-      });
-    }
-
-    // Workspace noVNC WebSocket proxy (only when workspaces enabled)
-    const wsProxyMatch = isWorkspacesEnabled() ? path.match(/^\/workspace\/([a-f0-9]{16})\/novnc\/websockify$/) : null;
-    if (wsProxyMatch) {
-      return import("./server/routes/workspace-proxy").then(({ upgradeWorkspaceWs }) =>
-        upgradeWorkspaceWs(req, wsProxyMatch[1], server),
-      );
-    }
-
-    // Workspace noVNC HTTP proxy (only when workspaces enabled)
-    const proxyMatch = isWorkspacesEnabled() ? path.match(/^\/workspace\/([a-f0-9]{16})\/novnc(\/.*)?$/) : null;
-    if (proxyMatch) {
-      return import("./server/routes/workspace-proxy").then(({ handleWorkspaceProxy }) =>
-        handleWorkspaceProxy(req, url, proxyMatch[1]),
-      );
-    }
-
     // API routes
     if (path.startsWith("/api/") || path.startsWith("/mcp") || path === "/health") {
       // NOTE: /api/auth.channel is handled pre-auth above — see handleAuthChannel.
-      // Auth check for /api/ and /mcp routes (not /health which is a monitoring endpoint)
-      // IMPORTANT: /mcp/agent/ and /mcp/space/ are agent-internal endpoints — no auth required.
-      //   /mcp/agent/ is used by Claude Code agents running as subprocesses inside the channel.
-      //   /mcp/space/ has its own per-space token validation inside handleSpaceMcpRequest.
-      const isAgentMcpPath = path.startsWith("/mcp/agent/") || path.startsWith("/mcp/space/");
-      if (!isAgentMcpPath && (path.startsWith("/api/") || path.startsWith("/mcp"))) {
-        if (isAuthEnabled()) {
-          const token = extractToken(req);
-          if (!isInternalToken(token)) {
-            const channel = url.searchParams.get("channel") ?? undefined;
-            // Channel-scoped auth: only enforce auth when the specific channel requires it.
-            // Global endpoints without a ?channel= param are gated only if a global "*"
-            // catch-all is configured; otherwise they are allowed through.
-            const authRequired = channel ? isChannelAuthRequired(channel) : hasGlobalAuth();
-            if (authRequired && !validateApiToken(token, channel)) {
-              return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
-                status: 401,
-                headers: { "Content-Type": "application/json" },
-              });
-            }
-          }
-        }
-      }
+      // Auth check delegated to middleware.ts (single source of truth).
+      const authError = validateApiKey(req, url, path, isAuthEnabled);
+      if (authError) return authError;
       return handleRequest(req, url, path, server);
     }
 
@@ -887,13 +646,13 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       const stateParam = url.searchParams.get("state");
       const errorParam = url.searchParams.get("error");
       // SECURITY: Never log auth codes or full query strings — they contain credentials
-      console.log(
-        `[OAuth callback] code=${code ? "present" : "null"}, state=${stateParam ? "present" : "null"}, error=${errorParam || "none"}`,
+      logger.debug(
+        `OAuth callback: code=${code ? "present" : "null"}, state=${stateParam ? "present" : "null"}, error=${errorParam || "none"}`,
       );
 
       if (errorParam) {
         const errorDesc = url.searchParams.get("error_description") || errorParam;
-        console.error(`[OAuth callback] Provider returned error: ${errorParam} — ${errorDesc}`);
+        logger.error(`OAuth callback: provider returned error: ${errorParam} — ${errorDesc}`);
         return new Response(`<html><body><h2>OAuth Error</h2><p>${escapeHtml(errorDesc)}</p></body></html>`, {
           status: 400,
           headers: { "Content-Type": "text/html" },
@@ -910,7 +669,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         // Validate nonce against pending flows (CSRF protection)
         const flow = validateOAuthState(stateParam);
         if (!flow) {
-          console.warn(`[OAuth callback] Invalid/expired state (duplicate request?). stateParam=${stateParam}`);
+          logger.warn(`OAuth callback: invalid/expired state (duplicate request?). stateParam=${stateParam}`);
           return new Response(
             `<html><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
             <div style="text-align:center"><h2>Already processed</h2><p>This OAuth callback was already handled. You can close this tab.</p></div>
@@ -927,8 +686,8 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           token_endpoint,
           redirect_uri: flowRedirectUri,
         } = flow;
-        console.log(
-          `[OAuth callback] Flow matched: channel=${channel}, server=${serverName}, has_token_endpoint=${!!token_endpoint}, has_redirect_uri=${!!flowRedirectUri}, has_secret=${!!client_secret}, has_verifier=${!!code_verifier}`,
+        logger.debug(
+          `OAuth callback: flow matched channel=${channel}, server=${serverName}, has_token_endpoint=${!!token_endpoint}, has_redirect_uri=${!!flowRedirectUri}, has_secret=${!!client_secret}, has_verifier=${!!code_verifier}`,
         );
 
         // Look up the OAuth config for this server
@@ -936,7 +695,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         const configs = getChannelMCPServers(channel);
         const serverConfig = configs[serverName];
         if (!serverConfig?.oauth) {
-          console.error(`[OAuth callback] No OAuth config found for ${channel}:${serverName}`);
+          logger.error(`OAuth callback: no OAuth config found for ${channel}:${serverName}`);
           return new Response("Unknown OAuth server", {
             status: 404,
             headers: { "Content-Type": "text/plain" },
@@ -952,8 +711,8 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         }
         const effectiveClientId = client_id || serverConfig.oauth.client_id;
         const redirectUri = flowRedirectUri;
-        console.log(
-          `[OAuth callback] Exchanging code: has_token_url=${!!tokenUrl}, has_client_id=${!!effectiveClientId}, has_redirect_uri=${!!redirectUri}`,
+        logger.debug(
+          `OAuth callback: exchanging code has_token_url=${!!tokenUrl}, has_client_id=${!!effectiveClientId}, has_redirect_uri=${!!redirectUri}`,
         );
 
         const token = await exchangeOAuthCode(
@@ -964,21 +723,21 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           code_verifier,
           client_secret,
         );
-        console.log(
-          `[OAuth callback] Token received: type=${token.token_type}, scopes=${token.scopes?.join(",")}, expires_at=${token.expires_at}, has_refresh=${!!token.refresh_token}`,
+        logger.info(
+          `OAuth callback: token received type=${token.token_type}, scopes=${token.scopes?.join(",")}, expires_at=${token.expires_at}, has_refresh=${!!token.refresh_token}`,
         );
         saveOAuthToken(channel, serverName, token);
 
         // Try reconnecting the MCP server with the new token
-        console.log(`[OAuth callback] Connecting MCP server ${serverName} with new token...`);
+        logger.info(`OAuth callback: connecting MCP server ${serverName} with new token...`);
         const connectConfig: any = {
           transport: "http",
           url: serverConfig.url,
           token: token.access_token,
         };
         const connectResult = await workerManager.addChannelMcpServer(channel, serverName, connectConfig);
-        console.log(
-          `[OAuth callback] Connect result: success=${connectResult.success}, tools=${connectResult.tools}, error=${connectResult.error || "none"}`,
+        logger.info(
+          `OAuth callback: connect result success=${connectResult.success}, tools=${connectResult.tools}, error=${connectResult.error || "none"}`,
         );
 
         if (!connectResult.success) {
@@ -999,9 +758,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           `<html><body><h2>MCP Connected!</h2><p>Server <b>${safeName}</b> authenticated successfully (${connectResult.tools} tools). You can close this tab.</p><script>window.close()</script></body></html>`,
           { headers: { "Content-Type": "text/html" } },
         );
-      } catch (err: any) {
-        const msg = err.message || "Unknown error";
-        console.error(`[OAuth callback] Error: ${msg}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        logger.error(`OAuth callback error: ${msg}`);
         const safeMsg = escapeHtml(msg);
         let hint = "";
         if (msg.includes("bad_client_secret") || msg.includes("invalid_client")) {
@@ -1103,7 +862,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       return json({ ok: true, keys: keyPool.getStatus() });
     }
     if (path === "/api/keys/sync" && req.method === "POST") {
-      keyPool.syncAllQuotas().catch(() => {});
+      keyPool.syncAllQuotas().catch((err) => {
+        logger.warn("[index] syncAllQuotas failed:", err);
+      });
       return json({ ok: true, message: "Quota sync triggered" });
     }
 
@@ -1222,7 +983,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         const clearedChannel = body.channel || "general";
         broadcastChannelCleared(clearedChannel);
         // Reset all agent sessions for this channel (fire-and-forget)
-        workerManager.resetChannel(clearedChannel).catch(() => {});
+        workerManager.resetChannel(clearedChannel).catch((err) => {
+          logger.warn("[index] resetChannel failed:", err);
+        });
         return json(result);
       }
       if (result.ok && body.files && Array.isArray(body.files) && body.files.length > 0) {
@@ -1237,7 +1000,9 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
         // Wake deferred agents for this channel (inactive >1 day, not started on boot)
         const ch = body.channel || "general";
         if (body.user === "UHUMAN" && workerManager.hasDeferredAgents(ch)) {
-          workerManager.startDeferredAgents(ch).catch(() => {});
+          workerManager.startDeferredAgents(ch).catch((err) => {
+            logger.warn("[index] startDeferredAgents failed:", err);
+          });
         }
       }
       return json(result);
@@ -1465,8 +1230,21 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     if (path === "/api/tasks.update" && req.method === "POST") {
       const body = await parseBody(req);
-      if (!body.task_id) return json({ ok: false, error: "task_id required" }, 400);
-      const result = updateTask(body.task_id, body);
+      const tv = validateBody(
+        z.object({
+          task_id: z.string(),
+          title: z.string().optional(),
+          description: z.string().optional(),
+          status: z.enum(["todo", "doing", "done", "blocked"]).optional(),
+          priority: z.enum(["P0", "P1", "P2", "P3"]).optional(),
+          tags: z.string().optional(),
+          due_at: z.number().optional(),
+          claimer: z.string().optional(),
+        }),
+        body,
+      );
+      if (!tv.ok) return tv.error;
+      const result = updateTask(tv.data.task_id, tv.data);
       if (!result.success) {
         const r = result as {
           success: false;
@@ -1478,7 +1256,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
           return json({ ok: false, error: "already_claimed", claimed_by: r.claimed_by }, 409);
       }
       const updatedTask = (result as { success: true; task: { channel?: string; title: string } }).task;
-      if (body.status === "done" || body.status === "completed") {
+      if (tv.data.status === "done") {
         const channel = updatedTask.channel;
         const allTasks = listTasks(channel ? { channel } : {});
         const done = allTasks.filter((t: { status: string }) => t.status === "done").length;
@@ -1709,7 +1487,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 
     return json({ ok: false, error: "not_found" }, 404);
   } catch (error) {
-    console.error("[ERROR]", error);
+    logger.error("Server error:", error);
     return json({ ok: false, error: "Internal server error" }, 500);
   }
 }
@@ -1718,6 +1496,7 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
 // Startup
 // ============================================================================
 
+// startup banner — intentionally uses console.log (not logger) so it always shows regardless of log level
 console.log(`
 +---------------------------------------------------------------+
 |  Claw'd App                                                   |
@@ -1728,24 +1507,12 @@ console.log(`
 +---------------------------------------------------------------+
 `);
 
-// Helper for space recovery notifications
-async function postToChannel(apiUrl: string, channel: string, text: string, agentId: string): Promise<void> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 10000);
-  await fetch(`${apiUrl}/api/chat.postMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ channel, text, user: "UBOT", agent_id: agentId }),
-    signal: ctrl.signal,
-  }).finally(() => clearTimeout(timer));
-}
-
 // Start worker manager (loads agents from DB, starts polling loops)
 setTimeout(async () => {
   try {
     // Clean up orphaned tmux sessions from previous runs
     try {
-      const { cleanupStaleTmuxSessions } = await import("./claude-code-tmux");
+      const { cleanupStaleTmuxSessions } = await import("./claude-code/tmux");
       cleanupStaleTmuxSessions();
     } catch {}
 
@@ -1755,7 +1522,7 @@ setTimeout(async () => {
     // Space recovery AFTER scheduler.start() — prevents runningJobs.clear() from wiping recovered registrations
     const activeSpaces = spaceManager.getActiveSpaces();
     if (activeSpaces.length > 0) {
-      console.log(`[Spaces] Recovering ${activeSpaces.length} active space(s)...`);
+      logger.info(`Spaces: recovering ${activeSpaces.length} active space(s)...`);
       for (const space of activeSpaces) {
         try {
           // Validate source job for scheduler spaces
@@ -1782,11 +1549,7 @@ setTimeout(async () => {
           }
 
           // Get agent config
-          const recoverCtrl = new AbortController();
-          const recoverTimer = setTimeout(() => recoverCtrl.abort(), 10000);
-          const res = await fetch(`${config.chatApiUrl}/api/app.agents.list`, {
-            signal: recoverCtrl.signal,
-          }).finally(() => clearTimeout(recoverTimer));
+          const res = await timedFetch(`${config.chatApiUrl}/api/app.agents.list`);
           const data = (await res.json()) as any;
           const agentEntry =
             data.ok && Array.isArray(data.agents)
@@ -1832,7 +1595,9 @@ setTimeout(async () => {
                 space.channel,
                 `Space ${isTimeout ? "timed_out" : "failed"}: ${space.title}`,
                 agentConfig.agentId,
-              ).catch(() => {});
+              ).catch((err) => {
+                logger.warn("[index] postToChannel (abort) failed:", err);
+              });
             }
             spaceWorkerManager.stopSpaceWorker(space.id);
           };
@@ -1871,7 +1636,9 @@ setTimeout(async () => {
                     space.channel,
                     `Space failed: ${space.title}`,
                     agentConfig.agentId,
-                  ).catch(() => {});
+                  ).catch((err) => {
+                    logger.warn("[index] postToChannel (fail) failed:", err);
+                  });
                 spaceWorkerManager.stopSpaceWorker(space.id);
               }
             })
@@ -1884,17 +1651,17 @@ setTimeout(async () => {
               }
             });
 
-          console.log(
-            `[Spaces] Recovered space ${space.id} (${space.title}), ${Math.round(remainingMs / 1000)}s remaining`,
+          logger.info(
+            `Spaces: recovered space ${space.id} (${space.title}), ${Math.round(remainingMs / 1000)}s remaining`,
           );
         } catch (err) {
-          console.error(`[Spaces] Failed to recover space ${space.id}:`, err);
+          logger.error(`Spaces: failed to recover space ${space.id}:`, err);
           spaceManager.failSpace(space.id, "Recovery failed");
         }
       }
     }
   } catch (error) {
-    console.error("[clawd] Failed to start worker manager:", error);
+    logger.error("Failed to start worker manager:", error);
   }
 }, 1000); // Delay 1s to ensure server is fully ready
 
@@ -1907,7 +1674,7 @@ if (config.openBrowser) {
       stderr: "ignore",
     });
   } catch {
-    console.log(`[clawd] Open http://localhost:${PORT} in your browser`);
+    logger.info(`Open http://localhost:${PORT} in your browser`);
   }
 }
 
@@ -1916,7 +1683,7 @@ setInterval(() => {
   try {
     const { cleared } = clearStaleStreamingStates();
     if (cleared.length > 0) {
-      console.log(`[Cleanup] Cleared stale streaming states: ${cleared.join(", ")}`);
+      logger.info(`Cleanup: cleared stale streaming states: ${cleared.join(", ")}`);
       for (const entry of cleared) {
         const [agentId, channel] = entry.split("@");
         const agent = getOrRegisterAgent(agentId, channel);
@@ -1929,7 +1696,7 @@ setInterval(() => {
       }
     }
   } catch (err) {
-    console.error("[Cleanup] Error clearing stale streaming:", err);
+    logger.error("Cleanup: error clearing stale streaming:", err);
   }
 }, 60_000);
 
@@ -1955,9 +1722,9 @@ function runDbMaintenance() {
       if (sm) sm.purgeOldSessions(30);
     } catch {}
 
-    console.log("[DB Maintenance] Checkpoint + cleanup completed");
+    logger.info("DB maintenance: checkpoint + cleanup completed");
   } catch (err) {
-    console.error("[DB Maintenance] Error:", err);
+    logger.error("DB maintenance error:", err);
   }
 }
 
@@ -1966,14 +1733,14 @@ const dbMaintenanceTimer = setInterval(runDbMaintenance, 30 * 60 * 1000);
 dbMaintenanceTimer.unref();
 
 // Graceful shutdown (SP25: scheduler → spaces → workers)
-// Force-exit after 8s to prevent hang if cleanup gets stuck
+// Force-exit after 15s to prevent hang if cleanup gets stuck
 let shutdownInProgress = false;
 const gracefulShutdown = async (signal: string) => {
   if (shutdownInProgress) return;
   shutdownInProgress = true;
-  console.log(`[clawd] Received ${signal}, shutting down...`);
+  logger.info(`Received ${signal}, shutting down...`);
   const forceTimer = setTimeout(() => {
-    console.error("[clawd] Shutdown timed out after 15s, forcing exit");
+    logger.error("Shutdown timed out after 15s, forcing exit");
     process.exit(1);
   }, 15000);
   forceTimer.unref();
@@ -1981,16 +1748,8 @@ const gracefulShutdown = async (signal: string) => {
     await scheduler.stop();
     await spaceWorkerManager.stopAll();
     await workerManager.stop();
-    // Always destroy workspace containers on shutdown (even if feature was disabled after
-    // containers were created, to prevent Docker resource leaks)
-    const { listActiveWorkspaces, destroyWorkspace } = await import("./agent/workspace/container.js");
-    const workspaces = listActiveWorkspaces();
-    if (workspaces.length > 0) {
-      console.log(`[clawd] Destroying ${workspaces.length} workspace container(s)...`);
-      await Promise.allSettled(workspaces.map((w) => destroyWorkspace(w.id)));
-    }
   } catch (err) {
-    console.error("[clawd] Error during shutdown:", err);
+    logger.error("Error during shutdown:", err);
   }
   // Final DB maintenance — checkpoint WAL before exit
   try {
@@ -2005,12 +1764,12 @@ process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 // Prevent unhandled rejections from crashing the process
 // (Claude Code SDK subprocess errors can surface as unhandled rejections)
 process.on("unhandledRejection", (reason: any) => {
-  console.error(`[clawd] Unhandled rejection: ${reason?.message || reason}`);
-  if (reason?.stack) console.error(`[clawd] Stack: ${reason.stack.slice(0, 500)}`);
+  logger.error(`Unhandled rejection: ${reason?.message || reason}`);
+  if (reason?.stack) logger.error(`Stack: ${reason.stack.slice(0, 500)}`);
 });
 
 process.on("uncaughtException", (err: Error) => {
-  console.error(`[clawd] Uncaught exception: ${err.message}`);
-  if (err.stack) console.error(`[clawd] Stack: ${err.stack.slice(0, 500)}`);
+  logger.error(`Uncaught exception: ${err.message}`);
+  if (err.stack) logger.error(`Stack: ${err.stack.slice(0, 500)}`);
   // Don't exit — let the process continue serving other agents
 });

@@ -2,10 +2,11 @@
  * Session Management with SQLite
  */
 
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { getDataDir } from "../../config-file";
+import { getDataDir } from "../../config/config-file";
+import { createDatabase } from "../../db/factory";
 import { runMigrations } from "../../db/migrations";
 import { memoryMigrations } from "../../db/migrations/memory-migrations";
 import type { Message } from "../api/client";
@@ -83,23 +84,8 @@ export class SessionManager {
       mkdirSync(dir, { recursive: true });
     }
 
-    this.db = new Database(path);
-    this.setupConcurrency();
+    this.db = createDatabase(path, { foreignKeys: false });
     this.init();
-  }
-
-  private setupConcurrency() {
-    // Enable WAL mode for better concurrent read/write
-    this.db.exec("PRAGMA journal_mode = WAL");
-    // Wait up to 30 seconds for locks (increased from 5s)
-    this.db.exec("PRAGMA busy_timeout = 30000");
-    // Balanced sync mode
-    this.db.exec("PRAGMA synchronous = NORMAL");
-    // Increase cache size for better performance (negative = KB)
-    const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
-    this.db.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`);
-    this.db.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`);
-    // WAL mode already provides excellent read concurrency without dirty reads
   }
 
   private init() {

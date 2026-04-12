@@ -4,7 +4,7 @@
  *
  * Import from here rather than duplicating strings across:
  *   - src/agent/prompt/builder.ts         (in-process agents: OpenAI/Anthropic/Copilot/Ollama)
- *   - src/claude-code-main-worker.ts       (Claude Code SDK agents)
+ *   - src/claude-code/main-worker.ts        (Claude Code SDK agents)
  *   - src/agent/workers/clawd-chat/index.ts (external clawd-worker subprocess)
  */
 

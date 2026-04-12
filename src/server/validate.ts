@@ -8,6 +8,7 @@
  */
 
 import type { ZodSchema } from "zod";
+import { corsHeaders } from "./http-helpers";
 
 export type ValidationResult<T> = { ok: true; data: T } | { ok: false; error: Response };
 
@@ -18,7 +19,7 @@ export function validateBody<T>(schema: ZodSchema<T>, body: unknown): Validation
       ok: false,
       error: new Response(JSON.stringify({ error: "validation failed", issues: result.error.issues }), {
         status: 400,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...corsHeaders },
       }),
     };
   }

@@ -13,7 +13,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isBrowserEnabled, isWorkspacesEnabled } from "../config-file";
+import { isBrowserEnabled } from "../config/config-file";
 import { resolveToolAliases } from "./agents/loader";
 import type { CompletionRequest, Message, ToolCall, ToolDefinition } from "./api/client";
 import { createProvider } from "./api/factory";
@@ -24,13 +24,11 @@ import { formatToolResult, parseToolArguments } from "./core/loop";
 import { destroyHooks, initializeHooks } from "./hooks/manager";
 import { MCPManager } from "./mcp/client";
 import { estimateMessagesTokens, estimateTokens } from "./memory/memory";
-import { BrowserPlugin } from "./plugins/browser-plugin";
 import { type ContextModePluginResult, createContextModePlugin } from "./plugins/context-mode-plugin";
-import { CustomToolPlugin } from "./plugins/custom-tool-plugin";
 import { type Plugin, PluginManager } from "./plugins/manager";
 import { createStatePersistencePlugin } from "./plugins/state-persistence-plugin";
-import { TunnelPlugin } from "./plugins/tunnel-plugin";
-import { WorkspaceToolPlugin } from "./plugins/workspace-plugin";
+import { resolveModel, resolveIterationModel } from "./model-selection";
+import { tryRegisterTunnelPlugin, tryRegisterCustomToolPlugin, tryRegisterBrowserPlugin } from "./plugin-guards";
 import { buildDynamicSystemPrompt, type PromptContext } from "./prompt/builder";
 import { type Checkpoint, CheckpointManager } from "./session/checkpoint";
 import { getSessionManager, type Session, type SessionManager } from "./session/manager";
@@ -43,11 +41,11 @@ import {
 } from "./session/message-scoring";
 import { getSkillManager } from "./skills/manager";
 import { type ToolPlugin, ToolPluginManager } from "./tools/plugin";
-import { executeTools, getSandboxProjectRoot, type ToolResult, toolDefinitions } from "./tools/tools";
+import { executeTools, getSandboxProjectRoot, type ToolResult, toolDefinitions } from "./tools/definitions";
 import { getAgentContext, getContextProjectRoot, setAgentSessionId } from "./utils/agent-context";
-import { getMicroCompactor } from "./utils/microcompaction";
 import { ContextTracker } from "./utils/context-tracker";
 import { isDebugEnabled } from "./utils/debug";
+import { getMicroCompactor } from "./utils/microcompaction";
 import { smartTruncate } from "./utils/smart-truncation";
 
 // ============================================================================
@@ -56,7 +54,6 @@ import { smartTruncate } from "./utils/smart-truncation";
 
 const YELLOW = "\x1b[33m";
 const CYAN = "\x1b[36m";
-const _RED = "\x1b[31m";
 const RESET = "\x1b[0m";
 
 const logInterrupt = (msg: string) => console.log(`${CYAN}[Interrupt] ${msg}${RESET}`);
@@ -186,12 +183,6 @@ CLAIMING TASKS:
 ## Heartbeat
 Messages wrapped in <agent_signal> are your inner pulse — NOT from any user. On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, or idle. Never mention heartbeats in chat.
 
-## Workspace Tools (when spawn_workspace / list_workspaces are available)
-- After spawning a workspace, **immediately** send a workspace card using chat_send_message with the workspace_json parameter (use the workspace_id returned by spawn_workspace).
-- **NEVER** include URLs, paths, or internal addresses in message text — not even relative ones like /workspace/.... The workspace card handles navigation for the user.
-- Use file_id values (from screenshot) with chat_send_message_with_files to share screenshots — never include local paths or base64 in messages.
-- Only use workspace_id from the **most recently spawned** workspace (from the current spawn_workspace call, not from list_workspaces).
-
 ## Artifacts
 When you need to present rich visual content — dashboards, charts, interactive UIs, data tables, diagrams, or formatted documents — wrap the content in artifact tags:
 
@@ -270,7 +261,7 @@ export class Agent {
   private toolPluginManager: ToolPluginManager = new ToolPluginManager();
   private mcpManager: MCPManager = new MCPManager();
 
-  /** Expose MCPManager for external bridges (e.g., RemoteWorkerBridge) */
+  /** Expose MCPManager for external plugin use */
   getMcpManager(): MCPManager {
     return this.mcpManager;
   }
@@ -286,7 +277,6 @@ export class Agent {
   private contextTracker: ContextTracker | null = null;
   private microCompactor: ReturnType<typeof getMicroCompactor> | null = null;
   private compacting = false;
-  private _workspacePluginRegistered = false;
   private _tunnelPluginRegistered = false;
   private _browserPluginRegistered = false;
   private _customToolPluginRegistered = false;
@@ -328,12 +318,7 @@ export class Agent {
    * Uses provider's model if available, otherwise falls back to config.
    */
   private getModel(): string {
-    // Use provider's model if available (from config.json)
-    if (this.client && "model" in this.client) {
-      return (this.client as any).model;
-    }
-    // Fall back to config model (from CLI args)
-    return this.config.model || "claude-sonnet-4.5";
+    return resolveModel(this.client, this.config.model);
   }
 
   /**
@@ -354,64 +339,16 @@ export class Agent {
     afterCompaction: boolean,
     userMessage: string,
   ): string {
-    const fullModel = this.getModel();
-    const fastModel = this.config.fastModel || "claude-haiku-4.5";
-
-    // Always use full model for first 2 iterations
-    if (iteration <= 2) {
-      if (this.config.verbose) {
-        console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
-      }
-      return fullModel;
-    }
-
-    // Always use full model when tool results are pending
-    if (toolResultPending) {
-      if (this.config.verbose) {
-        console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
-      }
-      return fullModel;
-    }
-
-    // Always use full model immediately after compaction
-    if (afterCompaction) {
-      if (this.config.verbose) {
-        console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
-      }
-      return fullModel;
-    }
-
-    // Always use full model for reasoning-heavy requests
-    const reasoningKeywords = /\b(explain|why|analyze|analyse|design|understand|reason|think|consider|evaluate)\b/i;
-    if (reasoningKeywords.test(userMessage)) {
-      if (this.config.verbose) {
-        console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
-      }
-      return fullModel;
-    }
-
-    // Check if last N iterations were pure tool calls (no substantive text >50 chars)
-    const PURE_TOOL_WINDOW = 3;
-    const recentHistory = iterationContentHistory.slice(-PURE_TOOL_WINDOW);
-    if (recentHistory.length < PURE_TOOL_WINDOW) {
-      if (this.config.verbose) {
-        console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
-      }
-      return fullModel;
-    }
-
-    const allPureToolCalls = recentHistory.every((c) => c.length < 50);
-    if (allPureToolCalls) {
-      if (this.config.verbose) {
-        console.log(`[Agent] Model: ${fastModel} (downgraded: tool-routing)`);
-      }
-      return fastModel;
-    }
-
-    if (this.config.verbose) {
-      console.log(`[Agent] Model: ${fullModel} (full reasoning)`);
-    }
-    return fullModel;
+    return resolveIterationModel(
+      this.getModel(),
+      this.config.fastModel || "claude-haiku-4.5",
+      iteration,
+      iterationContentHistory,
+      toolResultPending,
+      afterCompaction,
+      userMessage,
+      this.config.verbose,
+    );
   }
 
   // ============================================================================
@@ -1579,11 +1516,11 @@ SUMMARY:`;
               console.log(`[Agent] Context mode plugin failed:`, err?.message || err);
             }
           });
-      } catch (err: any) {
+      } catch (err: unknown) {
         // C26: graceful degradation — continue without compression
         this.contextModePlugin = null;
         if (this.config.verbose) {
-          console.log(`[Agent] Context mode plugin failed:`, err?.message || err);
+          console.log(`[Agent] Context mode plugin failed:`, err instanceof Error ? err.message : err);
         }
       }
     }
@@ -1598,7 +1535,9 @@ SUMMARY:`;
             console.log(`[Agent] Discovered token limit for ${this.config.model}: ${limit}`);
           }
         })
-        .catch(() => {});
+        .catch((err) => {
+          if (this.config.verbose) console.warn("[Agent] fetchModelTokenLimit failed:", err);
+        });
     }
 
     // Initialize context tracker when contextMode is enabled
@@ -1615,84 +1554,27 @@ SUMMARY:`;
       }
     });
 
-    // Register workspace tool plugin (spawn_workspace, destroy_workspace, list_workspaces)
-    // Only enabled when config.json has "workspaces": true or ["channel-1", ...].
-    // Gracefully skips if Docker is unavailable. Guard against duplicate registration.
     const ctx = getAgentContext();
-    if (!this._workspacePluginRegistered && isWorkspacesEnabled(ctx?.channel)) {
-      try {
-        const wsPlugin = new WorkspaceToolPlugin(this.mcpManager);
-        this.toolPluginManager.register(wsPlugin);
-        this._workspacePluginRegistered = true;
-      } catch (err: any) {
-        if (this.config.verbose) {
-          console.log(`[Agent] Workspace plugin registration failed:`, err?.message || err);
-        }
-      }
-    }
 
-    // Register tunnel plugin (tunnel_create, tunnel_destroy, tunnel_list)
-    // Uses cloudflared Quick Tunnels — gracefully skips if cloudflared is unavailable.
+    // Register optional plugins (tunnel, custom scripts, browser)
     if (!this._tunnelPluginRegistered) {
-      try {
-        this.toolPluginManager.register(new TunnelPlugin());
-        this._tunnelPluginRegistered = true;
-      } catch (err: any) {
-        if (this.config.verbose) {
-          console.log(`[Agent] Tunnel plugin registration failed:`, err?.message || err);
-        }
-      }
+      this._tunnelPluginRegistered = tryRegisterTunnelPlugin(this.toolPluginManager, this.config.verbose);
     }
-
-    // Register custom script plugin (custom_script management + discovered ct_* tools)
-    // Scans {projectRoot}/.clawd/tools/ for user-created custom scripts.
     if (!this._customToolPluginRegistered) {
-      try {
-        const customPlugin = new CustomToolPlugin();
-        this.toolPluginManager.register(customPlugin);
-        this._customToolPluginRegistered = true;
-        // Discover existing custom tools and register as first-class ct_* tools
-        // Use original project root for custom tools (not worktree)
-        const configRoot = ctx?.originalProjectRoot || ctx?.projectRoot || getContextProjectRoot();
-        if (configRoot && configRoot !== "/" && existsSync(join(configRoot, ".clawd"))) {
-          const discovered = customPlugin.getDiscoveredTools(configRoot);
-          for (const tool of discovered) {
-            try {
-              this.toolPluginManager.register({
-                name: `custom-script-${tool.name}`,
-                getTools: () => [tool],
-              });
-            } catch (toolErr: any) {
-              if (this.config.verbose) {
-                console.log(`[Agent] Failed to register ct tool ${tool.name}:`, toolErr?.message);
-              }
-            }
-          }
-        }
-      } catch (err: any) {
-        if (this.config.verbose) {
-          console.log(`[Agent] Custom tool plugin registration failed:`, err?.message || err);
-        }
-      }
+      const configRoot = ctx?.originalProjectRoot || ctx?.projectRoot || getContextProjectRoot();
+      this._customToolPluginRegistered = tryRegisterCustomToolPlugin(
+        this.toolPluginManager,
+        configRoot,
+        this.config.verbose,
+      );
     }
-
-    // Register browser plugin (browser_navigate, browser_screenshot, browser_click, etc.)
-    // Only enabled when config.json has "browser": true, ["channel-1", ...], or { channel: [tokens] }.
     if (!this._browserPluginRegistered && isBrowserEnabled(ctx?.channel)) {
-      try {
-        // Use channel:agentName as browser identity — two agents in different channels
-        // can share the same name, so both parts are needed for uniqueness.
-        const browserAgentId =
-          ctx?.channel && ctx?.agentId
-            ? `${ctx.channel}:${ctx.agentId}`
-            : ctx?.agentId || `agent_${Date.now().toString(36)}`;
-        this.toolPluginManager.register(new BrowserPlugin(ctx?.channel, browserAgentId));
-        this._browserPluginRegistered = true;
-      } catch (err: any) {
-        if (this.config.verbose) {
-          console.log(`[Agent] Browser plugin registration failed:`, err?.message || err);
-        }
-      }
+      this._browserPluginRegistered = tryRegisterBrowserPlugin(
+        this.toolPluginManager,
+        ctx?.channel,
+        this.agentId,
+        this.config.verbose,
+      );
     }
 
     return this.session;
@@ -2236,7 +2118,7 @@ SUMMARY:`;
                 break;
             }
           }
-        } catch (err: any) {
+        } catch (err: unknown) {
           // Handle AllKeysSuspendedError — notify user and cancel
           if (err instanceof AllKeysSuspendedError) {
             const resumeTime = err.earliestResumeAt.toISOString();
@@ -2258,8 +2140,9 @@ SUMMARY:`;
             };
           }
           // Ignore abort errors
-          if (!signal.aborted && !err.message?.includes("aborted")) {
-            streamError = err;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          if (!signal.aborted && !errMsg.includes("aborted")) {
+            streamError = err instanceof Error ? err : new Error(errMsg);
           }
         }
 
@@ -2673,13 +2556,13 @@ SUMMARY:`;
               toolPrep.map(async ({ toolCall, parsedArgs }) => {
                 try {
                   return await this.executeSingleToolCall(toolCall);
-                } catch (toolError: any) {
+                } catch (toolError: unknown) {
                   return {
                     args: parsedArgs || {},
                     result: {
                       success: false,
                       output: "",
-                      error: toolError.message || "Tool execution failed",
+                      error: toolError instanceof Error ? toolError.message : "Tool execution failed",
                     } as ToolResult,
                   };
                 }
@@ -2711,13 +2594,13 @@ SUMMARY:`;
             let result: { args: Record<string, any>; result: ToolResult };
             try {
               result = await this.executeSingleToolCall(toolCall);
-            } catch (toolError: any) {
+            } catch (toolError: unknown) {
               result = {
                 args: parsedArgs || {},
                 result: {
                   success: false,
                   output: "",
-                  error: toolError.message || "Tool execution failed",
+                  error: toolError instanceof Error ? toolError.message : "Tool execution failed",
                 },
               };
             }

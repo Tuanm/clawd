@@ -3,9 +3,8 @@
  * Tests: getToolCap, isExempt, compressToolOutput
  */
 
-import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
-import { compressToolOutput, getToolCap, isExempt } from "./output-compressor";
-import { ToolResult } from "./output-compressor";
+import { describe, expect, mock, test } from "bun:test";
+import { compressToolOutput, getToolCap, isExempt, type ToolResult } from "./output-compressor";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -14,7 +13,7 @@ function makeOutput(n: number): string {
 }
 
 function mockIndexFn() {
-  return vi.fn((_sessionId: string, _sourceId: string, _toolName: string, _content: string) => true);
+  return mock((_sessionId: string, _sourceId: string, _toolName: string, _content: string) => true);
 }
 
 // ── getToolCap Tests ─────────────────────────────────────────────────
@@ -243,7 +242,7 @@ describe("compressToolOutput", () => {
   describe("graceful degradation", () => {
     test("indexFn throwing does not cause compressToolOutput to throw", () => {
       const result: ToolResult = { success: true, output: makeOutput(100) };
-      const badIndexFn = vi.fn(() => {
+      const badIndexFn = mock(() => {
         throw new Error("index error");
       });
       const compressed = compressToolOutput("view", result, "session1", badIndexFn);
@@ -253,7 +252,7 @@ describe("compressToolOutput", () => {
 
     test("indexFn throwing on over-cap does not cause throw", () => {
       const result: ToolResult = { success: true, output: makeOutput(20000) };
-      const badIndexFn = vi.fn(() => {
+      const badIndexFn = mock(() => {
         throw new Error("index error");
       });
       const compressed = compressToolOutput("bash", result, "session1", badIndexFn);

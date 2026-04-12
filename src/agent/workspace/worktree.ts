@@ -11,8 +11,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { getAuthorConfig } from "../../config-file";
+import { join, sep } from "node:path";
+import { getAuthorConfig } from "../../config/config-file";
 
 // ============================================================================
 // Git Detection
@@ -169,17 +169,22 @@ export async function createWorktree(projectPath: string, agentId: string): Prom
         stdio: "pipe",
         timeout: 300_000, // 5 min timeout for large submodules
       });
-    } catch (subErr: any) {
+    } catch (subErr: unknown) {
       try {
         execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: projectPath, stdio: "pipe" });
       } catch {}
-      throw new Error(`Submodule init failed (worktree rolled back): ${subErr.message}`);
+      throw new Error(
+        `Submodule init failed (worktree rolled back): ${subErr instanceof Error ? subErr.message : String(subErr)}`,
+      );
     }
   }
 
   // Install dependencies in the worktree (best-effort, non-blocking)
-  installWorktreeDeps(worktreePath).catch((err) => {
-    console.warn(`[Worktree] Dependency install failed for ${worktreePath}:`, err.message);
+  installWorktreeDeps(worktreePath).catch((err: unknown) => {
+    console.warn(
+      `[Worktree] Dependency install failed for ${worktreePath}:`,
+      err instanceof Error ? err.message : String(err),
+    );
   });
 
   return { path: worktreePath, branch: branchName };
@@ -221,7 +226,6 @@ export async function safeDeleteWorktree(
   projectRoot: string,
 ): Promise<{ deleted: boolean; reason?: string }> {
   const expectedBase = getWorktreeBase(projectRoot);
-  const sep = require("node:path").sep;
   if (
     !worktreePath.startsWith(expectedBase + sep) &&
     !worktreePath.startsWith(expectedBase + "/") &&
@@ -860,8 +864,8 @@ export function stageHunk(
     // Count remaining unstaged hunks
     const remaining = getFileDiff(worktreePath, filePath, "unstaged");
     return { ok: true, remainingHunks: remaining?.hunks.length ?? 0 };
-  } catch (err: any) {
-    return { ok: false, error: `apply_failed: ${err.message}` };
+  } catch (err: unknown) {
+    return { ok: false, error: `apply_failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -888,8 +892,8 @@ export function revertHunk(
     });
     const remaining = getFileDiff(worktreePath, filePath, "unstaged");
     return { ok: true, remainingHunks: remaining?.hunks.length ?? 0 };
-  } catch (err: any) {
-    return { ok: false, error: `apply_failed: ${err.message}` };
+  } catch (err: unknown) {
+    return { ok: false, error: `apply_failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -917,8 +921,8 @@ export function unstageHunk(
     });
     const remaining = getFileDiff(worktreePath, filePath, "staged");
     return { ok: true, remainingHunks: remaining?.hunks.length ?? 0 };
-  } catch (err: any) {
-    return { ok: false, error: `apply_failed: ${err.message}` };
+  } catch (err: unknown) {
+    return { ok: false, error: `apply_failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 

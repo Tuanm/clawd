@@ -1,7 +1,10 @@
 services:
   clawd:
-    image: ghcr.io/Tuanm/clawd:latest
     build: .
+    container_name: clawd
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "3456:3456"
     volumes:

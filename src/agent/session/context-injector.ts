@@ -9,7 +9,7 @@
  * turn starts fresh while still having access to recent conversation history.
  */
 
-import { type SessionManager, getSessionManager } from "./manager";
+import { getSessionManager, type SessionManager } from "./manager";
 
 // ============================================================================
 // Types

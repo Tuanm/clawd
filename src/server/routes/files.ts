@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { ATTACHMENTS_DIR, db, generateId } from "../database";
 
 // Cache directory for optimized images
@@ -26,9 +26,39 @@ export async function uploadFile(file: File, _channel: string, _threadTs?: strin
   }
 
   const id = generateId("F");
-  const ext = file.name.split(".").pop() || "";
+  const safeBase = basename(file.name);
+  const ext =
+    extname(safeBase)
+      .replace(/[^a-zA-Z0-9]/g, "")
+      .slice(0, 10) || "bin";
   const filename = `${id}.${ext}`;
   const filepath = join(ATTACHMENTS_DIR, filename);
+
+  // Validate/coerce MIME type — never trust client-supplied type directly
+  const ALLOWED_MIMETYPES = new Set([
+    "text/plain",
+    "text/html",
+    "text/css",
+    "text/csv",
+    "text/markdown",
+    "application/json",
+    "application/pdf",
+    "application/xml",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/svg+xml",
+    "audio/mpeg",
+    "audio/wav",
+    "audio/ogg",
+    "video/mp4",
+    "video/webm",
+    "application/zip",
+    "application/gzip",
+    "application/octet-stream",
+  ]);
+  const safeMime = ALLOWED_MIMETYPES.has(file.type) ? file.type : "application/octet-stream";
 
   // Save file to disk (async to avoid blocking event loop on large files)
   const buffer = await file.arrayBuffer();
@@ -38,7 +68,7 @@ export async function uploadFile(file: File, _channel: string, _threadTs?: strin
   db.run(`INSERT INTO files (id, name, mimetype, size, path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)`, [
     id,
     file.name,
-    file.type,
+    safeMime,
     file.size,
     filepath,
     userId,
@@ -47,7 +77,7 @@ export async function uploadFile(file: File, _channel: string, _threadTs?: strin
   const fileInfo = {
     id,
     name: file.name,
-    mimetype: file.type,
+    mimetype: safeMime,
     size: file.size,
     url_private: `/api/files/${id}`,
   };

@@ -74,8 +74,8 @@ registerTool(
         .join("\n\n");
 
       return { success: true, output: `Available skills:\n\n${formatted}` };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -115,8 +115,8 @@ registerTool(
         .join("\n\n");
 
       return { success: true, output: `Matching skills:\n\n${formatted}` };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -155,8 +155,8 @@ registerTool(
         success: true,
         output: `# Skill: ${skill.name} (${skill.source})\n\n${skill.content}\n\n---\n*Skill activated. Follow the guidelines above.*`,
       };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -206,8 +206,8 @@ registerTool(
       }
 
       return { success: true, output: `Skill '${name}' saved to ${scope || "project"} scope.` };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -238,8 +238,8 @@ registerTool(
       }
 
       return { success: true, output: `Skill '${name}' deleted.` };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -289,8 +289,8 @@ registerTool(
       let output = `Todo list (${list.length} items):\n`;
       for (const t of list) output += `- [${t.status}] ${t.content} (${t.id})\n`;
       return { success: true, output };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -310,8 +310,8 @@ registerTool("todo_read", "Read your current Todo list.", {}, [], async () => {
     let output = `Todo list (${done}/${list.length} completed):\n`;
     for (const t of list) output += `- [${t.status}] ${t.content} (${t.id})\n`;
     return { success: true, output };
-  } catch (err: any) {
-    return { success: false, output: "", error: err.message };
+  } catch (err: unknown) {
+    return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
   }
 });
 
@@ -344,8 +344,8 @@ registerTool(
       let output = `Updated. Progress: ${done}/${list.length}\n`;
       for (const t of list) output += `- [${t.status}] ${t.content} (${t.id})\n`;
       return { success: true, output };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -468,11 +468,11 @@ echo "Exit code: $?" >> "${logFile}"
         2,
       ),
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     return {
       success: false,
       output: "",
-      error: `Failed to spawn tmux session: ${err.message}`,
+      error: `Failed to spawn tmux session: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }
@@ -504,8 +504,8 @@ Sub-agents can spawn their own sub-agents (up to 3 levels deep). The sub-agent w
     try {
       const agentName = name || `subagent-${Date.now()}`;
       return await spawnTmuxSubAgent(task, agentName);
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );

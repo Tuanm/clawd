@@ -307,7 +307,7 @@ triggers: [api-docs, document-api, endpoints, swagger]
 
 ## Steps
 
-1. Find all route files: `glob "src/api/**/*.ts"`
+1. Find all route files: `glob "src/server/routes/**/*.ts"`
 2. For each file, extract:
    - HTTP method and path
    - Request body schema (if POST/PUT)

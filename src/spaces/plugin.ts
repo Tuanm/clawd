@@ -1,6 +1,7 @@
 import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
 import { timedFetch } from "../utils/timed-fetch";
 import type { SpaceManager } from "./manager";
+import { MAX_RESULT_LENGTH } from "../agent/constants/spaces";
 
 interface SpacePluginConfig {
   spaceId: string;
@@ -45,8 +46,8 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
             // Post result to parent channel
             try {
               const truncated =
-                result.length > 10000
-                  ? result.slice(0, 10000) + "\n\n[Result truncated — full result available in sub-space]"
+                result.length > MAX_RESULT_LENGTH
+                  ? result.slice(0, MAX_RESULT_LENGTH) + "\n\n[Result truncated — full result available in sub-space]"
                   : result;
               await timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
                 method: "POST",

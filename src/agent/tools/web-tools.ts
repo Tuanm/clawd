@@ -85,8 +85,8 @@ registerTool(
       }
 
       return { success: true, output: content };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );
@@ -136,8 +136,8 @@ registerTool(
         .join("\n\n");
 
       return { success: true, output: `Search results for "${query}":\n\n${output}` };
-    } catch (err: any) {
-      return { success: false, output: "", error: err.message };
+    } catch (err: unknown) {
+      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
   },
 );

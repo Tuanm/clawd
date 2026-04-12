@@ -7,7 +7,7 @@ import Database from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getDataDir } from "../../config-file";
+import { getDataDir } from "../../config/config-file";
 import { runMigrations } from "../../db/migrations";
 import { memoryMigrations } from "../../db/migrations/memory-migrations";
 
@@ -197,14 +197,16 @@ export class KnowledgeBase {
       if (!ftsQuery) return [];
 
       // Session IDs are formatted as "{channel}-{agentId}", so LIKE '{channel}-%' matches all agents in the channel
-      const channelPrefix = `${channel}-%`;
+      // Escape LIKE wildcards in channel name to prevent injection
+      const safeChannel = channel.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+      const channelPrefix = `${safeChannel}-%`;
 
       // FTS search with channel filter
       const ftsResults = this.db
         .query(
           `SELECT k.source_id AS sourceId, k.tool_name AS toolName, k.chunk_index AS chunkIndex, k.content, rank AS rank
            FROM knowledge_fts f JOIN knowledge k ON k.id = f.rowid
-           WHERE knowledge_fts MATCH ? AND k.session_id LIKE ?
+           WHERE knowledge_fts MATCH ? AND k.session_id LIKE ? ESCAPE '\\'
            ORDER BY rank LIMIT ?`,
         )
         .all(ftsQuery, channelPrefix, limit) as KBSearchResult[];
@@ -216,7 +218,7 @@ export class KnowledgeBase {
       return this.db
         .query(
           `SELECT source_id AS sourceId, tool_name AS toolName, chunk_index AS chunkIndex, content, 0 as rank
-           FROM knowledge WHERE content LIKE ? ESCAPE '\\' AND session_id LIKE ?
+           FROM knowledge WHERE content LIKE ? ESCAPE '\\' AND session_id LIKE ? ESCAPE '\\'
            ORDER BY created_at DESC LIMIT ?`,
         )
         .all(`%${escapedQuery}%`, channelPrefix, limit) as KBSearchResult[];
@@ -311,7 +313,8 @@ export class KnowledgeBase {
       }
 
       if (toDelete.length > 0) {
-        this.db.run(`DELETE FROM knowledge WHERE id IN (${toDelete.join(",")})`);
+        const placeholders = toDelete.map(() => "?").join(",");
+        this.db.run(`DELETE FROM knowledge WHERE id IN (${placeholders})`, toDelete);
         const current = this.sessionSizes.get(sessionId) || 0;
         this.sessionSizes.set(sessionId, Math.max(0, current - freed));
       }

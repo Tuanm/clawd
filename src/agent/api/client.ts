@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import http2 from "node:http2";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { trackFailure, trackSuccess } from "../../analytics";
+import { trackFailure, trackSuccess } from "../../shared/analytics";
 import { callContext } from "./call-context";
 import { AllKeysSuspendedError, keyPool } from "./key-pool";
 import { ensureKeyPoolInitialized, getBaseUrlForProvider, getCopilotToken } from "./provider-config";

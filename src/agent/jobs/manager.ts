@@ -121,13 +121,13 @@ export class JobManager extends EventEmitter {
         job.progress = 100;
         this.emit("job:completed", job);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (abortController.signal.aborted) {
         job.status = "cancelled";
         this.emit("job:cancelled", job);
       } else {
         job.status = "failed";
-        job.error = error.message || String(error);
+        job.error = error instanceof Error ? error.message : String(error);
         this.emit("job:failed", job);
       }
     } finally {

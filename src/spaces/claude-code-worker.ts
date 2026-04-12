@@ -7,10 +7,16 @@
 
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { countCustomScripts } from "../agent/plugins/custom-tool-plugin";
-import { initMemorySession, saveToMemory } from "../claude-code-memory";
-import { runSDKQuery } from "../claude-code-sdk";
-import { startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "../claude-code-tmux";
-import { formatToolDescription, hasTmux, truncateToolResult } from "../claude-code-utils";
+import { initMemorySession, saveToMemory } from "../claude-code/memory";
+import { runSDKQuery } from "../claude-code/sdk";
+import { startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "../claude-code/tmux";
+import { formatToolDescription, hasTmux, truncateToolResult } from "../claude-code/utils";
+import {
+  DEFAULT_API_PORT,
+  HEALTH_CHECK_INTERVAL_MS,
+  MAX_CONTEXT_LENGTH,
+  RETRY_BACKOFF_MS,
+} from "../agent/constants/spaces";
 
 import { setAgentStreaming } from "../server/database";
 import { spaceProjectRoots } from "../server/mcp";
@@ -131,16 +137,17 @@ export class ClaudeCodeSpaceWorker {
       try {
         await this.runOnce();
         return;
-      } catch (err: any) {
+      } catch (err: unknown) {
         this.retryCount++;
-        const isAuth = err.message?.includes("Not logged in") || err.message?.includes("/login");
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const isAuth = errMsg.includes("Not logged in") || errMsg.includes("/login");
         if (isAuth || this.retryCount > this.maxRetries || this.stopped) {
           throw err;
         }
         await this.postSystemMessage(
-          `Error: ${err.message?.slice(0, 100)}. Retrying (${this.retryCount}/${this.maxRetries})...`,
+          `Error: ${errMsg.slice(0, 100)}. Retrying (${this.retryCount}/${this.maxRetries})...`,
         );
-        await Bun.sleep(5000 * this.retryCount);
+        await Bun.sleep(RETRY_BACKOFF_MS * this.retryCount);
       }
     }
   }
@@ -194,7 +201,7 @@ export class ClaudeCodeSpaceWorker {
 
   private async runOnce(): Promise<void> {
     const { space, task, context, agentId, agentPrompt } = this.config;
-    const prompt = context ? `**Context:**\n${context.slice(0, 4000)}\n\n**Task:** ${task}` : task;
+    const prompt = context ? `**Context:**\n${context.slice(0, MAX_CONTEXT_LENGTH)}\n\n**Task:** ${task}` : task;
 
     const shortId = space.id.slice(0, 8);
     const logFilePath = `/tmp/clawd-claude-code-log-${space.id}.jsonl`;
@@ -228,10 +235,16 @@ export class ClaudeCodeSpaceWorker {
           } catch {}
         }
       } catch {}
-    }, 2000);
+    }, HEALTH_CHECK_INTERVAL_MS);
 
     // Register project root for space MCP file tools (before runSDKQuery)
-    const effectiveProjectRoot = this.config.projectRoot || process.cwd();
+    if (!this.config.projectRoot) {
+      throw new Error(
+        `[ClaudeCodeSpaceWorker] projectRoot is required but was not provided for space ${space.id}. ` +
+          `Ensure the agent's channel_agents.project column is set in the database.`,
+      );
+    }
+    const effectiveProjectRoot = this.config.projectRoot;
     spaceProjectRoots.set(space.id, effectiveProjectRoot);
 
     // Build tool-restriction addendum (injected after the agent prompt when tools are restricted)
@@ -304,7 +317,7 @@ RULES:
       // Run the initial prompt; if interrupted by human message, catch abort and resume below
       try {
         this.sessionId = await runSDKQuery(buildSdkOpts(prompt), sdkCallbacks);
-      } catch (err: any) {
+      } catch (err: unknown) {
         // If this was a human-interrupt abort, fall through to the resume loop
         if (!interrupted) throw err;
         console.log(`[claude-code] Initial run aborted by human interrupt in ${space.space_channel}`);
@@ -325,7 +338,7 @@ RULES:
 
         try {
           this.sessionId = await runSDKQuery(buildSdkOpts(humanPrompt), sdkCallbacks);
-        } catch (err: any) {
+        } catch (err: unknown) {
           if (!interrupted) throw err;
           console.log(`[claude-code] Resume aborted by another human message in ${space.space_channel}`);
         }
@@ -374,9 +387,9 @@ RULES:
   }
 
   private buildMcpServers(): Record<string, McpServerConfig> {
-    let port = "3456";
+    let port = DEFAULT_API_PORT;
     try {
-      port = new URL(this.config.apiUrl).port || "3456";
+      port = new URL(this.config.apiUrl).port || DEFAULT_API_PORT;
     } catch {}
 
     // Only the clawd space MCP server is passed to the CC SDK.

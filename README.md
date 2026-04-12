@@ -25,7 +25,7 @@ Claw'd is an open-source platform where AI agents operate autonomously through a
 ### Install & Build
 
 ```sh
-git clone https://github.com/Tuanm/clawd.git
+git clone https://github.com/clawd-pilot/clawd.git
 cd clawd
 bun install
 bun run build    # Builds UI → embeds assets → compiles binary
@@ -65,7 +65,7 @@ flowchart LR
     API["Chat API (/api/*)"]
     MCP["MCP Endpoint (/mcp)"]
     Bridge["Browser Bridge (/browser/ws)"]
-    DB[("SQLite\nchat.db + memory.db")]
+    DB[("SQLite\nchat.db + memory.db\nkanban.db + scheduler.db")]
     Agents["Agent Loops"]
   end
 
@@ -288,17 +288,28 @@ Agent session memory and knowledge store (SQLite, WAL mode). Contains:
 clawd/
 ├── src/                          # Server + agent system
 │   ├── index.ts                  # Entry point: HTTP/WS server, all API routes
-│   ├── config.ts                 # CLI argument parser
-│   ├── config-file.ts            # Config file loader, getDataDir()
+│   ├── config/
+│   │   ├── config.ts             # CLI argument parser
+│   │   └── config-file.ts        # Config file loader, getDataDir()
 │   ├── worker-loop.ts            # Per-agent polling loop
 │   ├── worker-manager.ts         # Multi-agent orchestrator
 │   ├── server/
 │   │   ├── database.ts           # chat.db schema & migrations
 │   │   ├── websocket.ts          # WebSocket broadcasting
 │   │   ├── browser-bridge.ts     # Browser extension WS bridge
-│   │   ├── remote-worker.ts      # Remote worker WebSocket bridge
-│   │   └── routes/
-│   │       └── artifact-actions.ts # Interactive artifact action handler and validation
+│   │   ├── mcp/                  # MCP server (protocol, tool defs, execution)
+│   │   └── routes/               # REST API route handlers
+│   │       ├── channels.ts       # Channel CRUD
+│   │       ├── messages.ts       # Message operations
+│   │       ├── files.ts          # File upload/download
+│   │       ├── mcp-servers.ts    # MCP server management
+│   │       ├── articles.ts       # Article management
+│   │       ├── tasks.ts          # Task/kanban operations
+│   │       ├── analytics.ts      # Usage analytics
+│   │       ├── worktree.ts       # Git worktree operations
+│   │       ├── artifact-actions.ts # Interactive artifact actions
+│   │       ├── artifact-datasource.ts # Artifact data sources
+│   │       └── datasource-parsers.ts  # Data source parsers
 │   ├── agent/
 │   │   ├── agent.ts              # Agent class, reasoning loop, compaction
 │   │   ├── agents/               # Agent file loader (4-directory priority, Claude Code compat)
@@ -314,6 +325,16 @@ clawd/
 │   │   ├── manager.ts            # Space lifecycle
 │   │   ├── worker.ts             # Space worker orchestrator
 │   │   └── spawn-plugin.ts       # spawn_agent tool implementation
+│   ├── claude-code/              # Claude Code SDK integration
+│   │   ├── sdk.ts                # Claude Agent SDK wrapper
+│   │   ├── main-worker.ts        # Claude Code process management
+│   │   └── memory.ts             # Memory bridge for Claude Code sessions
+│   ├── embedded/                 # Build-generated embedded assets
+│   │   ├── index.ts              # Barrel export
+│   │   ├── ui.ts                 # Embedded React UI (base64)
+│   │   ├── cli.ts                # Embedded CLI assets (base64)
+│   │   └── extension.ts          # Embedded browser extension (base64)
+│   ├── db/                       # Database modules
 │   └── scheduler/                # Scheduled tasks
 │       ├── manager.ts            # Tick loop (10s interval)
 │       ├── runner.ts             # Job executor → sub-spaces
@@ -343,13 +364,16 @@ clawd/
 │   │       ├── content-script.js # DOM extraction
 │   │       ├── shield.js         # Anti-detection patches
 │   │       └── offscreen.js      # Persistent WS connection
-│   └── clawd-worker/            # Remote worker clients
+│   └── remote-worker/            # Remote worker clients
 │       ├── README.md             # Remote worker documentation
 │       ├── typescript/           # TypeScript implementation (Bun/Node.js)
 │       ├── python/               # Python implementation (zero-dependency)
 │       └── java/                 # Java implementation (zero-dependency)
 ├── scripts/
+│   ├── build-helper.ts            # Build system helper (used by all build:* scripts)
 │   ├── embed-ui.ts               # Embed UI assets into binary
+│   ├── embed-cli.ts              # Embed CLI assets into binary
+│   ├── migrate-agents.ts         # Agent migration utility
 │   └── zip-extension.ts          # Pack extension into binary
 ├── Dockerfile                    # Multi-stage Docker build
 └── compose.yaml                  # Docker Compose deployment
@@ -377,7 +401,7 @@ Agents are extended via two interfaces:
 - **ToolPlugin** — adds tools: `getTools()`, `beforeExecute()`, `afterExecute()`
 - **Plugin** — adds lifecycle hooks: `onUserMessage()`, `onToolCall()`, `getSystemContext()`
 
-Built-in plugins: browser, workspace, context-mode, state-persistence, tunnel, spawn-agent, scheduler, memory, custom-tool.
+Built-in plugins: browser, context-mode, state-persistence, tunnel, spawn-agent, scheduler, memory, custom-tool.
 
 ### Model Tiering & Tool Filtering
 
@@ -445,7 +469,7 @@ For full details, see **[docs/skills.md](docs/skills.md)**.
 
 ### Custom Tools
 
-Agents can create, manage, and use project-specific custom tools via the `custom_tool` tool with 6 modes: `list`, `add`, `edit`, `delete`, `view`, `execute`.
+Agents can create, manage, and use project-specific custom tools via the `custom_script` tool with 6 modes: `list`, `add`, `edit`, `delete`, `view`, `execute`.
 
 Tools are stored at `{projectRoot}/.clawd/tools/{toolId}/` with:
 - **`tool.json`** — metadata (name, description, parameters, entrypoint, interpreter, timeout)
@@ -651,30 +675,30 @@ Remote workers allow agents to execute tools (`view`, `edit`, `create`, `grep`, 
 
 | Implementation | Runtime | File |
 |---|---|---|
-| **TypeScript** | Bun / Node.js 22.4+ | `packages/clawd-worker/typescript/remote-worker.ts` |
-| **Python** | Python 3.8+ (stdlib only) | `packages/clawd-worker/python/remote_worker.py` |
-| **Java** | Java 21+ | `packages/clawd-worker/java/RemoteWorker.java` |
+| **TypeScript** | Bun / Node.js 22.4+ | `packages/remote-worker/typescript/remote-worker.ts` |
+| **Python** | Python 3.8+ (stdlib only) | `packages/remote-worker/python/remote_worker.py` |
+| **Java** | Java 21+ | `packages/remote-worker/java/RemoteWorker.java` |
 
 ### Quick Start
 
 ```sh
 # TypeScript (Bun)
-CLAWD_WORKER_TOKEN=your-token bun packages/clawd-worker/typescript/remote-worker.ts \
+CLAWD_WORKER_TOKEN=your-token bun packages/remote-worker/typescript/remote-worker.ts \
   --server wss://your-server.example.com
 
 # Python
-CLAWD_WORKER_TOKEN=your-token python3 packages/clawd-worker/python/remote_worker.py \
+CLAWD_WORKER_TOKEN=your-token python3 packages/remote-worker/python/remote_worker.py \
   --server wss://your-server.example.com
 
 # Java
-javac --source 21 --enable-preview packages/clawd-worker/java/RemoteWorker.java
-CLAWD_WORKER_TOKEN=your-token java --enable-preview -cp packages/clawd-worker/java RemoteWorker \
+javac --source 21 --enable-preview packages/remote-worker/java/RemoteWorker.java
+CLAWD_WORKER_TOKEN=your-token java --enable-preview -cp packages/remote-worker/java RemoteWorker \
   --server wss://your-server.example.com
 ```
 
 Add `--browser` to enable remote browser automation (launches Chrome/Edge via CDP). Remote workers support 24 of the 26 browser tools (`browser_cookies` and `browser_emulate` are extension-only).
 
-See **[packages/clawd-worker/README.md](packages/clawd-worker/README.md)** for full CLI options.
+See **[packages/remote-worker/README.md](packages/remote-worker/README.md)** for full CLI options.
 
 ---
 
@@ -694,7 +718,7 @@ The multi-stage Dockerfile:
 
 GitHub workflow publishes Docker images to **ghcr.io** on tag push:
 - **Trigger**: Push tag (e.g., `v1.2.3`)
-- **Registry**: `ghcr.io/Tuanm/clawd`
+- **Registry**: `ghcr.io/clawd-pilot/clawd`
 - **Tags**: Version-specific (e.g., `v1.2.3`) and `latest`
 
 ### Run with Docker Compose
@@ -704,7 +728,7 @@ GitHub workflow publishes Docker images to **ghcr.io** on tag push:
 services:
   clawd:
     build: .
-    image: ghcr.io/Tuanm/clawd:latest
+    image: ghcr.io/clawd-pilot/clawd:latest
     ports:
       - "3456:3456"
     volumes:
@@ -749,7 +773,7 @@ Authorization: Bearer <token>
 ```
 WebSocket connections authenticate via `?token=<value>` query parameter on `/ws`.
 
-For the complete API reference, see **[docs/architecture.md § API Reference](docs/architecture.md#12-api-reference)**.
+For the complete API reference, see **[docs/architecture.md § API Reference](docs/architecture.md#13-api-reference)**.
 
 ---
 
@@ -900,8 +924,8 @@ bun run install:local  # Copy binary to ~/.clawd/bin/
 ### Build Pipeline
 
 1. `vite build` — compiles React UI → `packages/ui/dist/`
-2. `embed-ui.ts` — base64 embeds UI into `src/embedded-ui.ts`
-3. `zip-extension.ts` — packs browser extension into `src/embedded-extension.ts`
+2. `embed-ui.ts` — base64 embeds UI into `src/embedded/ui.ts`
+3. `zip-extension.ts` — packs browser extension into `src/embedded/extension.ts`
 4. `bun build --compile` — produces `dist/clawd` binary
 
 ### Code Style

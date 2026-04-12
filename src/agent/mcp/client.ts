@@ -243,6 +243,8 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
     if (!this.process?.stdin) {
       throw new Error("MCP server not connected");
     }
+    // Extract to local to avoid non-null assertion inside closure
+    const stdin = this.process.stdin;
 
     const id = ++this.requestId;
     const request: MCPRequest = {
@@ -256,7 +258,7 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
       this.pendingRequests.set(id, { resolve, reject });
 
       const message = `${JSON.stringify(request)}\n`;
-      (this.process!.stdin as any).write(message);
+      (stdin as any).write(message);
 
       // Timeout — clear on resolve/reject to prevent leak
       const timer = setTimeout(() => {
@@ -413,8 +415,9 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
         console.log(`[MCP] ${this.name}: Connected successfully`);
       }
       this.emit("connected");
-    } catch (err: any) {
-      console.error(`[MCP] ${this.name}: Connection failed: ${err.message}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[MCP] ${this.name}: Connection failed: ${message}`);
       this.emit("error", err);
       throw err;
     }
@@ -457,9 +460,10 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     try {
       const result = await this.request("resources/list", {});
       this.resources = result.resources || [];
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (isDebugEnabled()) {
-        console.log(`[MCP] ${this.name}: No resources (optional): ${err.message}`);
+        const message = err instanceof Error ? err.message : String(err);
+        console.log(`[MCP] ${this.name}: No resources (optional): ${message}`);
       }
       this.resources = [];
     }
@@ -468,9 +472,10 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
     try {
       const result = await this.request("prompts/list", {});
       this.prompts = result.prompts || [];
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (isDebugEnabled()) {
-        console.log(`[MCP] ${this.name}: No prompts (optional): ${err.message}`);
+        const message = err instanceof Error ? err.message : String(err);
+        console.log(`[MCP] ${this.name}: No prompts (optional): ${message}`);
       }
       this.prompts = [];
     }
@@ -504,10 +509,11 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
         body: JSON.stringify(request),
         signal: ctrl.signal,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       clearTimeout(timer);
       // Sanitize URL from error to avoid leaking credentials/internal addresses
-      const safeMsg = `MCP HTTP request failed: ${err?.message?.split("http")[0]?.trim() || "network error"}`;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const safeMsg = `MCP HTTP request failed: ${errMsg.split("http")[0]?.trim() || "network error"}`;
       const safeErr = new Error(safeMsg);
       // Emit error so health monitor can detect dead HTTP servers
       this.emit("error", safeErr);
@@ -585,9 +591,10 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
       // Notifications expect 202 Accepted (no body) or similar success
       const newSessionId = response.headers.get("mcp-session-id");
       if (newSessionId) this.sessionId = newSessionId;
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (isDebugEnabled()) {
-        console.log(`[MCP] ${this.name}: Notification ${method} failed: ${err.message}`);
+        const message = err instanceof Error ? err.message : String(err);
+        console.log(`[MCP] ${this.name}: Notification ${method} failed: ${message}`);
       }
     } finally {
       clearTimeout(timer);
@@ -615,8 +622,8 @@ class MCPHttpConnection extends EventEmitter implements IMCPConnection {
         if (msg.id === undefined) {
           this.emit("notification", msg);
         }
-      } catch (err: any) {
-        if (err.message && !err.message.includes("JSON")) throw err;
+      } catch (err: unknown) {
+        if (err instanceof Error && !err.message.includes("JSON")) throw err;
         // Skip malformed SSE lines
       }
     }
@@ -703,7 +710,9 @@ export class MCPManager extends EventEmitter {
           .then(() => {
             this.emit("tools:changed", config.name);
           })
-          .catch(() => {});
+          .catch((err) => {
+            console.error("[mcp-client] reconnect tools:changed failed:", err);
+          });
       }
     });
 
@@ -958,9 +967,10 @@ export class MCPManager extends EventEmitter {
         console.log(`[MCP] Tool result:`, result);
       }
       return { success: true, result };
-    } catch (error: any) {
-      console.error(`[MCP] Tool error: ${toolName}:`, error.message);
-      return { success: false, error: error.message };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[MCP] Tool error: ${toolName}:`, message);
+      return { success: false, error: message };
     }
   }
 

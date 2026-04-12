@@ -5,6 +5,14 @@
 
 import type { SpaceManager } from "./manager";
 import type { SpaceWorkerManager } from "./worker";
+import {
+  DEFAULT_AGENT_COLOR,
+  DEFAULT_AGENT_TIMEOUT_SECONDS,
+  DEFAULT_API_PORT,
+  MAX_ACTIVE_SUB_AGENTS,
+  MAX_CONTEXT_LENGTH,
+  RETRY_BACKOFF_MS,
+} from "../agent/constants/spaces";
 
 // ============================================================================
 // Global references (set by WorkerManager during startup)
@@ -12,7 +20,7 @@ import type { SpaceWorkerManager } from "./worker";
 
 let _spaceManager: SpaceManager | null = null;
 let _spaceWorkerManager: SpaceWorkerManager | null = null;
-let _chatApiUrl: string = "http://localhost:3456";
+let _chatApiUrl = `http://localhost:${DEFAULT_API_PORT}`;
 let _yolo: boolean = false;
 
 export function setAgentMcpInfra(
@@ -184,7 +192,7 @@ export async function executeAgentToolCall(
       if (!task) return textResult(JSON.stringify({ ok: false, error: "Missing task" }));
 
       // Limit active sub-agents per channel to prevent resource exhaustion
-      const MAX_ACTIVE_SUB_AGENTS = 9;
+      // MAX_ACTIVE_SUB_AGENTS imported from constants
       const activeSpaces = _spaceManager
         .listSpaces(channel, "active")
         .filter((s) => s.source === "spawn_agent" || s.source === "claude_code");
@@ -215,10 +223,34 @@ export async function executeAgentToolCall(
       const context = (args.context as string) || "";
       const agentType = args.agent as string | undefined;
 
+      // Resolve parent agent's project root and provider early (needed for agent file loading + sub-agent CWD)
+      let projectRoot: string | undefined;
+      let parentProviderName: string | undefined;
+      try {
+        const { db } = await import("../server/database");
+        const row = db
+          .query<{ project: string | null; provider: string | null }, [string, string]>(
+            `SELECT project, provider FROM channel_agents WHERE channel = ? AND agent_id = ?`,
+          )
+          .get(channel, agentId);
+        if (row?.project) projectRoot = row.project;
+        if (row?.provider) parentProviderName = row.provider;
+      } catch (err) {
+        throw new Error(
+          `[agent-mcp-tools] Failed to resolve projectRoot for agent ${agentId} on channel ${channel}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      if (!projectRoot) {
+        throw new Error(
+          `[agent-mcp-tools] projectRoot is required but not found for agent ${agentId} on channel ${channel}. ` +
+            `Ensure channel_agents.project is set in the database.`,
+        );
+      }
+
       // Load agent file if specified (for system prompt / directives)
       let agentPrompt: string | undefined;
       if (agentType) {
-        const agentFile = loadAgentFile(agentType, "");
+        const agentFile = loadAgentFile(agentType, projectRoot);
         if (!agentFile) {
           return textResult(JSON.stringify({ ok: false, error: `Agent file "${agentType}" not found` }));
         }
@@ -240,9 +272,9 @@ export async function executeAgentToolCall(
         title: taskName.slice(0, 100),
         description: task.slice(0, 500),
         agent_id: subAgentId,
-        agent_color: "#D97706",
+        agent_color: DEFAULT_AGENT_COLOR,
         source: "claude_code",
-        timeout_seconds: 1800,
+        timeout_seconds: DEFAULT_AGENT_TIMEOUT_SECONDS,
       });
 
       getOrRegisterAgent(subAgentId, channel, false);
@@ -281,25 +313,15 @@ export async function executeAgentToolCall(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channel: space.space_channel,
-          text: context ? `**Context:**\n${surrogateSlice(context, 4000)}\n\n**Task:** ${task}` : `**Task:** ${task}`,
+          text: context
+            ? `**Context:**\n${surrogateSlice(context, MAX_CONTEXT_LENGTH)}\n\n**Task:** ${task}`
+            : `**Task:** ${task}`,
           user: "UBOT",
           agent_id: agentId,
         }),
-      }).catch(() => {});
-
-      // Resolve parent agent's project root and provider for sub-agent CWD + auth
-      let projectRoot: string | undefined;
-      let parentProviderName: string | undefined;
-      try {
-        const { db } = await import("../server/database");
-        const row = db
-          .query<{ project: string | null; provider: string | null }, [string, string]>(
-            `SELECT project, provider FROM channel_agents WHERE channel = ? AND agent_id = ?`,
-          )
-          .get(channel, agentId);
-        if (row?.project) projectRoot = row.project;
-        if (row?.provider) parentProviderName = row.provider;
-      } catch {}
+      }).catch((err) => {
+        console.error("[agent-mcp] chat.postMessage (task start) failed:", err);
+      });
 
       // Create worker
       let ccResolve: (v: string) => void;
@@ -313,7 +335,7 @@ export async function executeAgentToolCall(
         agentId: subAgentId,
         apiUrl: _chatApiUrl,
         projectRoot,
-        spaceManager: _spaceManager!,
+        spaceManager: _spaceManager,
         agentPrompt,
         providerName: parentProviderName,
         yolo: _yolo,
@@ -327,12 +349,14 @@ export async function executeAgentToolCall(
       registerClaudeCodeWorker(space.id, ccWorker);
       spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
 
-      const timeoutMs = 1800 * 1000;
+      const timeoutMs = DEFAULT_AGENT_TIMEOUT_SECONDS * 1000;
       const timeoutTimer = setTimeout(() => {
         ccWorker.stop();
         if (!ccSettled) {
           ccSettled = true;
-          _spaceManager!.failSpace(space.id, "Timeout: sub-agent exceeded 30 minute limit");
+          if (_spaceManager) {
+            _spaceManager.failSpace(space.id, "Timeout: sub-agent exceeded 30 minute limit");
+          }
           timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -342,12 +366,14 @@ export async function executeAgentToolCall(
               user: subAgentId,
               agent_id: subAgentId,
             }),
-          }).catch(() => {});
+          }).catch((err) => {
+            console.error("[agent-mcp] chat.postMessage (timeout) failed:", err);
+          });
         }
       }, timeoutMs);
 
       spaceCompleteCallbacks.set(space.id, (result: string) => {
-        const won = _spaceManager!.completeSpace(space.id, result);
+        const won = _spaceManager ? _spaceManager.completeSpace(space.id, result) : false;
         if (won) {
           clearTimeout(timeoutTimer);
           timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
@@ -359,7 +385,9 @@ export async function executeAgentToolCall(
               user: subAgentId,
               agent_id: subAgentId,
             }),
-          }).catch(() => {});
+          }).catch((err) => {
+            console.error("[agent-mcp] chat.postMessage (complete) failed:", err);
+          });
           if (!ccSettled) {
             ccSettled = true;
             ccResolve?.(result);
@@ -375,10 +403,11 @@ export async function executeAgentToolCall(
           try {
             await ccWorker.start();
             return;
-          } catch (err: any) {
-            const is500 = err.message?.includes("500") || err.message?.includes("Internal server error");
+          } catch (err: unknown) {
+            const is500 =
+              err instanceof Error && (err.message?.includes("500") || err.message?.includes("Internal server error"));
             if (is500 && attempt < MAX_RETRIES) {
-              const delay = 5000 * (attempt + 1);
+              const delay = RETRY_BACKOFF_MS * (attempt + 1);
               console.log(`[spawn_agent] 500 error on attempt ${attempt + 1}, retrying in ${delay / 1000}s...`);
               await new Promise((r) => setTimeout(r, delay));
               continue;
@@ -404,7 +433,9 @@ export async function executeAgentToolCall(
               const errorMsg = lastMsg
                 ? `Sub-agent exited without completing. Last message: ${lastMsg}`
                 : "Sub-agent exited without completing";
-              _spaceManager!.failSpace(space.id, errorMsg);
+              if (_spaceManager) {
+                _spaceManager.failSpace(space.id, errorMsg);
+              }
               const chatText = lastMsg
                 ? `Sub-agent failed: ${taskName}\n\nLast message:\n${lastMsg}`
                 : `Sub-agent failed: ${taskName} — exited without completing`;
@@ -417,24 +448,29 @@ export async function executeAgentToolCall(
                   user: subAgentId,
                   agent_id: subAgentId,
                 }),
-              }).catch(() => {});
+              }).catch((err) => {
+                console.error("[agent-mcp] chat.postMessage (failed) failed:", err);
+              });
               reject(new Error(errorMsg));
             }
           })
-          .catch((err) => {
+          .catch((err: unknown) => {
             if (!ccSettled) {
               ccSettled = true;
-              _spaceManager!.failSpace(space.id, err.message);
+              const errMsg = err instanceof Error ? err.message : String(err);
+              _spaceManager?.failSpace(space.id, errMsg);
               timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   channel,
-                  text: `Sub-agent error: ${taskName} — ${err.message || ""}`,
+                  text: `Sub-agent error: ${taskName} — ${errMsg}`,
                   user: subAgentId,
                   agent_id: subAgentId,
                 }),
-              }).catch(() => {});
+              }).catch((postErr) => {
+                console.error("[agent-mcp] chat.postMessage (error) failed:", postErr);
+              });
               reject(err);
             }
           })
@@ -446,7 +482,9 @@ export async function executeAgentToolCall(
             unregisterClaudeCodeWorker(space.id);
             ccWorker.cleanup();
           });
-      }).catch(() => {}); // Swallow — tracked via space status
+      }).catch((err) => {
+        console.error("[agent-mcp] spawn_agent outer promise failed:", err);
+      }); // tracked via space status
 
       return textResult(
         JSON.stringify({
@@ -549,8 +587,9 @@ export async function executeAgentToolCall(
         });
         const data = (await res.json()) as any;
         return textResult(JSON.stringify(data));
-      } catch (err: any) {
-        return textResult(JSON.stringify({ ok: false, error: err.message }));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return textResult(JSON.stringify({ ok: false, error: message }));
       }
     }
 
@@ -562,8 +601,9 @@ export async function executeAgentToolCall(
         );
         const data = (await res.json()) as any;
         return textResult(JSON.stringify(data));
-      } catch (err: any) {
-        return textResult(JSON.stringify({ ok: false, error: err.message }));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return textResult(JSON.stringify({ ok: false, error: message }));
       }
     }
 
@@ -579,8 +619,9 @@ export async function executeAgentToolCall(
         });
         const data = (await res.json()) as any;
         return textResult(JSON.stringify(data));
-      } catch (err: any) {
-        return textResult(JSON.stringify({ ok: false, error: err.message }));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return textResult(JSON.stringify({ ok: false, error: message }));
       }
     }
 

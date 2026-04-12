@@ -99,15 +99,16 @@ interface Plugin {
 ```
 src/
 ├── index.ts                    # Entry point: HTTP/WS server, routes
-├── config.ts                   # CLI argument parser
-├── config-file.ts              # ~/.clawd/config.json loader
+├── config/
+│   ├── config.ts               # CLI argument parser
+│   └── config-file.ts          # ~/.clawd/config.json loader
 ├── worker-loop.ts              # Per-agent polling loop
 ├── worker-manager.ts           # Multi-agent orchestrator + heartbeat
 ├── server/
 │   ├── database.ts             # chat.db schema & migrations
 │   ├── websocket.ts            # WebSocket push events
 │   ├── browser-bridge.ts       # Browser extension WS bridge
-│   ├── remote-worker.ts        # Remote worker WS bridge
+│   ├── mcp/                    # MCP server (protocol, tool defs, execution)
 │   └── routes/                 # API endpoint handlers
 ├── agent/
 │   ├── agent.ts                # Agent class + reasoning loop
@@ -126,11 +127,18 @@ src/
 │   ├── worker.ts               # Space worker orchestrator
 │   ├── db.ts                   # spaces table schema
 │   └── plugin.ts               # spawn_agent tool
-├── scheduler/                  # Job scheduling (cron/interval/once)
-│   ├── manager.ts              # Tick loop
-│   ├── runner.ts               # Job executor
-│   └── parse-schedule.ts       # Natural language parser
-└── api/                        # Agent registration, MCP, articles
+├── claude-code/                # Claude Code SDK integration
+│   ├── sdk.ts                  # Claude Agent SDK wrapper
+│   ├── main-worker.ts          # Claude Code process management
+│   └── memory.ts               # Memory bridge for Claude Code sessions
+├── embedded/                   # Build-generated embedded assets
+│   ├── ui.ts                   # Embedded React UI (base64)
+│   └── extension.ts            # Embedded browser extension (base64)
+├── db/                         # Database modules
+└── scheduler/                  # Job scheduling (cron/interval/once)
+    ├── manager.ts              # Tick loop
+    ├── runner.ts               # Job executor
+    └── parse-schedule.ts       # Natural language parser
 
 packages/
 ├── ui/                         # React SPA (Vite)
@@ -144,12 +152,13 @@ packages/
 │       ├── artifact-*.tsx      # Artifact renderers
 │       ├── chart-renderer.tsx  # Recharts wrapper
 │       └── styles.css          # All styles
-└── browser-extension/          # Chrome MV3
-    └── src/
+├── browser-extension/          # Chrome MV3
+│   └── src/
         ├── service-worker.js   # Command dispatcher
         ├── content-script.js   # DOM extraction
         ├── shield.js           # Anti-detection patches
         └── offscreen.js        # WS connection
+└── remote-worker/              # Remote worker clients (TypeScript, Python, Java)
 ```
 
 ### 3.2 File Size Limits

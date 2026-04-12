@@ -6,7 +6,7 @@
  */
 
 import type Database from "bun:sqlite";
-import type { AgentMemoryStore, AgentMemory } from "./agent-memory";
+import type { AgentMemory, AgentMemoryStore } from "./agent-memory";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -179,7 +179,7 @@ export class WikiCompiler {
   private searchFallback(agentId: string, channel: string, query: string, limit: number): WikiArticle[] {
     try {
       const escaped = query.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
-      const pattern = `%${escaped}%`;
+      const pattern = `%${escaped.toLowerCase()}%`;
       const rows = this.db
         .query(
           `SELECT * FROM agent_wiki
@@ -534,10 +534,10 @@ export class WikiCompiler {
         isNew = true;
       }
 
-      // Insert memory refs
+      // Insert memory refs — skip null/undefined ids to avoid NOT NULL violations (BUG-1)
       const stmt = this.db.prepare(`INSERT OR IGNORE INTO wiki_memory_refs (wiki_id, memory_id) VALUES (?, ?)`);
       for (const mid of memoryIds) {
-        stmt.run(wikiId, mid);
+        if (mid != null) stmt.run(wikiId, mid);
       }
 
       // Refresh fast-read JSON cache

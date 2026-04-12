@@ -6,8 +6,8 @@
  * Checkpoints are stored in-memory with optional DB persistence for recovery.
  */
 
-import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FileSessionManager } from "./file-manager";
@@ -387,8 +387,8 @@ Summary:`;
         console.log("[Summarizer] LLM summary generated successfully");
         return result.trim();
       }
-    } catch (err: any) {
-      const errMsg = err?.message || String(err);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       if (errMsg.includes("forbidden") || errMsg.includes("403")) {
         console.log("[Summarizer] Token lacks Copilot API access, using fallback");
       } else {

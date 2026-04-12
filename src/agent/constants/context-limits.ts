@@ -8,6 +8,7 @@
 const BUILTIN_TOKEN_LIMITS: Record<string, number> = {
   "claude-opus-4.6": 128000,
   "claude-opus-4.5": 128000,
+  "claude-sonnet-4.6": 128000,
   "claude-sonnet-4.5": 128000,
   "claude-sonnet-4": 128000,
   "claude-haiku-4.5": 128000,

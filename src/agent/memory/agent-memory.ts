@@ -6,11 +6,12 @@
  * auto-extracted memories. Uses same memory.db as MemoryManager/KnowledgeBase.
  */
 
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getDataDir } from "../../config-file";
+import { getDataDir } from "../../config/config-file";
+import { createDatabase } from "../../db/factory";
 import { runMigrations } from "../../db/migrations";
 import { memoryMigrations } from "../../db/migrations/memory-migrations";
 
@@ -135,18 +136,7 @@ export class AgentMemoryStore {
     if (!dbPath && !existsSync(newDefault) && existsSync(oldDefault)) {
       resolvedPath = oldDefault;
     }
-    this.db = new Database(resolvedPath);
-    this.setupConcurrency();
-  }
-
-  private setupConcurrency() {
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA busy_timeout = 30000");
-    this.db.exec("PRAGMA synchronous = NORMAL");
-    this.db.exec("PRAGMA foreign_keys = ON");
-    const isContainer = process.env.ENV === "dev" || process.env.ENV === "prod" || process.env.ENV === "staging";
-    this.db.exec(`PRAGMA cache_size = -${isContainer ? 8000 : 64000}`);
-    this.db.exec(`PRAGMA mmap_size = ${isContainer ? 0 : 268435456}`);
+    this.db = createDatabase(resolvedPath);
   }
 
   private ensureInit(): void {
@@ -652,15 +642,20 @@ export class AgentMemoryStore {
     if (evictedIds.length === 0) return;
 
     const placeholders = evictedIds.map(() => "?").join(",");
-    this.db.transaction(() => {
-      // Queue affected wiki articles for recompilation before eviction
-      this.markWikiArticlesDirty(evictedIds);
-      this.db.run(`DELETE FROM agent_memories WHERE id IN (${placeholders}) AND agent_id = ? AND priority < 80`, [
-        ...evictedIds,
-        agentId,
-      ]);
-      this.cleanupWikiRefsForMemories(evictedIds);
-    })();
+    try {
+      this.db.transaction(() => {
+        // Queue affected wiki articles for recompilation before eviction
+        this.markWikiArticlesDirty(evictedIds);
+        this.db.run(`DELETE FROM agent_memories WHERE id IN (${placeholders}) AND agent_id = ? AND priority < 80`, [
+          ...evictedIds,
+          agentId,
+        ]);
+        this.cleanupWikiRefsForMemories(evictedIds);
+      })();
+    } catch (err: unknown) {
+      // Graceful degradation — eviction failure must not block save()
+      console.warn("[AgentMemory] Cap eviction failed:", err instanceof Error ? err.message : String(err));
+    }
 
     // Optimize FTS5 index after bulk deletes
     try {

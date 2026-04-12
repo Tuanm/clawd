@@ -114,7 +114,7 @@ export function postMessage(req: PostMessageRequest) {
   const ts = generateTs();
   // Default to UBOT if agent_id is provided, UHUMAN otherwise
   const user = req.user || (req.agent_id ? "UBOT" : "UHUMAN");
-  const sanitizedText = sanitizeText(req.text);
+  const sanitizedText = req.text ? sanitizeText(req.text) : "";
   const text = sanitizedText;
 
   const codePreviewJson = req.code_preview ? JSON.stringify(req.code_preview) : null;
@@ -198,22 +198,23 @@ export function updateMessage(req: UpdateMessageRequest) {
   }
 
   const now = Math.floor(Date.now() / 1000);
-
   const text = req.text;
 
-  preparedStatements.updateMessage.run(text, now, req.ts, req.channel);
+  db.transaction(() => {
+    preparedStatements.updateMessage.run(text, now, req.ts, req.channel);
 
-  // Update tool_result_json if provided (for scheduled tool call status updates)
-  if (req.tool_result_json) {
-    db.run(`UPDATE messages SET tool_result_json = ? WHERE ts = ? AND channel = ?`, [
-      req.tool_result_json,
-      req.ts,
-      req.channel,
-    ]);
-  }
+    // Update tool_result_json if provided (for scheduled tool call status updates)
+    if (req.tool_result_json) {
+      db.run(`UPDATE messages SET tool_result_json = ? WHERE ts = ? AND channel = ?`, [
+        req.tool_result_json,
+        req.ts,
+        req.channel,
+      ]);
+    }
 
-  // Clear interactive_json on edit (prevent stale interactive artifacts)
-  db.run(`UPDATE messages SET interactive_json = NULL WHERE ts = ? AND channel = ?`, [req.ts, req.channel]);
+    // Clear interactive_json on edit (prevent stale interactive artifacts)
+    db.run(`UPDATE messages SET interactive_json = NULL WHERE ts = ? AND channel = ?`, [req.ts, req.channel]);
+  })();
 
   const msg = preparedStatements.getMessageByTs.get(req.ts);
 
@@ -237,17 +238,21 @@ export function appendMessage(req: AppendMessageRequest) {
     }
   }
 
-  const existing = preparedStatements.getMessageByTs.get(req.ts);
-  if (!existing) {
-    return { ok: false, error: "message_not_found" };
-  }
-
-  const separator = req.separator ?? "\n\n";
-  const currentText = existing.text || "";
-  const newText = currentText ? currentText + separator + req.text : req.text;
+  let appendResult: { ok: false; error: string } | null = null;
   const now = Math.floor(Date.now() / 1000);
 
-  preparedStatements.updateMessage.run(newText, now, req.ts, req.channel);
+  db.transaction(() => {
+    const existing = preparedStatements.getMessageByTs.get(req.ts);
+    if (!existing) {
+      appendResult = { ok: false, error: "message_not_found" };
+      return;
+    }
+    const separator = req.separator ?? "\n\n";
+    const newText = existing.text ? existing.text + separator + req.text : req.text;
+    preparedStatements.updateMessage.run(newText, now, req.ts, req.channel);
+  })();
+
+  if (appendResult) return appendResult;
 
   const msg = preparedStatements.getMessageByTs.get(req.ts);
 
@@ -609,14 +614,16 @@ export function clearChannelHistory(channel: string): {
   if (!CLEARABLE_CHANNELS.has(channel)) {
     return { ok: false, error: "channel_not_clearable" };
   }
-  // Delete artifact actions for this channel
-  db.run(`DELETE FROM artifact_actions WHERE channel = ?`, [channel]);
-  // Delete all messages (including threads) for this channel
-  db.run(`DELETE FROM messages WHERE channel = ?`, [channel]);
-  // Delete conversation summaries so agents start fresh (no compressed history)
-  db.run(`DELETE FROM summaries WHERE channel = ?`, [channel]);
-  // Reset agent seen/processed pointers so agents re-read from scratch
-  db.run(`DELETE FROM agent_seen WHERE channel = ?`, [channel]);
+  db.transaction(() => {
+    // Delete artifact actions for this channel
+    db.run(`DELETE FROM artifact_actions WHERE channel = ?`, [channel]);
+    // Delete all messages (including threads) for this channel
+    db.run(`DELETE FROM messages WHERE channel = ?`, [channel]);
+    // Delete conversation summaries so agents start fresh (no compressed history)
+    db.run(`DELETE FROM summaries WHERE channel = ?`, [channel]);
+    // Reset agent seen/processed pointers so agents re-read from scratch
+    db.run(`DELETE FROM agent_seen WHERE channel = ?`, [channel]);
+  })();
   return { ok: true };
 }
 
@@ -640,10 +647,11 @@ export function deleteMessage(channel: string, ts: string) {
     return { ok: false, error: "message_not_found" };
   }
 
-  // Cascade delete artifact actions
-  db.run(`DELETE FROM artifact_actions WHERE message_ts = ? AND channel = ?`, [ts, channel]);
-
-  db.run(`DELETE FROM messages WHERE ts = ? AND channel = ?`, [ts, channel]);
+  db.transaction(() => {
+    // Cascade delete artifact actions
+    db.run(`DELETE FROM artifact_actions WHERE message_ts = ? AND channel = ?`, [ts, channel]);
+    db.run(`DELETE FROM messages WHERE ts = ? AND channel = ?`, [ts, channel]);
+  })();
 
   return { ok: true, channel, ts };
 }

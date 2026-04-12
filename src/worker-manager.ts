@@ -6,7 +6,7 @@
  * add/remove agent requests from the API.
  */
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadAgentFile } from "./agent/agents/loader";
@@ -16,28 +16,34 @@ import {
   resolveProviderBaseType,
   saveChannelMCPServer,
 } from "./agent/api/provider-config";
+import type { MCPServerConfig } from "./agent/api/providers";
 import { getCatalogEntry, resolveArgs } from "./agent/mcp/catalog";
-import { validateServerConfig } from "./mcp-validation";
 import { MCPManager } from "./agent/mcp/client";
 import {
   createWorktree,
+  ensureClawdGitignore,
   isGitInstalled,
   isGitRepo,
   pruneWorktrees,
   safeDeleteWorktree,
 } from "./agent/workspace/worktree";
-import type { AppConfig } from "./config";
-import { isWorktreeEnabled } from "./config-file";
+import type { AppConfig } from "./config/config";
+import { isWorktreeEnabled } from "./config/config-file";
 import { INTERNAL_SERVICE_TOKEN } from "./internal-token";
-import { loadOAuthToken, loadOrRefreshOAuthToken } from "./mcp-oauth";
+import { loadOAuthToken, loadOrRefreshOAuthToken } from "./server/mcp/oauth";
+import { validateServerConfig } from "./agent/api/mcp-validation";
 import type { SchedulerManager } from "./scheduler/manager";
-import { setAgentStreaming } from "./server/database";
+import { db, setAgentStreaming } from "./server/database";
 import { broadcastUpdate } from "./server/websocket";
+import { setAgentMcpInfra } from "./spaces/agent-mcp-tools";
 import { getSpaceByChannel } from "./spaces/db";
 import type { SpaceManager } from "./spaces/manager";
 import type { SpaceWorkerManager } from "./spaces/worker";
+import { createLogger } from "./utils/logger";
 import { timedFetch } from "./utils/timed-fetch";
 import { type AgentHealthSnapshot, type AgentWorker, WorkerLoop, type WorkerLoopConfig } from "./worker-loop";
+
+const logger = createLogger("WorkerManager");
 
 /** Resolved heartbeat configuration (all fields required, defaults applied) */
 interface HeartbeatConfig {
@@ -125,20 +131,21 @@ export class WorkerManager {
     this.spaceWorkerManager = spaceWorkerManager;
     // Register for agent MCP tools (claude_code, list_agents, etc.)
     try {
-      const { setAgentMcpInfra } = require("./spaces/agent-mcp-tools");
       setAgentMcpInfra(spaceManager, spaceWorkerManager, this.config.chatApiUrl, this.config.yolo ?? false);
-    } catch {}
+    } catch {
+      // Intentionally swallowed — MCP infra registration is best-effort; agent tools register on first use
+    }
   }
 
   /** Start the worker manager -- loads agents from DB and starts active loops */
   private _bulkStarting = false;
 
   async start(): Promise<void> {
-    console.log("[WorkerManager] Starting...");
+    logger.info("Starting...");
 
     // Load agents from the chat server's database
     const agents = await this.loadAgentsFromDb();
-    console.log(`[WorkerManager] Found ${agents.length} configured agent(s)`);
+    logger.info(`Found ${agents.length} configured agent(s)`);
 
     // Start active agents (bulk start defers inactive channels)
     this._bulkStarting = true;
@@ -150,8 +157,8 @@ export class WorkerManager {
     this._bulkStarting = false;
 
     const deferredCount = this.deferredAgents.size;
-    console.log(
-      `[WorkerManager] ${this.loops.size} worker loop(s) running` +
+    logger.info(
+      `${this.loops.size} worker loop(s) running` +
         (deferredCount > 0 ? `, ${deferredCount} deferred (inactive channels)` : ""),
     );
 
@@ -168,7 +175,9 @@ export class WorkerManager {
     const jitter = Math.random() * 60_000; // ±1 min per-process jitter
     this.oauthRefreshTimer = setInterval(
       () => {
-        this.refreshExpiringTokens().catch(() => {});
+        this.refreshExpiringTokens().catch((err) => {
+          logger.warn("[worker-manager] refreshExpiringTokens failed:", err);
+        });
       },
       5 * 60_000 + jitter,
     );
@@ -206,11 +215,14 @@ export class WorkerManager {
               reason === "refresh_failed"
                 ? "OAuth token refresh failed — user re-auth needed"
                 : "OAuth token expired — user re-auth needed";
-            console.warn(`[MCP OAuth] ${key}: ${msg}`);
+            logger.warn(`MCP OAuth ${key}: ${msg}`);
             broadcastUpdate(channel, { type: "mcp_oauth_expired", server: name, reason });
           }
         } catch (err) {
-          console.warn(`[MCP OAuth] Unexpected error refreshing ${key}:`, (err as Error).message);
+          logger.warn(
+            `MCP OAuth unexpected error refreshing ${key}:`,
+            err instanceof Error ? err.message : String(err),
+          );
         } finally {
           this.oauthRefreshInFlight.delete(key);
         }
@@ -220,7 +232,7 @@ export class WorkerManager {
 
   /** Stop all worker loops */
   async stop(): Promise<void> {
-    console.log("[WorkerManager] Stopping all worker loops...");
+    logger.info("Stopping all worker loops...");
 
     if (this.oauthRefreshTimer) {
       clearInterval(this.oauthRefreshTimer);
@@ -241,19 +253,22 @@ export class WorkerManager {
     for (const [channel, mcp] of this.channelMcp) {
       try {
         await mcp.disconnectAll();
-        console.log(`[WorkerManager] Disconnected channel MCP: ${channel}`);
+        logger.info(`Disconnected channel MCP: ${channel}`);
       } catch (err) {
-        console.error(`[WorkerManager] Error disconnecting channel MCP ${channel}:`, err);
+        logger.error(`Error disconnecting channel MCP ${channel}:`, err);
       }
     }
     this.channelMcp.clear();
     this.channelMcpPending.clear();
 
-    console.log("[WorkerManager] All worker loops stopped");
+    logger.info("All worker loops stopped");
   }
 
   /** Deferred agents: channels inactive >1 day are not started until a message arrives */
   private deferredAgents = new Map<string, AgentConfig>();
+
+  /** In-flight startAgent calls keyed by channel:agentId — prevents TOCTOU concurrent-start races (RC-1) */
+  private _startingAgents: Set<string> = new Set();
 
   /** Check if a channel has been inactive for more than the threshold */
   private isChannelInactive(channel: string, thresholdMs = 24 * 60 * 60 * 1000): boolean {
@@ -281,7 +296,7 @@ export class WorkerManager {
       }
     }
     for (const agent of deferred) {
-      console.log(`[WorkerManager] Starting deferred agent: ${agent.channel}:${agent.agentId}`);
+      logger.info(`Starting deferred agent: ${agent.channel}:${agent.agentId}`);
       await this.startAgent(agent);
     }
   }
@@ -299,186 +314,196 @@ export class WorkerManager {
     const key = `${agent.channel}:${agent.agentId}`;
 
     if (this.loops.has(key)) {
-      console.log(`[WorkerManager] Agent ${key} already running`);
+      logger.info(`Agent ${key} already running`);
       return false;
     }
 
-    // Defer startup for channels inactive >1 day (saves resources on startup)
-    // Only applies during initial bulk start, not explicit startAgent calls from API
-    if (this._bulkStarting && this.isChannelInactive(agent.channel)) {
-      this.deferredAgents.set(key, agent);
-      console.log(`[WorkerManager] Deferred agent ${key} (channel inactive >1 day)`);
+    // RC-1: TOCTOU guard — reject concurrent startAgent calls for the same agent.
+    // The Set is populated synchronously before the first await so any concurrent call
+    // that reaches this point will see the key already present.
+    if (this._startingAgents.has(key)) {
+      logger.info(`Agent ${key} already starting`);
       return false;
     }
+    this._startingAgents.add(key);
 
-    // Resolve project root early so auto-provision can use it
-    let effectiveProjectRoot = agent.project || this.defaultProjectRoot(agent.channel);
+    try {
+      // Defer startup for channels inactive >1 day (saves resources on startup)
+      // Only applies during initial bulk start, not explicit startAgent calls from API
+      if (this._bulkStarting && this.isChannelInactive(agent.channel)) {
+        this.deferredAgents.set(key, agent);
+        logger.info(`Deferred agent ${key} (channel inactive >1 day)`);
+        return false;
+      }
 
-    // Auto-provision MCP servers from agent file frontmatter BEFORE ensureChannelMcp
-    // so that newly saved servers are included when the MCPManager initializes
-    if (agent.agentType) {
-      const agentFile = loadAgentFile(agent.agentType, effectiveProjectRoot);
-      if (agentFile) {
-        const rawMcpIds = agentFile.rawFrontmatter.mcpServers;
-        if (Array.isArray(rawMcpIds) && rawMcpIds.length > 0) {
-          await this.autoProvisionAgentMcpServers(
-            agent.channel,
-            rawMcpIds as string[],
-            agent.agentId,
-            effectiveProjectRoot,
-            agentFile.rawFrontmatter.env as Record<string, string> | undefined,
+      // Resolve project root early so auto-provision can use it
+      let effectiveProjectRoot = agent.project || this.defaultProjectRoot(agent.channel);
+
+      // Auto-provision MCP servers from agent file frontmatter BEFORE ensureChannelMcp
+      // so that newly saved servers are included when the MCPManager initializes
+      if (agent.agentType) {
+        const agentFile = loadAgentFile(agent.agentType, effectiveProjectRoot);
+        if (agentFile) {
+          const rawMcpIds = agentFile.rawFrontmatter.mcpServers;
+          if (Array.isArray(rawMcpIds) && rawMcpIds.length > 0) {
+            await this.autoProvisionAgentMcpServers(
+              agent.channel,
+              rawMcpIds as string[],
+              agent.agentId,
+              effectiveProjectRoot,
+              agentFile.rawFrontmatter.env as Record<string, string> | undefined,
+            );
+          }
+        }
+      }
+
+      // Ensure channel MCP servers are running (starts on first agent in channel)
+      const channelMcpManager = await this.ensureChannelMcp(agent.channel);
+
+      let worktreePath: string | undefined;
+      let worktreeBranch: string | undefined;
+      const originalProjectRoot = effectiveProjectRoot;
+
+      // Ensure .gitignore files are set up for any git project (not just worktree)
+      if (!agent.workerToken && isGitRepo(effectiveProjectRoot)) {
+        try {
+          ensureClawdGitignore(effectiveProjectRoot);
+        } catch {
+          // Intentionally swallowed — .gitignore setup is best-effort; doesn't block agent startup
+        }
+      }
+
+      // Create worktree if enabled for this channel (skip remote workers — they manage their own filesystem)
+      if (isWorktreeEnabled(agent.channel) && !agent.workerToken) {
+        if (!isGitInstalled()) {
+          logger.warn(`Worktree enabled but git is not installed — skipping isolation for ${key}`);
+        } else if (!isGitRepo(effectiveProjectRoot)) {
+          logger.warn(`Worktree enabled but ${effectiveProjectRoot} is not a git repo — skipping isolation for ${key}`);
+        } else {
+          try {
+            // Prune stale worktree entries first (crash recovery)
+            pruneWorktrees(effectiveProjectRoot);
+            const wt = await createWorktree(effectiveProjectRoot, agent.agentId);
+            worktreePath = wt.path;
+            worktreeBranch = wt.branch;
+            effectiveProjectRoot = wt.path;
+            this.worktreeInfo.set(key, {
+              path: wt.path,
+              branch: wt.branch,
+              originalRoot: originalProjectRoot,
+            });
+            // Persist to DB so worktree survives server restart
+            this.persistWorktreeInfo(agent.channel, agent.agentId, wt.path, wt.branch);
+            logger.info(`Worktree ready: ${wt.path} (branch: ${wt.branch})`);
+          } catch (err) {
+            logger.error(`Worktree creation failed for ${key}, using original project:`, err);
+          }
+        }
+      } else if (isWorktreeEnabled(agent.channel) && agent.worktreePath && agent.worktreeBranch) {
+        // Restore worktree info from DB (persisted from previous session) — only if worktree still enabled
+        if (existsSync(agent.worktreePath)) {
+          worktreePath = agent.worktreePath;
+          worktreeBranch = agent.worktreeBranch;
+          effectiveProjectRoot = agent.worktreePath;
+          this.worktreeInfo.set(key, {
+            path: agent.worktreePath,
+            branch: agent.worktreeBranch,
+            originalRoot: originalProjectRoot,
+          });
+          logger.info(`Restored worktree from DB: ${agent.worktreePath} (branch: ${agent.worktreeBranch})`);
+        } else {
+          // Worktree path from DB no longer exists — clear it
+          this.persistWorktreeInfo(agent.channel, agent.agentId, null, null);
+        }
+      } else if (!isWorktreeEnabled(agent.channel) && agent.worktreePath) {
+        // Worktree was disabled — clear stale DB entries
+        this.persistWorktreeInfo(agent.channel, agent.agentId, null, null);
+        logger.info(`Worktree disabled for ${key}, cleared stale DB entry`);
+      }
+
+      const loopConfig: WorkerLoopConfig = {
+        channel: agent.channel,
+        agentId: agent.agentId,
+        provider: agent.provider,
+        model: agent.model,
+        projectRoot: effectiveProjectRoot,
+        chatApiUrl: this.config.chatApiUrl,
+        wsUrl: this.config.chatApiUrl.replace(/^http(s?):\/\//, "ws$1://").replace(/\/?$/, "/ws"),
+        debug: this.config.debug,
+        yolo: this.config.yolo ?? false,
+        contextMode: this.config.contextMode,
+        scheduler: this.scheduler,
+        spaceManager: this.spaceManager,
+        spaceWorkerManager: this.spaceWorkerManager,
+        channelMcpManager: channelMcpManager || undefined,
+        workerToken: agent.workerToken,
+        // Remote workers go through the HTTP API; in-process agents use direct DB access
+        directDb: !agent.workerToken,
+        heartbeatInterval: agent.heartbeatInterval,
+        // Pass auth token so internal HTTP self-calls include Authorization header
+        authToken: INTERNAL_SERVICE_TOKEN,
+        worktreePath,
+        worktreeBranch,
+        originalProjectRoot: worktreePath ? originalProjectRoot : undefined,
+      };
+
+      // Load agent file config if agent_type is set (prompt + tool restrictions)
+      // Model/provider from channel config take precedence — agent_type provides prompt only
+      if (agent.agentType) {
+        const agentFile = loadAgentFile(agent.agentType, effectiveProjectRoot);
+        if (agentFile) {
+          loopConfig.agentFileConfig = agentFile;
+        } else {
+          logger.warn(
+            `Agent file not found for type "${agent.agentType}" (agent: ${key}) — starting without type config`,
           );
         }
       }
-    }
 
-    // Ensure channel MCP servers are running (starts on first agent in channel)
-    const channelMcpManager = await this.ensureChannelMcp(agent.channel);
+      // Create the appropriate worker type
+      let worker: AgentWorker;
 
-    let worktreePath: string | undefined;
-    let worktreeBranch: string | undefined;
-    const originalProjectRoot = effectiveProjectRoot;
-
-    // Ensure .gitignore files are set up for any git project (not just worktree)
-    if (!agent.workerToken && isGitRepo(effectiveProjectRoot)) {
-      try {
-        const { ensureClawdGitignore } = require("./agent/workspace/worktree");
-        ensureClawdGitignore(effectiveProjectRoot);
-      } catch {}
-    }
-
-    // Create worktree if enabled for this channel (skip remote workers — they manage their own filesystem)
-    if (isWorktreeEnabled(agent.channel) && !agent.workerToken) {
-      if (!isGitInstalled()) {
-        console.warn(`[WorkerManager] Worktree enabled but git is not installed — skipping isolation for ${key}`);
-      } else if (!isGitRepo(effectiveProjectRoot)) {
-        console.warn(
-          `[WorkerManager] Worktree enabled but ${effectiveProjectRoot} is not a git repo — skipping isolation for ${key}`,
-        );
-      } else {
-        try {
-          // Prune stale worktree entries first (crash recovery)
-          pruneWorktrees(effectiveProjectRoot);
-          const wt = await createWorktree(effectiveProjectRoot, agent.agentId);
-          worktreePath = wt.path;
-          worktreeBranch = wt.branch;
-          effectiveProjectRoot = wt.path;
-          this.worktreeInfo.set(key, {
-            path: wt.path,
-            branch: wt.branch,
-            originalRoot: originalProjectRoot,
-          });
-          // Persist to DB so worktree survives server restart
-          this.persistWorktreeInfo(agent.channel, agent.agentId, wt.path, wt.branch);
-          console.log(`[WorkerManager] Worktree ready: ${wt.path} (branch: ${wt.branch})`);
-        } catch (err) {
-          console.error(`[WorkerManager] Worktree creation failed for ${key}, using original project:`, err);
-        }
-      }
-    } else if (isWorktreeEnabled(agent.channel) && agent.worktreePath && agent.worktreeBranch) {
-      // Restore worktree info from DB (persisted from previous session) — only if worktree still enabled
-      const { existsSync } = require("node:fs");
-      if (existsSync(agent.worktreePath)) {
-        worktreePath = agent.worktreePath;
-        worktreeBranch = agent.worktreeBranch;
-        effectiveProjectRoot = agent.worktreePath;
-        this.worktreeInfo.set(key, {
-          path: agent.worktreePath,
-          branch: agent.worktreeBranch,
-          originalRoot: originalProjectRoot,
+      const resolvedProvider = resolveProviderBaseType(agent.provider || "copilot");
+      if (resolvedProvider === "claude-code") {
+        // Claude Code main agent — subprocess-based, uses MCP for chat tools
+        const { ClaudeCodeMainWorker, registerMainWorker } = await import("./claude-code/main-worker");
+        const ccWorker = new ClaudeCodeMainWorker({
+          channel: agent.channel,
+          agentId: agent.agentId,
+          model: agent.model,
+          provider: agent.provider || "claude-code",
+          projectRoot: effectiveProjectRoot,
+          chatApiUrl: this.config.chatApiUrl,
+          debug: this.config.debug,
+          agentFileConfig: loopConfig.agentFileConfig,
+          heartbeatInterval: agent.heartbeatInterval,
+          yolo: this.config.yolo ?? false,
         });
-        console.log(
-          `[WorkerManager] Restored worktree from DB: ${agent.worktreePath} (branch: ${agent.worktreeBranch})`,
-        );
+        registerMainWorker(`${agent.channel}:${agent.agentId}`, ccWorker);
+        worker = ccWorker;
       } else {
-        // Worktree path from DB no longer exists — clear it
-        this.persistWorktreeInfo(agent.channel, agent.agentId, null, null);
+        // Normal LLM-based agent
+        worker = new WorkerLoop(loopConfig);
       }
-    } else if (!isWorktreeEnabled(agent.channel) && agent.worktreePath) {
-      // Worktree was disabled — clear stale DB entries
-      this.persistWorktreeInfo(agent.channel, agent.agentId, null, null);
-      console.log(`[WorkerManager] Worktree disabled for ${key}, cleared stale DB entry`);
-    }
 
-    const loopConfig: WorkerLoopConfig = {
-      channel: agent.channel,
-      agentId: agent.agentId,
-      provider: agent.provider,
-      model: agent.model,
-      projectRoot: effectiveProjectRoot,
-      chatApiUrl: this.config.chatApiUrl,
-      wsUrl: this.config.chatApiUrl.replace(/^http(s?):\/\//, "ws$1://").replace(/\/?$/, "/ws"),
-      debug: this.config.debug,
-      yolo: this.config.yolo ?? false,
-      contextMode: this.config.contextMode,
-      scheduler: this.scheduler,
-      spaceManager: this.spaceManager,
-      spaceWorkerManager: this.spaceWorkerManager,
-      channelMcpManager: channelMcpManager || undefined,
-      workerToken: agent.workerToken,
-      // Remote workers go through the HTTP API; in-process agents use direct DB access
-      directDb: !agent.workerToken,
-      heartbeatInterval: agent.heartbeatInterval,
-      // Pass auth token so internal HTTP self-calls include Authorization header
-      authToken: INTERNAL_SERVICE_TOKEN,
-      worktreePath,
-      worktreeBranch,
-      originalProjectRoot: worktreePath ? originalProjectRoot : undefined,
-    };
+      this.loops.set(key, worker);
 
-    // Load agent file config if agent_type is set (prompt + tool restrictions)
-    // Model/provider from channel config take precedence — agent_type provides prompt only
-    if (agent.agentType) {
-      const agentFile = loadAgentFile(agent.agentType, effectiveProjectRoot);
-      if (agentFile) {
-        loopConfig.agentFileConfig = agentFile;
-      } else {
-        console.warn(
-          `[WorkerManager] Agent file not found for type "${agent.agentType}" (agent: ${key}) — starting without type config`,
-        );
+      // Set sleeping state before starting (if was sleeping before restart)
+      if (agent.sleeping) {
+        worker.setSleeping(true);
+        logger.info(`Agent ${key} starting in sleep mode`);
       }
+
+      worker.start();
+
+      logger.info(
+        `Started agent: ${key} (provider: ${agent.provider || "copilot"}, model: ${agent.model}${worktreeBranch ? `, worktree: ${worktreeBranch}` : ""}, sleeping: ${agent.sleeping || false})`,
+      );
+      return true;
+    } finally {
+      // RC-1: always remove from in-flight set so restarts are not blocked
+      this._startingAgents.delete(key);
     }
-
-    // Create the appropriate worker type
-    let worker: AgentWorker;
-
-    const resolvedProvider = resolveProviderBaseType(agent.provider || "copilot");
-    if (resolvedProvider === "claude-code") {
-      // Claude Code main agent — subprocess-based, uses MCP for chat tools
-      const { ClaudeCodeMainWorker, registerMainWorker } = require("./claude-code-main-worker");
-      const ccWorker = new ClaudeCodeMainWorker({
-        channel: agent.channel,
-        agentId: agent.agentId,
-        model: agent.model,
-        provider: agent.provider || "claude-code",
-        projectRoot: effectiveProjectRoot,
-        chatApiUrl: this.config.chatApiUrl,
-        debug: this.config.debug,
-        agentFileConfig: loopConfig.agentFileConfig,
-        heartbeatInterval: agent.heartbeatInterval,
-        yolo: this.config.yolo ?? false,
-      });
-      registerMainWorker(`${agent.channel}:${agent.agentId}`, ccWorker);
-      worker = ccWorker;
-    } else {
-      // Normal LLM-based agent
-      worker = new WorkerLoop(loopConfig);
-    }
-
-    this.loops.set(key, worker);
-
-    // Set sleeping state before starting (if was sleeping before restart)
-    if (agent.sleeping) {
-      worker.setSleeping(true);
-      console.log(`[WorkerManager] Agent ${key} starting in sleep mode`);
-    }
-
-    worker.start();
-
-    console.log(
-      `[WorkerManager] Started agent: ${key} (provider: ${agent.provider || "copilot"}, model: ${agent.model}${worktreeBranch ? `, worktree: ${worktreeBranch}` : ""}, sleeping: ${agent.sleeping || false})`,
-    );
-    return true;
   }
 
   /** Stop and remove an agent */
@@ -487,7 +512,7 @@ export class WorkerManager {
     const loop = this.loops.get(key);
 
     if (!loop) {
-      console.log(`[WorkerManager] Agent ${key} not found`);
+      logger.info(`Agent ${key} not found`);
       return false;
     }
 
@@ -496,9 +521,11 @@ export class WorkerManager {
 
     // Clean up Claude Code main worker registry if applicable
     try {
-      const { unregisterMainWorker } = require("./claude-code-main-worker");
+      const { unregisterMainWorker } = await import("./claude-code/main-worker");
       unregisterMainWorker(key);
-    } catch {}
+    } catch {
+      // Intentionally swallowed — CC worker deregistration is best-effort; worker already stopped
+    }
 
     // Clean up worktree if one was created
     const wtInfo = this.worktreeInfo.get(key);
@@ -506,12 +533,12 @@ export class WorkerManager {
       try {
         const result = await safeDeleteWorktree(wtInfo.path, wtInfo.originalRoot);
         if (result.deleted) {
-          console.log(`[WorkerManager] Cleaned up worktree: ${wtInfo.path}`);
+          logger.info(`Cleaned up worktree: ${wtInfo.path}`);
         } else {
-          console.warn(`[WorkerManager] Worktree kept (${result.reason}): ${wtInfo.path}`);
+          logger.warn(`Worktree kept (${result.reason}): ${wtInfo.path}`);
         }
       } catch (err) {
-        console.error(`[WorkerManager] Failed to clean up worktree ${wtInfo.path}:`, err);
+        logger.error(`Failed to clean up worktree ${wtInfo.path}:`, err);
       }
       this.worktreeInfo.delete(key);
     }
@@ -519,7 +546,7 @@ export class WorkerManager {
     // Tear down channel MCP if this was the last agent in the channel
     await this.teardownChannelMcpIfEmpty(channel);
 
-    console.log(`[WorkerManager] Stopped agent: ${key}`);
+    logger.info(`Stopped agent: ${key}`);
     return true;
   }
 
@@ -666,7 +693,7 @@ export class WorkerManager {
       }
     }
     await Promise.allSettled(resets);
-    console.log(`[WorkerManager] Reset ${resets.length} agent(s) for channel: ${channel}`);
+    logger.info(`Reset ${resets.length} agent(s) for channel: ${channel}`);
   }
 
   /** Get status of all running loops */
@@ -691,8 +718,8 @@ export class WorkerManager {
   private startHeartbeatMonitor(): void {
     if (!this.heartbeatConfig.enabled) return;
     this.scheduleNextHeartbeat();
-    console.log(
-      `[Heartbeat] Monitor started (interval: ${this.heartbeatConfig.intervalMs}ms, ` +
+    logger.info(
+      `Heartbeat monitor started (interval: ${this.heartbeatConfig.intervalMs}ms, ` +
         `processingTimeout: ${this.heartbeatConfig.processingTimeoutMs}ms, ` +
         `spaceIdleTimeout: ${this.heartbeatConfig.spaceIdleTimeoutMs}ms)`,
     );
@@ -744,7 +771,7 @@ export class WorkerManager {
           health.processingDurationMs !== null &&
           health.processingDurationMs > this.heartbeatConfig.processingTimeoutMs
         ) {
-          console.log(`[Heartbeat] Processing timeout: ${key} (${Math.round(health.processingDurationMs / 1000)}s)`);
+          logger.info(`Heartbeat processing timeout: ${key} (${Math.round(health.processingDurationMs / 1000)}s)`);
           loop.cancelProcessing();
           this.clearAgentStreamingState(health.channel, health.agentId);
           this.broadcastHeartbeatEvent(health.channel, health.agentId, "processing_timeout");
@@ -766,7 +793,7 @@ export class WorkerManager {
           if (health.idleDurationMs > loop.heartbeatInterval * 1000) {
             heartbeatActions.push(async () => {
               loop.injectHeartbeat();
-              console.log(`[Heartbeat] Injected heartbeat for agent: ${key} (interval: ${loop.heartbeatInterval}s)`);
+              logger.info(`Heartbeat injected for agent: ${key} (interval: ${loop.heartbeatInterval}s)`);
               this.broadcastHeartbeatEvent(health.channel, health.agentId, "heartbeat_sent");
             });
           }
@@ -779,7 +806,7 @@ export class WorkerManager {
       // Check space workers (stored in SpaceWorkerManager, NOT in this.loops)
       await this.checkSpaceWorkerHealth();
     } catch (err) {
-      console.error("[Heartbeat] Error during health check:", err);
+      logger.error("Heartbeat error during health check:", err);
     } finally {
       this.heartbeatInProgress = false;
     }
@@ -810,7 +837,7 @@ export class WorkerManager {
     this.spaceHeartbeatCounts.set(key, count);
 
     if (count > WorkerManager.MAX_SPACE_HEARTBEATS) {
-      console.log(`[Heartbeat] Space agent ${key} unresponsive after ${count} heartbeats, failing space`);
+      logger.info(`Heartbeat: space agent ${key} unresponsive after ${count} heartbeats, failing space`);
       if (this.spaceManager) {
         this.spaceManager.failSpace(spaceStatus.spaceId, "Heartbeat: agent unresponsive after max heartbeat attempts");
         this.spaceWorkerManager?.stopSpaceWorker(spaceStatus.spaceId);
@@ -822,9 +849,7 @@ export class WorkerManager {
 
     // Inject heartbeat to wake idle space agent
     loop.injectHeartbeat();
-    console.log(
-      `[Heartbeat] Injected heartbeat for idle space agent: ${key} (${count}/${WorkerManager.MAX_SPACE_HEARTBEATS})`,
-    );
+    logger.info(`Heartbeat injected for idle space agent: ${key} (${count}/${WorkerManager.MAX_SPACE_HEARTBEATS})`);
     this.broadcastHeartbeatEvent(health.channel, health.agentId, "heartbeat_sent");
   }
 
@@ -847,7 +872,7 @@ export class WorkerManager {
         health.processingDurationMs !== null &&
         health.processingDurationMs > this.heartbeatConfig.processingTimeoutMs
       ) {
-        console.log(`[Heartbeat] Processing timeout: ${key} (${Math.round(health.processingDurationMs / 1000)}s)`);
+        logger.info(`Heartbeat processing timeout: ${key} (${Math.round(health.processingDurationMs / 1000)}s)`);
         const loop = this.spaceWorkerManager.getWorkerLoop(spaceId);
         if (loop) loop.cancelProcessing();
         this.clearAgentStreamingState(health.channel, health.agentId);
@@ -865,7 +890,7 @@ export class WorkerManager {
         this.spaceHeartbeatCounts.set(key, count);
 
         if (count > WorkerManager.MAX_SPACE_HEARTBEATS) {
-          console.log(`[Heartbeat] Space worker ${key} unresponsive after ${count} heartbeats, failing space`);
+          logger.info(`Heartbeat: space worker ${key} unresponsive after ${count} heartbeats, failing space`);
           if (this.spaceManager) {
             this.spaceManager.failSpace(
               spaceStatus.spaceId,
@@ -882,8 +907,8 @@ export class WorkerManager {
         if (loop) {
           heartbeatActions.push(async () => {
             loop.injectHeartbeat();
-            console.log(
-              `[Heartbeat] Injected heartbeat for idle space worker: ${key} (${count}/${WorkerManager.MAX_SPACE_HEARTBEATS})`,
+            logger.info(
+              `Heartbeat injected for idle space worker: ${key} (${count}/${WorkerManager.MAX_SPACE_HEARTBEATS})`,
             );
             this.broadcastHeartbeatEvent(health.channel, health.agentId, "heartbeat_sent");
           });
@@ -967,7 +992,7 @@ export class WorkerManager {
         }));
       }
     } catch (error) {
-      console.log("[WorkerManager] No saved agents found (API not available yet), starting fresh");
+      logger.info("No saved agents found (API not available yet), starting fresh");
     }
 
     return [];
@@ -1011,13 +1036,13 @@ export class WorkerManager {
 
       const entry = getCatalogEntry(id);
       if (!entry) {
-        console.warn(`[WorkerManager] Auto-provision: catalog entry "${id}" not found (agent: ${agentId})`);
+        logger.warn(`Auto-provision: catalog entry "${id}" not found (agent: ${agentId})`);
         continue;
       }
 
       // Skip if already configured — user config wins; log if env differs
       if (existing[entry.id] !== undefined) {
-        console.log(`[WorkerManager] Auto-provision: "${id}" already configured for channel ${channel} — skipping`);
+        logger.debug(`Auto-provision: "${id}" already configured for channel ${channel} — skipping`);
         continue;
       }
 
@@ -1025,13 +1050,14 @@ export class WorkerManager {
       let resolvedArgs: string[];
       try {
         resolvedArgs = resolveArgs(entry.args || [], { PROJECT_ROOT: projectRoot, ...(env || {}) });
-      } catch (err: any) {
-        console.warn(`[WorkerManager] Auto-provision: cannot resolve args for "${id}": ${err.message}`);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(`Auto-provision: cannot resolve args for "${id}": ${message}`);
         continue;
       }
 
       // Build minimal server config
-      const mcpConfig: any = {
+      const mcpConfig: MCPServerConfig & { autoProvisioned: boolean; autoProvisionedBy: string } = {
         transport: entry.transport,
         ...(entry.logo ? { logo: entry.logo } : {}),
         autoProvisioned: true,
@@ -1048,14 +1074,15 @@ export class WorkerManager {
       // Validate (async — includes DNS rebinding check for http)
       try {
         await validateServerConfig(entry.id, mcpConfig);
-      } catch (err: any) {
-        console.warn(`[WorkerManager] Auto-provision: validation failed for "${id}": ${err.message}`);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(`Auto-provision: validation failed for "${id}": ${message}`);
         continue;
       }
 
       saveChannelMCPServer(channel, entry.id, mcpConfig);
       provisioned.push({ id: entry.id, name: entry.name, envRequired: entry.envRequired || [] });
-      console.log(`[WorkerManager] Auto-provisioned MCP server "${id}" for channel ${channel} (agent: ${agentId})`);
+      logger.info(`Auto-provisioned MCP server "${id}" for channel ${channel} (agent: ${agentId})`);
     }
 
     // Notify UI so it can show a dismissable banner
@@ -1094,7 +1121,7 @@ export class WorkerManager {
     const setupPromise = (async (): Promise<MCPManager | null> => {
       const mcpManager = new MCPManager();
       const enabledEntries = Object.entries(serverConfigs).filter(([, c]) => c.enabled !== false);
-      console.log(`[WorkerManager] Starting ${enabledEntries.length} MCP server(s) for channel: ${channel}`);
+      logger.info(`Starting ${enabledEntries.length} MCP server(s) for channel: ${channel}`);
 
       for (const [name, config] of enabledEntries) {
         try {
@@ -1104,7 +1131,7 @@ export class WorkerManager {
             const stored = loadOAuthToken(channel, name);
             token = stored?.access_token;
             if (!token) {
-              console.log(`[WorkerManager] Skipping MCP server ${name} (no OAuth token — connect via UI)`);
+              logger.info(`Skipping MCP server ${name} (no OAuth token — connect via UI)`);
               continue;
             }
           }
@@ -1118,11 +1145,9 @@ export class WorkerManager {
             headers: config.headers,
             token,
           });
-          console.log(`[WorkerManager] Connected MCP server: ${name} (channel: ${channel})`);
+          logger.info(`Connected MCP server: ${name} (channel: ${channel})`);
         } catch (err) {
-          console.error(
-            `[WorkerManager] Failed to connect MCP server ${name} for channel ${channel}: ${(err as any)?.message || err}`,
-          );
+          logger.error(`Failed to connect MCP server ${name} for channel ${channel}: ${(err as any)?.message || err}`);
         }
       }
 
@@ -1137,7 +1162,7 @@ export class WorkerManager {
       return await setupPromise;
     } catch (err) {
       this.channelMcpPending.delete(channel);
-      console.error(`[WorkerManager] Failed to setup channel MCP for ${channel}:`, err);
+      logger.error(`Failed to setup channel MCP for ${channel}:`, err);
       return null;
     }
   }
@@ -1151,9 +1176,9 @@ export class WorkerManager {
 
     try {
       await mcp.disconnectAll();
-      console.log(`[WorkerManager] Disconnected channel MCP: ${channel} (last agent stopped)`);
+      logger.info(`Disconnected channel MCP: ${channel} (last agent stopped)`);
     } catch (err) {
-      console.error(`[WorkerManager] Error disconnecting channel MCP ${channel}:`, err);
+      logger.error(`Error disconnecting channel MCP ${channel}:`, err);
     }
     this.channelMcp.delete(channel);
   }
@@ -1212,13 +1237,14 @@ export class WorkerManager {
         token: config.token,
       });
       const tools = mgr.getAllTools().filter((t) => t.server === name).length;
-      console.log(`[WorkerManager] Added MCP server: ${name} (channel: ${channel}, ${tools} tools)`);
+      logger.info(`Added MCP server: ${name} (channel: ${channel}, ${tools} tools)`);
       // Reset CC agent sessions so they pick up the new tools via clawd MCP proxy
       this.resetChannelAgentSessions(channel);
       return { success: true, tools };
-    } catch (err: any) {
-      console.error(`[WorkerManager] Failed to add MCP server ${name} for channel ${channel}: ${err.message}`);
-      return { success: false, tools: 0, error: err.message };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`Failed to add MCP server ${name} for channel ${channel}: ${message}`);
+      return { success: false, tools: 0, error: message };
     }
   }
 
@@ -1230,9 +1256,9 @@ export class WorkerManager {
     try {
       await mgr.removeServer(name);
     } catch (err) {
-      console.error(`[WorkerManager] Error removing MCP server ${name} from ${channel}:`, err);
+      logger.error(`Error removing MCP server ${name} from ${channel}:`, err);
     }
-    console.log(`[WorkerManager] Removed MCP server: ${name} (channel: ${channel})`);
+    logger.info(`Removed MCP server: ${name} (channel: ${channel})`);
 
     // Reset CC agent sessions so they drop the removed server's tools
     this.resetChannelAgentSessions(channel);
@@ -1254,12 +1280,14 @@ export class WorkerManager {
     let count = 0;
     for (const [key, loop] of this.loops) {
       if (key.startsWith(`${channel}:`)) {
-        loop.resetSession().catch(() => {});
+        loop.resetSession().catch((err) => {
+          logger.warn("[worker-manager] resetSession failed:", err);
+        });
         count++;
       }
     }
     if (count > 0) {
-      console.log(`[WorkerManager] Reset ${count} agent session(s) for channel ${channel} (MCP config changed)`);
+      logger.info(`Reset ${count} agent session(s) for channel ${channel} (MCP config changed)`);
     }
   }
 

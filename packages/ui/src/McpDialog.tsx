@@ -2,7 +2,7 @@ import DOMPurify from "dompurify";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
-import { useInputContextMenu, InputContextMenu } from "./InputContextMenu";
+import { InputContextMenu, useInputContextMenu } from "./InputContextMenu";
 
 const API_URL = "";
 
