@@ -98,6 +98,9 @@ export class WorkerManager {
   private oauthRefreshInFlight = new Set<string>();
   /** Worktree tracking: key → { path, branch, originalRoot } */
   private worktreeInfo: Map<string, { path: string; branch: string; originalRoot: string }> = new Map();
+  /** Remote worker bridges for CC agents (key → bridge). Normal agents manage their own bridge in WorkerLoop. */
+  private ccRemoteWorkerBridges: Map<string, import("./agent/plugins/remote-worker-bridge").RemoteWorkerBridge> =
+    new Map();
 
   // Heartbeat monitor state
   private heartbeatConfig: HeartbeatConfig;
@@ -481,6 +484,21 @@ export class WorkerManager {
         });
         registerMainWorker(`${agent.channel}:${agent.agentId}`, ccWorker);
         worker = ccWorker;
+
+        // CC agents don't have WorkerLoop's built-in RemoteWorkerBridge.
+        // Create one here so remote worker tools are added to the channel MCPManager
+        // and proxied through the MCP endpoint to the CC SDK.
+        if (agent.workerToken && channelMcpManager) {
+          try {
+            const { RemoteWorkerBridge } = await import("./agent/plugins/remote-worker-bridge");
+            const bridge = new RemoteWorkerBridge(channelMcpManager, agent.channel, agent.workerToken);
+            await bridge.init();
+            this.ccRemoteWorkerBridges.set(key, bridge);
+            logger.info(`Created RemoteWorkerBridge for CC agent ${key}`);
+          } catch (err) {
+            logger.error(`Failed to create RemoteWorkerBridge for CC agent ${key}:`, err);
+          }
+        }
       } else {
         // Normal LLM-based agent
         worker = new WorkerLoop(loopConfig);
@@ -525,6 +543,13 @@ export class WorkerManager {
       unregisterMainWorker(key);
     } catch {
       // Intentionally swallowed — CC worker deregistration is best-effort; worker already stopped
+    }
+
+    // Clean up RemoteWorkerBridge for CC agents
+    const ccBridge = this.ccRemoteWorkerBridges.get(key);
+    if (ccBridge) {
+      ccBridge.destroy();
+      this.ccRemoteWorkerBridges.delete(key);
     }
 
     // Clean up worktree if one was created
@@ -1114,7 +1139,13 @@ export class WorkerManager {
     const serverConfigs = getChannelMCPServers(channel);
     const serverNames = Object.keys(serverConfigs);
     if (serverNames.length === 0) {
-      return null; // No MCP servers configured for this channel
+      // No MCP servers configured — still create an empty MCPManager if any agent
+      // in this channel has a workerToken (remote worker tools are added dynamically
+      // via RemoteWorkerBridge and need an MCPManager to attach to).
+      const hasRemoteWorker = this.hasRemoteWorkerAgent(channel);
+      if (!hasRemoteWorker) {
+        return null; // No MCP servers and no remote workers — skip
+      }
     }
 
     // Create and connect
@@ -1301,5 +1332,19 @@ export class WorkerManager {
   /** Get the shared MCPManager for a channel (if any) */
   getChannelMcpManager(channel: string): MCPManager | undefined {
     return this.channelMcp.get(channel);
+  }
+
+  /** Check if any agent in the given channel has a workerToken configured */
+  private hasRemoteWorkerAgent(channel: string): boolean {
+    try {
+      const row = db
+        .query<{ cnt: number }, [string]>(
+          `SELECT COUNT(*) as cnt FROM channel_agents WHERE channel = ? AND worker_token IS NOT NULL AND worker_token != ''`,
+        )
+        .get(channel);
+      return (row?.cnt ?? 0) > 0;
+    } catch {
+      return false;
+    }
   }
 }

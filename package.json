@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
-    "test": "bun test",
-    "test:isolated": "for f in $(find src -name '*.test.ts' | sort); do bun test \"$f\" || exit 1; done",
-    "test:ci": "bun run test:isolated",
+    "test": "for f in $(find src -name '*.test.ts' | sort); do bun test \"$f\" || exit 1; done",
+    "test:fast": "for f in $(find src -name '*.test.ts' | sort); do bun test \"$f\" || exit 1; done",
+    "test:ci": "bun run test",
     "dev:ui": "cd packages/ui && bun run dev",
     "build:ui": "cd packages/ui && bun install && bun run build",
     "build:embed": "bun run scripts/embed-ui.ts && bun run build:extension && bun run scripts/embed-cli.ts",
