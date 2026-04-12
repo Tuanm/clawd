@@ -54,7 +54,6 @@
 │                                    │
 │  Plugin System                     │
 │  ├─ Browser Plugin                 │
-│  ├─ Workspace Plugin (Git)         │
 │  ├─ MCP Plugin                     │
 │  └─ Custom Plugins                 │
 │                                    │
@@ -479,7 +478,6 @@
   "quotas": { "daily_image_limit": 50 },
 
   // Feature Flags
-  "workspaces": true,
   "worker": true,
   "memory": true,
   "browser": true,
@@ -581,7 +579,6 @@
 
 ### Phase 5: Enterprise (2025-Q1+)
 - Desktop automation (keyboard/mouse)
-- Workspace Docker integration (noVNC)
 - Multi-user collaboration features
 - Advanced analytics & reporting
 
@@ -594,7 +591,6 @@
 **Known Limitations**:
 - Windows sandbox support limited (path validation only)
 - Desktop automation not yet implemented
-- Docker workspace integration in beta
 
 **Active Development**:
 - Performance optimizations (token caching, database indexing)

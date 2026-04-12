@@ -345,7 +345,7 @@ The tool name is shown in monospace. The card uses a subtle border and can be ex
 
 A horizontal `<hr>`-style separator with "New messages" label (CSS `text-transform: uppercase` renders it as "NEW MESSAGES") appears between read and unread messages. Uses `hsl(0 72% 51%)` (danger red). Has no entry animation — it simply renders in place.
 
-### Subspace / Workspace Cards
+### Subspace Cards
 
 Agent sub-space attachments render as bordered cards with a colored status dot (green=active, gray=completed, red=failed), title, description, and agent avatar. Clickable to open the subspace.
 
