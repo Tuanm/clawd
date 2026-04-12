@@ -8,12 +8,14 @@
  * Usage: bun run scripts/embed-cli.ts
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
 
 const CLI_PATH = join(import.meta.dir, "..", "node_modules", "@anthropic-ai", "claude-agent-sdk", "cli.js");
 const TS_OUTPUT = join(import.meta.dir, "..", "src", "embedded", "cli.ts");
+
+mkdirSync(dirname(TS_OUTPUT), { recursive: true });
 
 if (!existsSync(CLI_PATH)) {
   console.error("[embed-cli] cli.js not found — is @anthropic-ai/claude-agent-sdk installed?");
