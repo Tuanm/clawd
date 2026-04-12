@@ -189,6 +189,8 @@ export class WorkerLoop implements AgentWorker {
   private lastActivityAt: number = Date.now();
   private processingStartedAt: number | null = null;
   private lastHeartbeatAt: number = Date.now();
+  private remoteWorkerBridge: import("./agent/plugins/remote-worker-bridge").RemoteWorkerBridge | null = null;
+  private remoteWorkerBridgeReady: Promise<void> | null = null;
   private heartbeatPending = false;
 
   // Continuation retry cap (Layer 5 — stream resilience)
@@ -366,6 +368,23 @@ export class WorkerLoop implements AgentWorker {
     // an old loop (e.g. after provider change + restart) blocking message polling.
     this.sleeping = false;
     this.log("Starting worker loop");
+
+    // Initialize remote worker bridge if this agent has a workerToken
+    // The promise is awaited in loop() before first agent execution
+    if (this.config.workerToken && this.config.channelMcpManager) {
+      this.remoteWorkerBridgeReady = import("./agent/plugins/remote-worker-bridge")
+        .then(async ({ RemoteWorkerBridge }) => {
+          if (!this.running) return;
+          this.remoteWorkerBridge = new RemoteWorkerBridge(
+            this.config.channelMcpManager!,
+            this.config.channel,
+            this.config.workerToken,
+          );
+          await this.remoteWorkerBridge.init();
+        })
+        .catch((err) => this.log(`RemoteWorkerBridge init error: ${err}`));
+    }
+
     this.connectWebSocket();
     this.loop();
   }
@@ -396,6 +415,12 @@ export class WorkerLoop implements AgentWorker {
       this.stoppedPromise = null;
     }
     await this.clearStreamingState();
+
+    // Destroy remote worker bridge
+    if (this.remoteWorkerBridge) {
+      this.remoteWorkerBridge.destroy();
+      this.remoteWorkerBridge = null;
+    }
 
     // Kill all cloudflare tunnels created by this worker
     try {
@@ -496,6 +521,12 @@ export class WorkerLoop implements AgentWorker {
     const { channel, agentId } = this.config;
 
     this.log(`Session: ${this.sessionName}`);
+
+    // Wait for remote worker bridge to initialize before processing messages
+    if (this.remoteWorkerBridgeReady) {
+      await this.remoteWorkerBridgeReady;
+      this.remoteWorkerBridgeReady = null;
+    }
 
     while (this.running) {
       try {
