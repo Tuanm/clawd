@@ -159,7 +159,6 @@ Settings are loaded from `~/.clawd/config.json`. Changes are picked up automatic
     "anthropic": { "claude-opus-4.6": 200000 }
   },
 
-  "workspaces": true,                    // true | false | ["channel1", "channel2"]
   "worker": true,                        // true | { "channel": ["token1"] }
   "browser": true,                       // true | ["ch1"] | { "ch1": ["auth_token"] }
   "memory": true,                        // true | { "provider": "copilot", "model": "gpt-4.1", "autoExtract": true }
@@ -315,7 +314,7 @@ clawd/
 │   │   ├── agents/               # Agent file loader (4-directory priority, Claude Code compat)
 │   │   ├── api/                  # LLM provider clients, key pool, factory
 │   │   ├── tools/                # Tool definitions, web search, document converter
-│   │   ├── plugins/              # All plugins (chat, browser, workspace, tunnel, etc.)
+│   │   ├── plugins/              # All plugins (chat, browser, tunnel, etc.)
 │   │   ├── session/              # Session manager, checkpoints, summarizer
 │   │   ├── memory/               # Session memory, knowledge base, agent memories
 │   │   ├── skills/               # Custom skill loader (project + global)

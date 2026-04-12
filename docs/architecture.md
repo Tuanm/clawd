@@ -64,10 +64,9 @@
     - [config.json Schema](#181-configjson-schema)
     - [System Files & Directories](#182-system-files--directories)
 19. [Codebase Refactor — April 2026](#19-codebase-refactor--april-2026)
-    - [Workspace Feature Removal](#191-workspace-feature-removal-phase-2)
-    - [MCP Server Restructure](#192-mcp-server-restructure-phase-5)
-    - [Source Directory Reorganization](#193-source-directory-reorganization-phase-6)
-    - [Error Handling Patterns](#194-error-handling-patterns-phase-7)
+    - [MCP Server Restructure](#191-mcp-server-restructure-phase-5)
+    - [Source Directory Reorganization](#192-source-directory-reorganization-phase-6)
+    - [Error Handling Patterns](#193-error-handling-patterns-phase-7)
 
 ---
 
@@ -115,7 +114,7 @@ flowchart TD
 
         subgraph AgentLoop["Agent Loop (src/agent/)"]
             LLM["LLM provider (multi-provider)"]
-            Tools["Tool plugins (browser, workspace)"]
+            Tools["Tool plugins (browser, tunnel)"]
             MCPClients["MCP clients (chat + external)"]
             Spawner["Sub-agent spawner (spaces)"]
             Compactor["Context compactor / token manager"]
@@ -192,7 +191,7 @@ clawd/
 │   │   │   ├── chat-tools.ts   # Chat send/upload/list
 │   │   │   ├── web-tools.ts    # Web fetch/search
 │   │   │   └── memory-tools.ts # Memory recall/save
-│   │   ├── plugins/            # All plugins (chat, browser, workspace, tunnel, etc.)
+│   │   ├── plugins/            # All plugins (chat, browser, tunnel, etc.)
 │   │   ├── session/            # Session manager, checkpoints, summarizer
 │   │   ├── memory/             # memory.ts, knowledge-base.ts, agent-memory.ts, wiki-compiler.ts
 │   │   ├── mcp/                # MCP client connections
@@ -369,7 +368,7 @@ This is the primary database for all chat, agent, and scheduling state.
 | `agent_id` | TEXT | Agent ID |
 | `provider` | TEXT | LLM provider for this assignment |
 | `model` | TEXT | LLM model for this assignment |
-| `project` | TEXT | Project/workspace path |
+| `project` | TEXT | Project path |
 | `worker_token` | TEXT | Remote worker auth token (nullable) |
 
 #### agent_seen
@@ -2309,10 +2308,6 @@ settings, browser auth tokens, and all other browser-side settings apply on the 
     "spaceIdleTimeoutMs": 60000   // Poke idle sub-agents after 60s
   },
 
-  // Workspace plugin toggle
-  // true = all channels, false = disabled, ["channel1"] = specific channels
-  "workspaces": true,
-
   // Remote worker configuration
   // true = accept workers, { "channel": ["token1"] } = per-channel tokens
   "worker": true,
@@ -2413,20 +2408,7 @@ This section documents structural changes made during the April 2026 multi-phase
 
 ---
 
-### 19.1 Workspace Feature Removal (Phase 2)
-
-**Removed packages:**
-- `packages/workspace-mcp/` — workspace-scoped MCP server (unused)
-
-**Note:** `packages/clawd-worker/` was renamed to `packages/remote-worker/` — it contains standalone remote worker scripts (TypeScript, Python, Java) that users download to connect remote machines.
-
-**Rationale:** The workspace-mcp package was an architectural experiment that was never deployed. Removing it reduces build complexity and eliminates dead code paths.
-
-**Impact:** No runtime behavior change. The remote worker scripts are standalone and have no imports from the main codebase.
-
----
-
-### 19.2 MCP Server Restructure (Phase 5)
+### 19.1 MCP Server Restructure (Phase 5)
 
 The MCP endpoint handling was extracted from a monolithic file into `src/server/mcp/`:
 
@@ -2448,7 +2430,7 @@ src/server/mcp/
 
 ---
 
-### 19.3 Source Directory Reorganization (Phase 6)
+### 19.2 Source Directory Reorganization (Phase 6)
 
 Three new top-level groupings were introduced under `src/`:
 
@@ -2490,7 +2472,7 @@ Consolidates runtime config loading:
 
 ---
 
-### 19.4 Error Handling Patterns (Phase 7)
+### 19.3 Error Handling Patterns (Phase 7)
 
 All typed errors are defined in `src/errors.ts` and follow a consistent class hierarchy:
 

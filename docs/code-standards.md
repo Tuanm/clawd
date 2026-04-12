@@ -115,10 +115,9 @@ src/
 │   ├── agents/loader.ts        # Agent file discovery (4-directory priority)
 │   ├── api/                    # LLM provider clients, key pool
 │   ├── tools/                  # Tool definitions, web search, doc conversion
-│   ├── plugins/                # All plugins (chat, browser, workspace, etc.)
+│   ├── plugins/                # All plugins (chat, browser, tunnel, etc.)
 │   ├── session/                # Session manager, checkpoints, summarizer
 │   ├── memory/                 # Session memory, knowledge base, agent memory
-│   ├── workspace/              # Git isolated mode
 │   ├── mcp/                    # MCP client connections
 │   ├── prompt/                 # System prompt builder
 │   └── utils/                  # sandbox.ts, debug, context helpers
@@ -1158,7 +1157,7 @@ Sub-agents have limited tool access for safety:
 **Blocked:**
 - `chat_send_message` — Cannot post to parent channel directly
 - File/git tools — Inherit from parent config
-- Browser/workspace tools — Inherit from parent config
+- Browser tools — Inherit from parent config
 
 **Inheritance**: Sub-agents inherit parent's `disallowedTools` and can be further restricted via agent file.
 

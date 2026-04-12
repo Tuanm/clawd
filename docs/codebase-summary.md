@@ -98,13 +98,13 @@ clawd/
 │   │   │   ├── chat-tools.ts         # Chat send/upload (realpathSync allowlist for local uploads)
 │   │   │   ├── web-tools.ts          # Web fetch/search tools (readOnly)
 │   │   │   └── memory-tools.ts       # Memory recall/save tools
-│   │   ├── plugins/                  # All plugins (chat, browser, workspace, tunnel, etc.)
+│   │   ├── plugins/                  # All plugins (chat, browser, tunnel, etc.)
 │   │   ├── session/                  # Session manager, checkpoints, summarizer
 │   │   │   └── manager.test.ts       # Session compaction tests (ordering bug fix: created_at ASC, id ASC)
 │   │   ├── memory/                   # memory.ts, knowledge-base.ts, agent-memory.ts
-│   │   ├── workspace/                # Git isolated mode for multi-agent channels
+│   │   ├── workspace/                # Git worktree isolation for multi-agent channels
 │   │   │   ├── worktree.ts           # Worktree lifecycle, diff/commit/merge/hunk operations
-│   │   │   └── index.ts              # Workspace plugin entry
+│   │   │   └── index.ts              # Worktree exports barrel
 │   │   ├── mcp/                      # MCP client connections
 │   │   └── utils/                    # sandbox.ts, debug, context helpers
 │   ├── spaces/                       # Sub-agent system
@@ -244,7 +244,7 @@ interface Plugin {
 }
 ```
 
-Built-in plugins: browser, workspace, context-mode, state-persistence, spawn-agent, scheduler, memory, custom-tools, clawd-agent-bus, mcp-client.
+Built-in plugins: browser, context-mode, state-persistence, spawn-agent, scheduler, memory, custom-tools, clawd-agent-bus, mcp-client.
 
 ### Heartbeat Monitor (`src/worker-manager.ts`)
 
@@ -897,7 +897,6 @@ Main configuration file at `~/.clawd/config.json`:
   "quotas": { "daily_image_limit": 50 },
 
   // Features
-  "workspaces": true,        // Docker workspace support
   "worker": true,            // Remote worker support
   "memory": true,            // Agent memory system
   "browser": true,           // Browser extension
@@ -1207,8 +1206,6 @@ Located in `biome.json`:
 
 Documented in docs/brainstorm-* files:
 - Desktop automation (keyboard/mouse control)
-- Workspace Docker integration (noVNC)
-- Pure MCP-based workspace evaluation
 - Agent OS platforms (Skyline, Antml)
 - Browser extension landscape analysis
 - Windows compatibility improvements
