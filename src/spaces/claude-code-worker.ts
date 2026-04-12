@@ -263,8 +263,15 @@ export class ClaudeCodeSpaceWorker {
       }
     } catch {}
 
+    // Inject ## Naming section so sub-agents know where to write outputs
+    // (Claude Code hooks inject this via session-init.cjs, but Claw'd bypasses those hooks)
+    const today = new Date().toISOString().slice(0, 10);
+    const namingSection = agentPrompt
+      ? `\n\n## Naming\n- Date: ${today}\n- Reports path: ${effectiveProjectRoot}/reports/\n- Plans path: ${effectiveProjectRoot}/plans/\n- Pattern: {date}-{slug}.md\n- NEVER write to ~/home, ~/plans, ~/research, or any user home directory\n- ALL outputs MUST be relative to the project root: ${effectiveProjectRoot}\n`
+      : "";
+
     const basePrompt = agentPrompt
-      ? `${agentPrompt}${toolAddendum}${customScriptAddendum}\n\n---\n\n`
+      ? `${agentPrompt}${namingSection}${toolAddendum}${customScriptAddendum}\n\n---\n\n`
       : `You are an autonomous coding agent. Complete the given task using your tools.\n\nFor file operations within the project, prefer the MCP file tools (mcp__clawd__file_view, mcp__clawd__file_edit, mcp__clawd__file_multi_edit, mcp__clawd__file_create, mcp__clawd__file_glob, mcp__clawd__file_grep) — they are project-root-scoped and sandbox-safe. Use Bash only for system commands that cannot be done with file tools.${toolAddendum}${customScriptAddendum}\n\n`;
 
     // Shared SDK callbacks (reused across initial run and interrupt resumes)
