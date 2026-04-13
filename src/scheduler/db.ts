@@ -354,6 +354,7 @@ export function resumeJob(
     return { success: false, error: "Only the creating agent can resume this job" };
   if (job.status !== "paused") return { success: false, error: `Cannot resume job with status '${job.status}'` };
   updateJobStatus(id, "active");
+  resetErrors(id);
   return { success: true };
 }
 

@@ -89,6 +89,16 @@ export async function executeToolCall(
           });
           break;
         }
+        case "scheduler_pause": {
+          const r = _scheduler.pauseJobFromTool(args.id as string, args.agent_id as string, args.channel as string);
+          resultText = JSON.stringify({ ok: r.success, error: r.success ? undefined : r.error });
+          break;
+        }
+        case "scheduler_resume": {
+          const r = _scheduler.resumeJobFromTool(args.id as string, args.agent_id as string, args.channel as string);
+          resultText = JSON.stringify({ ok: r.success, error: r.success ? undefined : r.error });
+          break;
+        }
         case "scheduler_history": {
           const limit = Math.min((args.limit as number) || 10, 50);
           const runs = _scheduler.getJobRunsForTool(args.id as string, limit, args.channel as string | undefined);

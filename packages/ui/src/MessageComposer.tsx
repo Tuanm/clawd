@@ -60,6 +60,7 @@ interface Props {
   projectsButton?: React.ReactNode;
   mcpButton?: React.ReactNode;
   skillsButton?: React.ReactNode;
+  schedulerButton?: React.ReactNode;
   worktreeButton?: React.ReactNode;
   onPlanClick?: () => void;
   theme: "light" | "dark";
@@ -257,6 +258,7 @@ export default function MessageComposer({
   projectsButton,
   mcpButton,
   skillsButton,
+  schedulerButton,
   worktreeButton,
   onPlanClick,
   theme,
@@ -651,7 +653,13 @@ export default function MessageComposer({
                 <path d="M4 3h16c.55 0 1 .45 1 1v16c0 .55-.45 1-1 1H4c-.55 0-1-.45-1-1V4c0-.55.45-1 1-1zm1 2v14h14V5H5zm3.4 10.6L4.8 12l3.6-3.6L9.8 7l-5 5 5 5-1.4-1.4zm7.2 0l3.6-3.6-3.6-3.6L14.2 7l5 5-5 5 1.4-1.4z" />
               </svg>
             </button>
-            {(searchButton || projectsButton || worktreeButton || mcpButton || skillsButton || onPlanClick) && (
+            {(searchButton ||
+              projectsButton ||
+              worktreeButton ||
+              mcpButton ||
+              skillsButton ||
+              schedulerButton ||
+              onPlanClick) && (
               <>
                 <div className="toolbar-divider" />
                 <ToolsMenuButton>
@@ -660,6 +668,7 @@ export default function MessageComposer({
                   {worktreeButton}
                   {mcpButton}
                   {skillsButton}
+                  {schedulerButton}
                   {onPlanClick && (
                     <button className="plan-btn" onClick={onPlanClick} title="Tasks">
                       <svg
@@ -835,13 +844,20 @@ export default function MessageComposer({
             />
             {/* Icon buttons — auto-collapses into ⋮ when container overflows */}
             {!showToolbar &&
-              (searchButton || projectsButton || mcpButton || skillsButton || worktreeButton || onPlanClick) && (
+              (searchButton ||
+                projectsButton ||
+                mcpButton ||
+                skillsButton ||
+                schedulerButton ||
+                worktreeButton ||
+                onPlanClick) && (
                 <IconButtonRow>
                   {searchButton}
                   {projectsButton}
                   {worktreeButton}
                   {mcpButton}
                   {skillsButton}
+                  {schedulerButton}
                   {onPlanClick && (
                     <button className="plan-btn" onClick={onPlanClick} title="Tasks">
                       <svg
