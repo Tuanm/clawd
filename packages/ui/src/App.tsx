@@ -14,6 +14,7 @@ import MessageComposer from "./MessageComposer";
 import MessageList, { reinitializeMermaid, StreamOutputDialog } from "./MessageList";
 import TodoDialog from "./PlanModal";
 import ProjectsDialog from "./ProjectsDialog";
+import SchedulerDialog from "./SchedulerDialog";
 import SearchModal from "./SearchModal";
 import SidebarPanel from "./SidebarPanel";
 import SkillFilesChannel from "./SkillFilesChannel";
@@ -590,6 +591,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const [showWorktreeDialog, setShowWorktreeDialog] = useState(false);
   const [worktreeEnabled, setWorktreeEnabled] = useState(false);
   const [showSkillsDialog, setShowSkillsDialog] = useState(false);
+  const [showSchedulerDialog, setShowSchedulerDialog] = useState(false);
+  const [schedulerRefreshTick, setSchedulerRefreshTick] = useState(0);
   const [jumpToMessageTs, setJumpToMessageTs] = useState<string | null>(null);
   const [activeSubAgents, setActiveSubAgents] = useState<ActiveSubAgent[]>([]);
   const [showSubAgentsDialog, setShowSubAgentsDialog] = useState(false);
@@ -1935,6 +1938,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           }
         } else if (data.type === "channel_cleared") {
           updateChannelState(msgChannel, { messages: [], pendingMessages: [] });
+        } else if (data.type === "scheduler_event") {
+          if (msgChannel === activeChannelRef.current) {
+            setSchedulerRefreshTick((t) => t + 1);
+          }
         }
       } catch {
         // Ignore parse errors
@@ -2671,6 +2678,25 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               </button>
             ) : undefined
           }
+          schedulerButton={
+            !isSpaceChannel ? (
+              <button className="scheduler-btn" onClick={() => setShowSchedulerDialog(true)} title="Scheduler">
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <polyline points="12 6 12 12 16 14" />
+                </svg>
+              </button>
+            ) : undefined
+          }
           worktreeButton={
             !isSpaceChannel && worktreeEnabled && activeAgents.length > 0 ? (
               <button className="worktree-btn" onClick={() => setShowWorktreeDialog(true)} title="Git">
@@ -2719,6 +2745,12 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       <AgentDialog channel={activeChannel} isOpen={showAgentDialog} onClose={() => setShowAgentDialog(false)} />
       <McpDialog channel={activeChannel} isOpen={showMcpDialog} onClose={() => setShowMcpDialog(false)} />
       <SkillsDialog channel={activeChannel} isOpen={showSkillsDialog} onClose={() => setShowSkillsDialog(false)} />
+      <SchedulerDialog
+        channel={activeChannel}
+        isOpen={showSchedulerDialog}
+        onClose={() => setShowSchedulerDialog(false)}
+        refreshTick={schedulerRefreshTick}
+      />
       <ProjectsDialog
         channel={activeChannel}
         isOpen={showProjectsDialog}

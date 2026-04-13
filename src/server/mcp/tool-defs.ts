@@ -1159,6 +1159,40 @@ Best practices:
     },
   },
   {
+    name: "scheduler_pause",
+    description: "Pause an active scheduled job.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Job ID" },
+      },
+      required: ["id"],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "scheduler_resume",
+    description: "Resume a paused scheduled job. Resets consecutive error count.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Job ID" },
+      },
+      required: ["id"],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
     name: "scheduler_history",
     description: "View run history for a scheduled job.",
     inputSchema: {

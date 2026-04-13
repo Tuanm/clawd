@@ -24,6 +24,7 @@ import { setDebug } from "./agent/utils/debug";
 import { registerAgentRoutes } from "./server/routes/agents";
 import { registerArticleRoutes } from "./server/routes/articles";
 import { getPublicOrigin, registerMcpServerRoutes } from "./server/routes/mcp-servers";
+import { registerSchedulerRoutes } from "./server/routes/scheduler";
 import { registerWorktreeRoutes } from "./server/routes/worktree";
 import { loadConfig, validateConfig } from "./config/config";
 import {
@@ -292,6 +293,9 @@ const handleMcpServerRoute = registerMcpServerRoutes(workerManager);
 
 // Register article management API routes
 const handleArticleRoute = registerArticleRoutes(db);
+
+// Register scheduler management API routes
+const handleSchedulerRoute = registerSchedulerRoutes(scheduler);
 
 // Register worktree management API routes
 const handleWorktreeRoute = registerWorktreeRoutes(workerManager);
@@ -617,6 +621,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     // MCP server management routes
     const mcpResponse = handleMcpServerRoute(req, url, path);
     if (mcpResponse) return mcpResponse;
+
+    // Scheduler management routes
+    const schedulerResponse = handleSchedulerRoute(req, url, path);
+    if (schedulerResponse) return schedulerResponse;
 
     // Worktree management routes
     const worktreeResponse = handleWorktreeRoute(req, url, path);

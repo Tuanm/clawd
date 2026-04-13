@@ -258,6 +258,9 @@ export class SchedulerManager {
     const job = getJob(id);
     if (!job) return { success: false, error: "Job not found" };
     const result = dbPauseJob(id, callerAgent, callerChannel);
+    if (result.success) {
+      this.broadcast(callerChannel, { type: "scheduler_event", event: "paused", job_id: id, title: job.title });
+    }
     return { ...result, title: job.title };
   }
 
@@ -269,6 +272,9 @@ export class SchedulerManager {
     const job = getJob(id);
     if (!job) return { success: false, error: "Job not found" };
     const result = dbResumeJob(id, callerAgent, callerChannel);
+    if (result.success) {
+      this.broadcast(callerChannel, { type: "scheduler_event", event: "resumed", job_id: id, title: job.title });
+    }
     return { ...result, title: job.title };
   }
 
