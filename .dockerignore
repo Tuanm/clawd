@@ -9,5 +9,4 @@ packages/ui/dist/
 src/embedded-ui.ts
 graphify-out/
 docs/
-packages/browser-extension/
 plans/

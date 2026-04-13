@@ -10,11 +10,12 @@
  * Usage: bun run scripts/zip-extension.ts
  */
 
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import JSZip from "jszip";
 
 const EXT_DIR = join(import.meta.dir, "..", "packages", "browser-extension");
+
 const ZIP_OUTPUT = join(import.meta.dir, "..", "dist", "browser-extension.zip");
 const TS_OUTPUT = join(import.meta.dir, "..", "src", "embedded", "extension.ts");
 
