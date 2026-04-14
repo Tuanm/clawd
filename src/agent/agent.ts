@@ -95,6 +95,23 @@ export interface AgentConfig {
   toolDenylist?: string[];
   /** Prompt context for dynamic system prompt assembly */
   promptContext?: PromptContext;
+  /** Skill review plugin config (optional — omit to disable auto-skill generation) */
+  skillReview?: {
+    /** Tool call interval between reviews (default: 20) */
+    reviewInterval?: number;
+    /** Minimum tool calls before first review (default: 10) */
+    minToolCallsBeforeFirstReview?: number;
+    /** Model for review sub-agent (default: inherit parent's model) */
+    reviewModel?: string;
+    /** Max skills to create per review (default: 2) */
+    maxSkillsPerReview?: number;
+    /** Cooldown between reviews in ms (default: 300000 = 5 min) */
+    reviewCooldownMs?: number;
+    /** Claw'd API server URL for posting notifications */
+    apiUrl: string;
+    /** Channel ID for notifications */
+    channel: string;
+  };
 }
 
 export interface AgentResult {
@@ -769,6 +786,29 @@ SUMMARY:`;
     }
     if (mainPlugin) {
       await this.plugins.register(mainPlugin);
+    }
+
+    // Register skill-review plugin if configured
+    if (this.config.skillReview?.apiUrl && this.config.skillReview?.channel) {
+      try {
+        const { createSkillReviewPlugin } = await import("./plugins/skill-review-plugin");
+        const { plugin: skillReviewPlugin } = createSkillReviewPlugin({
+          apiUrl: this.config.skillReview.apiUrl,
+          channel: this.config.skillReview.channel,
+          reviewInterval: this.config.skillReview.reviewInterval,
+          minToolCallsBeforeFirstReview: this.config.skillReview.minToolCallsBeforeFirstReview,
+          reviewModel: this.config.skillReview.reviewModel,
+          maxSkillsPerReview: this.config.skillReview.maxSkillsPerReview,
+          reviewCooldownMs: this.config.skillReview.reviewCooldownMs,
+        });
+        await this.plugins.register(skillReviewPlugin);
+        console.log("[Agent] Skill review plugin registered");
+      } catch (err) {
+        console.error(
+          "[Agent] Failed to register skill-review plugin:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
     }
 
     // Register tool plugin if provided

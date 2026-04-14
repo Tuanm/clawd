@@ -479,14 +479,14 @@ echo "Exit code: $?" >> "${logFile}"
 
 registerTool(
   "spawn_agent",
-  `Spawn a sub-agent to work on a task. The sub-agent is a fully autonomous agent with the same capabilities (file ops, bash, web tools, etc.).
+  `Spawn a sub-agent to work on a task asynchronously. The sub-agent is a fully autonomous agent with the same capabilities (file ops, bash, web tools, etc.).
 
 Use this for:
 - Parallelizing independent tasks
 - Delegating complex subtasks
 - Running long operations
 
-The sub-agent runs asynchronously and will respond directly to the chat channel when done — no need to wait or poll for results.
+IMPORTANT: Do NOT wait for or poll the sub-agent. Continue with other work immediately after spawning. The sub-agent will respond directly to the chat channel when done.
 
 Sub-agents can spawn their own sub-agents (up to 3 levels deep). The sub-agent will run until it completes the task or hits max iterations.`,
   {
@@ -1030,3 +1030,61 @@ export async function terminateAllSubAgents(): Promise<void> {
     } catch {}
   }
 }
+
+// ============================================================================
+// Skill Review Trigger (registered by skill-review-plugin on init)
+// ============================================================================
+
+/** Module-level registry for the skill-review plugin's manual trigger function. */
+let skillReviewTrigger: (() => Promise<void>) | null = null;
+
+/**
+ * Register the skill-review plugin's manual trigger function.
+ * Called by the plugin during `onInit`.
+ */
+export function registerSkillReviewTrigger(fn: () => Promise<void>): void {
+  skillReviewTrigger = fn;
+}
+
+/**
+ * Unregister on plugin shutdown.
+ */
+export function unregisterSkillReviewTrigger(): void {
+  skillReviewTrigger = null;
+}
+
+registerTool(
+  "trigger_skill_review",
+  "Manually trigger a skill review. Analyzes recent conversation for patterns worth capturing as skills. Results are auto-saved as project skills. Use this when you've discovered important patterns that should become reusable skills.",
+  {
+    focus: {
+      type: "string",
+      description: "Optional focus area: 'corrections', 'workflows', 'patterns', 'all'",
+      default: "all",
+    },
+  },
+  ["focus"],
+  async ({ focus }) => {
+    if (!skillReviewTrigger) {
+      return {
+        success: false,
+        output: "",
+        error: "Skill review plugin is not enabled. Configure skillReview in the agent config to enable it.",
+      };
+    }
+
+    try {
+      await skillReviewTrigger();
+      return {
+        success: true,
+        output: `Skill review triggered (focus: ${focus ?? "all"}). Results will be saved to .clawd/skills/ when complete.`,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        output: "",
+        error: `Skill review failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  },
+);
