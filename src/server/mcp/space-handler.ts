@@ -65,9 +65,16 @@ export async function handleSpaceMcpRequest(req: Request, spaceId: string): Prom
           description: t.description,
           inputSchema: t.inputSchema,
         }));
-        const { CUSTOM_SCRIPT_MCP_TOOL_DEF: spaceCustomScriptToolDef } = await import(
-          "../../agent/plugins/custom-tool-plugin"
-        );
+        const { CustomToolPlugin } = await import("../../agent/plugins/custom-tool-plugin");
+        const spaceCustomScriptTools = new CustomToolPlugin().getTools().map((t) => ({
+          name: t.name,
+          description: t.description || t.name,
+          inputSchema: {
+            type: "object",
+            properties: Object.fromEntries(Object.entries(t.parameters || {}).map(([k, v]) => [k, v])),
+            required: t.required || [],
+          },
+        }));
         result = {
           tools: [
             {
@@ -85,7 +92,7 @@ export async function handleSpaceMcpRequest(req: Request, spaceId: string): Prom
               },
             },
             ...spaceFileToolDefs,
-            spaceCustomScriptToolDef,
+            ...spaceCustomScriptTools,
             {
               name: "web_search",
               description: "Search the web. Returns results with titles, URLs, and snippets.",

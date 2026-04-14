@@ -84,6 +84,10 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
           const { TunnelPlugin } = await import("../../agent/plugins/tunnel-plugin");
           return new TunnelPlugin().getTools();
         },
+        async () => {
+          const { CustomToolPlugin } = await import("../../agent/plugins/custom-tool-plugin");
+          return new CustomToolPlugin(channel, agentId).getTools();
+        },
       ];
       for (const getTools of pluginToRegister) {
         try {
@@ -912,8 +916,6 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         inputSchema: t.inputSchema,
       }));
 
-      const { CUSTOM_SCRIPT_MCP_TOOL_DEF } = await import("../../agent/plugins/custom-tool-plugin");
-
       const webToolDefs = [
         {
           name: "web_search",
@@ -967,7 +969,6 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         ...utilityToolDefs,
         ...fileToolDefs,
         ...webToolDefs,
-        CUSTOM_SCRIPT_MCP_TOOL_DEF,
       ];
 
       // Append connected channel MCP server tools (convert from OpenAI → MCP format)

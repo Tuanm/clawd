@@ -3,13 +3,15 @@
  *
  * Sub-agents respond directly to the parent chat channel via complete_task,
  * so no wait/poll/report tools are needed — the parent sees results in chat.
+ *
+ * The core spawn logic is in spawn-helper.ts, shared with chat-tools.ts.
  */
 
-import { type AgentFileConfig, listAgentFiles, loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
-import { resolveProviderBaseType } from "../agent/api/provider-config";
+import { listAgentFiles } from "../agent/agents/loader";
+import { type TrackedSpace, executeSpawnAgent, type SpawnContext } from "./spawn-helper";
 import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
 import type { ToolResult } from "../agent/tools/definitions";
-import { getOrRegisterAgent } from "../server/database";
+import { resolveProviderBaseType } from "../agent/api/provider-config";
 import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots } from "../server/mcp";
 import { timedFetch } from "../utils/timed-fetch";
 import {
@@ -25,9 +27,10 @@ import {
   DEFAULT_SPAWN_AGENT_COLOR,
   DEFAULT_SPAWN_TIMEOUT_SECONDS,
   MAX_ACTIVE_SUB_AGENTS,
-  MAX_CONTEXT_LENGTH,
   SPACE_EVICTION_MS,
 } from "../agent/constants/spaces";
+import { getAgent } from "../server/database";
+import { type AgentFileConfig, loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
 
 /**
  * Build the disallowedTools list for a CC sub-agent.
@@ -40,19 +43,9 @@ function buildCcDisallowedTools(
   providerName: string,
 ): string[] | undefined {
   const fromConfig = agentCfg?.disallowedTools ? mapToMcpToolNames(agentCfg.disallowedTools) : [];
-  // Block native CC web tools only for custom CC providers, not the built-in "claude-code"
   const extra = providerName !== "claude-code" ? ["WebSearch", "WebFetch"] : [];
   const merged = [...fromConfig, ...extra];
   return merged.length > 0 ? merged : undefined;
-}
-
-/** Surrogate-safe string slice — avoids cutting UTF-16 surrogate pairs */
-function surrogateSlice(s: string, maxLen: number): string {
-  if (s.length <= maxLen) return s;
-  let cut = maxLen;
-  const code = s.charCodeAt(cut - 1);
-  if (code >= 0xd800 && code <= 0xdbff) cut--;
-  return s.slice(0, cut);
 }
 
 export interface SpawnPluginConfig {
@@ -106,7 +99,7 @@ export function createSpawnAgentPlugin(
         {
           name: "spawn_agent",
           description:
-            "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning.\n\nIMPORTANT: Do NOT wait for or poll the sub-agent. The sub-agent will report back via chat when complete. Use list_agents(type='running') to check status, or get_agent_report(agent_id) to read results.\n\nChoose the right agent type for the task:\n- agent='general' (DEFAULT) — full access: read, write, edit, bash. Use for implementation, fixes, multi-step tasks.\n- agent='explore' — read-only, fast (haiku model). Use ONLY for search, analysis, code review where no file changes are needed.\n- agent='plan' — read-only research for gathering context before planning.\n\nCustom agents from .clawd/agents/ are also available (use list_agents(type='available') to discover).\n\nWrite the task as a self-contained work request. The result will be posted to the channel automatically when the sub-agent completes.",
+            "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning.\n\nIMPORTANT: Do NOT wait for or poll the sub-agent. The sub-agent will report back via chat when complete. Use list_agents(type='running') to check status, get_agent_report(agent_id) to read structured results, or get_agent_logs(agent_id) to view raw output.\n\nChoose the right agent type for the task:\n- agent='general' (DEFAULT) — full access: read, write, edit, bash. Use for implementation, fixes, multi-step tasks.\n- agent='explore' — read-only, fast (haiku model). Use ONLY for search, analysis, code review where no file changes are needed.\n- agent='plan' — read-only research for gathering context before planning.\n\nModel override: 'sonnet', 'opus', 'haiku', 'inherit' (use parent's model), or a specific model name. Do NOT use 'opus' for sub-agents — it's too expensive.\n\nCustom agents from .clawd/agents/ are also available (use list_agents(type='available') to discover).\n\nWrite the task as a self-contained work request. The result will be posted to the channel automatically when the sub-agent completes.",
           parameters: {
             task: { type: "string", description: "The task for the sub-agent" },
             name: { type: "string", description: "Optional friendly name" },
@@ -338,343 +331,34 @@ export function createSpawnAgentPlugin(
     },
   };
 
+  // Delegate to shared spawn helper (shared with chat-tools.ts)
   async function handleSpawnAgent(args: Record<string, any>): Promise<ToolResult> {
-    const task = args.task as string;
-    const context = (args.context as string) || "";
+    const ctx: SpawnContext = {
+      channel: config.channel,
+      agentId: config.agentId,
+      apiUrl: config.apiUrl,
+      yolo: config.yolo,
+      spaceManager,
+      spaceWorkerManager,
+      trackedSpaces,
+      getAgentConfig,
+    };
 
-    if (!task) {
-      return { success: false, output: "", error: "Missing required parameter: task" };
-    }
+    const result = await executeSpawnAgent(ctx, {
+      task: args.task as string,
+      agentType: (args.agent as string) || "general",
+      context: (args.context as string) || undefined,
+      name: args.name as string | undefined,
+      model: args.model as string | undefined,
+    });
 
-    // Limit active sub-agents per channel to prevent resource exhaustion
-    // MAX_ACTIVE_SUB_AGENTS imported from constants
-    const activeSpaces = spaceManager
-      .listSpaces(config.channel, "active")
-      .filter((s) => s.source === "spawn_agent" || s.source === "claude_code");
-    if (activeSpaces.length >= MAX_ACTIVE_SUB_AGENTS) {
-      return {
-        success: false,
-        output: "",
-        error: `Channel has ${activeSpaces.length} active sub-agents (max ${MAX_ACTIVE_SUB_AGENTS}). Wait for existing agents to complete or stop some with stop_agent before spawning more.`,
-      };
-    }
-
-    try {
+    // Update cached project root after successful spawn
+    if (result.success) {
       const agentConfig = await getAgentConfig(config.channel);
-      if (!agentConfig) {
-        return { success: false, output: "", error: `No agent configured for channel ${config.channel}` };
-      }
-      if (!agentConfig.project) {
-        return {
-          success: false,
-          output: "",
-          error: `[SpawnPlugin] projectRoot is required but not found for channel ${config.channel}. Ensure channel_agents.project is set.`,
-        };
-      }
-      _cachedProjectRoot = agentConfig.project;
-
-      // Load agent file config — explicit agent= param, or default to "general"
-      const agentName = (args.agent as string) || "general";
-      let agentFileConfig: AgentFileConfig | null = null;
-      const projectRoot = agentConfig.project;
-      agentFileConfig = loadAgentFile(agentName, projectRoot);
-      if (!agentFileConfig) {
-        return { success: false, output: "", error: `Agent file "${agentName}" not found` };
-      }
-
-      // Name: explicit > agent file name > fallback
-      const name = (args.name as string) || agentFileConfig?.name || `sub-${Date.now()}`;
-
-      const spaceId = crypto.randomUUID();
-      const sanitizedTitle = name
-        .replace(/[\n\r]/g, " ")
-        .trim()
-        .slice(0, 100);
-      // Use friendly name as sub-agent ID (sanitized), with UUID suffix for uniqueness
-      const safeName = sanitizedTitle.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40);
-      const subAgentId = `${safeName}-${spaceId.slice(0, 6)}`;
-
-      // 1. Create space (sub-agent registered as non-worker gets proper avatar color)
-      const space = spaceManager.createSpace({
-        id: spaceId,
-        channel: config.channel,
-        title: sanitizedTitle,
-        description: task.slice(0, 500),
-        agent_id: subAgentId,
-        agent_color: agentConfig.avatar_color || DEFAULT_SPAWN_AGENT_COLOR,
-        source: "spawn_agent",
-        timeout_seconds: DEFAULT_SPAWN_TIMEOUT_SECONDS,
-      });
-
-      // Register sub-agent in parent channel so avatar color resolves for messages
-      getOrRegisterAgent(subAgentId, config.channel, false);
-
-      // 2+3. Post preview card and task in parallel (no data dependency)
-      const [cardRes, taskRes] = await Promise.all([
-        // Preview card to main channel
-        timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            channel: config.channel,
-            text: "",
-            user: config.agentId,
-            agent_id: config.agentId,
-            subtype: "subspace",
-            subspace_json: JSON.stringify({
-              id: space.id,
-              title: space.title,
-              description: space.description,
-              agent_id: space.agent_id,
-              agent_color: space.agent_color,
-              status: space.status,
-              channel: space.channel,
-            }),
-          }),
-        }),
-        // Task to space channel
-        timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            channel: space.space_channel,
-            text: context
-              ? `**Context:**\n${surrogateSlice(context, MAX_CONTEXT_LENGTH)}\n\n**Task:** ${task}`
-              : `**Task:** ${task}`,
-            user: "UBOT",
-            agent_id: config.agentId,
-          }),
-        }),
-      ]);
-
-      if (cardRes.ok) {
-        const cardData = (await cardRes.json()) as any;
-        if (cardData.ts) spaceManager.updateCardTs(space.id, cardData.ts);
-      }
-      if (!taskRes.ok) {
-        spaceManager.failSpace(space.id, "Failed to post task to space channel");
-        return { success: false, output: "", error: "Failed to post task to space channel" };
-      }
-
-      // 4. Start space worker (use sub-agent ID so it differs from main agent)
-      // Apply provider + model overrides from agent file if provided
-      const effectiveProvider = agentFileConfig?.provider || agentConfig.provider;
-      const effectiveModel = agentFileConfig?.model
-        ? resolveModelAlias(agentFileConfig.model, agentConfig.model)
-        : agentConfig.model;
-
-      let completionPromise: Promise<string>;
-
-      // Route claude-code provider to ClaudeCodeSpaceWorker (can't use WorkerLoop)
-      if (resolveProviderBaseType(effectiveProvider) === "claude-code" || effectiveProvider === "claude-code") {
-        let ccResolve: (v: string) => void;
-        let ccSettled = false;
-
-        const wrappedResolve = (summary: string) => {
-          if (ccSettled) return;
-          ccSettled = true;
-          ccResolve?.(summary);
-        };
-
-        const ccWorker = new ClaudeCodeSpaceWorker({
-          space,
-          task,
-          context,
-          model: effectiveModel,
-          agentId: subAgentId,
-          apiUrl: config.apiUrl,
-          projectRoot:
-            _cachedProjectRoot ||
-            agentConfig.project ||
-            (() => {
-              throw new Error(
-                `[SpawnPlugin] projectRoot is required but not found for channel ${config.channel}. Ensure channel_agents.project is set.`,
-              );
-            })(),
-          spaceManager,
-          resolve: wrappedResolve,
-          onComplete: () => unregisterClaudeCodeWorker(space.id),
-          agentPrompt: agentFileConfig?.systemPrompt || undefined,
-          providerName: effectiveProvider,
-          yolo: config.yolo ?? false,
-          // Translate agent YAML tool names (short or CC native) to MCP full names
-          allowedTools: agentFileConfig?.tools ? mapToMcpToolNames(agentFileConfig.tools) : undefined,
-          disallowedTools: buildCcDisallowedTools(agentFileConfig, effectiveProvider),
-        });
-        registerClaudeCodeWorker(space.id, ccWorker);
-        spaceAuthTokens.set(space.id, ccWorker.getSpaceToken());
-
-        spaceCompleteCallbacks.set(space.id, (result: string) => {
-          const won = spaceManager.completeSpace(space.id, result);
-          if (won) {
-            timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                channel: config.channel,
-                text: result,
-                user: subAgentId,
-                agent_id: subAgentId,
-              }),
-            }).catch((err) => {
-              console.error("[SpawnPlugin] chat.postMessage (complete) failed:", err);
-            });
-            wrappedResolve(result);
-            ccWorker.stop();
-          }
-        });
-
-        const timeoutMs = (space.timeout_seconds || 600) * 1000;
-        const timeoutTimer = setTimeout(() => {
-          if (!ccSettled) {
-            ccSettled = true;
-            spaceManager.timeoutSpace(space.id);
-            ccWorker.stop();
-          }
-        }, timeoutMs);
-        if (typeof timeoutTimer === "object" && "unref" in timeoutTimer) (timeoutTimer as any).unref();
-
-        completionPromise = new Promise<string>((resolve, reject) => {
-          ccResolve = resolve;
-          ccWorker
-            .start()
-            .then(() => {
-              if (!ccSettled) {
-                ccSettled = true;
-                spaceManager.failSpace(space.id, "Claude Code exited without calling complete_task");
-                reject(new Error("Claude Code exited without calling complete_task"));
-              }
-            })
-            .catch((err) => {
-              if (!ccSettled) {
-                ccSettled = true;
-                spaceManager.failSpace(space.id, err.message);
-                reject(err);
-              }
-            })
-            .finally(() => {
-              clearTimeout(timeoutTimer);
-              spaceCompleteCallbacks.delete(space.id);
-              spaceAuthTokens.delete(space.id);
-              spaceProjectRoots.delete(space.id);
-              unregisterClaudeCodeWorker(space.id);
-              ccWorker.cleanup();
-            });
-        });
-      } else {
-        // Normal LLM provider — use WorkerLoop via spaceWorkerManager
-        try {
-          completionPromise = spaceWorkerManager.startSpaceWorker(
-            space,
-            { ...agentConfig, agentId: subAgentId, provider: effectiveProvider, model: effectiveModel },
-            agentFileConfig || undefined,
-          );
-        } catch (workerErr: unknown) {
-          const workerErrMsg = workerErr instanceof Error ? workerErr.message : String(workerErr);
-          spaceManager.failSpace(space.id, workerErrMsg);
-          return { success: false, output: "", error: `Failed to start worker: ${workerErrMsg}` };
-        }
-      }
-
-      // 5. Set up timeout controller
-      const timeoutMs = (space.timeout_seconds || 600) * 1000;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
-      if (typeof timer === "object" && "unref" in timer) (timer as any).unref();
-      let settled = false;
-
-      const onAbort = () => {
-        if (settled) return;
-        settled = true;
-        const isTimeout = controller.signal.reason === "timeout";
-        const won = isTimeout
-          ? spaceManager.timeoutSpace(space.id)
-          : spaceManager.failSpace(space.id, String(controller.signal.reason));
-        if (won) {
-          const prefix = isTimeout ? "Sub-space timed out" : "Sub-space failed";
-          timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              channel: config.channel,
-              text: `${prefix}: ${sanitizedTitle}`,
-              user: subAgentId,
-              agent_id: subAgentId,
-            }),
-          }).catch((err) => {
-            console.error("[SpawnPlugin] chat.postMessage (abort) failed:", err);
-          });
-        }
-        spaceWorkerManager.stopSpaceWorker(space.id);
-      };
-      controller.signal.addEventListener("abort", onAbort, { once: true });
-
-      // 6. Track the space
-      const tracked: TrackedSpace = {
-        spaceId,
-        name: sanitizedTitle,
-        promise: completionPromise,
-        startedAt: Date.now(),
-        status: "running",
-        agentFileConfig: agentFileConfig || undefined,
-      };
-
-      completionPromise
-        .then((summary) => {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-          }
-          tracked.status = "completed";
-          tracked.result = summary;
-        })
-        .catch((err: unknown) => {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            // Update DB and card on failure
-            spaceManager.failSpace(spaceId, err instanceof Error ? err.message : String(err));
-          }
-          tracked.status = "failed";
-          tracked.error = err instanceof Error ? err.message : String(err);
-        })
-        .finally(() => {
-          controller.signal.removeEventListener("abort", onAbort);
-          spaceWorkerManager.stopSpaceWorker(space.id);
-          // Kill the sub-agent immediately
-          spaceManager.cleanupSpaceAgents(space.id);
-          // Evict from memory after 30 minutes (DB fallback still works)
-          const evictTimer = setTimeout(() => trackedSpaces.delete(spaceId), SPACE_EVICTION_MS);
-          if (typeof evictTimer === "object" && "unref" in evictTimer) (evictTimer as any).unref();
-          // Store so retask_agent can cancel this eviction
-          const t = trackedSpaces.get(spaceId);
-          if (t) t.evictionTimer = evictTimer;
-        });
-
-      trackedSpaces.set(spaceId, tracked);
-
-      return {
-        success: true,
-        output: JSON.stringify({
-          agent_id: spaceId,
-          name: sanitizedTitle,
-          status: "spawned",
-          space_channel: space.space_channel,
-          message:
-            "Sub-agent started and working independently. Do NOT wait — continue with other tasks. The sub-agent will report back when done. Use list_agents(type='running') to check status or get_agent_report(agent_id) to read results.",
-        }),
-      };
-    } catch (err: unknown) {
-      // If a space was created before the error, mark it as failed to prevent orphans
-      try {
-        const activeSpaces = spaceManager.listSpaces(config.channel, "active");
-        const orphan = activeSpaces.find((s) => s.description === task.slice(0, 500));
-        if (orphan) spaceManager.failSpace(orphan.id, err instanceof Error ? err.message : String(err));
-      } catch {
-        /* best-effort cleanup */
-      }
-      return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
+      if (agentConfig?.project) _cachedProjectRoot = agentConfig.project;
     }
+
+    return result;
   }
 
   async function handleRetaskAgent(args: Record<string, any>): Promise<ToolResult> {

@@ -1,6 +1,6 @@
 /**
  * Chat Tools — skill_*, todo_write/read/update, spawn_agent, list_agents,
- *              kill_agent, get_agent_logs, article_*, chat_send_article
+ *              kill_agent, get_agent_report, get_agent_logs, article_*, chat_send_article
  *
  * Registers chat/collaboration tools into the shared tool registry.
  */
@@ -351,159 +351,112 @@ registerTool(
 );
 
 // ============================================================================
-// Sub-Agent System
+// Sub-Agent System (delegates to spawn-helper)
 // ============================================================================
 
-// Spawn a sub-agent in a detached tmux session (survives main agent exit)
-async function spawnTmuxSubAgent(
+// Lazy import to avoid circular deps — spawn-helper is self-contained
+async function getSpawnHelper() {
+  const mod = await import("../../spaces/spawn-helper");
+  return mod;
+}
+
+/**
+ * Spawn a sub-agent using the shared space/worker system.
+ * Replaces the broken tmux subprocess approach.
+ */
+async function spawnAgentViaHelper(
   task: string,
-  name: string,
+  options: { name?: string; agentType?: string; context?: string; model?: string },
 ): Promise<{ success: boolean; output: string; error?: string }> {
-  const { execSync, spawn } = await import("node:child_process");
-  const { mkdirSync } = await import("node:fs");
-  const { join } = await import("node:path");
+  const { executeSpawnAgent, SpawnContext } = await getSpawnHelper();
 
-  // Check if tmux is available
-  try {
-    execSync("which tmux", { stdio: "ignore" });
-  } catch {
-    return {
-      success: false,
-      output: "",
-      error: "tmux is not installed. Install it with: apt install tmux (or brew install tmux on macOS)",
-    };
-  }
+  // Build a minimal SpawnContext — chat-tools has access to these from registry
+  const ctx: SpawnContext = {
+    channel: currentChannel(),
+    agentId: currentAgentId(),
+    apiUrl: chatApiUrl(),
+    spaceManager: undefined as any, // WorkerLoop provides these; chat-tools runs in main
+    spaceWorkerManager: undefined as any,
+    trackedSpaces: new Map(),
+    getAgentConfig: async () => null, // Chat tools don't have per-channel agent config
+  };
 
-  const { randomUUID } = await import("node:crypto");
-  const randomSuffix = randomUUID().replace(/-/g, "").substring(0, 12);
+  const result = await executeSpawnAgent(ctx, {
+    task,
+    agentType: options.agentType || "general",
+    context: options.context,
+    name: options.name,
+    model: options.model,
+  });
 
-  const sessionName = `clawd-${name}-${randomSuffix}`;
-  const agentId = `tmux-${sessionName}`;
-
-  // Use project-scoped agents directory
-  const agentsDir = getProjectAgentsDir();
-  const agentDir = join(agentsDir, sessionName);
-  try {
-    mkdirSync(agentDir, { recursive: true });
-  } catch {}
-  const logFile = join(agentDir, "output.log");
-  const resultFile = join(agentDir, "result.json");
-  const scriptFile = join(agentDir, "run.sh");
-  const metaFile = join(agentDir, "meta.json");
-
-  // Write agent metadata
-  const { writeFileSync, chmodSync } = await import("node:fs");
-  writeFileSync(
-    metaFile,
-    JSON.stringify({
-      id: agentId,
-      name,
-      task: task.slice(0, 500),
-      status: "running",
-      createdAt: Date.now(),
-      projectHash: getProjectHash(),
-    }),
-  );
-
-  // Append instruction to use report_agent_result tool
-  const taskWithInstruction = `${task}\n\nIMPORTANT: When you complete this task, use the report_agent_result tool to write your final result/report. The parent agent will read this.`;
-  // Use single-quote shell escaping: wrap in single quotes and escape embedded single quotes as '\''
-  const shellSafeTask = taskWithInstruction.replace(/'/g, "'\\''");
-
-  // Build clawd command - pass project-hash so sub-agent uses same project dir
-  const currentProjectHash = getProjectHash();
-  const baseClawdCmd = `clawd -p '${shellSafeTask}' --result-file "${resultFile}" --project-hash "${currentProjectHash}"`;
-
-  // Get sandbox root (detect git root or use cwd)
-  const sandboxRoot = getSandboxProjectRoot();
-
-  // Run clawd directly in tmux (no sandbox wrapping)
-  const clawdCmd = `${baseClawdCmd} 2>&1 | tee -a "${logFile}"`;
-
-  // Dedicated tmux socket for sub-agents (project-scoped)
-  const socketPath = join(agentsDir, "tmux.sock");
-
-  // Create tmux session - write script to temp file to avoid quoting hell
-  const scriptContent = `#!/bin/bash
-# Sub-agent runs in sandbox root directory
-cd "${sandboxRoot}"
-echo "Starting sub-agent: ${name}" >> "${logFile}"
-echo "Sandbox root: ${sandboxRoot}" >> "${logFile}"
-echo "Project hash: ${currentProjectHash}" >> "${logFile}"
-echo "---" >> "${logFile}"
-${clawdCmd}
-echo "---" >> "${logFile}"
-echo "Exit code: $?" >> "${logFile}"
-`;
-  writeFileSync(scriptFile, scriptContent);
-  chmodSync(scriptFile, 0o755);
-
-  const tmuxCmd = `tmux -S "${socketPath}" new-session -d -s "${sessionName}" "${scriptFile}"`;
-
-  try {
-    execSync(tmuxCmd, { stdio: "ignore" });
-
-    // Store agent info
-    subAgents.set(agentId, {
-      id: agentId,
-      name,
-      task,
-      status: "running",
-      startedAt: Date.now(),
-      tmuxSession: sessionName,
-      resultFile,
-    });
-
-    return {
-      success: true,
-      output: JSON.stringify(
-        {
-          agent_id: agentId,
-          name,
-          status: "running",
-          project_hash: currentProjectHash,
-          message: `Sub-agent spawned. Use list_agents to check status, get_agent_logs to view output, or kill_agent to stop it.`,
-        },
-        null,
-        2,
-      ),
-    };
-  } catch (err: unknown) {
-    return {
-      success: false,
-      output: "",
-      error: `Failed to spawn tmux session: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
+  return {
+    success: result.success,
+    output: result.output || "",
+    error: result.error,
+  };
 }
 
 registerTool(
   "spawn_agent",
-  `Spawn a sub-agent to work on a task asynchronously. The sub-agent is a fully autonomous agent with the same capabilities (file ops, bash, web tools, etc.).
+  `Spawn a sub-agent to work on a task asynchronously. The sub-agent operates in the same chat channel and reports results back directly.
 
-Use this for:
-- Parallelizing independent tasks
-- Delegating complex subtasks
-- Running long operations
+**When to spawn a sub-agent:**
+- Parallelize independent research paths that can run simultaneously
+- Delegate complex multi-step tasks that would block the main agent
+- Offload file analysis, code search, or documentation tasks
+- Run independent work while the main agent handles coordination
 
-IMPORTANT: Do NOT wait for or poll the sub-agent. Continue with other work immediately after spawning. The sub-agent will respond directly to the chat channel when done.
+**Agent type selection:**
+- \`explore\` (default, fast) — Code search, file discovery, pattern analysis. Uses Haiku model. Best for: "find all files related to X", "search the codebase for Y", "analyze the structure of Z".
+- \`general\` — Full-access agent for complex multi-step tasks. Uses the parent model. Best for: "implement feature X", "refactor module Y", "debug issue Z".
+- \`plan\` — Research agent for gathering context before planning. Uses the parent model. Best for: "analyze requirements for X", "research options for Y", "gather context for Z".
 
-Sub-agents can spawn their own sub-agents (up to 3 levels deep). The sub-agent will run until it completes the task or hits max iterations.`,
+**Do NOT delegate:**
+- Reading a specific file (use view directly — faster)
+- Simple grep/glob search (faster than spawning)
+- Quick targeted changes where latency matters
+- Single-step operations that take <5 seconds
+
+**Important:** Do NOT wait for or poll the sub-agent. Continue with other work immediately after spawning. The sub-agent will report back via chat when complete.`,
   {
     task: {
       type: "string",
-      description: "The task for the sub-agent to complete. Be specific and include all necessary context.",
+      description:
+        "The task for the sub-agent to complete. Be specific and include all necessary context, constraints, and expected deliverables.",
     },
     name: {
       type: "string",
-      description: "Optional friendly name for the sub-agent (for tracking)",
+      description: "Optional friendly name for the sub-agent (for tracking in list_agents)",
+    },
+    agent: {
+      type: "string",
+      description:
+        "Agent type: 'explore' (fast, read-only), 'general' (full access), or 'plan' (research). Defaults to 'general'.",
+    },
+    context: {
+      type: "string",
+      description: "Optional additional context to prepend to the agent's system prompt.",
+    },
+    model: {
+      type: "string",
+      description:
+        "Optional model override: 'sonnet', 'opus', 'haiku', 'inherit' (use parent's model), or a specific model name.",
     },
   },
   ["task"],
-  async ({ task, name }) => {
+  async ({ task, name, agent, context, model }) => {
     try {
-      const agentName = name || `subagent-${Date.now()}`;
-      return await spawnTmuxSubAgent(task, agentName);
+      const result = await spawnAgentViaHelper(task, {
+        name,
+        agentType: agent,
+        context,
+        model,
+      });
+
+      if (result.success) {
+        return result;
+      }
+      return { success: false, output: "", error: result.error };
     } catch (err: unknown) {
       return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
     }
@@ -709,6 +662,49 @@ registerTool(
         output: `Agent: ${agentInfo.name} [${agentInfo.status.toUpperCase()}]\n(no output yet — agent may still be starting)`,
       };
     }
+  },
+);
+
+// ============================================================================
+// Tool: Agent Report
+// ============================================================================
+
+registerTool(
+  "get_agent_report",
+  "Get a sub-agent's structured result, status, or error by ID. Use to check on sub-agents you spawned earlier — returns status, result data, and any error message.",
+  {
+    agent_id: {
+      type: "string",
+      description: "The ID of the sub-agent",
+    },
+  },
+  ["agent_id"],
+  async ({ agent_id }) => {
+    const agentInfo = subAgents.get(agent_id);
+    if (!agentInfo) {
+      return {
+        success: false,
+        output: "",
+        error: `Agent ${agent_id} not found. Use list_agents to see available agents.`,
+      };
+    }
+    return {
+      success: true,
+      output: JSON.stringify(
+        {
+          id: agentInfo.id,
+          name: agentInfo.name,
+          status: agentInfo.status,
+          task: agentInfo.task.slice(0, 500),
+          result: agentInfo.result ?? null,
+          error: agentInfo.error ?? null,
+          startedAt: new Date(agentInfo.startedAt).toISOString(),
+          completedAt: agentInfo.completedAt ? new Date(agentInfo.completedAt).toISOString() : null,
+        },
+        null,
+        2,
+      ),
+    };
   },
 );
 

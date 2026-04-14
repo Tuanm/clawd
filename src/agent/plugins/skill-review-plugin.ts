@@ -42,15 +42,15 @@ const DEFAULT_COOLDOWN_MS = 300_000; // 5 minutes
 // ── Credential Redaction (exported for testing) ───────────────────────────
 
 export const CREDENTIAL_PATTERNS = [
-  /(?:api[_-]?key|token|secret|password|credential|auth)["\s:=]+[a-zA-Z0-9_\-]{10,}/gi,
+  /(?:api[_-]?key|token|secret|password|credential|auth)["\s:=]+[a-zA-Z0-9_-]{10,}/gi,
   /sk-[a-zA-Z0-9]{20,}/g,
   /sk-proj-[a-zA-Z0-9_-]{20,}/g,
   /ghp_[a-zA-Z0-9]{36}/g,
   /gho_[a-zA-Z0-9]{36}/g,
   /xox[baprs]-[a-zA-Z0-9]{10,}/g,
-  /Bearer\s+[a-zA-Z0-9_\-\.]+/gi,
+  /Bearer\s+[a-zA-Z0-9_\-.]+/gi,
   /-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----/g,
-  /AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|DEFAULT_REGION)[=\s][a-zA-Z0-9_\-]+/gi,
+  /AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|DEFAULT_REGION)[=\s][a-zA-Z0-9_-]+/gi,
 ];
 
 export function sanitize(content: string): string {

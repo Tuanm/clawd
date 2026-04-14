@@ -55,7 +55,7 @@ export const AGENT_MCP_TOOLS = [
   {
     name: "spawn_agent",
     description:
-      "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning.\n\nIMPORTANT: Do NOT wait for or poll the sub-agent. The sub-agent will report back via chat when complete. Use list_agents(type='running') to check status, or get_agent_report(agent_id) to read results.\n\nModel guide: 'sonnet' (default, general tasks), 'haiku' (quick/simple). Do NOT use opus for sub-agents — it's too expensive.\n\nAgent types: 'general' (default, full access), 'explore' (read-only, haiku — for search/analysis), 'plan' (read-only research).",
+      "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning.\n\nIMPORTANT: Do NOT wait for or poll the sub-agent. The sub-agent will report back via chat when complete. Use list_agents(type='running') to check status, get_agent_report(agent_id) to read structured results, or get_agent_logs(agent_id) to view raw output.\n\nAgent types:\n- 'explore' (default, fast) — read-only, uses haiku model. For search, analysis, code review where no changes are needed.\n- 'general' — full access agent, uses parent model. For implementation, fixes, multi-step tasks needing file modifications.\n- 'plan' — read-only research, uses parent model. For gathering context before planning.\n\nModel override: 'sonnet', 'opus', 'haiku', 'inherit' (use parent's model), or a specific model name. Do NOT use 'opus' for sub-agents — it's too expensive.",
     inputSchema: {
       type: "object",
       properties: {
@@ -492,7 +492,8 @@ export async function executeAgentToolCall(
           agent_id: spaceId,
           name: taskName,
           status: "spawned",
-          message: "Claude Code sub-agent started. Use list_agents to check status, get_agent_report to read results.",
+          message:
+            "Claude Code sub-agent started. Use list_agents to check status, get_agent_report to read results, or get_agent_logs to view raw output.",
         }),
       );
     }
