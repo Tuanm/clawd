@@ -55,7 +55,7 @@ export const AGENT_MCP_TOOLS = [
   {
     name: "spawn_agent",
     description:
-      "Spawn a sub-agent to handle a task autonomously. The sub-agent works independently with full tool access (file read/write/edit, bash, grep, etc.).\n\nModel guide: 'sonnet' (default, general tasks), 'haiku' (quick/simple). Do NOT use opus for sub-agents — it's too expensive.\n\nThe sub-agent runs asynchronously. Use list_agents to check status and get_agent_report to read results.",
+      "Spawn a sub-agent to handle a task asynchronously. The sub-agent works independently — you do NOT need to wait for it. Continue with other work immediately after spawning.\n\nIMPORTANT: Do NOT wait for or poll the sub-agent. The sub-agent will report back via chat when complete. Use list_agents(type='running') to check status, or get_agent_report(agent_id) to read results.\n\nModel guide: 'sonnet' (default, general tasks), 'haiku' (quick/simple). Do NOT use opus for sub-agents — it's too expensive.\n\nAgent types: 'general' (default, full access), 'explore' (read-only, haiku — for search/analysis), 'plan' (read-only research).",
     inputSchema: {
       type: "object",
       properties: {
