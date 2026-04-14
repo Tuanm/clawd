@@ -88,6 +88,7 @@ const BUILTIN_TOOLS = new Set([
   "spawn_agent",
   "kill_agent",
   "list_agents",
+  "get_agent_report",
   "get_agent_logs",
   "chat_search",
   "memory_summary",

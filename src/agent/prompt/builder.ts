@@ -223,9 +223,9 @@ function sectionSubAgents(ctx: PromptContext): string {
 
   // Build dynamic agent list
   let agentList = `Built-in agents:
-- explore: fast read-only codebase search (haiku) — file discovery, code search, pattern analysis
-- plan: research agent for gathering context before planning (inherit model)
-- general: full-access agent for complex multi-step tasks (inherit model)`;
+- explore (haiku): Fast read-only agent for file discovery, code search, and codebase exploration without making changes.
+- plan (inherit): Research agent for gathering context before creating implementation plans.
+- general (inherit): General-purpose agent for complex multi-step tasks needing code modifications or multi-step operations.`;
 
   try {
     const { getContextConfigRoot } = require("../utils/agent-context");
@@ -252,22 +252,22 @@ function sectionSubAgents(ctx: PromptContext): string {
   }
 
   return `# Sub-Agents
-Use ${p}spawn_agent to delegate tasks. Default: 'explore' (fast, read-only, haiku).
+Use ${p}spawn_agent to delegate tasks.
 Use ${p}list_agents(type="available") to discover all agents.
-Use ${p}get_agent_report(agent_id) to read a completed sub-agent's result.
+Use ${p}get_agent_report(agent_id) to read a completed sub-agent's structured result, or ${p}get_agent_logs(agent_id) for raw output logs.
 
 ${agentList}
 
-Delegate when:
+**When to delegate:**
 - Task produces verbose output you don't need in context
 - Broad codebase exploration needing more than 3 queries
 - Independent research paths that can run in parallel
 - Self-contained work that returns a summary
 
-Do NOT delegate:
+**When NOT to delegate:**
 ${doNotDelegate.map((r) => `- ${r}`).join("\n")}
 
-Active sub-agents:
+**Active sub-agents:**
 - Before starting any task, check ${p}list_agents for actively-running sub-agents
 - Sub-agents report their results back to the main channel when complete
 - Never start work that overlaps an in-flight sub-agent's task — wait for its report first`;

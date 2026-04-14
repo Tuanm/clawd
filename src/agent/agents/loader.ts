@@ -238,7 +238,7 @@ const BUILTIN_AGENTS: AgentFileConfig[] = [
       "Fast read-only agent for searching and analyzing codebases. Use for file discovery, code search, and codebase exploration without making changes.",
     model: "haiku",
     tools: ["view", "grep", "glob", "bash", "today", "get_environment", "web_search", "web_fetch"],
-    disallowedTools: ["edit", "create"],
+    disallowedTools: ["edit", "create", "custom_script"],
     systemPrompt: `You are a fast, read-only codebase explorer. Your job is to search, read, and analyze code efficiently.
 
 When invoked, determine the thoroughness needed:
@@ -261,7 +261,7 @@ Guidelines:
       "Research agent for gathering context before creating implementation plans. Use when planning features or changes that need codebase understanding first.",
     model: "inherit",
     tools: ["view", "grep", "glob", "bash", "today", "get_environment", "web_search", "web_fetch"],
-    disallowedTools: ["edit", "create"],
+    disallowedTools: ["edit", "create", "custom_script"],
     systemPrompt: `You are a planning research agent. Your job is to gather codebase context needed for implementation planning.
 
 When invoked:
