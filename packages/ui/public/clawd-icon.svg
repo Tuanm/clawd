@@ -1,6 +1,6 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Background with rounded corners -->
-  <rect width="512" height="512" rx="96" fill="#f7f5f0"/>
+  <!-- Background (no rounded corners - OS handles masking) -->
+  <rect width="512" height="512" fill="#f7f5f0"/>
   
   <!-- Claw'd character scaled and centered (with padding) -->
   <g transform="translate(128, 128) scale(3.88)">
