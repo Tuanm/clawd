@@ -690,33 +690,30 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "agent_not_found" }, 404);
         }
 
-        // Reset session when provider or model changes:
-        // - Provider change: old session has incompatible message format
-        // - Model change: new model may have smaller context window (e.g. opus[1m] → sonnet)
+        // Handle provider or model change:
+        // - Session messages are preserved in SQLite (provider-agnostic format)
+        // - buildContextPreamble() reformats for the new provider on next turn
+        // - Claude Code session ID must be cleared (backend-specific, not portable)
         // Compare against old values captured BEFORE the DB update (not agent.provider/model
         // which already reflect the new values).
         const providerChanged =
           provider !== undefined && oldAgent != null && String(provider).toLowerCase() !== oldAgent.provider;
         const modelChanged = model !== undefined && oldAgent != null && model !== oldAgent.model;
         if (providerChanged || modelChanged) {
-          try {
-            const { getSessionManager } = await import("../../../agent/session/manager");
-            const sm = getSessionManager();
-            const sessionName = `${channel}-${agent_id.replace(/[^a-zA-Z0-9]/g, "_")}`;
-            if (sm.resetSession(sessionName)) {
-              const reason = providerChanged
-                ? `provider changed (${oldAgent.provider} → ${provider})`
-                : `model changed (${oldAgent.model} → ${model})`;
-              console.log(`[agents] ${reason}, reset session "${sessionName}"`);
-            }
-          } catch {}
-          // Also clear Claude Code session ID if present
+          const reason = providerChanged
+            ? `provider changed (${oldAgent.provider} → ${provider})`
+            : `model changed (${oldAgent.model} → ${model})`;
+          console.log(`[agents] ${reason}, session context preserved`);
+
+          // Clear Claude Code session ID (backend-specific, cannot transfer between providers)
           try {
             db.run(`UPDATE channel_agents SET claude_code_session_id = NULL WHERE channel = ? AND agent_id = ?`, [
               channel,
               agent_id,
             ]);
-          } catch {}
+          } catch (err) {
+            console.warn(`[agents] ${reason}, session ID clear failed (continuing):`, err);
+          }
         }
 
         // Restart worker if model, provider, project, worker_token, heartbeat_interval, or agent_type changed, or active state changed
