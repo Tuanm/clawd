@@ -288,7 +288,7 @@ export function getModelForProvider(providerName: string): string {
   const defaultModels: Record<ProviderType, string> = {
     anthropic: "claude-sonnet-4-6",
     openai: "gpt-4o",
-    copilot: "claude-sonnet-4.6",
+    copilot: "claude-sonnet-4-6",
     ollama: "minimax-m2.7:cloud",
     "claude-code": "sonnet",
   };

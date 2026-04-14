@@ -485,7 +485,7 @@ export function buildAgentSystemPrompt(agent: AgentFileConfig, allAgents: AgentF
  *
  * When `provider` is provided, checks ~/.clawd/config.json's
  * `providers.{provider}.models.{alias}` first (so haiku maps to the
- * provider's configured model, not always claude-haiku-4.5).
+ * provider's configured model, not always claude-haiku-4-5).
  * Falls back to hardcoded defaults only when config has no mapping.
  */
 export function resolveModelAlias(alias: string, parentModel: string, provider?: string): string {
@@ -497,9 +497,9 @@ export function resolveModelAlias(alias: string, parentModel: string, provider?:
 
   // Fall back to hardcoded defaults only when config has no entry
   const ALIASES: Record<string, string> = {
-    sonnet: "claude-sonnet-4.6",
-    opus: "claude-opus-4.6",
-    haiku: "claude-haiku-4.5",
+    sonnet: "claude-sonnet-4-6",
+    opus: "claude-opus-4-6",
+    haiku: "claude-haiku-4-5",
   };
   return ALIASES[alias] || alias;
 }
