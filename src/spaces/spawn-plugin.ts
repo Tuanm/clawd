@@ -456,7 +456,7 @@ export function createSpawnAgentPlugin(
       // Restart space worker (preserve agent file config from original spawn)
       const retaskProvider = tracked.agentFileConfig?.provider || agentConfig.provider;
       const retaskModel = tracked.agentFileConfig?.model
-        ? resolveModelAlias(tracked.agentFileConfig.model, agentConfig.model)
+        ? resolveModelAlias(tracked.agentFileConfig.model, agentConfig.model, retaskProvider)
         : agentConfig.model;
       let completionPromise: Promise<string>;
 

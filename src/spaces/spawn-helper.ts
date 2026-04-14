@@ -215,14 +215,15 @@ export async function executeSpawnAgent(ctx: SpawnContext, opts: ExecuteSpawnOpt
       return { success: false, output: "", error: "Failed to post task to space channel" };
     }
 
-    // Resolve model: explicit override > agent file alias > parent model
-    const effectiveModel = modelOverride
-      ? resolveModelAlias(modelOverride, agentConfig.model)
-      : agentFileConfig.model
-        ? resolveModelAlias(agentFileConfig.model, agentConfig.model)
-        : agentConfig.model;
-
     const effectiveProvider = agentFileConfig?.provider || agentConfig.provider;
+
+    // Resolve model: explicit override > agent file alias > parent model
+    // Pass effectiveProvider so config.json provider.models mapping is checked first
+    const effectiveModel = modelOverride
+      ? resolveModelAlias(modelOverride, agentConfig.model, effectiveProvider)
+      : agentFileConfig.model
+        ? resolveModelAlias(agentFileConfig.model, agentConfig.model, effectiveProvider)
+        : agentConfig.model;
 
     let completionPromise: Promise<string>;
 

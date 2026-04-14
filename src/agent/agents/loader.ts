@@ -23,6 +23,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { mapModelName } from "../api/provider-config";
 
 // ============================================================================
 // Types
@@ -481,13 +482,24 @@ export function buildAgentSystemPrompt(agent: AgentFileConfig, allAgents: AgentF
  * Resolve a model alias to a full model ID.
  * Aliases: sonnet, opus, haiku, inherit (returns parentModel).
  * Full model IDs pass through unchanged.
+ *
+ * When `provider` is provided, checks ~/.clawd/config.json's
+ * `providers.{provider}.models.{alias}` first (so haiku maps to the
+ * provider's configured model, not always claude-haiku-4.5).
+ * Falls back to hardcoded defaults only when config has no mapping.
  */
-export function resolveModelAlias(alias: string, parentModel: string): string {
+export function resolveModelAlias(alias: string, parentModel: string, provider?: string): string {
+  if (alias === "inherit") return parentModel;
+
+  // Check config first — respects provider-specific model mappings from config.json
+  const configModel = mapModelName(alias, provider);
+  if (configModel !== alias) return configModel;
+
+  // Fall back to hardcoded defaults only when config has no entry
   const ALIASES: Record<string, string> = {
     sonnet: "claude-sonnet-4.6",
     opus: "claude-opus-4.6",
     haiku: "claude-haiku-4.5",
-    inherit: parentModel,
   };
   return ALIASES[alias] || alias;
 }
