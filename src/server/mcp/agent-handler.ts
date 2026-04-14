@@ -2532,18 +2532,12 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         }
       }
 
-      // Auto-inject channel and agent_id into chat tool calls
-      const enrichedArgs = {
-        ...(toolArgs || {}),
-        channel: (toolArgs?.channel as string) || channel,
-        agent_id: (toolArgs?.agent_id as string) || agentId,
-      };
-
-      // Handle connected channel MCP server tools
+      // Handle connected channel MCP server tools FIRST (before enrichment)
+      // External tools like Notion reject unknown fields (channel/agent_id) in their API
       try {
         const mcpManager = _workerManager?.getChannelMcpManager(channel);
         if (mcpManager) {
-          const mcpResult = await mcpManager.executeMCPTool(name, enrichedArgs);
+          const mcpResult = await mcpManager.executeMCPTool(name, toolArgs || {});
           if (mcpResult !== undefined) {
             const text = typeof mcpResult === "string" ? mcpResult : JSON.stringify(mcpResult);
             return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } }), {
@@ -2554,6 +2548,13 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       } catch {
         // Intentionally swallowed — channel MCP tool execution is best-effort; falls through to local tool handler
       }
+
+      // Auto-inject channel and agent_id into local chat tool calls only
+      const enrichedArgs = {
+        ...(toolArgs || {}),
+        channel: (toolArgs?.channel as string) || channel,
+        agent_id: (toolArgs?.agent_id as string) || agentId,
+      };
 
       const result = await executeToolCall(name, enrichedArgs);
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
