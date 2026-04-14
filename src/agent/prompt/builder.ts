@@ -14,11 +14,25 @@ import { listAgentFiles } from "../agents/loader";
 import { CLAUDE_CODE_RUNTIME_BLOCK, MAIN_AGENT_RUNTIME_BLOCK } from "./shared";
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
 export interface PromptContext {
   agentId: string;
+  channel: string;
   projectRoot: string;
   isSpaceAgent: boolean;
   availableTools: string[];
@@ -28,6 +42,10 @@ export interface PromptContext {
   browserEnabled: boolean;
   contextMode: boolean;
   agentFileConfig?: AgentFileConfig;
+  /** Other agents in the same channel (excluding self) */
+  otherAgents?: (AgentFileConfig & { status?: string })[];
+  /** Map of agent_id -> status for quick lookup */
+  otherAgentStatuses?: Record<string, { status: string; hibernate_until?: string | null }>;
   /** Whether this agent is running in a git worktree */
   worktreeEnabled?: boolean;
   /** Worktree branch name, e.g., "clawd/a3f7b2" */
@@ -63,7 +81,38 @@ function sectionIdentity(ctx: PromptContext): string {
   }
   // Claude Code SDK agents use the MCP-prefixed tool name in the runtime block
   const runtimeBlock = ctx.mcpPrefix ? CLAUDE_CODE_RUNTIME_BLOCK : MAIN_AGENT_RUNTIME_BLOCK;
-  return `You are Claw'd, an autonomous AI assistant connected to a chat channel.
+
+  // Get agent name from config or fallback
+  const agentName = ctx.agentFileConfig?.name || "Claw'd";
+  const channel = ctx.channel || "unknown";
+
+  // Build other agents section if available (excluding self)
+  let otherAgentsSection = "";
+  if (ctx.otherAgents && ctx.otherAgents.length > 0) {
+    const otherList = ctx.otherAgents
+      .filter((a) => a.name !== ctx.agentId) // Exclude self
+      .map((a) => {
+        const agentStatus = ctx.otherAgentStatuses?.[a.agent_id || ""];
+        // Determine display status: active if "ready", otherwise show the status
+        const statusLabel = agentStatus?.status === "ready" ? "active" : agentStatus?.status || "unknown";
+        // Use XML with CDATA for descriptions (handles multi-line content)
+        if (a.description) {
+          return `  <agent name="${escapeXml(a.name)}" status="${statusLabel}"><![CDATA[${a.description}]]></agent>`;
+        }
+        return `  <agent name="${escapeXml(a.name)}" status="${statusLabel}"/>`;
+      })
+      .join("\n");
+
+    if (otherList) {
+      otherAgentsSection = `
+
+<other_agents channel="${channel}">
+${otherList}
+</other_agents>`;
+    }
+  }
+
+  return `You are "${agentName}", an autonomous AI assistant connected to a chat channel "${channel}" in our Claw'd platform.${otherAgentsSection}
 
 ${runtimeBlock}`;
 }

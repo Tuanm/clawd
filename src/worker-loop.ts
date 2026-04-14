@@ -1590,10 +1590,69 @@ export class WorkerLoop implements AgentWorker {
           // Load CLAWD.md context
           const clawdContext = this.loadClawdInstructions();
 
+          // Query other agents in the same channel (for the "other agents" section in system prompt)
+          const otherAgents: Awaited<ReturnType<typeof listAgentFiles>> = [];
+          const otherAgentStatuses: Record<string, { status: string; hibernate_until?: string | null }> = {};
+          const HIBERNATE_TIMEOUT = 600;
+          const nowSeconds = Math.floor(Date.now() / 1000);
+
+          try {
+            const channelAgents = db
+              .query("SELECT agent_id, project FROM channel_agents WHERE channel = ? AND agent_id != ?")
+              .all(this.config.channel, this.config.agentId) as { agent_id: string; project: string }[];
+
+            for (const ca of channelAgents) {
+              // Only include main agents (no project), not sub-agents
+              if (ca.project) continue;
+
+              // Add basic entry (no description for main agents without agent files)
+              otherAgents.push({
+                name: ca.agent_id,
+              });
+
+              // Query agent status from agent_status table
+              const seenResult = db
+                .query<{ last_poll_ts: number | null }, [string, string]>(
+                  `SELECT last_poll_ts FROM agent_seen WHERE agent_id = ? AND channel = ?`,
+                )
+                .get(ca.agent_id, this.config.channel);
+              const statusResult = db
+                .query<{ status: string; hibernate_until: string | null }, [string, string]>(
+                  `SELECT status, hibernate_until FROM agent_status WHERE agent_id = ? AND channel = ?`,
+                )
+                .get(ca.agent_id, this.config.channel);
+
+              const lastPollTs = seenResult?.last_poll_ts;
+              const isOnline = lastPollTs ? nowSeconds - lastPollTs <= HIBERNATE_TIMEOUT : false;
+              const storedStatus = statusResult?.status || "ready";
+
+              // If agent hasn't polled recently, it's hibernating
+              let finalStatus = isOnline ? storedStatus : "hibernate";
+              // Check if hibernate_until has passed
+              if (finalStatus === "hibernate" && statusResult?.hibernate_until) {
+                const hibernateUntilTs = parseInt(statusResult.hibernate_until, 10);
+                if (hibernateUntilTs && hibernateUntilTs > nowSeconds) {
+                  finalStatus = "hibernate"; // Still in hibernate period
+                } else {
+                  finalStatus = "ready"; // Hibernate period expired
+                }
+              }
+
+              otherAgentStatuses[ca.agent_id] = {
+                status: finalStatus,
+                hibernate_until: statusResult?.hibernate_until,
+              };
+            }
+          } catch (err) {
+            // Best-effort: don't fail agent startup if we can't query other agents
+            logger.debug(`Could not query other agents: ${err}`);
+          }
+
           // Create agent config
           // Build prompt context for dynamic system prompt assembly
           const promptContext: PromptContext = {
             agentId: this.config.agentId,
+            channel: this.config.channel,
             projectRoot: this.config.projectRoot,
             isSpaceAgent: !!this.config.isSpaceAgent,
             availableTools: toolDefinitions.map((t) => t.function.name),
@@ -1603,6 +1662,8 @@ export class WorkerLoop implements AgentWorker {
             browserEnabled: false, // updated below if browser plugin registers
             contextMode: this.config.contextMode,
             agentFileConfig: this.config.agentFileConfig,
+            otherAgents: otherAgents.length > 0 ? otherAgents : undefined,
+            otherAgentStatuses: Object.keys(otherAgentStatuses).length > 0 ? otherAgentStatuses : undefined,
             worktreeEnabled: !!this.config.worktreePath,
             worktreeBranch: this.config.worktreeBranch,
           };
