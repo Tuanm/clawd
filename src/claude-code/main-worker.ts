@@ -16,6 +16,13 @@ import { buildDynamicSystemPrompt, type PromptContext } from "../agent/prompt/bu
 import { buildContextPreamble } from "../agent/session/context-injector";
 import { getSessionManager } from "../agent/session/manager";
 import { generateConversationSummary } from "../agent/session/summarizer";
+import {
+  buildSkillReviewPrompt,
+  parseSkillRecommendations,
+  postSystemMessage,
+  sanitize,
+} from "../agent/plugins/skill-review-plugin";
+import { getSkillManager } from "../agent/skills/manager";
 import { initMemorySession, saveToMemory } from "./memory";
 import { runSDKQuery } from "./sdk";
 import { formatToolDescription, truncateToolResult } from "./utils";
@@ -103,6 +110,21 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private turnMarkProcessed = false;
   private turnStreamText = "";
   private turnToolsUsed = new Set<string>();
+  // Skill review state — cumulative across turns within a session
+  private sessionToolCallCount = 0;
+  private skillReviewBuffer: Array<{ role: string; content: string; toolName?: string; ts: number }> = [];
+  private skillReviewLastAt = 0;
+  private skillReviewInProgress = false;
+  // Cached skill review config — built once from runtime values (avoids re-reading env on every tool call)
+  private _srConfig:
+    | { reviewInterval: number; minToolCalls: number; cooldownMs: number; maxSkills: number; model?: string }
+    | null
+    | "disabled" = null;
+
+  private addToSkillReviewBuffer(entry: { role: string; content: string; toolName?: string }): void {
+    this.skillReviewBuffer.push({ ...entry, ts: Date.now() });
+    if (this.skillReviewBuffer.length > 500) this.skillReviewBuffer.shift();
+  }
   // Memory injection: last keywords from user message for relevance scoring
   private lastKeywords: string[] = [];
   private get memorySessionName(): string {
@@ -621,6 +643,16 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     this.turnToolsUsed.add(toolName);
 
+    // Feed skill review buffer — strip mcp__clawd__ prefix for readability
+    this.sessionToolCallCount++;
+    const shortName = toolName.replace(/^mcp__clawd__/, "");
+    this.addToSkillReviewBuffer({
+      role: "tool",
+      content: sanitize(truncateToolResult(response).slice(0, 200)),
+      toolName: shortName,
+    });
+    this.maybeRunSkillReview();
+
     broadcastAgentToolCall(channel, agentId, toolName, input, "started");
     broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`);
     saveToMemory(
@@ -679,6 +711,126 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     manager.compactSessionByName(this.memorySessionName, 50, summary);
     logger.info(`Session compacted with LLM summary`);
+  }
+
+  // --------------------------------------------------------------------------
+  // Skill review
+  // --------------------------------------------------------------------------
+
+  /**
+   * Run a background skill review if enough tool calls have accumulated.
+   * Uses a direct LLM call (same pattern as generateConversationSummary) rather
+   * than spawning a full sub-agent — review is a single-turn analysis task.
+   */
+  private maybeRunSkillReview(): void {
+    // Lazily initialise — build once from runtime values, not from env-only
+    // derivation (CLAWD_API_URL is rarely set; chatApiUrl is always available).
+    if (this._srConfig === null) {
+      this._srConfig =
+        process.env.CLAWD_SKILL_REVIEW_ENABLED === "false"
+          ? "disabled"
+          : {
+              reviewInterval: parseInt(process.env.CLAWD_SKILL_REVIEW_INTERVAL ?? "20", 10),
+              minToolCalls: parseInt(process.env.CLAWD_SKILL_REVIEW_MIN_TOOLS ?? "10", 10),
+              cooldownMs: parseInt(process.env.CLAWD_SKILL_REVIEW_COOLDOWN_MS ?? "300000", 10),
+              maxSkills: parseInt(process.env.CLAWD_SKILL_REVIEW_MAX_SKILLS ?? "2", 10),
+              model: process.env.CLAWD_SKILL_REVIEW_MODEL,
+            };
+    }
+    if (this._srConfig === "disabled") return;
+    const srConfig = this._srConfig;
+
+    const reviewInterval = srConfig.reviewInterval;
+    const minToolCalls = srConfig.minToolCalls;
+    const cooldownMs = srConfig.cooldownMs;
+    const maxSkills = srConfig.maxSkills;
+
+    if (this.skillReviewInProgress) return;
+    if (this.sessionToolCallCount < minToolCalls) return;
+    if (this.sessionToolCallCount % reviewInterval !== 0) return;
+    if (Date.now() - this.skillReviewLastAt < cooldownMs) return;
+
+    this.skillReviewInProgress = true;
+    this.skillReviewLastAt = Date.now();
+
+    const { channel, chatApiUrl, projectRoot } = this.config;
+    const buffer = [...this.skillReviewBuffer];
+
+    // Build transcript from buffer
+    const lines: string[] = [
+      `# CC Agent Skill Review`,
+      `Tool calls: ${this.sessionToolCallCount}`,
+      `Buffer entries: ${buffer.length}`,
+      "",
+      "## Recent Activity",
+      "",
+    ];
+    for (const entry of buffer.slice(-100)) {
+      if (entry.role === "tool") {
+        lines.push(`[tool: ${entry.toolName}] ${entry.content}`);
+      } else if (entry.role === "assistant" && entry.content) {
+        lines.push(`[assistant] ${entry.content.slice(0, 200)}`);
+      } else if (entry.role === "user" && entry.content) {
+        lines.push(`[human] ${entry.content.slice(0, 200)}`);
+      }
+    }
+    const transcript = lines.join("\n");
+    const prompt = `${buildSkillReviewPrompt(maxSkills)}\n\n## Transcript to Analyze\n\n${transcript}`;
+
+    // Fire-and-forget — don't block the agent turn
+    (async () => {
+      try {
+        const { CopilotClient } = await import("../agent/api/client");
+        const client = new CopilotClient("");
+        const timeoutSignal = new Promise<null>((resolve) => setTimeout(() => resolve(null), 30_000));
+        const llmCall = client.complete({
+          model: srConfig.model || "claude-sonnet-4.5",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.3,
+          max_tokens: 2000,
+        });
+        const response = await Promise.race([llmCall, timeoutSignal]);
+        client.close();
+
+        if (!response) {
+          logger.info(`[SkillReview] Timed out`);
+          return;
+        }
+
+        const resultText = response.choices[0]?.message?.content ?? "";
+        const skills = parseSkillRecommendations(resultText, projectRoot);
+        if (skills.length === 0) {
+          logger.info(`[SkillReview] No skills found`);
+          return;
+        }
+
+        const skillManager = getSkillManager(projectRoot);
+        const created: Array<{ name: string; description: string; path: string }> = [];
+        for (const skill of skills.slice(0, maxSkills)) {
+          if (skillManager.getSkill(skill.name)) continue; // no overwrite
+          const saved = skillManager.saveSkill(
+            { name: skill.name, description: skill.description, triggers: skill.triggers, content: skill.skillContent },
+            "project",
+          );
+          if (saved.success) {
+            created.push({
+              name: skill.name,
+              description: skill.description,
+              path: `.clawd/skills/${skill.name}/SKILL.md`,
+            });
+            logger.info(`[SkillReview] Created skill: ${skill.name}`);
+          }
+        }
+
+        if (created.length > 0) {
+          await postSystemMessage(chatApiUrl, channel, created, skills.length - created.length);
+        }
+      } catch (err) {
+        logger.error(`[SkillReview] Error: ${err}`);
+      } finally {
+        this.skillReviewInProgress = false;
+      }
+    })();
   }
 
   // --------------------------------------------------------------------------
@@ -772,6 +924,17 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       : "";
 
     saveToMemory(this.memorySessionId, "user", prompt);
+
+    // Feed channel messages into skill review buffer so the reviewer has user
+    // context (what prompted the tool calls), not just tool results in isolation.
+    if (isNewTurn) {
+      for (const msg of messages) {
+        const text = (msg.text || "").trim();
+        if (!text) continue;
+        const sender = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
+        this.addToSkillReviewBuffer({ role: "user", content: `[${sender}]: ${sanitize(text.slice(0, 500))}` });
+      }
+    }
 
     this.abortController = new AbortController();
     const { channel, agentId, model, agentFileConfig } = this.config;
@@ -1123,6 +1286,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         toolCalls.length > 0 ? toolCalls : undefined,
       );
     }
+    // Feed assistant text into skill review buffer
+    const text = textParts.join("\n").trim();
+    if (text) this.addToSkillReviewBuffer({ role: "assistant", content: sanitize(text.slice(0, 500)) });
   }
 
   /** Format a single message line for prompt building */
