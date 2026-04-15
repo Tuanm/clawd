@@ -1499,6 +1499,11 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
       return json({ ok: true, space });
     }
 
+    if (path.startsWith("/api/trajectories")) {
+      const { handleTrajectoriesRequest } = await import("./server/routes/trajectories");
+      return handleTrajectoriesRequest(req);
+    }
+
     return json({ ok: false, error: "not_found" }, 404);
   } catch (error) {
     logger.error("Server error:", error);

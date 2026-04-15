@@ -214,4 +214,28 @@ export const chatMigrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 2,
+    description: "trajectories table for RL training data",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS trajectories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          channel TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          turn_index INTEGER NOT NULL,
+          user_message TEXT,
+          tool_calls_json TEXT,
+          assistant_response TEXT,
+          reward INTEGER DEFAULT NULL,
+          created_at INTEGER DEFAULT (strftime('%s','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_trajectories_channel ON trajectories(channel);
+        CREATE INDEX IF NOT EXISTS idx_trajectories_agent ON trajectories(agent_id, channel);
+        CREATE INDEX IF NOT EXISTS idx_trajectories_created ON trajectories(created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_trajectories_session_turn ON trajectories(session_id, turn_index);
+      `);
+    },
+  },
 ];

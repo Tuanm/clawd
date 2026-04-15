@@ -6,6 +6,7 @@
  * all tables when the schema version changes.
  *
  * v1 — initial schema: skills + triggers
+ * v2 — usage tracking: use_count, last_used_at, auto_generated
  */
 
 import type { Migration } from "../migrations";
@@ -33,6 +34,17 @@ export const skillsCacheMigrations: Migration[] = [
         );
 
         CREATE INDEX IF NOT EXISTS idx_triggers_trigger ON triggers(trigger);
+      `);
+    },
+  },
+  {
+    version: 2,
+    description: "usage tracking columns",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE skills ADD COLUMN use_count INTEGER DEFAULT 0;
+        ALTER TABLE skills ADD COLUMN last_used_at INTEGER DEFAULT NULL;
+        ALTER TABLE skills ADD COLUMN auto_generated INTEGER DEFAULT 0;
       `);
     },
   },

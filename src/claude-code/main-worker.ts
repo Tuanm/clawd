@@ -16,7 +16,15 @@ import { buildDynamicSystemPrompt, type PromptContext } from "../agent/prompt/bu
 import { buildContextPreamble } from "../agent/session/context-injector";
 import { getSessionManager } from "../agent/session/manager";
 import { generateConversationSummary } from "../agent/session/summarizer";
+import {
+  buildSkillReviewPrompt,
+  parseSkillRecommendations,
+  postSystemMessage,
+  sanitize,
+} from "../agent/plugins/skill-review-plugin";
+import { getSkillManager } from "../agent/skills/manager";
 import { initMemorySession, saveToMemory } from "./memory";
+import { TrajectoryRecorder } from "./trajectory-recorder";
 import { runSDKQuery } from "./sdk";
 import { formatToolDescription, truncateToolResult } from "./utils";
 
@@ -93,6 +101,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
    *  Does not persist across restarts (acceptable — post-restart messages appear as new). */
   private pendingSeenTimestamps = new Set<string>();
   private forceMarkRetries = new Map<string, number>();
+  private trajectoryRecorder: TrajectoryRecorder | null = null;
   private abortController: AbortController | null = null;
   private wasCancelledByHeartbeat = false;
   // Track whether the interrupt poller detected new messages this cycle.
@@ -103,6 +112,21 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private turnMarkProcessed = false;
   private turnStreamText = "";
   private turnToolsUsed = new Set<string>();
+  // Skill review state — cumulative across turns within a session
+  private sessionToolCallCount = 0;
+  private skillReviewBuffer: Array<{ role: string; content: string; toolName?: string; ts: number }> = [];
+  private skillReviewLastAt = 0;
+  private skillReviewInProgress = false;
+  // Cached skill review config — built once from runtime values (avoids re-reading env on every tool call)
+  private _srConfig:
+    | { reviewInterval: number; minToolCalls: number; cooldownMs: number; maxSkills: number; model?: string }
+    | null
+    | "disabled" = null;
+
+  private addToSkillReviewBuffer(entry: { role: string; content: string; toolName?: string }): void {
+    this.skillReviewBuffer.push({ ...entry, ts: Date.now() });
+    if (this.skillReviewBuffer.length > 500) this.skillReviewBuffer.shift();
+  }
   // Memory injection: last keywords from user message for relevance scoring
   private lastKeywords: string[] = [];
   private get memorySessionName(): string {
@@ -210,6 +234,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     try {
       this.restoreSessionId();
       this.memorySessionId = initMemorySession(this.memorySessionName, this.config.model);
+      this.trajectoryRecorder = new TrajectoryRecorder(
+        this.config.channel,
+        this.config.agentId,
+        `${this.config.channel}-${this.config.agentId}-${Date.now()}`,
+      );
 
       logger.info(
         `Started: ${this.config.channel}:${this.config.agentId}` +
@@ -613,6 +642,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       if (sentText && this.memorySessionId) {
         saveToMemory(this.memorySessionId, "assistant", `[Sent to chat]: ${sentText}`);
       }
+      // Record the visible assistant response for trajectory (only on successful delivery)
+      if (this.trajectoryRecorder && !response?.error) {
+        this.trajectoryRecorder.recordAssistantResponse(sanitize(input?.text || ""));
+      }
     }
     // Track whether chat_mark_processed was called this turn
     if (toolName === "mcp__clawd__chat_mark_processed" && !response?.error) {
@@ -620,6 +653,21 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
 
     this.turnToolsUsed.add(toolName);
+
+    // Feed skill review buffer — strip mcp__clawd__ prefix for readability
+    this.sessionToolCallCount++;
+    const shortName = toolName.replace(/^mcp__clawd__/, "");
+    this.addToSkillReviewBuffer({
+      role: "tool",
+      content: sanitize(truncateToolResult(response).slice(0, 200)),
+      toolName: shortName,
+    });
+    this.maybeRunSkillReview();
+    if (this.trajectoryRecorder && !CONVERSATION_TOOLS.has(toolName.replace(/^mcp__clawd__/, ""))) {
+      const trResult = sanitize(truncateToolResult(response).slice(0, 2000));
+      const trSuccess = !(response as any)?.error && !(response as any)?.isError && !trResult.startsWith("Error:");
+      this.trajectoryRecorder.recordToolCall(toolName.replace(/^mcp__clawd__/, ""), toolInput, trResult, trSuccess);
+    }
 
     broadcastAgentToolCall(channel, agentId, toolName, input, "started");
     broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`);
@@ -679,6 +727,131 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     manager.compactSessionByName(this.memorySessionName, 50, summary);
     logger.info(`Session compacted with LLM summary`);
+  }
+
+  // --------------------------------------------------------------------------
+  // Skill review
+  // --------------------------------------------------------------------------
+
+  /**
+   * Run a background skill review if enough tool calls have accumulated.
+   * Uses a direct LLM call (same pattern as generateConversationSummary) rather
+   * than spawning a full sub-agent — review is a single-turn analysis task.
+   */
+  private maybeRunSkillReview(): void {
+    // CC agents use this inline implementation rather than the plugin-based one
+    // (src/agent/plugins/skill-review-plugin.ts) used by non-CC agents via worker-loop.ts.
+    // Both share buildSkillReviewPrompt/parseSkillRecommendations/postSystemMessage.
+    // The plugin path has richer hooks (compaction, correction detection); this path
+    // is simpler because the CC SDK lifecycle doesn't have plugin slots.
+    // Lazily initialise — build once from runtime values, not from env-only
+    // derivation (CLAWD_API_URL is rarely set; chatApiUrl is always available).
+    if (this._srConfig === null) {
+      this._srConfig =
+        process.env.CLAWD_SKILL_REVIEW_ENABLED === "false"
+          ? "disabled"
+          : {
+              reviewInterval: parseInt(process.env.CLAWD_SKILL_REVIEW_INTERVAL ?? "20", 10),
+              minToolCalls: parseInt(process.env.CLAWD_SKILL_REVIEW_MIN_TOOLS ?? "10", 10),
+              cooldownMs: parseInt(process.env.CLAWD_SKILL_REVIEW_COOLDOWN_MS ?? "300000", 10),
+              maxSkills: parseInt(process.env.CLAWD_SKILL_REVIEW_MAX_SKILLS ?? "2", 10),
+              model: process.env.CLAWD_SKILL_REVIEW_MODEL,
+            };
+    }
+    if (this._srConfig === "disabled") return;
+    const srConfig = this._srConfig;
+
+    const reviewInterval = srConfig.reviewInterval;
+    const minToolCalls = srConfig.minToolCalls;
+    const cooldownMs = srConfig.cooldownMs;
+    const maxSkills = srConfig.maxSkills;
+
+    if (this.skillReviewInProgress) return;
+    if (this.sessionToolCallCount < minToolCalls) return;
+    if (this.sessionToolCallCount % reviewInterval !== 0) return;
+    if (Date.now() - this.skillReviewLastAt < cooldownMs) return;
+
+    this.skillReviewInProgress = true;
+    this.skillReviewLastAt = Date.now();
+
+    const { channel, chatApiUrl, projectRoot } = this.config;
+    const buffer = [...this.skillReviewBuffer];
+
+    // Build transcript from buffer
+    const lines: string[] = [
+      `# CC Agent Skill Review`,
+      `Tool calls: ${this.sessionToolCallCount}`,
+      `Buffer entries: ${buffer.length}`,
+      "",
+      "## Recent Activity",
+      "",
+    ];
+    for (const entry of buffer.slice(-100)) {
+      if (entry.role === "tool") {
+        lines.push(`[tool: ${entry.toolName}] ${entry.content}`);
+      } else if (entry.role === "assistant" && entry.content) {
+        lines.push(`[assistant] ${entry.content.slice(0, 200)}`);
+      } else if (entry.role === "user" && entry.content) {
+        lines.push(`[human] ${entry.content.slice(0, 200)}`);
+      }
+    }
+    const transcript = lines.join("\n");
+    const prompt = `${buildSkillReviewPrompt(maxSkills)}\n\n## Transcript to Analyze\n\n${transcript}`;
+
+    // Fire-and-forget — don't block the agent turn
+    (async () => {
+      try {
+        const { CopilotClient } = await import("../agent/api/client");
+        const client = new CopilotClient("");
+        const timeoutSignal = new Promise<null>((resolve) => setTimeout(() => resolve(null), 30_000));
+        const llmCall = client.complete({
+          model: srConfig.model || "claude-sonnet-4.5",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.3,
+          max_tokens: 2000,
+        });
+        const response = await Promise.race([llmCall, timeoutSignal]);
+        client.close();
+
+        if (!response) {
+          logger.info(`[SkillReview] Timed out`);
+          return;
+        }
+
+        const resultText = response.choices[0]?.message?.content ?? "";
+        const skills = parseSkillRecommendations(resultText, projectRoot);
+        if (skills.length === 0) {
+          logger.info(`[SkillReview] No skills found`);
+          return;
+        }
+
+        const skillManager = getSkillManager(projectRoot);
+        const created: Array<{ name: string; description: string; path: string }> = [];
+        for (const skill of skills.slice(0, maxSkills)) {
+          if (skillManager.getSkill(skill.name)) continue; // no overwrite
+          const saved = skillManager.saveSkill(
+            { name: skill.name, description: skill.description, triggers: skill.triggers, content: skill.skillContent },
+            "project",
+          );
+          if (saved.success) {
+            created.push({
+              name: skill.name,
+              description: skill.description,
+              path: `.clawd/skills/${skill.name}/SKILL.md`,
+            });
+            logger.info(`[SkillReview] Created skill: ${skill.name}`);
+          }
+        }
+
+        if (created.length > 0) {
+          await postSystemMessage(chatApiUrl, channel, created, skills.length - created.length);
+        }
+      } catch (err) {
+        logger.error(`[SkillReview] Error: ${err}`);
+      } finally {
+        this.skillReviewInProgress = false;
+      }
+    })();
   }
 
   // --------------------------------------------------------------------------
@@ -772,6 +945,27 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       : "";
 
     saveToMemory(this.memorySessionId, "user", prompt);
+
+    // Feed channel messages into skill review buffer so the reviewer has user
+    // context (what prompted the tool calls), not just tool results in isolation.
+    if (isNewTurn) {
+      for (const msg of messages) {
+        const text = (msg.text || "").trim();
+        if (!text) continue;
+        const sender = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
+        this.addToSkillReviewBuffer({ role: "user", content: `[${sender}]: ${sanitize(text.slice(0, 500))}` });
+      }
+      if (this.trajectoryRecorder) {
+        const userText = messages
+          .filter((m: any) => (m.text || "").trim())
+          .map((m: any) => {
+            const sender = m.user === "UHUMAN" ? "human" : m.agent_id || m.user || "unknown";
+            return `[${sender}]: ${(m.text || "").trim()}`;
+          })
+          .join("\n");
+        if (userText) this.trajectoryRecorder.recordUserMessage(sanitize(userText));
+      }
+    }
 
     this.abortController = new AbortController();
     const { channel, agentId, model, agentFileConfig } = this.config;
@@ -951,154 +1145,169 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         : {}),
     };
 
-    const newSessionId = await runSDKQuery(sdkOpts, {
-      onTextDelta: (text) => {
-        this.turnStreamText += text;
-        broadcastAgentToken(channel, agentId, text);
-      },
-      onThinkingDelta: (text) => broadcastAgentToken(channel, agentId, text, "thinking"),
-      onAssistantMessage: (content) => this.handleAssistantMessage(content),
-      onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
-      onActivity: () => {
-        // Refresh timestamps to prevent stale streaming cleanup AND heartbeat timeout
-        setAgentStreaming(agentId, channel, true);
-        this.processingStartedAt = Date.now();
-        this.lastActivityAt = Date.now();
-      },
-      onSessionId: (sid) => {
-        if (sid) {
-          this.sessionId = sid;
-          this.persistSessionId(sid);
-        } else {
-          // SDK cleared stale session — reset
-          this.sessionId = null;
-          this.persistSessionId(null);
+    try {
+      const newSessionId = await runSDKQuery(sdkOpts, {
+        onTextDelta: (text) => {
+          this.turnStreamText += text;
+          broadcastAgentToken(channel, agentId, text);
+        },
+        onThinkingDelta: (text) => broadcastAgentToken(channel, agentId, text, "thinking"),
+        onAssistantMessage: (content) => this.handleAssistantMessage(content),
+        onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
+        onActivity: () => {
+          // Refresh timestamps to prevent stale streaming cleanup AND heartbeat timeout
+          setAgentStreaming(agentId, channel, true);
+          this.processingStartedAt = Date.now();
+          this.lastActivityAt = Date.now();
+        },
+        onSessionId: (sid) => {
+          if (sid) {
+            this.sessionId = sid;
+            this.persistSessionId(sid);
+          } else {
+            // SDK cleared stale session — reset
+            this.sessionId = null;
+            this.persistSessionId(null);
+          }
+        },
+      });
+
+      if (newSessionId) {
+        this.sessionId = newSessionId;
+        this.persistSessionId(newSessionId);
+      }
+
+      // Re-injection: if agent produced ANY text but never called chat_send_message,
+      // send one ephemeral follow-up prompt so it can deliver the response.
+      // Skip for: heartbeat turns, cancelled/aborted turns, interrupted turns (resume handles it).
+      if (
+        !this.turnChatSent &&
+        this.turnStreamText.trim().length > 0 &&
+        !this.wasCancelledByHeartbeat &&
+        !isHeartbeatTurn &&
+        !this.abortController?.signal.aborted &&
+        !this.interruptDetected
+      ) {
+        const reinjectionPrompt =
+          "[NOTICE: Your previous turn produced output but did not call `mcp__clawd__chat_send_message` to deliver it — the human cannot see what you wrote.\n\n" +
+          "If you intended to respond to the human, call `mcp__clawd__chat_send_message` with your response now.\n" +
+          "If you intentionally chose not to respond, produce only [SILENT] and do nothing else.]";
+
+        // Use a fresh AbortController for re-injection (the original may have been aborted).
+        // Update this.abortController so cancelProcessing()/setSleeping() can still cancel it.
+        const reinjAbort = new AbortController();
+        this.abortController = reinjAbort;
+        let reinjectionText = "";
+        try {
+          await runSDKQuery(
+            { ...sdkOpts, prompt: reinjectionPrompt, resume: this.sessionId || undefined, abortController: reinjAbort },
+            {
+              onTextDelta: (text) => {
+                reinjectionText += text;
+              },
+              onThinkingDelta: () => {},
+              onAssistantMessage: () => {},
+              onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
+              onActivity: () => {
+                this.lastActivityAt = Date.now();
+              },
+              onSessionId: (sid) => {
+                if (sid) {
+                  this.sessionId = sid;
+                  this.persistSessionId(sid);
+                }
+              },
+            },
+          );
+        } catch (err) {
+          // Re-injection is best-effort — ignore errors
+          logger.error(`Re-injection failed: ${err}`);
         }
-      },
-    });
 
-    if (newSessionId) {
-      this.sessionId = newSessionId;
-      this.persistSessionId(newSessionId);
-    }
-
-    // Re-injection: if agent produced ANY text but never called chat_send_message,
-    // send one ephemeral follow-up prompt so it can deliver the response.
-    // Skip for: heartbeat turns, cancelled/aborted turns, interrupted turns (resume handles it).
-    if (
-      !this.turnChatSent &&
-      this.turnStreamText.trim().length > 0 &&
-      !this.wasCancelledByHeartbeat &&
-      !isHeartbeatTurn &&
-      !this.abortController?.signal.aborted &&
-      !this.interruptDetected
-    ) {
-      const reinjectionPrompt =
-        "[NOTICE: Your previous turn produced output but did not call `mcp__clawd__chat_send_message` to deliver it — the human cannot see what you wrote.\n\n" +
-        "If you intended to respond to the human, call `mcp__clawd__chat_send_message` with your response now.\n" +
-        "If you intentionally chose not to respond, produce only [SILENT] and do nothing else.]";
-
-      // Use a fresh AbortController for re-injection (the original may have been aborted).
-      // Update this.abortController so cancelProcessing()/setSleeping() can still cancel it.
-      const reinjAbort = new AbortController();
-      this.abortController = reinjAbort;
-      let reinjectionText = "";
-      try {
-        await runSDKQuery(
-          { ...sdkOpts, prompt: reinjectionPrompt, resume: this.sessionId || undefined, abortController: reinjAbort },
-          {
-            onTextDelta: (text) => {
-              reinjectionText += text;
-            },
-            onThinkingDelta: () => {},
-            onAssistantMessage: () => {},
-            onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
-            onActivity: () => {
-              this.lastActivityAt = Date.now();
-            },
-            onSessionId: (sid) => {
-              if (sid) {
-                this.sessionId = sid;
-                this.persistSessionId(sid);
-              }
-            },
-          },
-        );
-      } catch (err) {
-        // Re-injection is best-effort — ignore errors
-        logger.error(`Re-injection failed: ${err}`);
-      }
-
-      // If agent replied [SILENT], produced nothing, or already sent via chat_send_message, discard
-      if (reinjectionText.trim() && !reinjectionText.includes("[SILENT]") && !this.turnChatSent) {
-        broadcastAgentToken(channel, agentId, reinjectionText);
-      }
-    }
-
-    // Re-injection: if agent completed without calling chat_mark_processed,
-    // send a follow-up prompt so it can mark the messages as processed.
-    // Skip for: heartbeat turns, cancelled turns, or if mark_processed was already called.
-    // Dual guard: signal.aborted catches cancelProcessing/setSleeping; interruptDetected catches poller-detected interrupts
-    if (
-      !this.turnMarkProcessed &&
-      !this.wasCancelledByHeartbeat &&
-      !isHeartbeatTurn &&
-      !this.abortController?.signal.aborted &&
-      !this.interruptDetected
-    ) {
-      const lastTs = this.pendingTimestamps[this.pendingTimestamps.length - 1] || "";
-      const reminderPrompt =
-        `[NOTICE: You completed your turn but did not call \`mcp__clawd__chat_mark_processed\` to mark the message(s) as handled. ` +
-        `This is required so the same messages are not polled again.\n\n` +
-        `Call \`mcp__clawd__chat_mark_processed(timestamp="${lastTs}")\` now, even if empty.` +
-        `If you intentionally did not need to respond, produce only [SILENT].]`;
-
-      // Use a tracked AbortController so the interrupt poller can abort this re-injection too.
-      const markProcessedAbort = new AbortController();
-      this.abortController = markProcessedAbort;
-      try {
-        await runSDKQuery(
-          {
-            ...sdkOpts,
-            prompt: reminderPrompt,
-            resume: this.sessionId || undefined,
-            abortController: markProcessedAbort,
-          },
-          {
-            onTextDelta: () => {},
-            onThinkingDelta: () => {},
-            onAssistantMessage: () => {},
-            onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
-            onActivity: () => {
-              this.lastActivityAt = Date.now();
-            },
-            onSessionId: (sid) => {
-              if (sid) {
-                this.sessionId = sid;
-                this.persistSessionId(sid);
-              }
-            },
-          },
-        );
-      } catch (err: unknown) {
-        // Best-effort — only log non-abort errors
-        if (!markProcessedAbort.signal.aborted) {
-          const message = err instanceof Error ? err.message : String(err);
-          logger.error(`Mark-processed re-injection failed: ${message}`);
+        // If agent replied [SILENT], produced nothing, or already sent via chat_send_message, discard
+        if (reinjectionText.trim() && !reinjectionText.includes("[SILENT]") && !this.turnChatSent) {
+          broadcastAgentToken(channel, agentId, reinjectionText);
         }
       }
-    }
 
-    // Save a tool-activity summary for turns where the agent used tools but
-    // never called chat_send_message. Without this, tool-only turns leave no
-    // trace in the preamble — the agent's work becomes invisible in context.
-    if (!this.turnChatSent && this.memorySessionId) {
-      const tools = [...this.turnToolsUsed]
-        .map((t) => t.replace(/^mcp__clawd__/, ""))
-        .filter((t) => !CONVERSATION_TOOLS.has(t));
-      if (tools.length > 0) {
-        saveToMemory(this.memorySessionId, "assistant", `[Actions taken]: ${tools.join(", ")}`);
+      // Re-injection: if agent completed without calling chat_mark_processed,
+      // send a follow-up prompt so it can mark the messages as processed.
+      // Skip for: heartbeat turns, cancelled turns, or if mark_processed was already called.
+      // Dual guard: signal.aborted catches cancelProcessing/setSleeping; interruptDetected catches poller-detected interrupts
+      if (
+        !this.turnMarkProcessed &&
+        !this.wasCancelledByHeartbeat &&
+        !isHeartbeatTurn &&
+        !this.abortController?.signal.aborted &&
+        !this.interruptDetected
+      ) {
+        const lastTs = this.pendingTimestamps[this.pendingTimestamps.length - 1] || "";
+        const reminderPrompt =
+          `[NOTICE: You completed your turn but did not call \`mcp__clawd__chat_mark_processed\` to mark the message(s) as handled. ` +
+          `This is required so the same messages are not polled again.\n\n` +
+          `Call \`mcp__clawd__chat_mark_processed(timestamp="${lastTs}")\` now, even if empty.` +
+          `If you intentionally did not need to respond, produce only [SILENT].]`;
+
+        // Use a tracked AbortController so the interrupt poller can abort this re-injection too.
+        const markProcessedAbort = new AbortController();
+        this.abortController = markProcessedAbort;
+        try {
+          await runSDKQuery(
+            {
+              ...sdkOpts,
+              prompt: reminderPrompt,
+              resume: this.sessionId || undefined,
+              abortController: markProcessedAbort,
+            },
+            {
+              onTextDelta: () => {},
+              onThinkingDelta: () => {},
+              onAssistantMessage: () => {},
+              onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
+              onActivity: () => {
+                this.lastActivityAt = Date.now();
+              },
+              onSessionId: (sid) => {
+                if (sid) {
+                  this.sessionId = sid;
+                  this.persistSessionId(sid);
+                }
+              },
+            },
+          );
+        } catch (err: unknown) {
+          // Best-effort — only log non-abort errors
+          if (!markProcessedAbort.signal.aborted) {
+            const message = err instanceof Error ? err.message : String(err);
+            logger.error(`Mark-processed re-injection failed: ${message}`);
+          }
+        }
       }
+
+      // Save a tool-activity summary for turns where the agent used tools but
+      // never called chat_send_message. Without this, tool-only turns leave no
+      // trace in the preamble — the agent's work becomes invisible in context.
+      if (!this.turnChatSent && this.memorySessionId) {
+        const tools = [...this.turnToolsUsed]
+          .map((t) => t.replace(/^mcp__clawd__/, ""))
+          .filter((t) => !CONVERSATION_TOOLS.has(t));
+        if (tools.length > 0) {
+          saveToMemory(this.memorySessionId, "assistant", `[Actions taken]: ${tools.join(", ")}`);
+        }
+      }
+
+      if (this.turnMarkProcessed && this.trajectoryRecorder) {
+        this.trajectoryRecorder.commitTurn();
+      } else if (!this.turnMarkProcessed && this.trajectoryRecorder) {
+        this.trajectoryRecorder.abortTurn();
+      }
+    } catch (err) {
+      // Ensure the trajectory recorder does not carry stale pending state across turns
+      // when the SDK or post-processing throws unexpectedly.
+      if (this.trajectoryRecorder?.hasPendingState()) {
+        this.trajectoryRecorder.abortTurn();
+      }
+      throw err; // re-throw so the caller's error handling still fires
     }
   }
 
@@ -1123,6 +1332,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         toolCalls.length > 0 ? toolCalls : undefined,
       );
     }
+    // Feed assistant text into skill review buffer
+    const text = textParts.join("\n").trim();
+    if (text) this.addToSkillReviewBuffer({ role: "assistant", content: sanitize(text.slice(0, 500)) });
   }
 
   /** Format a single message line for prompt building */
