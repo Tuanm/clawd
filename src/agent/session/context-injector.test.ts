@@ -82,7 +82,7 @@ describe("buildContextPreamble", () => {
   test("builds a preamble with user and assistant messages", () => {
     const session = mgr.getOrCreateSession(SESSION, "model");
     mgr.addMessage(session.id, userMsg("Hello, world!"));
-    mgr.addMessage(session.id, assistantMsg("Hi there!"));
+    mgr.addMessage(session.id, assistantMsg("[Sent to chat]: Hi there!"));
 
     const result = buildContextPreamble(SESSION, opts());
 
@@ -92,17 +92,51 @@ describe("buildContextPreamble", () => {
     expect(result).toContain("[Assistant]: Hi there!");
   });
 
-  test("labels user messages as [Human] and assistant as [Assistant]", () => {
+  test("labels plain user messages as [Human] (fallback) and filters raw assistant text", () => {
     const session = mgr.getOrCreateSession(SESSION, "model");
     mgr.addMessage(session.id, userMsg("u"));
+    // Raw assistant text (no [Sent to chat]: prefix) is filtered — it's noisy internal streaming
     mgr.addMessage(session.id, assistantMsg("a"));
 
     const result = buildContextPreamble(SESSION, opts());
 
     expect(result).toContain("[Human]: u");
-    expect(result).toContain("[Assistant]: a");
-    expect(result).not.toContain("[user]:");
-    expect(result).not.toContain("[assistant]:");
+    // Raw assistant blob must NOT appear — only [Sent to chat]: prefixed lines are surfaced
+    expect(result).not.toContain("[Assistant]: a");
+  });
+
+  test("uses agentId as label for assistant turns when provided", () => {
+    const session = mgr.getOrCreateSession(SESSION, "model");
+    mgr.addMessage(session.id, assistantMsg("[Sent to chat]: Done!"));
+
+    const result = buildContextPreamble(SESSION, opts({ agentId: "claude-1" }));
+
+    expect(result).toContain("[claude-1]: Done!");
+    expect(result).not.toContain("[Assistant]:");
+  });
+
+  test("extracts per-sender lines from formatted prompt blobs", () => {
+    const session = mgr.getOrCreateSession(SESSION, "model");
+    // Simulate a real formatMessageLine() style prompt
+    const prompt = [
+      `# Messages on Channel "general" (poll start)`,
+      ``,
+      `[1705001234567] human: hey can you fix the auth bug`,
+      `[1705001235678] verify-agent: I checked the auth module, found an issue`,
+      ``,
+      `[REMINDER: Your streaming text output goes to the agentic framework only]`,
+    ].join("\n");
+    mgr.addMessage(session.id, userMsg(prompt));
+    mgr.addMessage(session.id, assistantMsg("[Sent to chat]: On it!"));
+
+    const result = buildContextPreamble(SESSION, opts({ agentId: "claude-1" }));
+
+    expect(result).toContain("[human]: hey can you fix the auth bug");
+    expect(result).toContain("[verify-agent]: I checked the auth module, found an issue");
+    expect(result).toContain("[claude-1]: On it!");
+    // Boilerplate must not appear
+    expect(result).not.toContain("# Messages on Channel");
+    expect(result).not.toContain("REMINDER");
   });
 
   // ── 3. Tool rows excluded ────────────────────────────────────────────────
@@ -112,7 +146,7 @@ describe("buildContextPreamble", () => {
     mgr.addMessage(session.id, userMsg("Run a command"));
     mgr.addMessage(session.id, toolCallMsg("abc123"));
     mgr.addMessage(session.id, toolResultMsg("abc123", "command output here"));
-    mgr.addMessage(session.id, assistantMsg("Done!"));
+    mgr.addMessage(session.id, assistantMsg("[Sent to chat]: Done!"));
 
     const result = buildContextPreamble(SESSION, opts());
 
@@ -177,7 +211,8 @@ describe("buildContextPreamble", () => {
 
     const result = buildContextPreamble(SESSION, opts({ maxMessages: 4 }));
 
-    const total = (result.match(/\[(Human|Assistant)\]:/g) ?? []).length;
+    // Each line starts with "[label]:" — count them regardless of label name
+    const total = (result.match(/^\[.+?\]:/gm) ?? []).length;
     expect(total).toBeLessThanOrEqual(4);
   });
 
@@ -186,7 +221,7 @@ describe("buildContextPreamble", () => {
   test("skips messages with whitespace-only content", () => {
     const session = mgr.getOrCreateSession(SESSION, "model");
     mgr.addMessage(session.id, userMsg("   "));
-    mgr.addMessage(session.id, assistantMsg("Real response"));
+    mgr.addMessage(session.id, assistantMsg("[Sent to chat]: Real response"));
 
     const result = buildContextPreamble(SESSION, opts());
 

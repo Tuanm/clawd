@@ -325,139 +325,11 @@ export class SessionSummarizer {
    * Generate a summary of the conversation using LLM sidecar agent
    */
   private async generateSummary(conversationText: string, messageCount: number): Promise<string> {
-    try {
-      const summary = await this.callLLMSidecar(conversationText, messageCount);
-      if (summary) return summary;
-    } catch (err) {
-      console.error("[Summarizer] LLM sidecar failed, using fallback:", err);
-    }
-
-    return this.generateFallbackSummary(conversationText, messageCount);
+    return generateConversationSummary(conversationText, messageCount, this.config.model);
   }
 
-  /**
-   * Call Copilot CLI as a sidecar agent for intelligent summarization
-   */
-  private async callLLMSidecar(conversationText: string, messageCount: number): Promise<string | null> {
-    const { CopilotClient } = await import("../api/client");
-
-    if (!this.config.token) {
-      console.log("[Summarizer] No token provided, using fallback summary");
-      return null;
-    }
-
-    const maxChars = 24000;
-    const truncatedText =
-      conversationText.length > maxChars
-        ? `${conversationText.substring(0, maxChars)}\n\n[...truncated...]`
-        : conversationText;
-
-    const prompt = `You are a conversation summarizer. Summarize the following ${messageCount} messages from a chat conversation.
-
-Focus on:
-1. Key decisions made
-2. Technical work completed (files modified, features implemented)
-3. Outstanding tasks or issues mentioned
-4. Important context that should be remembered
-
-Be concise but comprehensive. Use bullet points. Output ONLY the summary, no preamble.
-
----
-CONVERSATION:
-${truncatedText}
----
-
-Summary:`;
-
-    try {
-      // Call our chat/completions API with provided token
-      const client = new CopilotClient(this.config.token);
-      const response = await client.complete({
-        model: this.config.model || "claude-sonnet-4.5",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.3,
-        max_tokens: 2000,
-      });
-
-      client.close();
-
-      const result = response.choices[0]?.message?.content;
-
-      if (result && result.trim().length > 50) {
-        console.log("[Summarizer] LLM summary generated successfully");
-        return result.trim();
-      }
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.includes("forbidden") || errMsg.includes("403")) {
-        console.log("[Summarizer] Token lacks Copilot API access, using fallback");
-      } else {
-        console.log("[Summarizer] LLM unavailable, using fallback:", errMsg.substring(0, 100));
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Fallback summary generation using simple heuristics
-   */
   private generateFallbackSummary(conversationText: string, messageCount: number): string {
-    // Extract key topics (simple heuristic: look for common patterns)
-    const topics: string[] = [];
-
-    // Check for code-related discussions
-    if (
-      conversationText.includes("```") ||
-      conversationText.includes("function") ||
-      conversationText.includes("const ")
-    ) {
-      topics.push("Code implementation and debugging");
-    }
-
-    // Check for file operations
-    if (conversationText.includes(".ts") || conversationText.includes(".js") || conversationText.includes("file")) {
-      topics.push("File modifications");
-    }
-
-    // Check for UI discussions
-    if (
-      conversationText.includes("UI") ||
-      conversationText.includes("component") ||
-      conversationText.includes("display")
-    ) {
-      topics.push("UI/UX discussions");
-    }
-
-    // Check for architecture discussions
-    if (
-      conversationText.includes("architecture") ||
-      conversationText.includes("design") ||
-      conversationText.includes("system")
-    ) {
-      topics.push("Architecture and design decisions");
-    }
-
-    // Check for bug fixes
-    if (conversationText.includes("fix") || conversationText.includes("bug") || conversationText.includes("error")) {
-      topics.push("Bug fixes and troubleshooting");
-    }
-
-    let summary = `This checkpoint covers ${messageCount} messages in the conversation.\n\n`;
-
-    if (topics.length > 0) {
-      summary += `**Key Topics:**\n${topics.map((t) => `- ${t}`).join("\n")}\n\n`;
-    }
-
-    const lines = conversationText.split("\n\n");
-    if (lines.length > 0) {
-      const firstMsg = lines[0].substring(0, 200);
-      const lastMsg = lines[lines.length - 1].substring(0, 200);
-      summary += `**Started with:** "${firstMsg}..."\n\n`;
-      summary += `**Ended with:** "${lastMsg}..."\n`;
-    }
-
-    return summary;
+    return _heuristicSummary(conversationText, messageCount);
   }
 
   /**
@@ -490,6 +362,136 @@ Summary:`;
 
     return checkpoints.map((cp) => `[History from ${cp.fromTs} to ${cp.toTs}]\n${cp.summary}`).join("\n\n---\n\n");
   }
+}
+
+// ============================================================================
+// Standalone summary generation (usable without a full SessionSummarizer instance)
+// ============================================================================
+
+// Per-attempt timeout and retry config
+const SUMMARY_TIMEOUT_MS = 15_000;
+const SUMMARY_MAX_ATTEMPTS = 3;
+const SUMMARY_RETRY_DELAY_MS = 2_000;
+
+/**
+ * Generate a conversation summary using an LLM, falling back to heuristics.
+ * Retries up to SUMMARY_MAX_ATTEMPTS times with a per-attempt timeout.
+ * Used by both SessionSummarizer (via generateSummary) and maybeCompactSession.
+ */
+export async function generateConversationSummary(
+  conversationText: string,
+  messageCount: number,
+  model?: string,
+): Promise<string> {
+  const { CopilotClient } = await import("../api/client");
+
+  const maxChars = 24000;
+  const truncated =
+    conversationText.length > maxChars
+      ? `${conversationText.substring(0, maxChars)}\n\n[...truncated...]`
+      : conversationText;
+
+  const prompt = `You are a conversation summarizer. Summarize the following ${messageCount} messages from a chat conversation.
+
+Focus on:
+1. Key decisions made
+2. Technical work completed (files modified, features implemented)
+3. Outstanding tasks or issues mentioned
+4. Important context that should be remembered
+
+Be concise but comprehensive. Use bullet points. Output ONLY the summary, no preamble.
+
+---
+CONVERSATION:
+${truncated}
+---
+
+Summary:`;
+
+  for (let attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt++) {
+    // CopilotClient resolves its own token via getCopilotToken() / key pool internally
+    const client = new CopilotClient("");
+
+    try {
+      const llmCall = client.complete({
+        model: model || "claude-sonnet-4.5",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        max_tokens: 2000,
+      });
+
+      // Race against a per-attempt timeout. On timeout, close the client
+      // immediately so the in-flight request is not left dangling.
+      const timeoutSignal = new Promise<null>((resolve) => setTimeout(() => resolve(null), SUMMARY_TIMEOUT_MS));
+      const response = await Promise.race([llmCall, timeoutSignal]);
+      client.close();
+
+      if (!response) {
+        console.log(
+          `[Summarizer] Attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} timed out after ${SUMMARY_TIMEOUT_MS / 1000}s`,
+        );
+      } else {
+        const result = response.choices[0]?.message?.content;
+        if (result && result.trim().length > 50) {
+          console.log(`[Summarizer] LLM summary generated successfully (attempt ${attempt})`);
+          return result.trim();
+        }
+        console.log(`[Summarizer] Attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} returned empty/short result`);
+      }
+    } catch (err) {
+      client.close();
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`[Summarizer] Attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} failed: ${msg.substring(0, 100)}`);
+    }
+
+    if (attempt < SUMMARY_MAX_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, SUMMARY_RETRY_DELAY_MS));
+    }
+  }
+
+  console.log("[Summarizer] All LLM attempts exhausted, using heuristic fallback");
+  return _heuristicSummary(conversationText, messageCount);
+}
+
+function _heuristicSummary(conversationText: string, messageCount: number): string {
+  const topics: string[] = [];
+  if (
+    conversationText.includes("```") ||
+    conversationText.includes("function") ||
+    conversationText.includes("const ")
+  ) {
+    topics.push("Code implementation and debugging");
+  }
+  if (conversationText.includes(".ts") || conversationText.includes(".js") || conversationText.includes("file")) {
+    topics.push("File modifications");
+  }
+  if (
+    conversationText.includes("UI") ||
+    conversationText.includes("component") ||
+    conversationText.includes("display")
+  ) {
+    topics.push("UI/UX discussions");
+  }
+  if (
+    conversationText.includes("architecture") ||
+    conversationText.includes("design") ||
+    conversationText.includes("system")
+  ) {
+    topics.push("Architecture and design decisions");
+  }
+  if (conversationText.includes("fix") || conversationText.includes("bug") || conversationText.includes("error")) {
+    topics.push("Bug fixes and troubleshooting");
+  }
+  let summary = `Summary of ${messageCount} prior messages.\n\n`;
+  if (topics.length > 0) {
+    summary += `**Topics:** ${topics.join(", ")}\n\n`;
+  }
+  const lines = conversationText.split("\n\n").filter(Boolean);
+  if (lines.length > 0) {
+    summary += `**First message:** ${lines[0].substring(0, 200)}\n`;
+    if (lines.length > 1) summary += `**Last message:** ${lines[lines.length - 1].substring(0, 200)}`;
+  }
+  return summary;
 }
 
 /**

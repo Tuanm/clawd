@@ -73,6 +73,10 @@ let _defaultSessionManager: SessionManager | null = null;
 export class SessionManager {
   private db: Database;
   private _sessionUpdateTimes = new Map<string, number>(); // per-session debounce
+  // needsCompaction result is cached per session for 30s to avoid a SUM aggregate
+  // query on every new turn. Invalidated when the session is compacted.
+  private _compactionCache = new Map<string, { result: boolean; expiresAt: number }>();
+  private static readonly COMPACTION_CACHE_TTL_MS = 30_000;
 
   constructor(dbPath?: string) {
     const defaultPath = join(getDataDir(), "memory.db");
@@ -257,33 +261,46 @@ export class SessionManager {
    * This is optimized for resuming sessions without blowing up context size.
    */
   getRecentMessagesCompact(sessionId: string, limit = 50, maxContentLength = 8000): Message[] {
-    // Fetch more messages since we'll be filtering many out.
-    // +1 extra to account for summary row (created_at=0) which is always oldest and
-    // would otherwise be dropped by slice(-limit) when session has >= limit regular messages.
-    const rows = this.db
+    // Two separate queries so compaction summary rows (created_at=0) are never
+    // dropped by the LIMIT clause.  With a single DESC-ordered query, summary
+    // rows sort to the very bottom (created_at=0 is smallest) and get cut off
+    // whenever there are >= limit regular rows — a silent data loss.
+    //
+    // Query 1: all compaction summary rows (always kept, always pinned to front).
+    // Query 2: most recent `limit` preamble-relevant regular rows.
+    //   Includes: user prompts + [Sent to chat] + [Actions taken] assistant rows.
+    //   Excludes: raw streaming text blobs, tool results — they never appear in
+    //   the preamble and would waste the limit window if counted.
+    //   Note: [CONTEXT SUMMARY…] rows are role='user' so already in Query 1.
+    const summaryRows = this.db
+      .query(`SELECT * FROM messages WHERE session_id = ? AND created_at = 0 ORDER BY id ASC`)
+      .all(sessionId) as StoredMessage[];
+
+    const regularRows = this.db
       .query(
         `SELECT * FROM (
-        SELECT * FROM messages
-        WHERE session_id = ?
-          AND role IN ('user', 'assistant')
-          AND tool_call_id IS NULL
-        ORDER BY created_at DESC, id DESC LIMIT ?
-      ) ORDER BY created_at ASC, id ASC`,
+          SELECT * FROM messages
+          WHERE session_id = ?
+            AND created_at > 0
+            AND tool_call_id IS NULL
+            AND (
+              role = 'user'
+              OR (role = 'assistant' AND (
+                content LIKE '[Sent to chat]:%'
+                OR content LIKE '[Actions taken]:%'
+              ))
+            )
+          ORDER BY created_at DESC, id DESC LIMIT ?
+        ) ORDER BY created_at ASC, id ASC`,
       )
-      .all(sessionId, limit * 2 + 1) as StoredMessage[];
+      .all(sessionId, limit) as StoredMessage[];
 
-    const summaryMessages: Message[] = []; // created_at=0 compaction summaries — always kept
-    const regularMessages: Message[] = [];
+    const messages: Message[] = [];
 
-    for (const row of rows) {
-      // Skip assistant messages that only have tool_calls (no content)
-      if (row.role === "assistant" && row.tool_calls && !row.content) {
-        continue;
-      }
+    for (const row of [...summaryRows, ...regularRows]) {
+      if (row.role === "assistant" && row.tool_calls && !row.content) continue;
 
       let content = row.content;
-
-      // Truncate large content with smart head/tail preservation
       if (content && content.length > maxContentLength) {
         content = smartTruncate(content, {
           maxLength: maxContentLength,
@@ -291,22 +308,10 @@ export class SessionManager {
         });
       }
 
-      const msg: Message = {
-        role: row.role as Message["role"],
-        content,
-        // Intentionally omit tool_calls to keep history clean
-      };
-
-      // Compaction summary rows have created_at=0 — pin them to the front
-      if (row.created_at === 0) {
-        summaryMessages.push(msg);
-      } else {
-        regularMessages.push(msg);
-      }
+      messages.push({ role: row.role as Message["role"], content });
     }
 
-    // Return summary rows (always) + most recent 'limit' regular messages
-    return [...summaryMessages, ...regularMessages.slice(-limit)];
+    return messages;
   }
 
   /**
@@ -527,6 +532,10 @@ export class SessionManager {
       );
     }
 
+    // Invalidate the needsCompaction cache for all sessions that reference this sessionId.
+    // Simpler to clear the whole cache — it's small and rebuilds cheaply on next access.
+    this._compactionCache.clear();
+
     console.log(`[SessionManager] Compacted session: deleted ${deletedCount} messages, kept ${keepCount}`);
     return deletedCount;
   }
@@ -550,9 +559,36 @@ export class SessionManager {
    * @returns true if session exceeds limit
    */
   needsCompaction(name: string, maxTokens: number = 50000): boolean {
-    const stats = this.getSessionStatsByName(name);
-    if (!stats) return false;
-    return stats.estimatedTokens > maxTokens;
+    const now = Date.now();
+    const cached = this._compactionCache.get(name);
+    if (cached && now < cached.expiresAt) return cached.result;
+
+    const session = this.db
+      .query("SELECT id FROM sessions WHERE name = ? ORDER BY updated_at DESC LIMIT 1")
+      .get(name) as { id: string } | null;
+    if (!session) return false;
+
+    // Count only preamble-visible bytes — same filter as getRecentMessagesCompact.
+    // Streaming text blobs and tool results are excluded to avoid premature compaction.
+    const row = this.db
+      .query(
+        `SELECT COALESCE(SUM(LENGTH(COALESCE(content, ''))), 0) as bytes
+         FROM messages
+         WHERE session_id = ?
+           AND tool_call_id IS NULL
+           AND (
+             role = 'user'
+             OR (role = 'assistant' AND (
+               content LIKE '[Sent to chat]:%'
+               OR content LIKE '[Actions taken]:%'
+             ))
+           )`,
+      )
+      .get(session.id) as { bytes: number } | null;
+
+    const result = Math.ceil((row?.bytes || 0) / 3) > maxTokens;
+    this._compactionCache.set(name, { result, expiresAt: now + SessionManager.COMPACTION_CACHE_TTL_MS });
+    return result;
   }
 
   /**
@@ -571,8 +607,7 @@ export class SessionManager {
       `[SessionManager] Session "${name}" exceeds token limit (${stats.estimatedTokens} > ${maxTokens}), compacting...`,
     );
 
-    const summary = `Previous conversation had approximately ${stats.messageCount} messages and ${stats.estimatedTokens} tokens. The older messages have been compacted to stay within context limits.`;
-
+    const summary = `Conversation summary: approximately ${stats.messageCount} prior messages compacted (${stats.estimatedTokens} estimated tokens).`;
     const deleted = this.compactSessionByName(name, keepCount, summary);
     return deleted > 0;
   }

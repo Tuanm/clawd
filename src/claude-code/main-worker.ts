@@ -14,6 +14,8 @@ import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgent
 import { type AgentMemory, extractKeywords, getAgentMemoryStore } from "../agent/memory/agent-memory";
 import { buildDynamicSystemPrompt, type PromptContext } from "../agent/prompt/builder";
 import { buildContextPreamble } from "../agent/session/context-injector";
+import { getSessionManager } from "../agent/session/manager";
+import { generateConversationSummary } from "../agent/session/summarizer";
 import { initMemorySession, saveToMemory } from "./memory";
 import { runSDKQuery } from "./sdk";
 import { formatToolDescription, truncateToolResult } from "./utils";
@@ -41,6 +43,10 @@ const MAX_FORCE_MARK_RETRIES = 3;
 const MAX_MESSAGE_LENGTH = 10000;
 const MAX_COMBINED_PROMPT_LENGTH = 40000;
 const MAX_WAKEUP_MESSAGES = 3; // On wakeup, only process this many recent messages
+
+// Tools that manage conversation flow — excluded from the [Actions taken] summary
+// since they are implementation mechanics, not agent work visible to the user.
+const CONVERSATION_TOOLS = new Set(["chat_send_message", "chat_mark_processed"]);
 
 // ============================================================================
 // Types
@@ -96,6 +102,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private turnChatSent = false;
   private turnMarkProcessed = false;
   private turnStreamText = "";
+  private turnToolsUsed = new Set<string>();
   // Memory injection: last keywords from user message for relevance scoring
   private lastKeywords: string[] = [];
   private get memorySessionName(): string {
@@ -612,6 +619,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       this.turnMarkProcessed = true;
     }
 
+    this.turnToolsUsed.add(toolName);
+
     broadcastAgentToolCall(channel, agentId, toolName, input, "started");
     broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`);
     saveToMemory(
@@ -621,6 +630,55 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       undefined,
       toolUseId || `tool_${toolName}_${Date.now()}`,
     );
+  }
+
+  // --------------------------------------------------------------------------
+  // Session compaction
+  // --------------------------------------------------------------------------
+
+  /**
+   * If the session is approaching the token limit, compact it using an
+   * LLM-generated summary of the real Claw'd channel messages — not the LLM
+   * prompt blobs stored in the session DB.
+   *
+   * Channel messages are clean and fully attributed (human, agent IDs), making
+   * them far better source material for a summary than parsed prompt text.
+   */
+  private async maybeCompactSession(): Promise<void> {
+    const manager = getSessionManager();
+    if (!manager.needsCompaction(this.memorySessionName, 100_000)) return;
+
+    const { channel, model } = this.config;
+
+    // Read up to 200 recent channel messages — enough to summarise the whole
+    // conversation even for very active channels. Oldest first for the LLM.
+    type ChatRow = { ts: string; user: string; agent_id: string | null; text: string | null };
+    const rows = db
+      .query<ChatRow, [string, number]>(
+        `SELECT ts, user, agent_id, text FROM messages
+         WHERE channel = ? AND thread_ts IS NULL AND text IS NOT NULL AND text != ''
+         ORDER BY ts DESC LIMIT ?`,
+      )
+      .all(channel, 200)
+      .reverse();
+
+    const chatLines = rows
+      .filter((r) => r.text?.trim())
+      .map((r) => {
+        const sender = r.user === "UHUMAN" ? "human" : r.agent_id || r.user || "bot";
+        const text = (r.text || "").replace(/\s+/g, " ").trim().slice(0, 500);
+        return `[${sender}]: ${text}`;
+      });
+
+    if (chatLines.length === 0) return;
+
+    logger.info(`Compacting session — generating LLM summary from ${chatLines.length} channel messages...`);
+
+    const conversationText = chatLines.join("\n\n");
+    const summary = await generateConversationSummary(conversationText, chatLines.length, model);
+
+    manager.compactSessionByName(this.memorySessionName, 50, summary);
+    logger.info(`Session compacted with LLM summary`);
   }
 
   // --------------------------------------------------------------------------
@@ -706,7 +764,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     // Build context preamble BEFORE saveToMemory so the current message is not
     // included in the history (getRecentMessagesCompact reads the same DB).
-    const contextPreamble = isNewTurn ? buildContextPreamble(this.memorySessionName) : "";
+    // Compaction (if needed) is handled here with LLM-generated summaries from
+    // real channel messages — buildContextPreamble runs with autoCompact disabled.
+    if (isNewTurn) await this.maybeCompactSession();
+    const contextPreamble = isNewTurn
+      ? buildContextPreamble(this.memorySessionName, { disableAutoCompact: true, agentId: this.config.agentId })
+      : "";
 
     saveToMemory(this.memorySessionId, "user", prompt);
 
@@ -856,6 +919,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     this.turnChatSent = false;
     this.turnMarkProcessed = false;
     this.turnStreamText = "";
+    this.turnToolsUsed = new Set();
 
     // contextPreamble was computed above (before saveToMemory) to exclude the
     // current message from the injected history.
@@ -1022,6 +1086,18 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           const message = err instanceof Error ? err.message : String(err);
           logger.error(`Mark-processed re-injection failed: ${message}`);
         }
+      }
+    }
+
+    // Save a tool-activity summary for turns where the agent used tools but
+    // never called chat_send_message. Without this, tool-only turns leave no
+    // trace in the preamble — the agent's work becomes invisible in context.
+    if (!this.turnChatSent && this.memorySessionId) {
+      const tools = [...this.turnToolsUsed]
+        .map((t) => t.replace(/^mcp__clawd__/, ""))
+        .filter((t) => !CONVERSATION_TOOLS.has(t));
+      if (tools.length > 0) {
+        saveToMemory(this.memorySessionId, "assistant", `[Actions taken]: ${tools.join(", ")}`);
       }
     }
   }
