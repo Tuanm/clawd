@@ -621,6 +621,21 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
             required: ["keywords"],
           },
         },
+        {
+          name: "skill_cleanup",
+          description:
+            "Delete auto-generated skills that have not been used within max_age_days (default: 30). Returns count of deleted skills.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              max_age_days: {
+                type: "number",
+                description: "Maximum age in days before an unused auto-generated skill is deleted (default: 30)",
+              },
+            },
+            required: [],
+          },
+        },
       ];
 
       // Article tools
@@ -1747,6 +1762,8 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
                 text = `Skill '${args.name}' not found. Use skill_list to see available skills.`;
                 break;
               }
+              // A4: Track usage for TTL-based cleanup of auto-generated skills
+              manager.touchSkill(args.name as string);
               text = `# Skill: ${skill.name} (${skill.source})\n\n${skill.content}\n\n---\n*Skill activated. Follow the guidelines above.*`;
               break;
             }
@@ -1767,6 +1784,13 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
             case "skill_delete": {
               const deleted = manager.deleteSkill(args.name as string);
               text = deleted ? `Skill '${args.name}' deleted.` : `Skill '${args.name}' not found.`;
+              break;
+            }
+            case "skill_cleanup": {
+              // A4: Delete auto-generated skills unused for longer than max_age_days
+              const maxAgeDays = Math.max(1, typeof args.max_age_days === "number" ? args.max_age_days : 30);
+              const deletedCount = manager.cleanupStaleAutoSkills(maxAgeDays);
+              text = `Cleaned up ${deletedCount} stale auto-generated skill(s) older than ${maxAgeDays} days.`;
               break;
             }
             default:

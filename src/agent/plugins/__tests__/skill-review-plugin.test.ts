@@ -468,7 +468,7 @@ describe("runReview cooldown and guards", () => {
     expect(spawnAgentFn.mock.calls.length).toBe(0);
   });
 
-  test("triggers review when tool call count reaches threshold", async () => {
+  test("triggers review when tool call count reaches threshold (A1: fires on chat_mark_processed)", async () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
@@ -482,11 +482,13 @@ describe("runReview cooldown and guards", () => {
       { spawnAgentFn: spawnAgentFn as any },
     );
 
-    // Trigger at 5th call (5 % 5 === 0)
+    // Accumulate 5 tool calls (meets interval)
     for (let i = 0; i < 5; i++) {
       await plugin.hooks.onToolResult("bash", { success: true, output: "ok" }, {} as any);
     }
-
+    // A1: review fires on task-completion boundary (chat_mark_processed), not mid-task
+    expect(spawnAgentFn.mock.calls.length).toBe(0);
+    await plugin.hooks.onToolResult("chat_mark_processed", { success: true, output: "ok" }, {} as any);
     // Should have triggered exactly once
     expect(spawnAgentFn.mock.calls.length).toBe(1);
   });
