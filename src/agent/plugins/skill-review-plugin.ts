@@ -10,6 +10,7 @@ import type { Plugin, PluginContext, PluginHooks } from "./manager";
 import { getSkillManager } from "../skills/manager";
 import { getContextConfigRoot } from "../utils/agent-context";
 import { registerSkillReviewTrigger, unregisterSkillReviewTrigger } from "../tools/chat-tools";
+import { getSkillSet, improveSkillFromCorrections } from "../skills/improvement";
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ export function containsCorrection(text: string): boolean {
 export function extractCorrections(messages: any[]): string[] {
   const found: string[] = [];
   for (const msg of messages) {
+    if (msg.role !== "user") continue; // only user messages contain corrections
     if (msg.content && containsCorrection(msg.content)) {
       found.push(msg.content.slice(0, 500)); // cap at 500 chars
     }
@@ -154,6 +156,10 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
   let reviewInProgress = false;
   let pendingCorrections: string[] = [];
   let lastCheckpointSnapshot: string | null = null;
+
+  // Per-turn improvement state (reset at chat_mark_processed success gate)
+  let turnActivatedSkills = new Set<string>();
+  let turnBufferStartIdx = 0;
 
   // Capture projectRoot in closure for use throughout plugin lifecycle.
   // PluginContext has no projectRoot — must come from config or getContextConfigRoot().
@@ -419,6 +425,8 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
       lastCheckpointSnapshot = captureSnapshot();
       // Register manual trigger so trigger_skill_review tool works
       registerSkillReviewTrigger(() => runReview(_ctx));
+      // Clear in-flight improvement set in case of restart (prevents permanent skill lock)
+      getSkillSet(projectRoot).clear();
       console.log("[SkillReview] Plugin initialized, snapshot captured");
     },
 
@@ -430,6 +438,26 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
           ts: Date.now(),
         });
       }
+
+      // Capture skill_activate calls to track which skills were used this turn.
+      // Source: response.toolCalls[] (content is a string — cannot be parsed for tool names).
+      // NO resets here — resets happen at chat_mark_processed consumption gate only.
+      const toolCalls = Array.isArray(response?.toolCalls) ? response.toolCalls : [];
+      for (const tc of toolCalls) {
+        if (tc?.name !== "skill_activate") continue;
+        let args: any = tc.args;
+        if (typeof args === "string") {
+          try {
+            args = JSON.parse(args);
+          } catch {
+            args = {};
+          }
+        }
+        const skillName = args?.name;
+        if (typeof skillName === "string" && skillName.length > 0) {
+          turnActivatedSkills.add(skillName);
+        }
+      }
     },
 
     async onToolResult(name: string, result: any, _ctx: PluginContext) {
@@ -440,6 +468,35 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
         toolResult: { success: result?.success ?? false, output: result?.output || "" },
         ts: Date.now(),
       });
+
+      // Skill self-improvement: fire at task completion (chat_mark_processed success).
+      // Snapshot BEFORE any path that might consume pendingCorrections.
+      if (name === "chat_mark_processed" && result?.success !== false) {
+        const correctionsSnapshot = [...pendingCorrections];
+        const activatedSnapshot = [...turnActivatedSkills];
+        const turnSlice = messageBuffer
+          .slice(turnBufferStartIdx)
+          .map((e) => `[${e.role}] ${e.content}`)
+          .join("\n");
+
+        // Reset per-turn state AFTER snapshot
+        pendingCorrections = [];
+        turnActivatedSkills.clear();
+        turnBufferStartIdx = messageBuffer.length;
+
+        // Fire improvement (correction-gated, async fire-and-forget)
+        if (correctionsSnapshot.length > 0 && activatedSnapshot.length > 0) {
+          for (const skillName of activatedSnapshot) {
+            if (getSkillSet(projectRoot).has(skillName)) continue;
+            // acquireImprovementToken() is now called inside improveSkillFromCorrections
+            // after the credential check, so no bucket slot is wasted on missing credentials.
+            getSkillSet(projectRoot).add(skillName);
+            improveSkillFromCorrections(skillName, correctionsSnapshot, turnSlice, projectRoot)
+              .finally(() => getSkillSet(projectRoot).delete(skillName))
+              .catch((err) => console.error("[SkillImprovement]", err));
+          }
+        }
+      }
 
       // A1: Fire review after task completion (chat_mark_processed) with delta-based gate.
       // This replaces the old per-N-tool-call modulo trigger so review fires at task boundaries.

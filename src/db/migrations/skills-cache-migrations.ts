@@ -7,6 +7,7 @@
  *
  * v1 — initial schema: skills + triggers
  * v2 — usage tracking: use_count, last_used_at, auto_generated
+ * v3 — improvement tracking: improvement_count
  */
 
 import type { Migration } from "../migrations";
@@ -46,6 +47,20 @@ export const skillsCacheMigrations: Migration[] = [
         ALTER TABLE skills ADD COLUMN last_used_at INTEGER DEFAULT NULL;
         ALTER TABLE skills ADD COLUMN auto_generated INTEGER DEFAULT 0;
       `);
+    },
+  },
+  {
+    version: 3,
+    description: "add improvement_count for skill self-improvement loop",
+    up: (db) => {
+      try {
+        db.exec("ALTER TABLE skills ADD COLUMN improvement_count INTEGER DEFAULT 0;");
+      } catch (e) {
+        if (!String(e instanceof Error ? e.message : e).includes("already has a column named")) {
+          throw e;
+        }
+        // Column already exists — safe to continue
+      }
     },
   },
 ];

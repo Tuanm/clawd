@@ -524,6 +524,36 @@ export class SkillManager {
   // Usage Tracking
   // ============================================================================
 
+  // ============================================================================
+  // Improvement Tracking
+  // ============================================================================
+
+  /**
+   * Returns improvement stats for a skill, or null if the skill doesn't exist.
+   * Used by the self-improvement loop to check caps before updating.
+   */
+  getSkillStats(name: string): { improvement_count: number; auto_generated: number; use_count: number } | null {
+    const row = this.db
+      .query("SELECT improvement_count, auto_generated, use_count FROM skills WHERE name = ?")
+      .get(name) as { improvement_count: number; auto_generated: number; use_count: number } | null;
+    if (!row) return null;
+    return {
+      improvement_count: row.improvement_count ?? 0,
+      auto_generated: row.auto_generated ?? 0,
+      use_count: row.use_count ?? 0,
+    };
+  }
+
+  /**
+   * Increments the improvement_count for a skill by 1.
+   * Direct UPDATE — does not go through indexSingleSkill to avoid side effects.
+   * Note: if this fails after a successful saveSkill(), the counter stays
+   * below cap (undercounting). Accepted: undercounting is preferable to rollback.
+   */
+  incrementImprovementCount(name: string): void {
+    this.db.run("UPDATE skills SET improvement_count = improvement_count + 1 WHERE name = ?", [name]);
+  }
+
   /** Record that a skill was used: increments use_count and sets last_used_at. */
   touchSkill(name: string): void {
     this.db.run("UPDATE skills SET use_count = use_count + 1, last_used_at = ? WHERE name = ?", [Date.now(), name]);

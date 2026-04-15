@@ -276,14 +276,25 @@ describe("containsCorrection / extractCorrections", () => {
 
   test("extractCorrections returns array of correction strings", () => {
     const msgs = [
-      { content: "don't forget to add tests" },
-      { content: "Hello world" },
-      { content: "remember to run lint" },
+      { role: "user", content: "don't forget to add tests" },
+      { role: "user", content: "Hello world" },
+      { role: "user", content: "remember to run lint" },
     ];
     const result = extractCorrections(msgs);
     expect(result).toContain("don't forget to add tests");
     expect(result).toContain("remember to run lint");
     expect(result).toHaveLength(2);
+  });
+
+  test("extractCorrections ignores non-user messages", () => {
+    const msgs = [
+      { role: "assistant", content: "don't forget to add tests" }, // correction but assistant — ignored
+      { role: "tool", content: "remember to run lint" }, // correction but tool — ignored
+      { role: "user", content: "always use bun instead of npm" }, // user — captured
+    ];
+    const result = extractCorrections(msgs);
+    expect(result).toHaveLength(1);
+    expect(result).toContain("always use bun instead of npm");
   });
 });
 
