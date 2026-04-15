@@ -1675,6 +1675,24 @@ export class WorkerLoop implements AgentWorker {
           let turnMarkProcessed = false;
           let turnStreamText = "";
 
+          // Build skill review config from runtime values — never from env-only
+          // derivation, because CLAWD_API_URL is rarely set but chatApiUrl is
+          // always available at runtime. Only CLAWD_SKILL_REVIEW_ENABLED=false
+          // acts as an explicit kill switch.
+          const skillReviewConfig: AgentConfig["skillReview"] =
+            process.env.CLAWD_SKILL_REVIEW_ENABLED !== "false"
+              ? {
+                  apiUrl: chatApiUrl,
+                  channel,
+                  projectRoot: resolvedProjectRoot,
+                  reviewInterval: parseInt(process.env.CLAWD_SKILL_REVIEW_INTERVAL ?? "20", 10),
+                  minToolCallsBeforeFirstReview: parseInt(process.env.CLAWD_SKILL_REVIEW_MIN_TOOLS ?? "10", 10),
+                  maxSkillsPerReview: parseInt(process.env.CLAWD_SKILL_REVIEW_MAX_SKILLS ?? "2", 10),
+                  reviewCooldownMs: parseInt(process.env.CLAWD_SKILL_REVIEW_COOLDOWN_MS ?? "300000", 10),
+                  reviewModel: process.env.CLAWD_SKILL_REVIEW_MODEL,
+                }
+              : undefined;
+
           const agentConfig: AgentConfig = {
             provider,
             model,
@@ -1687,6 +1705,7 @@ export class WorkerLoop implements AgentWorker {
             // Note: agentFileConfig.skills is parsed but NOT consumed here (no-op).
             // Agent file edits on disk require agent restart to take effect (clawdInstructionsCache).
             promptContext,
+            skillReview: skillReviewConfig,
             onToken: (token) => {
               turnStreamText += token;
               process.stdout.write(token);
