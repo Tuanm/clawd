@@ -22,6 +22,7 @@ import {
   postSystemMessage,
   sanitize,
 } from "../agent/plugins/skill-review-plugin";
+import { improveSkillFromCorrections, getSkillSet } from "../agent/skills/improvement";
 import { getSkillManager } from "../agent/skills/manager";
 import { initMemorySession, saveToMemory } from "./memory";
 import { TrajectoryRecorder } from "./trajectory-recorder";
@@ -112,6 +113,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private turnMarkProcessed = false;
   private turnStreamText = "";
   private turnToolsUsed = new Set<string>();
+  // Skill improvement state — per-turn tracking for correction-gated improvement
+  private turnActivatedSkills = new Set<string>();
+  private turnBufferStartIdx = 0;
+  private skillsBeingImproved = new Set<string>();
   // Skill review state — cumulative across turns within a session
   private sessionToolCallCount = 0;
   private skillReviewBuffer: Array<{ role: string; content: string; toolName?: string; ts: number }> = [];
@@ -231,6 +236,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // an old loop (e.g. after provider change + restart) blocking message polling.
     this.sleeping = false;
     this.userSleeping = false;
+    // Reset skill improvement in-flight state on restart so skills aren't
+    // permanently locked if the worker crashed mid-improvement.
+    this.turnActivatedSkills = new Set();
+    this.turnBufferStartIdx = 0;
+    this.skillsBeingImproved = new Set();
+    getSkillSet(this.config.projectRoot).clear();
     try {
       this.restoreSessionId();
       this.memorySessionId = initMemorySession(this.memorySessionName, this.config.model);
@@ -652,6 +663,17 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       this.turnMarkProcessed = true;
     }
 
+    // NOTE: improvement cannot trigger from CC path until beforeCompaction hook is
+    // wired into the SDK — pendingCorrections is never populated here.
+    // Capture skill_activate calls for future use when corrections become available.
+    if (toolName === "skill_activate" || toolName === "mcp__clawd__skill_activate") {
+      const ok = !(response as any)?.error && !truncateToolResult(response).includes("not found");
+      const skillName = (toolInput as any)?.name;
+      if (ok && typeof skillName === "string" && skillName.length > 0) {
+        this.turnActivatedSkills.add(skillName);
+      }
+    }
+
     this.turnToolsUsed.add(toolName);
 
     // Feed skill review buffer — strip mcp__clawd__ prefix for readability
@@ -965,6 +987,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           .join("\n");
         if (userText) this.trajectoryRecorder.recordUserMessage(sanitize(userText));
       }
+
+      // Reset per-turn improvement state AFTER the user-message buffer loop so this
+      // turn's user messages are included in the slice for improvement context.
+      this.turnActivatedSkills = new Set();
+      this.turnBufferStartIdx = this.skillReviewBuffer.length;
     }
 
     this.abortController = new AbortController();
@@ -1300,6 +1327,14 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         this.trajectoryRecorder.commitTurn();
       } else if (!this.turnMarkProcessed && this.trajectoryRecorder) {
         this.trajectoryRecorder.abortTurn();
+      }
+
+      // NOTE: improvement cannot trigger from CC path until beforeCompaction hook is
+      // wired into the SDK — pendingCorrections is never populated here.
+      // This block captures skill activations for future use when corrections are available.
+      if (this.turnMarkProcessed && this.turnActivatedSkills.size > 0) {
+        // CC path: no corrections available — skip improvement for now
+        this.turnActivatedSkills = new Set();
       }
     } catch (err) {
       // Ensure the trajectory recorder does not carry stale pending state across turns
