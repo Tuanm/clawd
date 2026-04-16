@@ -3412,6 +3412,7 @@ body {
   padding: 12px 20px 8px;
   background: var(--bg-main);
   position: relative;
+  zoom: 0.85;
 }
 
 .composer-wrapper.dragging {
