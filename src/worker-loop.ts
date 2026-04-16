@@ -1679,6 +1679,8 @@ export class WorkerLoop implements AgentWorker {
           // derivation, because CLAWD_API_URL is rarely set but chatApiUrl is
           // always available at runtime. Only CLAWD_SKILL_REVIEW_ENABLED=false
           // acts as an explicit kill switch.
+          const _memCfg = loadConfigFile().memory;
+          const _memModel = typeof _memCfg === "object" && _memCfg?.model ? _memCfg.model : undefined;
           const skillReviewConfig: AgentConfig["skillReview"] =
             process.env.CLAWD_SKILL_REVIEW_ENABLED !== "false"
               ? {
@@ -1689,7 +1691,7 @@ export class WorkerLoop implements AgentWorker {
                   minToolCallsBeforeFirstReview: parseInt(process.env.CLAWD_SKILL_REVIEW_MIN_TOOLS ?? "10", 10),
                   maxSkillsPerReview: parseInt(process.env.CLAWD_SKILL_REVIEW_MAX_SKILLS ?? "2", 10),
                   reviewCooldownMs: parseInt(process.env.CLAWD_SKILL_REVIEW_COOLDOWN_MS ?? "300000", 10),
-                  reviewModel: process.env.CLAWD_SKILL_REVIEW_MODEL,
+                  reviewModel: _memModel,
                 }
               : undefined;
 
