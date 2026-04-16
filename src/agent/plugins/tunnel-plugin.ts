@@ -12,8 +12,8 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
 import type { ToolResult } from "../tools/definitions";
+import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
 
 // ============================================================================
 // Types

@@ -24,11 +24,11 @@ import { formatToolResult, parseToolArguments } from "./core/loop";
 import { destroyHooks, initializeHooks } from "./hooks/manager";
 import { MCPManager } from "./mcp/client";
 import { estimateMessagesTokens, estimateTokens } from "./memory/memory";
+import { resolveIterationModel, resolveModel } from "./model-selection";
+import { tryRegisterBrowserPlugin, tryRegisterCustomToolPlugin, tryRegisterTunnelPlugin } from "./plugin-guards";
 import { type ContextModePluginResult, createContextModePlugin } from "./plugins/context-mode-plugin";
 import { type Plugin, PluginManager } from "./plugins/manager";
 import { createStatePersistencePlugin } from "./plugins/state-persistence-plugin";
-import { resolveModel, resolveIterationModel } from "./model-selection";
-import { tryRegisterTunnelPlugin, tryRegisterCustomToolPlugin, tryRegisterBrowserPlugin } from "./plugin-guards";
 import { buildDynamicSystemPrompt, type PromptContext } from "./prompt/builder";
 import { type Checkpoint, CheckpointManager } from "./session/checkpoint";
 import { getSessionManager, type Session, type SessionManager } from "./session/manager";
@@ -40,8 +40,8 @@ import {
   scoreMessages,
 } from "./session/message-scoring";
 import { getSkillManager } from "./skills/manager";
-import { type ToolPlugin, ToolPluginManager } from "./tools/plugin";
 import { executeTools, getSandboxProjectRoot, type ToolResult, toolDefinitions } from "./tools/definitions";
+import { type ToolPlugin, ToolPluginManager } from "./tools/plugin";
 import { getAgentContext, getContextProjectRoot, setAgentSessionId } from "./utils/agent-context";
 import { ContextTracker } from "./utils/context-tracker";
 import { isDebugEnabled } from "./utils/debug";

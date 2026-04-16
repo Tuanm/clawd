@@ -5,17 +5,16 @@
  * Contains only the main handleMcpRequest entry point.
  */
 
+// Re-export handlers (used by index.ts route dispatch)
+export { handleAgentMcpRequest } from "./mcp/agent-handler";
 // Re-export shared state & setters (used by index.ts, scheduler, spaces)
 export {
   setMcpScheduler,
   setMcpWorkerManager,
-  spaceCompleteCallbacks,
   spaceAuthTokens,
+  spaceCompleteCallbacks,
   spaceProjectRoots,
 } from "./mcp/shared";
-
-// Re-export handlers (used by index.ts route dispatch)
-export { handleAgentMcpRequest } from "./mcp/agent-handler";
 export { handleSpaceMcpRequest } from "./mcp/space-handler";
 
 // Submodule imports for this file's handleMcpRequest

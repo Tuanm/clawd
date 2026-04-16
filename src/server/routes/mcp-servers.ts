@@ -5,6 +5,7 @@
  * Follows the same pattern as agents.ts.
  */
 
+import { convertCCFormatToInternal, validateServerConfig } from "../../agent/api/mcp-validation";
 import {
   getChannelMCPServers,
   removeChannelMCPServer as removeFromConfig,
@@ -14,10 +15,9 @@ import {
 import type { CCMcpServerConfig, MCPServerConfig } from "../../agent/api/providers";
 import { getCatalogEntry, listCategories, resolveArgs, searchCatalog } from "../../agent/mcp/catalog";
 import { COPILOT_LOGO, isCopilotEnabled, setCopilotEnabled } from "../../agent/plugins/copilot-analytics-plugin";
-import { discoverOAuthMetadata, loadOAuthToken, removeOAuthToken, startOAuthFlow } from "../mcp/oauth";
-import { convertCCFormatToInternal, validateServerConfig } from "../../agent/api/mcp-validation";
 import type { WorkerManager } from "../../worker-manager";
 import { json } from "../http-helpers";
+import { discoverOAuthMetadata, loadOAuthToken, removeOAuthToken, startOAuthFlow } from "../mcp/oauth";
 
 /** Resolve public-facing origin, respecting reverse proxy headers.
  *  Non-local hosts always use https (proxies may forward x-forwarded-proto: http

@@ -20,12 +20,6 @@ import { clearConfigCache as clearProviderConfigCache, ensureKeyPoolInitialized 
 import { applyTokenLimitOverrides } from "./agent/constants/context-limits";
 import { getSessionManager } from "./agent/session/manager";
 import { setDebug } from "./agent/utils/debug";
-// Now import modules (database will initialize)
-import { registerAgentRoutes } from "./server/routes/agents";
-import { registerArticleRoutes } from "./server/routes/articles";
-import { getPublicOrigin, registerMcpServerRoutes } from "./server/routes/mcp-servers";
-import { registerSchedulerRoutes } from "./server/routes/scheduler";
-import { registerWorktreeRoutes } from "./server/routes/worktree";
 import { loadConfig, validateConfig } from "./config/config";
 import {
   getDataDir,
@@ -39,10 +33,16 @@ import {
 } from "./config/config-file";
 import { extensionZipSize, getExtensionZip } from "./embedded/extension";
 import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbeddedUI } from "./embedded/ui";
-import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./server/mcp/oauth";
 import { upgradeBrowserWs } from "./server/browser-bridge";
-import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import { corsHeaders, json, numParam, parseBody } from "./server/http-helpers";
+import { escapeHtml, exchangeOAuthCode, saveOAuthToken, validateOAuthState } from "./server/mcp/oauth";
+import { upgradeRemoteWorkerWs } from "./server/remote-worker";
+// Now import modules (database will initialize)
+import { registerAgentRoutes } from "./server/routes/agents";
+import { registerArticleRoutes } from "./server/routes/articles";
+import { getPublicOrigin, registerMcpServerRoutes } from "./server/routes/mcp-servers";
+import { registerSchedulerRoutes } from "./server/routes/scheduler";
+import { registerWorktreeRoutes } from "./server/routes/worktree";
 import { validateBody } from "./server/validate";
 import { postToChannel } from "./utils/api-client";
 import { createLogger, setLogLevel } from "./utils/logger";
@@ -491,7 +491,7 @@ async function handleBrowserFileRequest(req: Request, url: URL, path: string): P
 // ============================================================================
 // Auth helpers — delegated to middleware.ts (single source of truth)
 // ============================================================================
-import { extractToken, extractWsToken, isInternalToken, handleAuthChannel, validateApiKey } from "./server/middleware";
+import { extractToken, extractWsToken, handleAuthChannel, isInternalToken, validateApiKey } from "./server/middleware";
 
 // ============================================================================
 // Server

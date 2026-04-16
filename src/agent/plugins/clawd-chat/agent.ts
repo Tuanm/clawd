@@ -10,8 +10,8 @@
  */
 
 import { timedFetch as _timedFetch } from "../../../utils/timed-fetch";
-import type { ToolPlugin, ToolRegistration } from "../../tools/plugin";
 import { setChatApiUrl, setCurrentAgentId, setCurrentChannel } from "../../tools/definitions";
+import type { ToolPlugin, ToolRegistration } from "../../tools/plugin";
 import { getContextProjectRoot } from "../../utils/agent-context";
 import type { Plugin, PluginContext } from "../manager";
 

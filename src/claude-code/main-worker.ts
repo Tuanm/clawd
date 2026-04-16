@@ -12,23 +12,18 @@ import { join } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "../agent/agents/loader";
 import { type AgentMemory, extractKeywords, getAgentMemoryStore } from "../agent/memory/agent-memory";
-import { buildDynamicSystemPrompt, type PromptContext } from "../agent/prompt/builder";
-import { buildContextPreamble } from "../agent/session/context-injector";
-import { getSessionManager } from "../agent/session/manager";
-import { generateConversationSummary } from "../agent/session/summarizer";
 import {
   buildSkillReviewPrompt,
   parseSkillRecommendations,
   postSystemMessage,
   sanitize,
 } from "../agent/plugins/skill-review-plugin";
-import { improveSkillFromCorrections, getSkillSet } from "../agent/skills/improvement";
+import { buildDynamicSystemPrompt, type PromptContext } from "../agent/prompt/builder";
+import { buildContextPreamble } from "../agent/session/context-injector";
+import { getSessionManager } from "../agent/session/manager";
+import { generateConversationSummary } from "../agent/session/summarizer";
+import { getSkillSet, improveSkillFromCorrections } from "../agent/skills/improvement";
 import { getSkillManager } from "../agent/skills/manager";
-import { initMemorySession, saveToMemory } from "./memory";
-import { TrajectoryRecorder } from "./trajectory-recorder";
-import { runSDKQuery } from "./sdk";
-import { formatToolDescription, truncateToolResult } from "./utils";
-
 import { db, getAgent, markMessagesSeen, setAgentStreaming } from "../server/database";
 import { getPendingMessages } from "../server/routes/messages";
 import {
@@ -38,8 +33,13 @@ import {
   broadcastMessageSeen,
   broadcastUpdate,
 } from "../server/websocket";
-import type { AgentHealthSnapshot, AgentWorker } from "../worker-loop";
 import { createLogger } from "../utils/logger";
+import type { AgentHealthSnapshot, AgentWorker } from "../worker-loop";
+import { initMemorySession, saveToMemory } from "./memory";
+import { runSDKQuery } from "./sdk";
+import { extractSubject } from "./tool-subject";
+import { TrajectoryRecorder } from "./trajectory-recorder";
+import { formatToolDescription, truncateToolResult } from "./utils";
 
 const logger = createLogger("claude-code-main");
 
@@ -112,7 +112,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private turnChatSent = false;
   private turnMarkProcessed = false;
   private turnStreamText = "";
-  private turnToolsUsed = new Set<string>();
+  // Per-tool log for [Actions taken] — ordered, includes primary subject argument
+  private turnToolLog: Array<{ name: string; subject: string }> = [];
   // Skill improvement state — per-turn tracking for correction-gated improvement
   private turnActivatedSkills = new Set<string>();
   private turnBufferStartIdx = 0;
@@ -674,21 +675,23 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       }
     }
 
-    this.turnToolsUsed.add(toolName);
+    const shortName = toolName.replace(/^mcp__clawd__/, "");
+    if (!CONVERSATION_TOOLS.has(shortName) && this.turnToolLog.length < 50) {
+      this.turnToolLog.push({ name: shortName, subject: extractSubject(shortName, toolInput) });
+    }
 
     // Feed skill review buffer — strip mcp__clawd__ prefix for readability
     this.sessionToolCallCount++;
-    const shortName = toolName.replace(/^mcp__clawd__/, "");
     this.addToSkillReviewBuffer({
       role: "tool",
       content: sanitize(truncateToolResult(response).slice(0, 200)),
       toolName: shortName,
     });
     this.maybeRunSkillReview();
-    if (this.trajectoryRecorder && !CONVERSATION_TOOLS.has(toolName.replace(/^mcp__clawd__/, ""))) {
+    if (this.trajectoryRecorder && !CONVERSATION_TOOLS.has(shortName)) {
       const trResult = sanitize(truncateToolResult(response).slice(0, 2000));
       const trSuccess = !(response as any)?.error && !(response as any)?.isError && !trResult.startsWith("Error:");
-      this.trajectoryRecorder.recordToolCall(toolName.replace(/^mcp__clawd__/, ""), toolInput, trResult, trSuccess);
+      this.trajectoryRecorder.recordToolCall(shortName, toolInput, trResult, trSuccess);
     }
 
     broadcastAgentToolCall(channel, agentId, toolName, input, "started");
@@ -1140,7 +1143,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     this.turnChatSent = false;
     this.turnMarkProcessed = false;
     this.turnStreamText = "";
-    this.turnToolsUsed = new Set();
+    this.turnToolLog = [];
 
     // contextPreamble was computed above (before saveToMemory) to exclude the
     // current message from the injected history.
@@ -1314,13 +1317,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // Save a tool-activity summary for turns where the agent used tools but
       // never called chat_send_message. Without this, tool-only turns leave no
       // trace in the preamble — the agent's work becomes invisible in context.
-      if (!this.turnChatSent && this.memorySessionId) {
-        const tools = [...this.turnToolsUsed]
-          .map((t) => t.replace(/^mcp__clawd__/, ""))
-          .filter((t) => !CONVERSATION_TOOLS.has(t));
-        if (tools.length > 0) {
-          saveToMemory(this.memorySessionId, "assistant", `[Actions taken]: ${tools.join(", ")}`);
-        }
+      // Format: "file_view(src/auth.ts), bash("bun test"), file_edit(src/auth.ts)"
+      // so the agent knows WHAT it operated on, not just which tool types it used.
+      if (!this.turnChatSent && this.memorySessionId && this.turnToolLog.length > 0) {
+        const summary = this.turnToolLog.map((e) => (e.subject ? `${e.name}(${e.subject})` : e.name)).join(", ");
+        saveToMemory(this.memorySessionId, "assistant", `[Actions taken]: ${summary}`);
       }
 
       if (this.turnMarkProcessed && this.trajectoryRecorder) {

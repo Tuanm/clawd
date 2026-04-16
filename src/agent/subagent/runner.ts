@@ -21,7 +21,7 @@ import {
   type ToolExecutor,
 } from "../core/loop";
 import { executeTool, toolDefinitions } from "../tools/definitions";
-import { type PluginContext, SubAgentPluginManager, type SubAgentPlugin, type ToolResultInfo } from "./plugin";
+import { type PluginContext, type SubAgentPlugin, SubAgentPluginManager, type ToolResultInfo } from "./plugin";
 
 // ============================================================================
 // Types

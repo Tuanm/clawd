@@ -34,6 +34,7 @@ mock.module("../../database", () => {
 });
 
 import { mock } from "bun:test";
+
 const { handleTrajectoriesRequest } = await import("../trajectories");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

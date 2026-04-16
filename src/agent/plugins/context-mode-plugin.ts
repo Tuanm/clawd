@@ -7,8 +7,8 @@
  */
 
 import { KnowledgeBase } from "../memory/knowledge-base";
-import type { ToolContext, ToolPlugin, ToolRegistration } from "../tools/plugin";
 import type { ToolResult } from "../tools/definitions";
+import type { ToolContext, ToolPlugin, ToolRegistration } from "../tools/plugin";
 import { type CompressResult, compressToolOutput, getToolCap } from "../utils/output-compressor";
 import type { Plugin, PluginHooks } from "./manager";
 

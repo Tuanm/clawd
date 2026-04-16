@@ -1,23 +1,24 @@
 /**
  * Shared modules used across agent and server layers.
  */
-export {
-  trackCopilotCall,
-  trackSuccess,
-  trackFailure,
-  queryCalls,
-  queryCallsCount,
-  querySummary,
-  queryKeyStats,
-  queryModelStats,
-  queryKeyHistory,
-  queryRecentStats,
-} from "./analytics";
+
 export type {
-  CopilotCallRecord,
   CallsQueryOptions,
-  SummaryRow,
+  CopilotCallRecord,
+  KeyHistoryRow,
   KeyStatsRow,
   ModelStatsRow,
-  KeyHistoryRow,
+  SummaryRow,
+} from "./analytics";
+export {
+  queryCalls,
+  queryCallsCount,
+  queryKeyHistory,
+  queryKeyStats,
+  queryModelStats,
+  queryRecentStats,
+  querySummary,
+  trackCopilotCall,
+  trackFailure,
+  trackSuccess,
 } from "./analytics";

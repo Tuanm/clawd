@@ -17,8 +17,8 @@ import {
 } from "../memory/agent-memory";
 import type { WikiArticle, WikiTOCEntry } from "../memory/wiki-compiler";
 import { WikiCompiler } from "../memory/wiki-compiler";
-import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
 import type { ToolResult } from "../tools/definitions";
+import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
 import type { Plugin, PluginContext, PluginHooks } from "./manager";
 
 // ── Config ─────────────────────────────────────────────────────────

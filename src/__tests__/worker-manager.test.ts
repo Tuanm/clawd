@@ -118,8 +118,8 @@ mock.module("../spaces/worker", () => ({}));
 
 // ── Imports (after mocks) ─────────────────────────────────────────────────────
 
-import { WorkerManager, type AgentConfig } from "../worker-manager";
 import type { AppConfig } from "../config/config";
+import { type AgentConfig, WorkerManager } from "../worker-manager";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

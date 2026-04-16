@@ -7,7 +7,7 @@
  * Uses bun:test.
  */
 
-import { describe, expect, test, beforeEach, mock } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 // --- Mock db functions ---
 
