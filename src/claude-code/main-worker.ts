@@ -14,6 +14,7 @@ import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgent
 import { type AgentMemory, extractKeywords, getAgentMemoryStore } from "../agent/memory/agent-memory";
 import {
   buildSkillReviewPrompt,
+  containsCorrection,
   parseSkillRecommendations,
   postSystemMessage,
   sanitize,
@@ -118,6 +119,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private turnActivatedSkills = new Set<string>();
   private turnBufferStartIdx = 0;
   private skillsBeingImproved = new Set<string>();
+  private pendingCorrections: string[] = [];
   // Skill review state — cumulative across turns within a session
   private sessionToolCallCount = 0;
   private skillReviewBuffer: Array<{ role: string; content: string; toolName?: string; ts: number }> = [];
@@ -665,9 +667,37 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       this.turnMarkProcessed = true;
     }
 
-    // NOTE: improvement cannot trigger from CC path until beforeCompaction hook is
-    // wired into the SDK — pendingCorrections is never populated here.
-    // Capture skill_activate calls for future use when corrections become available.
+    // Fire skill improvement at task completion when corrections were captured this turn.
+    // CC captures corrections from incoming user messages (non-CC uses beforeCompaction hook).
+    if (
+      (toolName === "chat_mark_processed" || toolName === "mcp__clawd__chat_mark_processed") &&
+      !(response as any)?.error
+    ) {
+      const correctionsSnapshot = [...this.pendingCorrections];
+      const activatedSnapshot = [...this.turnActivatedSkills];
+      this.pendingCorrections = [];
+      this.turnActivatedSkills = new Set();
+      this.turnBufferStartIdx = this.skillReviewBuffer.length;
+
+      if (correctionsSnapshot.length > 0 && activatedSnapshot.length > 0) {
+        const { projectRoot } = this.config;
+        const MAX_TURN_SLICE = 8_000;
+        const rawSlice = this.skillReviewBuffer
+          .slice(this.turnBufferStartIdx)
+          .map((e) => `[${e.role}] ${e.content}`)
+          .join("\n");
+        const turnSlice =
+          rawSlice.length > MAX_TURN_SLICE ? rawSlice.slice(0, MAX_TURN_SLICE) + " [truncated]" : rawSlice;
+        for (const skillName of activatedSnapshot) {
+          if (this.skillsBeingImproved.has(skillName)) continue;
+          this.skillsBeingImproved.add(skillName);
+          improveSkillFromCorrections(skillName, correctionsSnapshot, turnSlice, projectRoot)
+            .finally(() => this.skillsBeingImproved.delete(skillName))
+            .catch((err) => console.error("[SkillImprovement] CC path:", err));
+        }
+      }
+    }
+
     if (toolName === "skill_activate" || toolName === "mcp__clawd__skill_activate") {
       const ok = !(response as any)?.error && !truncateToolResult(response).includes("not found");
       const skillName = (toolInput as any)?.name;
@@ -990,6 +1020,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         if (!text) continue;
         const sender = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
         this.addToSkillReviewBuffer({ role: "user", content: `[${sender}]: ${sanitize(text.slice(0, 500))}` });
+        // Capture user corrections for skill improvement (mirrors non-CC beforeCompaction path)
+        if (msg.user === "UHUMAN" && containsCorrection(text)) {
+          this.pendingCorrections.push(text.slice(0, 500));
+          if (this.pendingCorrections.length > 100) this.pendingCorrections = this.pendingCorrections.slice(-100);
+        }
       }
       if (this.trajectoryRecorder) {
         const userText = messages
