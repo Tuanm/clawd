@@ -1,13 +1,15 @@
 /**
  * Migrations for chat.db
  *
- * ⚠️  Version numbering: chat-migrations uses versions 1–49.
- * agents-migrations.ts (also applied to chat.db) uses versions 50–99.
- * Keep this range in sync when adding new migrations to either file.
+ * ⚠️  Version numbering: chat-migrations uses versions 1–49 and 51+.
+ * agents-migrations.ts (also applied to chat.db) uses versions 50–50.
+ * Both share PRAGMA user_version on chat.db — never reuse a version number.
  *
- * v1 — initial schema: users, channels, messages, files, agent_seen, summaries,
- *       agent_status, agents, message_seen, articles, copilot_calls,
- *       artifact_actions, spaces (consolidated from initDatabase() in database.ts)
+ * v1  — initial schema: users, channels, messages, files, agent_seen, summaries,
+ *        agent_status, agents, message_seen, articles, copilot_calls,
+ *        artifact_actions, spaces (consolidated from initDatabase() in database.ts)
+ * v51 — trajectories table for RL training data (skipped v2 because existing DBs
+ *        had user_version=50 from agents-migrations, which would skip v2)
  */
 
 import type { Migration } from "../migrations";
@@ -215,7 +217,7 @@ export const chatMigrations: Migration[] = [
     },
   },
   {
-    version: 2,
+    version: 51,
     description: "trajectories table for RL training data",
     up: (db) => {
       db.exec(`
