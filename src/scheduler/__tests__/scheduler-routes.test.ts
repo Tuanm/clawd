@@ -7,7 +7,7 @@
  * Uses bun:test; no vitest imports.
  */
 
-import { describe, expect, test, beforeEach, mock } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 // Mock the db imports used by the routes file
 mock.module("../../scheduler/db", () => ({

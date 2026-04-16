@@ -14,8 +14,8 @@
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
 import type { ToolResult } from "../tools/definitions";
+import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
 
 export class BrowserPlugin implements ToolPlugin {
   readonly name = "browser";

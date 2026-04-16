@@ -1,7 +1,8 @@
 /**
  * Claude Code integration — SDK interaction, memory, tmux monitoring, utilities.
  */
-export { runSDKQuery } from "./sdk";
+
 export { initMemorySession, saveToMemory } from "./memory";
-export { startTmuxMonitor, stopTmuxMonitor, cleanupStaleTmuxSessions, type TmuxMonitor } from "./tmux";
-export { hasTmux, truncateToolResult, formatToolDescription } from "./utils";
+export { runSDKQuery } from "./sdk";
+export { cleanupStaleTmuxSessions, startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "./tmux";
+export { formatToolDescription, hasTmux, truncateToolResult } from "./utils";

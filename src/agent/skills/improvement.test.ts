@@ -4,16 +4,16 @@
  * All tests are pure — no LLM calls, no filesystem writes beyond temp dirs.
  */
 
-import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  acquireImprovementToken,
   _resetTokenBucket,
-  bumpPatch,
+  acquireImprovementToken,
   buildImprovementPrompt,
+  bumpPatch,
   getSkillSet,
   isEditable,
   MAX_IMPROVEMENTS_PER_SKILL,

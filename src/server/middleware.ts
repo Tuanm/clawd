@@ -10,8 +10,8 @@
  */
 
 import { timingSafeEqual } from "node:crypto";
-import { INTERNAL_SERVICE_TOKEN } from "../internal-token";
 import { hasGlobalAuth, isChannelAuthRequired, validateApiToken } from "../config/config-file";
+import { INTERNAL_SERVICE_TOKEN } from "../internal-token";
 import { corsHeaders, json, parseBody } from "./http-helpers";
 
 /** Cached OPTIONS pre-flight response (CORS) */

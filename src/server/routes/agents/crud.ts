@@ -34,9 +34,9 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   statSync,
   unlinkSync,
@@ -52,14 +52,14 @@ import {
   loadAgentFile,
 } from "../../../agent/agents/loader";
 import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../../../agent/api/provider-config";
+import { SessionManager } from "../../../agent/session/manager";
 import { getSkillManager } from "../../../agent/skills/manager";
 import { isWorktreeEnabled, loadConfigFile } from "../../../config/config-file";
 import { runMigrations } from "../../../db/migrations";
 import { agentsMigrations } from "../../../db/migrations/agents-migrations";
-import { broadcastUpdate } from "../../websocket";
-import { SessionManager } from "../../../agent/session/manager";
 import type { WorkerManager } from "../../../worker-manager";
 import { extractToken, isInternalToken } from "../../middleware";
+import { broadcastUpdate } from "../../websocket";
 
 // ============================================================================
 // Security: Sensitive file patterns (blocked from reading)

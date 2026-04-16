@@ -10,6 +10,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadAgentFile } from "./agent/agents/loader";
+import { validateServerConfig } from "./agent/api/mcp-validation";
 import {
   getAllChannelMCPServers,
   getChannelMCPServers,
@@ -30,10 +31,9 @@ import {
 import type { AppConfig } from "./config/config";
 import { isWorktreeEnabled } from "./config/config-file";
 import { INTERNAL_SERVICE_TOKEN } from "./internal-token";
-import { loadOAuthToken, loadOrRefreshOAuthToken } from "./server/mcp/oauth";
-import { validateServerConfig } from "./agent/api/mcp-validation";
 import type { SchedulerManager } from "./scheduler/manager";
 import { db, setAgentStreaming } from "./server/database";
+import { loadOAuthToken, loadOrRefreshOAuthToken } from "./server/mcp/oauth";
 import { broadcastUpdate } from "./server/websocket";
 import { setAgentMcpInfra } from "./spaces/agent-mcp-tools";
 import { getSpaceByChannel } from "./spaces/db";

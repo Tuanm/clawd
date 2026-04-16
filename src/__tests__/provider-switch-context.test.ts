@@ -9,8 +9,8 @@
  * claude_code_session_id (backend-specific) is cleared.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 // ── Test Database Setup ──────────────────────────────────────────────────────
 

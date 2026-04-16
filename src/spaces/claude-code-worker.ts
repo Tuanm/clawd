@@ -6,17 +6,17 @@
  */
 
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import { countCustomScripts } from "../agent/plugins/custom-tool-plugin";
-import { initMemorySession, saveToMemory } from "../claude-code/memory";
-import { runSDKQuery } from "../claude-code/sdk";
-import { startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "../claude-code/tmux";
-import { formatToolDescription, hasTmux, truncateToolResult } from "../claude-code/utils";
 import {
   DEFAULT_API_PORT,
   HEALTH_CHECK_INTERVAL_MS,
   MAX_CONTEXT_LENGTH,
   RETRY_BACKOFF_MS,
 } from "../agent/constants/spaces";
+import { countCustomScripts } from "../agent/plugins/custom-tool-plugin";
+import { initMemorySession, saveToMemory } from "../claude-code/memory";
+import { runSDKQuery } from "../claude-code/sdk";
+import { startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "../claude-code/tmux";
+import { formatToolDescription, hasTmux, truncateToolResult } from "../claude-code/utils";
 
 import { setAgentStreaming } from "../server/database";
 import { spaceProjectRoots } from "../server/mcp";

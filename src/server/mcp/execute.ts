@@ -20,8 +20,8 @@ import { analyzeImage, analyzeVideo, editImage, generateImage, getImageQuotaStat
 import { getOptimizedFile } from "../routes/files";
 import { getConversationHistory, getPendingMessages, postMessage } from "../routes/messages";
 import { broadcastMessage, broadcastMessageSeen, broadcastUpdate } from "../websocket";
-import { _scheduler } from "./shared";
 import { truncateForAgent } from "./protocol";
+import { _scheduler } from "./shared";
 
 export async function executeToolCall(
   name: string,

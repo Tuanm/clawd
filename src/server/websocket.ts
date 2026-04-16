@@ -8,10 +8,10 @@ import {
 } from "./browser-bridge";
 import { getAgent, getMessageSeenBy, type Message, type SlackMessage, toSlackMessage } from "./database";
 import {
-  type RemoteWorkerWsData,
   handleRemoteWorkerWsClose,
   handleRemoteWorkerWsMessage,
   handleRemoteWorkerWsOpen,
+  type RemoteWorkerWsData,
 } from "./remote-worker";
 
 /** Chat WebSocket data (regular connections) */

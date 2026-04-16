@@ -5,12 +5,12 @@
  * and recommend/auto-create skills after N tool iterations.
  */
 
-import { spawnAgent } from "../subagent/runner";
-import type { Plugin, PluginContext, PluginHooks } from "./manager";
-import { getSkillManager } from "../skills/manager";
-import { getContextConfigRoot } from "../utils/agent-context";
-import { registerSkillReviewTrigger, unregisterSkillReviewTrigger } from "../tools/chat-tools";
 import { getSkillSet, improveSkillFromCorrections } from "../skills/improvement";
+import { getSkillManager } from "../skills/manager";
+import { spawnAgent } from "../subagent/runner";
+import { registerSkillReviewTrigger, unregisterSkillReviewTrigger } from "../tools/chat-tools";
+import { getContextConfigRoot } from "../utils/agent-context";
+import type { Plugin, PluginContext, PluginHooks } from "./manager";
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -158,7 +158,7 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
   let lastCheckpointSnapshot: string | null = null;
 
   // Per-turn improvement state (reset at chat_mark_processed success gate)
-  let turnActivatedSkills = new Set<string>();
+  const turnActivatedSkills = new Set<string>();
   let turnBufferStartIdx = 0;
 
   // Capture projectRoot in closure for use throughout plugin lifecycle.

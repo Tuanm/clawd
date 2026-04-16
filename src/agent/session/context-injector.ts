@@ -135,7 +135,7 @@ function expandMessage(
       const line = raw.trim();
       if (!line) continue;
       // Detect "sender: text" lines (no timestamp brackets)
-      const senderMatch = /^([a-zA-Z0-9_\-]+):\s+(.+)$/.exec(line);
+      const senderMatch = /^([a-zA-Z0-9_-]+):\s+(.+)$/.exec(line);
       if (senderMatch) {
         const [, sender, text] = senderMatch;
         // Normalize to lowercase so wakeup labels match regular channel labels
