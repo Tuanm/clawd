@@ -577,6 +577,23 @@ export async function executeAgentToolCall(
       }
       _spaceManager.failSpace(id, reason);
 
+      // Use space.agent_id (the human-readable subAgentId) not the raw space UUID
+      // so avatar/name lookup resolves correctly in the UI.
+      const stoppedSpace = _spaceManager.getSpace(id);
+      const stopAgentId = stoppedSpace?.agent_id ?? id;
+      const { timedFetch: stopFetch } = await import("../utils/timed-fetch");
+      stopFetch(`${_chatApiUrl}/api/chat.postMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel,
+          text: `Sub-agent stopped: ${reason}`,
+          user: stopAgentId,
+          agent_id: stopAgentId,
+          subtype: "agent_report",
+        }),
+      }).catch((err: unknown) => console.error("[AgentMcpTools] chat.postMessage (stop_agent) failed:", err));
+
       return textResult(JSON.stringify({ ok: true, status: "stopped", reason }));
     }
 

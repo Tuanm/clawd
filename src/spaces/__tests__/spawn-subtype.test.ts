@@ -6,15 +6,17 @@
  * bodies posted to the parent channel.
  *
  * Call sites covered:
- *   - plugin.ts complete_task handler     → agent_report (direct call, easiest)
- *   - spawn-helper.ts completion          → agent_report  (comment-documented)
- *   - spawn-helper.ts abort/timeout       → agent_report  (comment-documented)
- *   - spawn-plugin.ts retask complete     → agent_report  (comment-documented)
- *   - spawn-plugin.ts retask abort        → agent_report  (comment-documented)
- *   - agent-mcp-tools.ts timeout          → agent_report  (comment-documented)
- *   - agent-mcp-tools.ts complete         → agent_report  (comment-documented)
- *   - agent-mcp-tools.ts failed/error     → agent_report  (comment-documented)
- *   - spawn-helper.ts subspace card       → subspace (NOT agent_report)
+ *   - plugin.ts complete_task handler     → agent_report (TESTED)
+ *   - plugin.ts idempotent completion     → agent_report (TESTED — lock guard)
+ *   - spawn-helper.ts abort/timeout       → agent_report (TESTED)
+ *   - spawn-helper.ts subspace card       → subspace (NOT agent_report) (TESTED)
+ *
+ * Call sites documented but NOT YET TESTED (integration-level, require heavy mocks):
+ *   - spawn-helper.ts CC completion success path (spaceCompleteCallbacks)
+ *   - spawn-helper.ts CC exit-without-complete / CC error
+ *   - spawn-plugin.ts stop_agent
+ *   - spawn-plugin.ts retask complete / retask abort
+ *   - agent-mcp-tools.ts timeout / complete / failed / stop_agent
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";

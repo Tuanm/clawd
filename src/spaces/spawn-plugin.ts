@@ -286,6 +286,23 @@ export function createSpawnAgentPlugin(
               tracked.error = reason;
             }
 
+            // Notify channel so parent agent sees the stop report.
+            // Use space.agent_id (the human-readable subAgentId like "name-abc123") not
+            // the raw space UUID — so avatar/name lookup resolves correctly in the UI.
+            const stoppedSpace = spaceManager.getSpace(id);
+            const stopAgentId = stoppedSpace?.agent_id ?? id;
+            timedFetch(`${config.apiUrl}/api/chat.postMessage`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                channel: config.channel,
+                text: `Sub-agent '${agentName}' stopped: ${reason}`,
+                user: stopAgentId,
+                agent_id: stopAgentId,
+                subtype: "agent_report",
+              }),
+            }).catch((err) => console.error("[SpawnPlugin] chat.postMessage (stop_agent) failed:", err));
+
             return {
               success: true,
               output: JSON.stringify({

@@ -122,6 +122,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private sessionToolCallCount = 0;
   private skillReviewBuffer: Array<{ role: string; content: string; toolName?: string; ts: number }> = [];
   private skillReviewLastAt = 0;
+  private skillReviewLastToolCount = 0;
   private skillReviewInProgress = false;
   // Cached skill review config — built once from runtime values (avoids re-reading env on every tool call)
   private _srConfig:
@@ -676,8 +677,13 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
 
     const shortName = toolName.replace(/^mcp__clawd__/, "");
-    if (!CONVERSATION_TOOLS.has(shortName) && this.turnToolLog.length < 50) {
-      this.turnToolLog.push({ name: shortName, subject: extractSubject(shortName, toolInput) });
+    if (!CONVERSATION_TOOLS.has(shortName)) {
+      if (this.turnToolLog.length < 50) {
+        this.turnToolLog.push({ name: shortName, subject: extractSubject(shortName, toolInput) });
+      } else if (this.turnToolLog.length === 50) {
+        // Mark overflow so the preamble summary is clearly partial
+        this.turnToolLog.push({ name: "+more", subject: "" });
+      }
     }
 
     // Feed skill review buffer — strip mcp__clawd__ prefix for readability
@@ -793,11 +799,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     if (this.skillReviewInProgress) return;
     if (this.sessionToolCallCount < minToolCalls) return;
-    if (this.sessionToolCallCount % reviewInterval !== 0) return;
+    if (this.sessionToolCallCount - this.skillReviewLastToolCount < reviewInterval) return;
     if (Date.now() - this.skillReviewLastAt < cooldownMs) return;
 
     this.skillReviewInProgress = true;
     this.skillReviewLastAt = Date.now();
+    this.skillReviewLastToolCount = this.sessionToolCallCount;
 
     const { channel, chatApiUrl, projectRoot } = this.config;
     const buffer = [...this.skillReviewBuffer];
