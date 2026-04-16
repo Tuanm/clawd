@@ -7,11 +7,17 @@
  * The core spawn logic is in spawn-helper.ts, shared with chat-tools.ts.
  */
 
-import { listAgentFiles } from "../agent/agents/loader";
-import { type TrackedSpace, executeSpawnAgent, type SpawnContext } from "./spawn-helper";
-import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
-import type { ToolResult } from "../agent/tools/definitions";
+import { type AgentFileConfig, listAgentFiles, loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
 import { resolveProviderBaseType } from "../agent/api/provider-config";
+import {
+  DEFAULT_SPAWN_AGENT_COLOR,
+  DEFAULT_SPAWN_TIMEOUT_SECONDS,
+  MAX_ACTIVE_SUB_AGENTS,
+  SPACE_EVICTION_MS,
+} from "../agent/constants/spaces";
+import type { ToolResult } from "../agent/tools/definitions";
+import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
+import { getAgent } from "../server/database";
 import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots } from "../server/mcp";
 import { timedFetch } from "../utils/timed-fetch";
 import {
@@ -22,31 +28,8 @@ import {
   unregisterClaudeCodeWorker,
 } from "./claude-code-worker";
 import type { SpaceManager } from "./manager";
+import { buildCcDisallowedTools, executeSpawnAgent, type SpawnContext, type TrackedSpace } from "./spawn-helper";
 import type { SpaceWorkerManager } from "./worker";
-import {
-  DEFAULT_SPAWN_AGENT_COLOR,
-  DEFAULT_SPAWN_TIMEOUT_SECONDS,
-  MAX_ACTIVE_SUB_AGENTS,
-  SPACE_EVICTION_MS,
-} from "../agent/constants/spaces";
-import { getAgent } from "../server/database";
-import { type AgentFileConfig, loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
-
-/**
- * Build the disallowedTools list for a CC sub-agent.
- * Custom CC providers (any provider whose base type is claude-code but whose name is not the
- * built-in "claude-code") must use mcp__clawd__web_search / mcp__clawd__web_fetch instead of
- * the CC-native WebSearch / WebFetch tools.
- */
-function buildCcDisallowedTools(
-  agentCfg: AgentFileConfig | null | undefined,
-  providerName: string,
-): string[] | undefined {
-  const fromConfig = agentCfg?.disallowedTools ? mapToMcpToolNames(agentCfg.disallowedTools) : [];
-  const extra = providerName !== "claude-code" ? ["WebSearch", "WebFetch"] : [];
-  const merged = [...fromConfig, ...extra];
-  return merged.length > 0 ? merged : undefined;
-}
 
 export interface SpawnPluginConfig {
   /** Parent channel where the main agent operates */
@@ -57,19 +40,6 @@ export interface SpawnPluginConfig {
   apiUrl: string;
   /** YOLO mode — bypass sandboxing for sub-agents (default: false) */
   yolo?: boolean;
-}
-
-export interface TrackedSpace {
-  spaceId: string;
-  name: string;
-  promise: Promise<string>;
-  startedAt: number;
-  result?: string;
-  error?: string;
-  status: "running" | "completed" | "failed";
-  evictionTimer?: ReturnType<typeof setTimeout>;
-  /** Agent file config used to spawn this space (preserved for retask) */
-  agentFileConfig?: AgentFileConfig;
 }
 
 export function createSpawnAgentPlugin(
@@ -507,6 +477,7 @@ export function createSpawnAgentPlugin(
                 text: result,
                 user: subAgentId,
                 agent_id: subAgentId,
+                subtype: "agent_report",
               }),
             }).catch((err) => {
               console.error("[SpawnPlugin] chat.postMessage (retask complete) failed:", err);
@@ -573,6 +544,7 @@ export function createSpawnAgentPlugin(
               text: `${prefix}: ${tracked.name}`,
               user: subAgentId,
               agent_id: subAgentId,
+              subtype: "agent_report",
             }),
           }).catch((err) => {
             console.error("[SpawnPlugin] chat.postMessage (retask abort) failed:", err);

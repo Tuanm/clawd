@@ -3,6 +3,46 @@
 
 import React, { useState } from "react";
 
+// Thumbs up icon (like reaction)
+export function ThumbsUpIcon({ filled = false }: { filled?: boolean }): React.ReactElement {
+  return React.createElement(
+    "svg",
+    {
+      width: "16",
+      height: "16",
+      viewBox: "0 0 24 24",
+      fill: filled ? "currentColor" : "none",
+      stroke: "currentColor",
+      strokeWidth: "2",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+    },
+    React.createElement("path", {
+      d: "M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z",
+    }),
+    React.createElement("path", { d: "M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" }),
+  );
+}
+
+// Thumbs down icon (dislike reaction)
+export function ThumbsDownIcon({ filled = false }: { filled?: boolean }): React.ReactElement {
+  return React.createElement(
+    "svg",
+    {
+      width: "16",
+      height: "16",
+      viewBox: "0 0 24 24",
+      fill: filled ? "currentColor" : "none",
+      stroke: "currentColor",
+      strokeWidth: "2",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+    },
+    React.createElement("path", { d: "M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z" }),
+    React.createElement("path", { d: "M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" }),
+  );
+}
+
 // Copy icon component
 export function CopyIcon(): React.ReactElement {
   return React.createElement(

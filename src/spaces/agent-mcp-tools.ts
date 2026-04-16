@@ -3,8 +3,6 @@
  * Used by handleAgentMcpRequest to expose agent management tools via MCP.
  */
 
-import type { SpaceManager } from "./manager";
-import type { SpaceWorkerManager } from "./worker";
 import {
   DEFAULT_AGENT_COLOR,
   DEFAULT_AGENT_TIMEOUT_SECONDS,
@@ -13,6 +11,8 @@ import {
   MAX_CONTEXT_LENGTH,
   RETRY_BACKOFF_MS,
 } from "../agent/constants/spaces";
+import type { SpaceManager } from "./manager";
+import type { SpaceWorkerManager } from "./worker";
 
 // ============================================================================
 // Global references (set by WorkerManager during startup)
@@ -365,6 +365,7 @@ export async function executeAgentToolCall(
               text: `Sub-agent timed out: ${taskName} (30 min limit)`,
               user: subAgentId,
               agent_id: subAgentId,
+              subtype: "agent_report",
             }),
           }).catch((err) => {
             console.error("[agent-mcp] chat.postMessage (timeout) failed:", err);
@@ -384,6 +385,7 @@ export async function executeAgentToolCall(
               text: result,
               user: subAgentId,
               agent_id: subAgentId,
+              subtype: "agent_report",
             }),
           }).catch((err) => {
             console.error("[agent-mcp] chat.postMessage (complete) failed:", err);
@@ -447,6 +449,7 @@ export async function executeAgentToolCall(
                   text: chatText,
                   user: subAgentId,
                   agent_id: subAgentId,
+                  subtype: "agent_report",
                 }),
               }).catch((err) => {
                 console.error("[agent-mcp] chat.postMessage (failed) failed:", err);
@@ -467,6 +470,7 @@ export async function executeAgentToolCall(
                   text: `Sub-agent error: ${taskName} — ${errMsg}`,
                   user: subAgentId,
                   agent_id: subAgentId,
+                  subtype: "agent_report",
                 }),
               }).catch((postErr) => {
                 console.error("[agent-mcp] chat.postMessage (error) failed:", postErr);

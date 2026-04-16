@@ -14,7 +14,6 @@
 import type { AgentFileConfig } from "../agent/agents/loader";
 import { loadAgentFile, resolveModelAlias } from "../agent/agents/loader";
 import { resolveProviderBaseType } from "../agent/api/provider-config";
-import type { ToolResult } from "../agent/tools/definitions";
 import {
   DEFAULT_SPAWN_AGENT_COLOR,
   DEFAULT_SPAWN_TIMEOUT_SECONDS,
@@ -22,6 +21,10 @@ import {
   MAX_CONTEXT_LENGTH,
   SPACE_EVICTION_MS,
 } from "../agent/constants/spaces";
+import type { ToolResult } from "../agent/tools/definitions";
+import { getOrRegisterAgent } from "../server/database";
+import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots } from "../server/mcp/shared";
+import { timedFetch } from "../utils/timed-fetch";
 import {
   ClaudeCodeSpaceWorker,
   mapToMcpToolNames,
@@ -30,12 +33,9 @@ import {
 } from "./claude-code-worker";
 import type { SpaceManager } from "./manager";
 import type { SpaceWorkerManager } from "./worker";
-import { getOrRegisterAgent } from "../server/database";
-import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots } from "../server/mcp/shared";
-import { timedFetch } from "../utils/timed-fetch";
 
 /** Build disallowedTools list for Claude Code sub-agents */
-function buildCcDisallowedTools(
+export function buildCcDisallowedTools(
   agentCfg: AgentFileConfig | null | undefined,
   providerName: string,
 ): string[] | undefined {
@@ -268,6 +268,7 @@ export async function executeSpawnAgent(ctx: SpawnContext, opts: ExecuteSpawnOpt
               text: result,
               user: subAgentId,
               agent_id: subAgentId,
+              subtype: "agent_report",
             }),
           }).catch((err) => {
             console.error("[SpawnHelper] chat.postMessage (complete) failed:", err);
@@ -353,6 +354,7 @@ export async function executeSpawnAgent(ctx: SpawnContext, opts: ExecuteSpawnOpt
             text: `${prefix}: ${sanitizedTitle}`,
             user: subAgentId,
             agent_id: subAgentId,
+            subtype: "agent_report",
           }),
         }).catch((err) => {
           console.error("[SpawnHelper] chat.postMessage (abort) failed:", err);

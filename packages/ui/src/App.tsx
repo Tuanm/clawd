@@ -1629,6 +1629,40 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           });
           // Space completions arrive as message_changed (status update on subspace card)
           if (data.message?.subspace) fetchActiveSubAgentsRef.current();
+        } else if (data.type === "reaction_added" || data.type === "reaction_removed") {
+          // Update the reaction list on the specific message in real-time.
+          // The event carries: { reaction, user, item: { ts } }
+          const reactionTs: string = data.item?.ts;
+          const reactionName: string = data.reaction;
+          const reactionUser: string = data.user;
+          if (reactionTs && reactionName) {
+            updateChannelState(msgChannel, {
+              messages: (channelStatesRef.current.get(msgChannel)?.messages || []).map((m) => {
+                if (m.ts !== reactionTs) return m;
+                const existing = m.reactions ? [...m.reactions] : [];
+                if (data.type === "reaction_added") {
+                  const idx = existing.findIndex((r) => r.name === reactionName);
+                  if (idx >= 0) {
+                    const users = existing[idx].users ? [...existing[idx].users!, reactionUser] : [reactionUser];
+                    existing[idx] = { ...existing[idx], users, count: users.length };
+                  } else {
+                    existing.push({ name: reactionName, users: [reactionUser], count: 1 });
+                  }
+                } else {
+                  const idx = existing.findIndex((r) => r.name === reactionName);
+                  if (idx >= 0) {
+                    const users = (existing[idx].users || []).filter((u) => u !== reactionUser);
+                    if (users.length === 0) {
+                      existing.splice(idx, 1);
+                    } else {
+                      existing[idx] = { ...existing[idx], users, count: users.length };
+                    }
+                  }
+                }
+                return { ...m, reactions: existing };
+              }),
+            });
+          }
         } else if (data.type === "artifact_action") {
           // Mark interactive artifact as submitted (one-shot cross-user disable)
           if (data.one_shot) {

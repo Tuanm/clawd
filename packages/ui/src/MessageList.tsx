@@ -16,7 +16,7 @@ import LazyViewport from "./lazy-viewport";
 import { highlightCode } from "./prism-setup";
 import { markdownSanitizeSchema } from "./sanitize-schema";
 import { UnreadSeparator } from "./UnreadSeparator";
-import { CheckIcon, CopyIcon, PreBlock } from "./ui-primitives";
+import { CheckIcon, CopyIcon, PreBlock, ThumbsDownIcon, ThumbsUpIcon } from "./ui-primitives";
 
 // Lazy-load ChartRenderer (Recharts) for inline chart rendering in messages
 const LazyChartRenderer = React.lazy(() => import("./chart-renderer"));
@@ -53,7 +53,7 @@ interface Message {
     url_private: string;
     mimetype?: string;
   }[];
-  reactions?: { name: string; count: number }[];
+  reactions?: { name: string; count: number; users?: string[] }[];
   // Multi-agent support fields
   agent_id?: string;
   avatar_color?: string;
@@ -1869,6 +1869,25 @@ export default function MessageList({
   const [isDragging, setIsDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
 
+  // Hover state for reaction pane + tracked position for portal rendering
+  const [hoveredMsgTs, setHoveredMsgTs] = useState<string | null>(null);
+  const [reactionPanePos, setReactionPanePos] = useState<{ top: number; right: number } | null>(null);
+  const hideReactionTimer = useRef<number | null>(null);
+  const [hoveredReactionKey, setHoveredReactionKey] = useState<string | null>(null);
+  const cancelHideReaction = () => {
+    if (hideReactionTimer.current) {
+      clearTimeout(hideReactionTimer.current);
+      hideReactionTimer.current = null;
+    }
+  };
+  const scheduleHideReaction = () => {
+    cancelHideReaction();
+    hideReactionTimer.current = window.setTimeout(() => {
+      setHoveredMsgTs(null);
+      setReactionPanePos(null);
+    }, 80);
+  };
+
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
@@ -2233,6 +2252,41 @@ export default function MessageList({
     }
   }, [channelKey, messages.length, isArticleMode]);
 
+  // Reaction helpers
+  const currentUserReacted = (msg: Message, key: "thumbsup" | "thumbsdown") =>
+    msg.reactions?.find((r) => r.name === key)?.users?.includes("UHUMAN") ?? false;
+
+  const toggleReaction = async (msgTs: string, key: "thumbsup" | "thumbsdown", currentlyReacted: boolean) => {
+    try {
+      const opposite = key === "thumbsup" ? "thumbsdown" : "thumbsup";
+      const msg = messages.find((m) => m.ts === msgTs);
+      const oppositeReacted = msg?.reactions?.find((r) => r.name === opposite)?.users?.includes("UHUMAN");
+      if (oppositeReacted) {
+        await authFetch(
+          `/api/reactions.remove`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channel, timestamp: msgTs, name: opposite, user: "UHUMAN" }),
+          },
+          channel,
+        );
+      }
+      const endpoint = currentlyReacted ? "remove" : "add";
+      await authFetch(
+        `/api/reactions.${endpoint}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel, timestamp: msgTs, name: key, user: "UHUMAN" }),
+        },
+        channel,
+      );
+    } catch (err) {
+      console.error("[Reaction] toggle failed:", err);
+    }
+  };
+
   // Check if a user is an agent - support both legacy UBOT/UWORKER patterns and new agent_id field
   const isAgent = (user: string) => user === "UBOT" || user.startsWith("UWORKER-");
 
@@ -2452,6 +2506,7 @@ export default function MessageList({
         // All messages render identically — no streaming/thinking animation on message bubbles
         const isStreaming = false;
         const isThinkingPlaceholder = msg.ts.startsWith("thinking_");
+        const isAgentReport = msg.subtype === "agent_report";
 
         return (
           <React.Fragment key={msg.ts}>
@@ -2463,11 +2518,25 @@ export default function MessageList({
               className={`message ${isAgentMessage(msg) ? "agent" : "user"} ${continuation ? "continuation" : ""} ${isStreaming ? "thinking" : ""}`}
               title={continuation ? formatFullTime(msg.ts) : undefined}
               data-time={continuation ? formatTime(msg.ts) : undefined}
+              style={{
+                position: "relative",
+                opacity: isAgentReport && hoveredMsgTs !== msg.ts ? 0.55 : 1,
+                transition: "opacity 0.15s",
+              }}
               onContextMenu={(e) => handleMessageContextMenu(e, msg)}
               onTouchStart={(e) => handleTouchStart(e, msg)}
               onTouchMove={handleTouchMove}
               onTouchEnd={handleTouchEnd}
               onTouchCancel={handleTouchEnd}
+              onMouseEnter={(e) => {
+                cancelHideReaction();
+                setHoveredMsgTs(msg.ts);
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                // top + 6: bottom of pane overlaps the top of message by ~6px so mouse
+                // can move from message into pane without crossing a gap
+                setReactionPanePos({ top: rect.top + 6, right: window.innerWidth - rect.right + 8 });
+              }}
+              onMouseLeave={scheduleHideReaction}
             >
               {!isThinkingPlaceholder && (
                 <button
@@ -3062,17 +3131,43 @@ export default function MessageList({
                     })}
                   </div>
                 )}
-                {/* Reactions hidden for now - uncomment when emoji conversion is implemented
-              {msg.reactions && msg.reactions.length > 0 && (
-                <div className="message-reactions">
-                  {msg.reactions.map((r) => (
-                    <span key={r.name} className="reaction">
-                      :{r.name}: {r.count}
-                    </span>
-                  ))}
-                </div>
-              )}
-              */}
+                {msg.reactions && msg.reactions.length > 0 && (
+                  <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "4px" }}>
+                    {msg.reactions
+                      .filter((r) => r.name === "thumbsup" || r.name === "thumbsdown")
+                      .map((r) => {
+                        const reacted = r.users?.includes("UHUMAN") ?? false;
+                        const key = r.name as "thumbsup" | "thumbsdown";
+                        return (
+                          <button
+                            key={r.name}
+                            onClick={() => toggleReaction(msg.ts, key, reacted)}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "3px",
+                              background: "none",
+                              border: "none",
+                              padding: "2px 4px",
+                              cursor: "pointer",
+                              borderRadius: "4px",
+                              color: reacted ? "var(--accent, #e85d04)" : "var(--text-muted, #888)",
+                              fontSize: "12px",
+                              transition: "color 0.1s",
+                            }}
+                            title={`${r.count} ${r.count === 1 ? "person" : "people"}`}
+                          >
+                            {key === "thumbsup" ? (
+                              <ThumbsUpIcon filled={reacted} />
+                            ) : (
+                              <ThumbsDownIcon filled={reacted} />
+                            )}
+                            {r.count > 1 && <span>{r.count}</span>}
+                          </button>
+                        );
+                      })}
+                  </div>
+                )}
                 {/* Seen indicator - shows small Claw'd icons for agents whose LAST read message is this one */}
                 {/* Shows on any message (user or other agents) - an agent's indicator appears on the last non-self message they've seen */}
                 {msg.seen_by && msg.seen_by.length > 0 && (
@@ -3458,6 +3553,56 @@ export default function MessageList({
                 </svg>
               </button>
             </div>
+          </div>,
+          document.body,
+        )}
+      {/* Reaction hover pane — portal to escape .message { overflow: hidden } clipping */}
+      {hoveredMsgTs &&
+        reactionPanePos &&
+        createPortal(
+          <div
+            onMouseEnter={cancelHideReaction}
+            onMouseLeave={scheduleHideReaction}
+            className="composer-overflow-dropdown"
+            style={{
+              position: "fixed",
+              top: reactionPanePos.top,
+              right: reactionPanePos.right,
+              transform: "translateY(-100%)",
+              zIndex: 1000,
+            }}
+          >
+            {(["thumbsup", "thumbsdown"] as const).map((key) => {
+              const msg = messages.find((m) => m.ts === hoveredMsgTs);
+              if (!msg) return null;
+              const reacted = currentUserReacted(msg, key);
+              const isKeyHovered = hoveredReactionKey === key;
+              return (
+                <button
+                  key={key}
+                  onMouseEnter={() => setHoveredReactionKey(key)}
+                  onMouseLeave={() => setHoveredReactionKey(null)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    toggleReaction(hoveredMsgTs, key, reacted);
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: "4px",
+                    cursor: "pointer",
+                    borderRadius: "4px",
+                    display: "flex",
+                    alignItems: "center",
+                    color: reacted || isKeyHovered ? "var(--accent, #e85d04)" : "var(--text-muted, #888)",
+                    transition: "color 0.1s",
+                  }}
+                  title={key === "thumbsup" ? "Like" : "Dislike"}
+                >
+                  {key === "thumbsup" ? <ThumbsUpIcon filled={reacted} /> : <ThumbsDownIcon filled={reacted} />}
+                </button>
+              );
+            })}
           </div>,
           document.body,
         )}
