@@ -1,7 +1,7 @@
+import { MAX_RESULT_LENGTH } from "../agent/constants/spaces";
 import type { ToolPlugin, ToolRegistration } from "../agent/tools/plugin";
 import { timedFetch } from "../utils/timed-fetch";
 import type { SpaceManager } from "./manager";
-import { MAX_RESULT_LENGTH } from "../agent/constants/spaces";
 
 interface SpacePluginConfig {
   spaceId: string;
@@ -57,6 +57,7 @@ export function createSpaceToolPlugin(config: SpacePluginConfig, spaceManager: S
                   text: truncated,
                   user: config.agentId,
                   agent_id: config.agentId,
+                  subtype: "agent_report",
                 }),
               });
             } catch {}
