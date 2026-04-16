@@ -7,7 +7,8 @@
  * Design decisions:
  * - Correction-gated only (no A/B/C classification). Gate: corrections.length > 0.
  * - LLM self-filters: outputs NO_CHANGE when correction does not apply.
- * - Global token bucket (3/hour) prevents runaway LLM costs.
+ * - Per-process token bucket (3/hour) prevents runaway LLM costs.
+ *   Not shared across multiple server instances — each process gets its own budget.
  * - Per-project in-flight deduplication via getSkillSet().
  * - Skills cache DB is ephemeral (recreate-on-mismatch): improvement_count resets
  *   on schema bump. The cap is therefore best-effort only.
@@ -124,7 +125,7 @@ export function isEditable(skillPath: string): boolean {
  */
 export function writeBackup(skillPath: string, _content: string): string {
   const dir = dirname(skillPath);
-  const backupPath = join(dir, `SKILL.bak-${Date.now()}`);
+  const backupPath = join(dir, `SKILL.bak-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 7)}`);
   copyFileSync(skillPath, backupPath);
   return backupPath;
 }

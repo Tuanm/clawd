@@ -284,6 +284,17 @@ export async function executeSpawnAgent(ctx: SpawnContext, opts: ExecuteSpawnOpt
           ccSettled = true;
           ctx.spaceManager.timeoutSpace(space.id);
           ccWorker.stop();
+          timedFetch(`${ctx.apiUrl}/api/chat.postMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              channel: ctx.channel,
+              text: `Sub-agent '${subAgentId}' timed out`,
+              user: subAgentId,
+              agent_id: subAgentId,
+              subtype: "agent_report",
+            }),
+          }).catch((err) => console.error("[SpawnHelper] chat.postMessage (timeout) failed:", err));
         }
       }, timeoutMs);
       if (typeof timeoutTimer === "object" && "unref" in timeoutTimer) (timeoutTimer as any).unref();
@@ -295,14 +306,37 @@ export async function executeSpawnAgent(ctx: SpawnContext, opts: ExecuteSpawnOpt
           .then(() => {
             if (!ccSettled) {
               ccSettled = true;
-              ctx.spaceManager.failSpace(space.id, "Claude Code exited without calling complete_task");
-              reject(new Error("Claude Code exited without calling complete_task"));
+              const msg = "Claude Code exited without calling complete_task";
+              ctx.spaceManager.failSpace(space.id, msg);
+              timedFetch(`${ctx.apiUrl}/api/chat.postMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  channel: ctx.channel,
+                  text: `Sub-agent '${subAgentId}' exited without completing: ${msg}`,
+                  user: subAgentId,
+                  agent_id: subAgentId,
+                  subtype: "agent_report",
+                }),
+              }).catch((err) => console.error("[SpawnHelper] chat.postMessage (exit) failed:", err));
+              reject(new Error(msg));
             }
           })
           .catch((err) => {
             if (!ccSettled) {
               ccSettled = true;
               ctx.spaceManager.failSpace(space.id, err.message);
+              timedFetch(`${ctx.apiUrl}/api/chat.postMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  channel: ctx.channel,
+                  text: `Sub-agent '${subAgentId}' failed: ${err.message}`,
+                  user: subAgentId,
+                  agent_id: subAgentId,
+                  subtype: "agent_report",
+                }),
+              }).catch((fetchErr) => console.error("[SpawnHelper] chat.postMessage (error) failed:", fetchErr));
               reject(err);
             }
           })

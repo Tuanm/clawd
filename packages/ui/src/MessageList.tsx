@@ -2257,11 +2257,12 @@ export default function MessageList({
     msg.reactions?.find((r) => r.name === key)?.users?.includes("UHUMAN") ?? false;
 
   const toggleReaction = async (msgTs: string, key: "thumbsup" | "thumbsdown", currentlyReacted: boolean) => {
-    try {
-      const opposite = key === "thumbsup" ? "thumbsdown" : "thumbsup";
-      const msg = messages.find((m) => m.ts === msgTs);
-      const oppositeReacted = msg?.reactions?.find((r) => r.name === opposite)?.users?.includes("UHUMAN");
-      if (oppositeReacted) {
+    const opposite = key === "thumbsup" ? "thumbsdown" : "thumbsup";
+    const msg = messages.find((m) => m.ts === msgTs);
+    const oppositeReacted = msg?.reactions?.find((r) => r.name === opposite)?.users?.includes("UHUMAN");
+    // Remove opposite first — failure here does not block the primary toggle
+    if (oppositeReacted) {
+      try {
         await authFetch(
           `/api/reactions.remove`,
           {
@@ -2271,7 +2272,12 @@ export default function MessageList({
           },
           channel,
         );
+      } catch (err) {
+        console.error("[Reaction] remove-opposite failed:", err);
       }
+    }
+    // Primary toggle — separate try/catch so remove-opposite failure doesn't block this
+    try {
       const endpoint = currentlyReacted ? "remove" : "add";
       await authFetch(
         `/api/reactions.${endpoint}`,

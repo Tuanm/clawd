@@ -105,8 +105,9 @@ export class TrajectoryRecorder {
           this.pendingAssistantResponse,
         ],
       );
-    } catch {
+    } catch (err) {
       // best-effort — trajectory loss is acceptable; don't break agent turns
+      console.error("[TrajectoryRecorder] Failed to commit turn:", err);
     }
     this.turnIndex++; // always advance, even on DB failure, to avoid duplicate turn_index
 

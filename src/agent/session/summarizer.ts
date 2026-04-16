@@ -209,7 +209,11 @@ export class SessionSummarizer {
       const session = manager.getSession(sessionName);
       if (!session) return [];
 
-      const messages = manager.getMessages(session.id);
+      // Bound the query: only fetch as many rows as _doSummarize can actually use
+      // (messageThreshold + keepRecentCount). getMessages() has no LIMIT and would
+      // load the entire session history for long-running agents, causing OOM.
+      const limit = (this.config.messageThreshold ?? 50) + (this.config.keepRecentCount ?? 20);
+      const messages = manager.getRecentMessages(session.id, limit);
 
       // Map model-level messages to a Slack-style shape for createSummary()
       return messages.map((msg, idx) => ({

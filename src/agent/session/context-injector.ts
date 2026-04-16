@@ -147,7 +147,13 @@ function expandMessage(
 
   const extracted: string[] = [];
   if (wakeupLines.length > 0) {
-    extracted.push(`[System context — while sleeping]:\n${wakeupLines.join("\n")}`);
+    // Deduplicate: the wakeup prompt may be retried and appear in multiple DB rows.
+    // Use a sentinel key so only the first occurrence is emitted.
+    const wakeupKey = "wakeup:prior_conversation";
+    if (!seenTimestamps.has(wakeupKey)) {
+      seenTimestamps.add(wakeupKey);
+      extracted.push(`[System context — while sleeping]:\n${wakeupLines.join("\n")}`);
+    }
   }
 
   for (const raw of trimmed.split("\n")) {
@@ -156,11 +162,14 @@ function expandMessage(
     if (!match) continue;
     const [, ts, sender, text] = match;
 
-    // Deduplicate: skip lines whose timestamp was already emitted from a
+    // Deduplicate: skip lines whose timestamp+sender was already emitted from a
     // prior turn's prompt (happens when a message is seen-but-not-processed
     // and carried into the next poll's prompt).
-    if (seenTimestamps.has(ts)) continue;
-    seenTimestamps.add(ts);
+    // Composite key on ts+sender prevents same-ms messages from different
+    // agents in multi-agent channels silently dropping one another.
+    const dedupKey = `${ts}:${sender}`;
+    if (seenTimestamps.has(dedupKey)) continue;
+    seenTimestamps.add(dedupKey);
 
     const snippet = text.replace(/\[truncated\]$/, "").trim();
     if (!snippet) continue;

@@ -35,7 +35,8 @@ interface Message {
   text: string;
   thread_ts?: string;
   files?: { id: string; name: string; url_private: string }[];
-  reactions?: { name: string; count: number }[];
+  subtype?: string;
+  reactions?: { name: string; count: number; users?: string[] }[];
   // Multi-agent support
   agent_id?: string;
   avatar_color?: string;
@@ -1643,7 +1644,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                 if (data.type === "reaction_added") {
                   const idx = existing.findIndex((r) => r.name === reactionName);
                   if (idx >= 0) {
-                    const users = existing[idx].users ? [...existing[idx].users!, reactionUser] : [reactionUser];
+                    const prev = existing[idx].users ?? [];
+                    const users = prev.includes(reactionUser) ? [...prev] : [...prev, reactionUser];
                     existing[idx] = { ...existing[idx], users, count: users.length };
                   } else {
                     existing.push({ name: reactionName, users: [reactionUser], count: 1 });

@@ -346,7 +346,8 @@ describe("updateSkillContent ordering", () => {
     expect(result.reason).toBe("cap_reached");
 
     sm.close();
-    (await import("./manager")).closeAllSkillManagers;
+    const { closeAllSkillManagers } = await import("./manager");
+    closeAllSkillManagers();
   });
 
   test("returns not_found when skill does not exist in DB", async () => {

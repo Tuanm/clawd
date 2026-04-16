@@ -47,9 +47,15 @@ export function extractSubject(shortName: string, toolInput: unknown): string {
       const first = sanitizeSubject(paths[0]);
       return paths.length === 1 ? first : `${first} +${paths.length - 1} more`;
     }
+    case "file_delete":
+      return sanitizeSubject(input.file_path ?? "");
     case "file_glob":
     case "file_grep":
       return sanitizeSubject(input.pattern ?? "");
+    case "skill_search": {
+      const kw = Array.isArray(input.keywords) ? input.keywords.join(" ") : (input.keywords ?? input.query ?? "");
+      return truncate(sanitizeSubject(String(kw)), 40);
+    }
     case "bash": {
       // Truncate first, then escape — escaping before truncation can leave a trailing
       // lone backslash when a `"` straddles the cut point, breaking the outer quotes.
@@ -58,10 +64,21 @@ export function extractSubject(shortName: string, toolInput: unknown): string {
     }
     case "spawn_agent":
       return sanitizeSubject(input.name ?? "");
+    case "skill_activate":
+      return sanitizeSubject(input.name ?? "");
     case "memo_save":
       return truncate(sanitizeSubject(input.content ?? ""), 30);
     case "memo_recall":
       return sanitizeSubject(input.query ?? "");
+    case "memo_delete":
+    case "memo_pin":
+    case "memo_unpin":
+      return String(input.id ?? "");
+    case "chat_search": {
+      // schema uses `keywords` (array), not `query`
+      const kw = Array.isArray(input.keywords) ? input.keywords.join(" ") : (input.keywords ?? "");
+      return truncate(sanitizeSubject(String(kw)), 40);
+    }
     case "web_search": {
       // Same truncate-first, escape-second ordering as bash.
       const q = truncate(sanitizeSubject(input.query ?? ""), 40).replace(/"/g, '\\"');

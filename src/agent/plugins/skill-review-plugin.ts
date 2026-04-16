@@ -474,13 +474,19 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
       if (name === "chat_mark_processed" && result?.success !== false) {
         const correctionsSnapshot = [...pendingCorrections];
         const activatedSnapshot = [...turnActivatedSkills];
-        const turnSlice = messageBuffer
+        const MAX_TURN_SLICE = 8_000;
+        const rawSlice = messageBuffer
           .slice(turnBufferStartIdx)
           .map((e) => `[${e.role}] ${e.content}`)
           .join("\n");
+        // Preserve the HEAD of the turn: user corrections and skill_activate calls appear
+        // early in the buffer, so head-slicing keeps the context the improvement LLM needs most.
+        const turnSlice =
+          rawSlice.length > MAX_TURN_SLICE ? rawSlice.slice(0, MAX_TURN_SLICE) + " [truncated]" : rawSlice;
 
-        // Reset per-turn state AFTER snapshot
-        pendingCorrections = [];
+        // Reset per-turn state AFTER snapshot.
+        // pendingCorrections is NOT cleared here — buildReviewTranscript() owns that reset
+        // so the review agent can still see corrections when improvement also fires in the same event.
         turnActivatedSkills.clear();
         turnBufferStartIdx = messageBuffer.length;
 
