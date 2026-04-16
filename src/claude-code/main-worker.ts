@@ -781,13 +781,17 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       this._srConfig =
         process.env.CLAWD_SKILL_REVIEW_ENABLED === "false"
           ? "disabled"
-          : {
-              reviewInterval: parseInt(process.env.CLAWD_SKILL_REVIEW_INTERVAL ?? "20", 10),
-              minToolCalls: parseInt(process.env.CLAWD_SKILL_REVIEW_MIN_TOOLS ?? "10", 10),
-              cooldownMs: parseInt(process.env.CLAWD_SKILL_REVIEW_COOLDOWN_MS ?? "300000", 10),
-              maxSkills: parseInt(process.env.CLAWD_SKILL_REVIEW_MAX_SKILLS ?? "2", 10),
-              model: process.env.CLAWD_SKILL_REVIEW_MODEL,
-            };
+          : (() => {
+              const memCfg = loadConfigFile().memory;
+              const memModel = typeof memCfg === "object" && memCfg?.model ? memCfg.model : undefined;
+              return {
+                reviewInterval: parseInt(process.env.CLAWD_SKILL_REVIEW_INTERVAL ?? "20", 10),
+                minToolCalls: parseInt(process.env.CLAWD_SKILL_REVIEW_MIN_TOOLS ?? "10", 10),
+                cooldownMs: parseInt(process.env.CLAWD_SKILL_REVIEW_COOLDOWN_MS ?? "300000", 10),
+                maxSkills: parseInt(process.env.CLAWD_SKILL_REVIEW_MAX_SKILLS ?? "2", 10),
+                model: memModel,
+              };
+            })();
     }
     if (this._srConfig === "disabled") return;
     const srConfig = this._srConfig;
@@ -837,7 +841,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         const client = new CopilotClient("");
         const timeoutSignal = new Promise<null>((resolve) => setTimeout(() => resolve(null), 30_000));
         const llmCall = client.complete({
-          model: srConfig.model || "claude-sonnet-4.5",
+          model: srConfig.model || "claude-sonnet-4.5", // srConfig.model is seeded from memory.model in config
           messages: [{ role: "user", content: prompt }],
           temperature: 0.3,
           max_tokens: 2000,

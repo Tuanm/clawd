@@ -22,6 +22,7 @@
 import { copyFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { loadConfigFile } from "../../config/config-file";
 import { getSkillManager } from "./manager";
 
 // ============================================================================
@@ -338,6 +339,9 @@ export async function improveSkillFromCorrections(
 
   const prompt = buildImprovementPrompt(skillName, existing.content, corrections, turnSlice);
 
+  const memCfg = loadConfigFile().memory;
+  const memModel = typeof memCfg === "object" && memCfg?.model ? memCfg.model : "claude-sonnet-4.5";
+
   const { CopilotClient } = await import("../api/client");
   const client = new CopilotClient("");
 
@@ -346,7 +350,7 @@ export async function improveSkillFromCorrections(
     timeoutId = setTimeout(() => resolve(null), 30_000);
   });
   const llmCall = client.complete({
-    model: "claude-sonnet-4.5",
+    model: memModel,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.2,
     max_tokens: 2000,
