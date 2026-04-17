@@ -1111,14 +1111,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   // refactor the actual turn input is rebuilt from session rows by buildSdkMessages,
   // so _prompt is unused here — channel messages are persisted below and rebuilt.
   private async _runSDKTurnImpl(_prompt: string, messages: any[], isNewTurn = true): Promise<void> {
-    // Always discard the CC session before the main SDK call. The AsyncIterable
-    // returned by sdkPrompt() carries the full rebuilt conversation history from
-    // our SQLite store, so `resume:` is redundant AND potentially harmful —
-    // combining it with a full-history iterable risks duplicating turns if the
-    // SDK merges resumed state with the replayed iterable.
-    // Re-injection paths below (plain-string prompts) still use this.sessionId,
-    // populated by onSessionId when the main SDK call responds.
-    this.sessionId = null;
+    // Keep the CC SDK's native session id intact across turns. The SDK loads
+    // prior conversation turns from its on-disk session file when we pass
+    // `resume: this.sessionId` below — we rely on it as the source of truth
+    // for conversation history. Our own session DB is still written (for the
+    // UI / analytics / summary) but is NOT replayed via the iterable, because
+    // the SDK's streaming input channel treats every user message as a live
+    // turn and responds to it; replaying history would make the agent re-
+    // answer past messages. Stale/corrupted sessions are detected inside
+    // runSDKQuery and retried with `resume: undefined`.
 
     // Persist each channel message as its own user-role row with an attributed
     // "[timestamp] author: text" prefix. Each becomes a separate SDKUserMessage
@@ -1128,12 +1129,20 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // main-turn batch), and those must be recorded here so they appear in this
     // turn's stream and in all future turns' rebuilt history.
     // Heartbeats are never persisted — they're delivered inline below.
+    //
+    // Track the row IDs of THIS turn's persisted messages. buildSdkMessages
+    // uses this set to distinguish current-turn messages (emitted as live
+    // user input the SDK acts on) from historical messages (emitted with
+    // isReplay:true so the SDK loads them as context WITHOUT re-executing
+    // past tool_use blocks or re-answering past user turns).
+    const currentTurnRowIds = new Set<number>();
     for (const msg of messages) {
       if (msg.kind === "heartbeat") continue;
       const text = (msg.text || "").trim();
       if (!text) continue;
       const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
-      saveToMemory(this.memorySessionId, "user", `[${msg.ts}] ${author}: ${text}`);
+      const rowId = saveToMemory(this.memorySessionId, "user", `[${msg.ts}] ${author}: ${text}`);
+      if (rowId !== null) currentTurnRowIds.add(rowId);
     }
 
     // Summarise old history AFTER persisting incoming messages so needsCompaction
@@ -1414,11 +1423,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     const sdkOpts = {
       ...sharedSdkOpts,
-      prompt: buildSdkPromptWithHeartbeat(sessionName, heartbeatText),
-      // resume: always undefined — the iterable above carries full rebuilt history
-      // from the session DB. Re-injection calls below (plain-string prompts) still
-      // pass resume: this.sessionId, populated via the onSessionId callback.
-      resume: undefined,
+      // Emit only the current turn's new user messages (plus an inline
+      // heartbeat if present). CC loads prior conversation from its own
+      // session file via `resume:` below.
+      prompt: buildSdkPromptWithHeartbeat(sessionName, heartbeatText, { currentTurnRowIds }),
+      // Resume CC's native session so it restores prior conversation context.
+      // When null/empty (first turn after restart, or cleared on corruption),
+      // the SDK starts fresh and the compaction summary injected into the
+      // system prompt provides the historical context.
+      resume: this.sessionId || undefined,
       abortController: this.abortController,
     };
 

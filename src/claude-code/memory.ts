@@ -25,11 +25,11 @@ export function saveToMemory(
   content: string,
   toolCalls?: any[],
   toolCallId?: string,
-): void {
-  if (!memorySessionId) return;
+): number | null {
+  if (!memorySessionId) return null;
   try {
     const sessions = getSessionManager();
-    sessions.addMessage(memorySessionId, {
+    return sessions.addMessage(memorySessionId, {
       role,
       content,
       tool_calls: toolCalls,
@@ -39,5 +39,6 @@ export function saveToMemory(
     // Persistence failures are recoverable (next turn will try again) but the
     // operator should know when the session DB is in trouble.
     console.error(`[saveToMemory] Failed to persist ${role} message:`, err);
+    return null;
   }
 }

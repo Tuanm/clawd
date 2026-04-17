@@ -213,42 +213,38 @@ function repairToolUsePairing(messages: SdkStreamMessage[]): SdkStreamMessage[] 
 // ============================================================================
 
 /**
- * Core row→SDK-message conversion for a resolved session. Both public entry
- * points (buildSdkMessages and buildSdkPromptWithHeartbeat) funnel through
- * this so the session is looked up exactly once per call.
+ * Convert a resolved session's rows into SDK messages suitable for tests or
+ * future history-rebuild flows. Currently only used by tests — production
+ * code emits only the CURRENT turn's new messages via buildSdkPromptWithHeartbeat
+ * and relies on CC's own session resume for historical context.
  *
- * Skips legacy [CC-Turn]/[Sent to chat]/[Actions taken] rows from pre-refactor
- * sessions (clean break — those history items are not re-rendered into the
- * new format). Repairs orphan tool_use blocks from crash/interrupt so the API
- * pairing invariant holds.
+ * Skips legacy [CC-Turn]/[Sent to chat]/[Actions taken] rows and compaction
+ * summary rows. Repairs orphan tool_use blocks so the Anthropic API pairing
+ * invariant would hold if the output were sent to the API.
  */
 async function* buildSdkMessagesFromSession(
   session: Session,
   manager: SessionManager,
 ): AsyncIterable<SdkStreamMessage> {
-  // Raw rows, chronological. We expose StoredMessage via the manager so the
-  // loader doesn't double-parse tool_calls JSON here.
   const rows = manager.getAllStoredMessages(session.id);
 
   const messages: SdkStreamMessage[] = [];
   for (const row of rows) {
     if (isLegacyRow(row)) continue;
     if (isCompactionSummaryRow(row)) continue;
+    let m: SdkStreamMessage | null = null;
     if (row.role === "assistant") {
-      messages.push(rowToAssistantMessage(row, session.id));
+      m = rowToAssistantMessage(row, session.id);
     } else if (row.role === "tool" || (row.role === "user" && row.tool_call_id)) {
-      const m = rowToToolResultMessage(row, session.id);
-      if (m) messages.push(m);
+      m = rowToToolResultMessage(row, session.id);
     } else if (row.role === "user") {
-      const m = rowToUserTextMessage(row, session.id);
-      if (m) messages.push(m);
+      m = rowToUserTextMessage(row, session.id);
     }
+    if (m) messages.push(m);
   }
 
   const repaired = repairToolUsePairing(messages);
-  for (const m of repaired) {
-    yield m;
-  }
+  for (const m of repaired) yield m;
 }
 
 /**
@@ -276,33 +272,54 @@ export async function collectSdkMessages(
 }
 
 /**
- * Build the SDK prompt iterable for a CC turn, optionally appending an inline
- * heartbeat message at the end.
+ * Build the SDK prompt iterable for a CC turn: emits ONLY the current turn's
+ * new user messages (identified by currentTurnRowIds) plus an optional inline
+ * heartbeat. Historical context is NOT replayed via the iterable — the CC SDK
+ * does not cleanly support history replay on its streaming input channel
+ * (isReplay:true is only used for session-file persistence markers; at runtime
+ * the SDK treats every user message in the iterable as a live turn and
+ * triggers a response, so replaying history makes the agent re-answer past
+ * messages and re-execute past tool_use blocks).
  *
- * Heartbeats are intentionally NOT persisted (they're ephemeral wake signals,
- * not conversation content). This helper appends the heartbeat text as an
- * extra user-role message on the iterable so the agent sees it this turn
- * without polluting future turns' rebuilt history.
+ * History is managed instead by the CC SDK's own session mechanism: the caller
+ * passes `resume: sessionId` to runSDKQuery and the SDK loads prior turns from
+ * its on-disk session file. Our own session DB still receives copies for UI/
+ * analytics/summary purposes, but is not the SDK's source of truth for
+ * conversation context.
  *
- * The heartbeat's session_id MUST match the session UUID used by the rebuilt
- * rows — otherwise the SDK could receive messages with mixed session ids on
- * the same iterable. We resolve the session exactly once and pass it into
- * buildSdkMessagesFromSession; the heartbeat reuses the same session.id.
- * If the session doesn't exist (shouldn't happen after initMemorySession)
- * we fall back to sessionName on the heartbeat's session_id.
+ * The heartbeat's session_id comes from our session UUID (or name fallback)
+ * so all yielded messages share a single session_id on the same iterable.
  */
 export async function* buildSdkPromptWithHeartbeat(
   sessionName: string,
   heartbeatText?: string | null,
-  opts: { _manager?: SessionManager } = {},
+  opts: { _manager?: SessionManager; currentTurnRowIds?: Set<number> } = {},
 ): AsyncIterable<unknown> {
   const manager = opts._manager ?? getSessionManager();
-  // Single session lookup: resolve once, reuse for both the rebuilt rows and
-  // the trailing heartbeat so both share a consistent session_id.
   const session = manager.getSession(sessionName);
   const sessionUuid = session?.id ?? sessionName;
 
-  if (session) yield* buildSdkMessagesFromSession(session, manager);
+  // Emit ONLY the rows that were persisted in this turn (caller tracked their
+  // DB ids). If the caller didn't pass any, nothing is emitted from history —
+  // the heartbeat alone (if any) will be the iterable's output.
+  if (session && opts.currentTurnRowIds && opts.currentTurnRowIds.size > 0) {
+    const ids = opts.currentTurnRowIds;
+    const rows = manager.getAllStoredMessages(session.id);
+    for (const row of rows) {
+      if (!ids.has(row.id)) continue;
+      if (isLegacyRow(row)) continue;
+      if (isCompactionSummaryRow(row)) continue;
+      let m: SdkStreamMessage | null = null;
+      if (row.role === "assistant") {
+        m = rowToAssistantMessage(row, session.id);
+      } else if (row.role === "tool" || (row.role === "user" && row.tool_call_id)) {
+        m = rowToToolResultMessage(row, session.id);
+      } else if (row.role === "user") {
+        m = rowToUserTextMessage(row, session.id);
+      }
+      if (m) yield m;
+    }
+  }
 
   if (heartbeatText) {
     yield {
