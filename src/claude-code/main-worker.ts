@@ -1120,11 +1120,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // populated by onSessionId when the main SDK call responds.
     this.sessionId = null;
 
-    // Maybe summarise old history before we rebuild the SDK message stream.
-    // The compaction summary is written as a session row with created_at=0 and
-    // is lifted into the system prompt below (NOT the message stream).
-    if (isNewTurn) await this.maybeCompactSession();
-
     // Persist each channel message as its own user-role row with an attributed
     // "[timestamp] author: text" prefix. Each becomes a separate SDKUserMessage
     // when buildSdkMessages rebuilds the stream for the SDK. Runs on BOTH new
@@ -1140,6 +1135,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
       saveToMemory(this.memorySessionId, "user", `[${msg.ts}] ${author}: ${text}`);
     }
+
+    // Summarise old history AFTER persisting incoming messages so needsCompaction
+    // sees the full post-persistence byte count — a batch that tips the session
+    // over threshold triggers compaction THIS turn instead of lagging to the
+    // next. The just-persisted messages are the most recent and are protected
+    // by keepCount in compactSession, so they survive the summarisation.
+    // Compaction summary rows have created_at=0 and are lifted into the system
+    // prompt below (NOT the message stream).
+    if (isNewTurn) await this.maybeCompactSession();
 
     // Clear the correction-scan dedup set at the start of each NEW turn so
     // fresh turns scan their messages from scratch. Resume turns (isNewTurn=false)
@@ -1364,8 +1368,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const sessionName = this.memorySessionName;
     const heartbeatText = isHeartbeatTurn ? messages[0]?.text : null;
 
-    const sdkOpts = {
-      prompt: buildSdkPromptWithHeartbeat(sessionName, heartbeatText),
+    // SDK options without the per-call `prompt`/`resume`/`abortController` —
+    // these vary per invocation (main call vs. re-injection), so we build them
+    // separately and compose. This avoids spreading a consumed async generator
+    // into re-injection calls (they override `prompt` to a string, but copying
+    // the already-iterated generator through spread is ugly and error-prone).
+    const sharedSdkOpts = {
       model: model || "sonnet",
       cwd: this.config.projectRoot,
       providerName: this.config.provider,
@@ -1378,17 +1386,22 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         },
       },
       mcpServers: this.buildMcpServers(),
-      // resume: always undefined — the iterable above carries full rebuilt history
-      // from the session DB. Re-injection calls below (plain-string prompts) still
-      // pass resume: this.sessionId, populated via the onSessionId callback.
-      resume: undefined,
-      abortController: this.abortController,
       yolo: this.config.yolo ?? false,
       // Custom CC providers (not the built-in "claude-code") must use mcp__clawd__web_search /
       // mcp__clawd__web_fetch — disable the CC-native equivalents for them.
       ...(this.config.provider && this.config.provider !== "claude-code"
         ? { disallowedTools: ["WebSearch", "WebFetch"] }
         : {}),
+    };
+
+    const sdkOpts = {
+      ...sharedSdkOpts,
+      prompt: buildSdkPromptWithHeartbeat(sessionName, heartbeatText),
+      // resume: always undefined — the iterable above carries full rebuilt history
+      // from the session DB. Re-injection calls below (plain-string prompts) still
+      // pass resume: this.sessionId, populated via the onSessionId callback.
+      resume: undefined,
+      abortController: this.abortController,
     };
 
     try {
@@ -1451,7 +1464,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         let reinjectionText = "";
         try {
           await runSDKQuery(
-            { ...sdkOpts, prompt: reinjectionPrompt, resume: this.sessionId || undefined, abortController: reinjAbort },
+            {
+              ...sharedSdkOpts,
+              prompt: reinjectionPrompt,
+              resume: this.sessionId || undefined,
+              abortController: reinjAbort,
+            },
             {
               onTextDelta: (text) => {
                 reinjectionText += text;
@@ -1512,7 +1530,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         try {
           await runSDKQuery(
             {
-              ...sdkOpts,
+              ...sharedSdkOpts,
               prompt: reminderPrompt,
               resume: this.sessionId || undefined,
               abortController: markProcessedAbort,
