@@ -52,6 +52,7 @@ import {
   loadAgentFile,
 } from "../../../agent/agents/loader";
 import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../../../agent/api/provider-config";
+import { bridgeConversationSummary } from "../../../agent/session/bridge-summary";
 import { SessionManager } from "../../../agent/session/manager";
 import { getSkillManager } from "../../../agent/skills/manager";
 import { isWorktreeEnabled, loadConfigFile } from "../../../config/config-file";
@@ -603,10 +604,20 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "channel and agent_id required" }, 400);
         }
 
-        // Capture old values BEFORE update — needed for session reset comparison
+        // Capture old values BEFORE update — needed for session reset comparison.
+        // Include project/agent_type (cwd-binding) and claude_code_session_id
+        // (CC-specific, may need bridging on risky changes).
         const oldAgent = db
-          .query("SELECT provider, model FROM channel_agents WHERE channel = ? AND agent_id = ?")
-          .get(channel, agent_id) as { provider: string; model: string } | null;
+          .query(
+            "SELECT provider, model, project, agent_type, claude_code_session_id FROM channel_agents WHERE channel = ? AND agent_id = ?",
+          )
+          .get(channel, agent_id) as {
+          provider: string;
+          model: string;
+          project: string | null;
+          agent_type: string | null;
+          claude_code_session_id: string | null;
+        } | null;
 
         // Update database
         const updates: string[] = [];
@@ -690,29 +701,61 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "agent_not_found" }, 404);
         }
 
-        // Handle provider or model change:
-        // - Session messages are preserved in SQLite (provider-agnostic format)
-        // - buildContextPreamble() reformats for the new provider on next turn
-        // - Claude Code session ID must be cleared (backend-specific, not portable)
-        // Compare against old values captured BEFORE the DB update (not agent.provider/model
-        // which already reflect the new values).
+        // Handle risky config changes — anything that could invalidate the CC
+        // session file (provider/model/cwd binding) or the agent's next-turn
+        // context. Compare against old values captured BEFORE the DB update
+        // (agent.* already reflects new values).
+        //
+        // For CC-family agents: clearing `claude_code_session_id` forces a
+        // fresh CC session, avoiding thinking-signature mismatch across
+        // model/provider changes and cwd mismatch across project/agent_type
+        // changes.
+        //
+        // Before clearing, we run `bridgeConversationSummary` — a one-shot
+        // LLM summarization of the existing session content. The summary is
+        // stored as a `[CONTEXT SUMMARY]` row and injected into the next
+        // turn's system prompt by main-worker.ts (via
+        // `getCompactionSummariesByName`). Without this, clearing the CC
+        // session produces amnesia: the agent loses all prior-turn context
+        // because the CC iterable only emits current-turn messages and the
+        // native CC session file is gone.
         const providerChanged =
           provider !== undefined && oldAgent != null && String(provider).toLowerCase() !== oldAgent.provider;
         const modelChanged = model !== undefined && oldAgent != null && model !== oldAgent.model;
-        if (providerChanged || modelChanged) {
-          const reason = providerChanged
-            ? `provider changed (${oldAgent.provider} → ${provider})`
-            : `model changed (${oldAgent.model} → ${model})`;
-          console.log(`[agents] ${reason}, session context preserved`);
+        const projectChanged = project !== undefined && oldAgent != null && project !== (oldAgent.project ?? "");
+        const agentTypeChanged =
+          agent_type !== undefined && oldAgent != null && (agent_type || null) !== (oldAgent.agent_type || null);
+        const riskyChange = providerChanged || modelChanged || projectChanged || agentTypeChanged;
 
-          // Clear Claude Code session ID (backend-specific, cannot transfer between providers)
+        if (riskyChange) {
+          const reasons: string[] = [];
+          if (providerChanged) reasons.push(`provider ${oldAgent!.provider}→${provider}`);
+          if (modelChanged) reasons.push(`model ${oldAgent!.model}→${model}`);
+          if (projectChanged) reasons.push(`project ${oldAgent!.project || ""}→${project}`);
+          if (agentTypeChanged) reasons.push(`agent_type ${oldAgent!.agent_type || "null"}→${agent_type || "null"}`);
+          const reasonLabel = reasons.join(", ");
+
+          // Bridge the existing session content into a summary so the agent
+          // remembers prior context after the CC session is cleared. Works for
+          // any family transition: if target is CC, the summary feeds the new
+          // session via system prompt; if target is non-CC, the summary is a
+          // harmless extra context block in the preamble.
+          try {
+            const bridged = await bridgeConversationSummary(channel, agent_id, agent.model);
+            if (bridged) console.log(`[agents] ${reasonLabel}: bridge summary generated`);
+          } catch (err) {
+            console.warn(`[agents] ${reasonLabel}: bridge summary failed (continuing):`, err);
+          }
+
+          // Clear Claude Code session ID (backend-specific, cannot transfer
+          // between providers / models / cwds).
           try {
             db.run(`UPDATE channel_agents SET claude_code_session_id = NULL WHERE channel = ? AND agent_id = ?`, [
               channel,
               agent_id,
             ]);
           } catch (err) {
-            console.warn(`[agents] ${reason}, session ID clear failed (continuing):`, err);
+            console.warn(`[agents] ${reasonLabel}: session ID clear failed (continuing):`, err);
           }
         }
 
