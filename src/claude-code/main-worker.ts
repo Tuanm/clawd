@@ -21,7 +21,7 @@ import {
   sanitize,
 } from "../agent/plugins/skill-review-plugin";
 import { buildDynamicSystemPrompt, type PromptContext } from "../agent/prompt/builder";
-import { buildSdkMessages } from "./build-sdk-messages";
+import { buildSdkPromptWithHeartbeat } from "./build-sdk-messages";
 import { getSessionManager } from "../agent/session/manager";
 import { generateConversationSummary } from "../agent/session/summarizer";
 import { getSkillSet, improveSkillFromCorrections } from "../agent/skills/improvement";
@@ -1358,28 +1358,14 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     // Build the SDK input as an AsyncIterable of role-structured messages from
     // the session DB. Channel messages are already persisted above (user rows
-    // with "[ts] author: text" format). Heartbeats aren't persisted — we append
-    // them to the stream inline so the agent sees the wake signal this turn
-    // without polluting future turns' history.
+    // with "[ts] author: text" format). Heartbeats aren't persisted — the helper
+    // appends them inline so the agent sees the wake signal this turn without
+    // polluting future turns' history.
     const sessionName = this.memorySessionName;
     const heartbeatText = isHeartbeatTurn ? messages[0]?.text : null;
-    // Resolve the session UUID so the inline heartbeat uses the same session_id
-    // as messages emitted by buildSdkMessages (consistency on the iterable).
-    const sessionUuid = getSessionManager().getSession(sessionName)?.id ?? sessionName;
-    async function* sdkPrompt(): AsyncIterable<unknown> {
-      for await (const m of buildSdkMessages(sessionName)) yield m;
-      if (heartbeatText) {
-        yield {
-          type: "user",
-          message: { role: "user", content: [{ type: "text", text: heartbeatText }] },
-          parent_tool_use_id: null,
-          session_id: sessionUuid,
-        };
-      }
-    }
 
     const sdkOpts = {
-      prompt: sdkPrompt(),
+      prompt: buildSdkPromptWithHeartbeat(sessionName, heartbeatText),
       model: model || "sonnet",
       cwd: this.config.projectRoot,
       providerName: this.config.provider,
@@ -1440,13 +1426,18 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // Re-injection: if agent produced ANY text but never called chat_send_message,
       // send one ephemeral follow-up prompt so it can deliver the response.
       // Skip for: heartbeat turns, cancelled/aborted turns, interrupted turns (resume handles it).
+      // REQUIRE this.sessionId: re-injection sends a plain-string prompt with
+      // `resume: this.sessionId` to continue context. If sessionId is null (main
+      // SDK threw before onSessionId fired), a fresh-session re-injection would
+      // have ZERO history — the model would answer the NOTICE blind. Skip instead.
       if (
         !this.turnChatSent &&
         this.turnStreamText.trim().length > 0 &&
         !this.wasCancelledByHeartbeat &&
         !isHeartbeatTurn &&
         !this.abortController?.signal.aborted &&
-        !this.interruptDetected
+        !this.interruptDetected &&
+        !!this.sessionId
       ) {
         const reinjectionPrompt =
           "[NOTICE: Your previous turn produced output but did not call `mcp__clawd__chat_send_message` to deliver it — the human cannot see what you wrote.\n\n" +
@@ -1493,13 +1484,17 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // Re-injection: if agent completed without calling chat_mark_processed,
       // send a follow-up prompt so it can mark the messages as processed.
       // Skip for: heartbeat turns, cancelled turns, or if mark_processed was already called.
-      // Dual guard: signal.aborted catches cancelProcessing/setSleeping; interruptDetected catches poller-detected interrupts
+      // Dual guard: signal.aborted catches cancelProcessing/setSleeping; interruptDetected catches poller-detected interrupts.
+      // REQUIRE this.sessionId: same reason as the chat-send re-injection above —
+      // a fresh-session reminder with `resume: undefined` sees no history, so
+      // mark_processed would run with no context. Skip; next turn retries.
       if (
         !this.turnMarkProcessed &&
         !this.wasCancelledByHeartbeat &&
         !isHeartbeatTurn &&
         !this.abortController?.signal.aborted &&
-        !this.interruptDetected
+        !this.interruptDetected &&
+        !!this.sessionId
       ) {
         // Prefer the last actual pending timestamp; fall back to the last message
         // in this turn's batch, then to "latest" if both are unavailable.
