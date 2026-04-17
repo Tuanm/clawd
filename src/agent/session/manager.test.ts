@@ -340,6 +340,22 @@ describe("SessionManager", () => {
       expect(compacted).toBe(true);
     });
 
+    test("needsCompaction respects maxTokens argument across repeated calls (cache stores bytes, not boolean)", () => {
+      // The cache is keyed by session name only. If it stored the boolean
+      // result, calling needsCompaction with different maxTokens thresholds
+      // would return stale results for whichever threshold was checked first.
+      // Verify both directions work within the cache's 30s TTL.
+      const session = mgr.createSession("threshold-switch", "m");
+      mgr.addMessage(session.id, userMsg("x".repeat(3000))); // ~1000 tokens
+
+      // Low threshold first — true. Populates cache with bytes=3000.
+      expect(mgr.needsCompaction("threshold-switch", 500)).toBe(true);
+      // High threshold — must recompute comparison from cached bytes.
+      expect(mgr.needsCompaction("threshold-switch", 5000)).toBe(false);
+      // Back to low — still true (cache is bytes, not result).
+      expect(mgr.needsCompaction("threshold-switch", 500)).toBe(true);
+    });
+
     test("addMessage invalidates needsCompaction cache (fresh data after insert)", () => {
       // The CC worker runs compaction AFTER persisting incoming messages, so it
       // relies on needsCompaction reflecting post-insert byte counts. Without
