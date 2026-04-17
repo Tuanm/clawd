@@ -340,6 +340,25 @@ describe("SessionManager", () => {
       expect(compacted).toBe(true);
     });
 
+    test("addMessage invalidates needsCompaction cache (fresh data after insert)", () => {
+      // The CC worker runs compaction AFTER persisting incoming messages, so it
+      // relies on needsCompaction reflecting post-insert byte counts. Without
+      // cache invalidation on addMessage, a cached false from a pre-insert call
+      // would persist (30s TTL) and the compactor would skip a now-over-threshold
+      // session. Verify the cache is cleared on insert so the second call sees
+      // the new state.
+      const session = mgr.createSession("cache-invalidation", "m");
+
+      // Seed just-under-threshold content and prime the cache with false.
+      mgr.addMessage(session.id, userMsg("x".repeat(200)));
+      expect(mgr.needsCompaction("cache-invalidation", 1000)).toBe(false);
+
+      // Push WELL over threshold in a single insert. The cached false must NOT
+      // shadow this — addMessage should have cleared the cache.
+      mgr.addMessage(session.id, userMsg("y".repeat(10_000))); // ~3333 tokens
+      expect(mgr.needsCompaction("cache-invalidation", 1000)).toBe(true);
+    });
+
     test("needsCompaction excludes compaction summary rows (created_at=0) from byte count", () => {
       // Summary rows live in the system prompt, not the LLM message stream, so
       // they must not count toward the compaction threshold. Otherwise a large
