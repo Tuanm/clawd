@@ -492,12 +492,16 @@ describe("SessionManager", () => {
       expect(toDelete[14].content).toBe("msg 14");
     });
 
-    test("includes [CC-Turn] assistant rows but excludes raw streaming blobs", () => {
+    test("includes all user/assistant/tool rows (legacy + new-format + streaming text)", () => {
+      // In the role-structured refactor, all assistant rows contribute to the
+      // next turn's rebuilt message stream — legacy-prefixed AND raw text AND
+      // tool_use-only. getMessagesToCompact returns everything that would be
+      // deleted by compaction so the LLM summariser sees full context.
       const mgr = new SessionManager(":memory:");
       const session = mgr.getOrCreateSession("sess", "claude");
       mgr.addMessage(session.id, userMsg("user 1"));
       mgr.addMessage(session.id, assistantMsg("[CC-Turn]:\n[1] you: msg"));
-      mgr.addMessage(session.id, assistantMsg("raw streaming blob — should be excluded"));
+      mgr.addMessage(session.id, assistantMsg("plain agent reply (new format)"));
       mgr.addMessage(session.id, assistantMsg("[Sent to chat]: legacy"));
       mgr.addMessage(session.id, assistantMsg("[Actions taken]: legacy tools"));
       for (let i = 0; i < 10; i++) mgr.addMessage(session.id, userMsg(`recent ${i}`));
@@ -506,9 +510,9 @@ describe("SessionManager", () => {
       const contents = toDelete.map((r) => r.content);
       expect(contents).toContain("user 1");
       expect(contents).toContain("[CC-Turn]:\n[1] you: msg");
+      expect(contents).toContain("plain agent reply (new format)");
       expect(contents).toContain("[Sent to chat]: legacy");
       expect(contents).toContain("[Actions taken]: legacy tools");
-      expect(contents).not.toContain("raw streaming blob — should be excluded");
     });
 
     test("by-name variant returns same result as by-id", () => {
@@ -528,12 +532,23 @@ describe("SessionManager", () => {
   });
 
   describe("autoCompact unified byte-count", () => {
-    test("does not compact when preamble-visible bytes are under threshold even if tool results inflate total", () => {
+    test("does not compact when total stream bytes are under threshold (no tool rows)", () => {
+      // needsCompaction now counts all stream-relevant bytes (user + tool + assistant)
+      // because tool results ARE part of the rebuilt LLM stream as tool_result blocks.
+      // Test: if ONLY a tiny user message exists, count stays well under threshold.
       const mgr = new SessionManager(":memory:");
       const session = mgr.getOrCreateSession("sess", "claude");
-      // Add one user message + many tool-result rows (which are filtered out of the
-      // preamble-visible byte count used by needsCompaction).
       mgr.addMessage(session.id, userMsg("hi"));
+      const compacted = mgr.autoCompact("sess", 1000, 5);
+      expect(compacted).toBe(false);
+    });
+
+    test("compacts when tool-result bytes alone exceed threshold (they count in new format)", () => {
+      // Tool results ARE rebuilt as user-role tool_result blocks in the SDK stream,
+      // so they count toward the compaction budget. 20 × 10KB ≈ 66k tokens ≫ 10k.
+      const mgr = new SessionManager(":memory:");
+      const session = mgr.getOrCreateSession("sess2", "claude");
+      mgr.addMessage(session.id, userMsg("trigger"));
       const bigToolOutput = "x".repeat(10000);
       for (let i = 0; i < 20; i++) {
         mgr.addMessage(session.id, {
@@ -542,11 +557,8 @@ describe("SessionManager", () => {
           tool_call_id: `call_${i}`,
         });
       }
-      // Preamble-visible bytes = just "hi" (~2 bytes / 3 ≈ 0 tokens) → below any threshold.
-      // Old autoCompact would have triggered at ~70k tokens (20 × 10k / 3). New one
-      // uses needsCompaction which filters to preamble-visible rows only.
-      const compacted = mgr.autoCompact("sess", 1000, 5);
-      expect(compacted).toBe(false);
+      const compacted = mgr.autoCompact("sess2", 10_000, 5);
+      expect(compacted).toBe(true);
     });
 
     test("compacts when preamble-visible bytes exceed threshold", () => {

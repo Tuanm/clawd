@@ -141,12 +141,15 @@ function rowToUserTextMessage(row: StoredMessage, sessionId: string): SdkStreamM
  * API would reject the request.
  *
  * This pass walks the emitted messages and, for any assistant tool_use not
- * immediately followed by a matching tool_result anywhere later in the stream,
- * injects a synthetic `{content:"[interrupted]", is_error:true}` tool_result
- * right after the offending assistant message to satisfy the pairing invariant.
+ * matched by a later tool_result, injects a synthetic filler tool_result
+ * ({is_error:true}) to satisfy the pairing invariant. The filler is merged
+ * INTO the immediately-following user message (if present) rather than
+ * emitted as a standalone — keeps tool_results for a given assistant batch
+ * contiguous in a single user message, which the Anthropic Messages API
+ * expects (the stricter reading of the protocol).
  */
 function repairToolUsePairing(messages: SdkStreamMessage[]): SdkStreamMessage[] {
-  // First pass: collect all tool_result ids that already exist.
+  // Pass 1: collect all resolved tool_result ids.
   const resolvedIds = new Set<string>();
   for (const m of messages) {
     if (m.message.role !== "user") continue;
@@ -155,29 +158,48 @@ function repairToolUsePairing(messages: SdkStreamMessage[]): SdkStreamMessage[] 
     }
   }
 
-  // Second pass: walk messages; after any assistant with tool_use blocks,
-  // inject filler tool_results for any tool_use whose id isn't in resolvedIds.
+  // Pass 2: walk messages; after an assistant with orphan tool_use blocks,
+  // prepend filler tool_results to the next user message (merging), or emit
+  // a standalone user message if no user follows (e.g. end-of-stream).
   const out: SdkStreamMessage[] = [];
-  for (const m of messages) {
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i];
     out.push(m);
+    i++;
+
     if (m.message.role !== "assistant") continue;
-    const orphans: ContentBlock[] = [];
+
+    const fillers: ContentBlock[] = [];
     for (const block of m.message.content) {
       if (block.type === "tool_use" && !resolvedIds.has(block.id)) {
-        orphans.push({
+        fillers.push({
           type: "tool_result",
           tool_use_id: block.id,
           content: "[interrupted — no result recorded]",
           is_error: true,
         });
-        // Mark as resolved so later orphan checks skip it.
         resolvedIds.add(block.id);
       }
     }
-    if (orphans.length > 0) {
+    if (fillers.length === 0) continue;
+
+    // If the next message is a user message, merge fillers into its content
+    // (fillers first so tool_results for this assistant are contiguous).
+    if (i < messages.length && messages[i].message.role === "user") {
+      const nextUser = messages[i];
+      out.push({
+        ...nextUser,
+        message: {
+          role: "user",
+          content: [...fillers, ...nextUser.message.content],
+        },
+      });
+      i++;
+    } else {
       out.push({
         type: "user",
-        message: { role: "user", content: orphans },
+        message: { role: "user", content: fillers },
         parent_tool_use_id: null,
         session_id: m.session_id,
       });
