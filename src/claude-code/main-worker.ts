@@ -98,10 +98,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private heartbeatPending = false;
   private memorySessionId: string | null = null;
   private pendingTimestamps: string[] = [];
-  /** In-memory set of timestamps marked as seen but not yet processed.
-   *  Tracks messages that appeared in a poll but weren't successfully processed,
-   *  so subsequent polls can differentiate "brand-new" vs "previously seen" messages.
-   *  Does not persist across restarts (acceptable — post-restart messages appear as new). */
+  /** Set of timestamps marked as seen but not yet processed. Tracks messages that
+   *  appeared in a poll but weren't successfully processed, so subsequent polls
+   *  can differentiate "brand-new" vs "previously seen" messages.
+   *  Persisted to agent_seen.pending_seen_ts_json via persistPendingSeenTimestamps()
+   *  so a crash mid-turn doesn't cause the agent to treat resumed messages as fresh
+   *  and produce duplicate replies. */
   private pendingSeenTimestamps = new Set<string>();
   private forceMarkRetries = new Map<string, number>();
   private trajectoryRecorder: TrajectoryRecorder | null = null;
@@ -125,6 +127,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private turnBufferStartIdx = 0;
   private skillsBeingImproved = new Set<string>();
   private pendingCorrections: string[] = [];
+  /** Per-turn set of message timestamps already scanned for corrections.
+   *  Cleared on new turns, preserved across resume turns — so resume-turn
+   *  user messages are scanned once (without double-counting the main-turn scan). */
+  private pendingScannedCorrectionTs = new Set<string>();
   // Skill review state — cumulative across turns within a session
   private sessionToolCallCount = 0;
   private skillReviewBuffer: Array<{ role: string; content: string; toolName?: string; ts: number }> = [];
@@ -253,6 +259,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     getSkillSet(this.config.projectRoot).clear();
     try {
       this.restoreSessionId();
+      this.restorePendingSeenTimestamps();
       this.memorySessionId = initMemorySession(this.memorySessionName, this.config.model);
       // Clear any orphan is_streaming=true flag from a prior process crash.
       // Without this, the UI would show this agent as streaming indefinitely.
@@ -398,6 +405,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             // Only add genuinely unseen timestamps to in-memory tracking.
             // seenNotProcessed messages are already tracked from the previous poll.
             for (const m of unseen) this.pendingSeenTimestamps.add(m.ts);
+            this.persistPendingSeenTimestamps();
           }
 
           // Mark messages as seen and broadcast to UI
@@ -487,6 +495,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
               for (const ts of this.pendingTimestamps) {
                 this.pendingSeenTimestamps.delete(ts);
               }
+              this.persistPendingSeenTimestamps();
             }
           }
 
@@ -829,37 +838,45 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const manager = getSessionManager();
     if (!manager.needsCompaction(this.memorySessionName, 100_000)) return;
 
-    const { channel, model } = this.config;
+    const { model } = this.config;
+    const KEEP_COUNT = 50;
 
-    // Read up to 200 recent channel messages — enough to summarise the whole
-    // conversation even for very active channels. Oldest first for the LLM.
-    type ChatRow = { ts: string; user: string; agent_id: string | null; text: string | null };
-    const rows = db
-      .query<ChatRow, [string, number]>(
-        `SELECT ts, user, agent_id, text FROM messages
-         WHERE channel = ? AND thread_ts IS NULL AND text IS NOT NULL AND text != ''
-         ORDER BY ts DESC LIMIT ?`,
-      )
-      .all(channel, 200)
-      .reverse();
+    // Summarize the ROWS being deleted (not channel chat) — otherwise the agent
+    // loses its own reasoning history ([CC-Turn] thought/action blocks) while the
+    // summary describes user/agent chat that is already fully available via the
+    // channel DB and injected into the preamble separately.
+    const rowsToDelete = manager.getMessagesToCompactByName(this.memorySessionName, KEEP_COUNT);
+    if (rowsToDelete.length === 0) return;
 
-    const chatLines = rows
-      .filter((r) => r.text?.trim())
-      .map((r) => {
-        const sender = r.user === "UHUMAN" ? "human" : r.agent_id || r.user || "bot";
-        const text = (r.text || "").replace(/\s+/g, " ").trim().slice(0, 500);
-        return `[${sender}]: ${text}`;
-      });
+    const lines: string[] = [];
+    for (const row of rowsToDelete) {
+      const content = (row.content || "").trim();
+      if (!content) continue;
+      if (content.startsWith("[CC-Turn]:")) {
+        // Structured turn row — strip the marker, pass inner lines through verbatim
+        // (they already include timestamps, actor labels, and truncated outputs).
+        const inner = content.slice("[CC-Turn]:".length).trim();
+        if (inner) lines.push(inner);
+      } else if (content.startsWith("[Sent to chat]:") || content.startsWith("[Actions taken]:")) {
+        // Legacy assistant rows — include raw for context
+        lines.push(`[you]: ${content.slice(0, 600)}`);
+      } else if (row.role === "user") {
+        // User-role rows may be formatted prompt blobs; truncate aggressively
+        lines.push(`[user]: ${content.replace(/\s+/g, " ").slice(0, 400)}`);
+      }
+    }
 
-    if (chatLines.length === 0) return;
+    if (lines.length === 0) return;
 
-    logger.info(`Compacting session — generating LLM summary from ${chatLines.length} channel messages...`);
+    logger.info(
+      `Compacting session — summarising ${rowsToDelete.length} session rows (${lines.length} lines) with LLM...`,
+    );
 
-    const conversationText = chatLines.join("\n\n");
-    const summary = await generateConversationSummary(conversationText, chatLines.length, model);
+    const conversationText = lines.join("\n");
+    const summary = await generateConversationSummary(conversationText, rowsToDelete.length, model);
 
-    manager.compactSessionByName(this.memorySessionName, 50, summary);
-    logger.info(`Session compacted with LLM summary`);
+    manager.compactSessionByName(this.memorySessionName, KEEP_COUNT, summary);
+    logger.info(`Session compacted with LLM summary of session rows`);
   }
 
   // --------------------------------------------------------------------------
@@ -1017,7 +1034,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   /** Poll for messages with seen/not-processed distinction for prompt labeling.
    *  Returns all pending messages plus arrays split by seen state.
-   *  Note: pendingSeenTimestamps is in-memory only — does not persist across restarts. */
+   *  pendingSeenTimestamps persists to DB (agent_seen.pending_seen_ts_json) via
+   *  persistPendingSeenTimestamps() — so crash mid-turn doesn't misclassify resumed
+   *  messages as fresh and cause duplicate replies. */
   private pollForMessagesWithSeen(): { pending: any[]; unseen: any[]; seenNotProcessed: any[] } {
     const { channel, agentId } = this.config;
     const seen = db
@@ -1111,20 +1130,42 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     saveToMemory(this.memorySessionId, "user", prompt);
 
-    // Feed channel messages into skill review buffer so the reviewer has user
-    // context (what prompted the tool calls), not just tool results in isolation.
-    if (isNewTurn) {
-      for (const msg of messages) {
-        const text = (msg.text || "").trim();
-        if (!text) continue;
-        const sender = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
+    // Clear the correction-scan dedup set at the start of each NEW turn so
+    // fresh turns scan their messages from scratch. Resume turns (isNewTurn=false)
+    // keep the set intact so messages already scanned in the aborted main turn
+    // aren't re-scanned.
+    if (isNewTurn) this.pendingScannedCorrectionTs.clear();
+
+    // Feed channel messages into skill review buffer AND scan for user corrections.
+    // Dedup by timestamp so resume-turn messages that were already scanned in the
+    // aborted main turn don't get double-counted. Without this dedup, corrections
+    // from resume-turn user messages were silently dropped (the old code gated the
+    // entire scan loop on isNewTurn).
+    for (const msg of messages) {
+      const text = (msg.text || "").trim();
+      if (!text) continue;
+      const sender = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
+
+      // Skill-review buffer on new turns only — it's an agent-work buffer, not a
+      // correction-detection buffer.
+      if (isNewTurn) {
         this.addToSkillReviewBuffer({ role: "user", content: `[${sender}]: ${sanitize(text.slice(0, 500))}` });
-        // Capture user corrections for skill improvement (mirrors non-CC beforeCompaction path)
-        if (msg.user === "UHUMAN" && containsCorrection(text)) {
+      }
+
+      // Correction capture runs on BOTH new turns AND resume turns, dedup'd by ts.
+      // Previously only new turns scanned — resume-turn corrections silently dropped.
+      if (msg.user === "UHUMAN" && msg.ts && !this.pendingScannedCorrectionTs.has(msg.ts)) {
+        this.pendingScannedCorrectionTs.add(msg.ts);
+        if (containsCorrection(text)) {
           this.pendingCorrections.push(text.slice(0, 500));
-          if (this.pendingCorrections.length > 100) this.pendingCorrections = this.pendingCorrections.slice(-100);
+          if (this.pendingCorrections.length > 100) {
+            this.pendingCorrections = this.pendingCorrections.slice(-100);
+          }
         }
       }
+    }
+
+    if (isNewTurn) {
       if (this.trajectoryRecorder) {
         const userText = messages
           .filter((m: any) => (m.text || "").trim())
@@ -1965,6 +2006,45 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
   }
 
+  /** Persist pendingSeenTimestamps to the DB so a crash-restart correctly classifies
+   *  resumed messages as "seen but not processed" rather than fresh. */
+  private persistPendingSeenTimestamps(): void {
+    try {
+      const json = this.pendingSeenTimestamps.size > 0 ? JSON.stringify([...this.pendingSeenTimestamps]) : null;
+      db.run(`UPDATE agent_seen SET pending_seen_ts_json = ? WHERE agent_id = ? AND channel = ?`, [
+        json,
+        this.config.agentId,
+        this.config.channel,
+      ]);
+    } catch {
+      // Best-effort — if the column doesn't exist (migration not run), silently skip.
+    }
+  }
+
+  /** Restore pendingSeenTimestamps from DB on worker start. Called after restoreSessionId. */
+  private restorePendingSeenTimestamps(): void {
+    try {
+      const row = db
+        .query<{ pending_seen_ts_json: string | null }, [string, string]>(
+          `SELECT pending_seen_ts_json FROM agent_seen WHERE agent_id = ? AND channel = ?`,
+        )
+        .get(this.config.agentId, this.config.channel);
+      if (row?.pending_seen_ts_json) {
+        const parsed = JSON.parse(row.pending_seen_ts_json);
+        if (Array.isArray(parsed)) {
+          for (const ts of parsed) {
+            if (typeof ts === "string") this.pendingSeenTimestamps.add(ts);
+          }
+          if (this.pendingSeenTimestamps.size > 0) {
+            logger.info(`Restored ${this.pendingSeenTimestamps.size} pending-seen timestamps from prior session`);
+          }
+        }
+      }
+    } catch {
+      // Migration not applied, column missing, or JSON invalid — start with empty Set.
+    }
+  }
+
   private forceMarkUnprocessed(): void {
     for (const ts of this.pendingTimestamps) {
       const retries = this.forceMarkRetries.get(ts) || 0;
@@ -1991,6 +2071,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     for (const ts of this.pendingTimestamps) {
       this.pendingSeenTimestamps.delete(ts);
     }
+    this.persistPendingSeenTimestamps();
     this.pendingTimestamps = [];
   }
 }

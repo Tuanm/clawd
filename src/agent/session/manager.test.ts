@@ -469,4 +469,96 @@ describe("SessionManager", () => {
       expect(checkpoints).toEqual([]);
     });
   });
+
+  describe("getMessagesToCompact", () => {
+    test("returns empty when session has fewer rows than keepCount", () => {
+      const mgr = new SessionManager(":memory:");
+      const session = mgr.getOrCreateSession("sess", "claude");
+      for (let i = 0; i < 10; i++) {
+        mgr.addMessage(session.id, userMsg(`msg ${i}`));
+      }
+      expect(mgr.getMessagesToCompact(session.id, 50)).toEqual([]);
+    });
+
+    test("returns rows that would be deleted (keeps keepCount most recent)", () => {
+      const mgr = new SessionManager(":memory:");
+      const session = mgr.getOrCreateSession("sess", "claude");
+      for (let i = 0; i < 20; i++) {
+        mgr.addMessage(session.id, userMsg(`msg ${i}`));
+      }
+      const toDelete = mgr.getMessagesToCompact(session.id, 5);
+      expect(toDelete.length).toBe(15);
+      expect(toDelete[0].content).toBe("msg 0");
+      expect(toDelete[14].content).toBe("msg 14");
+    });
+
+    test("includes [CC-Turn] assistant rows but excludes raw streaming blobs", () => {
+      const mgr = new SessionManager(":memory:");
+      const session = mgr.getOrCreateSession("sess", "claude");
+      mgr.addMessage(session.id, userMsg("user 1"));
+      mgr.addMessage(session.id, assistantMsg("[CC-Turn]:\n[1] you: msg"));
+      mgr.addMessage(session.id, assistantMsg("raw streaming blob — should be excluded"));
+      mgr.addMessage(session.id, assistantMsg("[Sent to chat]: legacy"));
+      mgr.addMessage(session.id, assistantMsg("[Actions taken]: legacy tools"));
+      for (let i = 0; i < 10; i++) mgr.addMessage(session.id, userMsg(`recent ${i}`));
+
+      const toDelete = mgr.getMessagesToCompact(session.id, 10);
+      const contents = toDelete.map((r) => r.content);
+      expect(contents).toContain("user 1");
+      expect(contents).toContain("[CC-Turn]:\n[1] you: msg");
+      expect(contents).toContain("[Sent to chat]: legacy");
+      expect(contents).toContain("[Actions taken]: legacy tools");
+      expect(contents).not.toContain("raw streaming blob — should be excluded");
+    });
+
+    test("by-name variant returns same result as by-id", () => {
+      const mgr = new SessionManager(":memory:");
+      const session = mgr.getOrCreateSession("named-sess", "claude");
+      for (let i = 0; i < 15; i++) mgr.addMessage(session.id, userMsg(`msg ${i}`));
+      const byId = mgr.getMessagesToCompact(session.id, 5);
+      const byName = mgr.getMessagesToCompactByName("named-sess", 5);
+      expect(byName.length).toBe(byId.length);
+      expect(byName.map((r) => r.id)).toEqual(byId.map((r) => r.id));
+    });
+
+    test("by-name returns empty for non-existent session", () => {
+      const mgr = new SessionManager(":memory:");
+      expect(mgr.getMessagesToCompactByName("nope", 50)).toEqual([]);
+    });
+  });
+
+  describe("autoCompact unified byte-count", () => {
+    test("does not compact when preamble-visible bytes are under threshold even if tool results inflate total", () => {
+      const mgr = new SessionManager(":memory:");
+      const session = mgr.getOrCreateSession("sess", "claude");
+      // Add one user message + many tool-result rows (which are filtered out of the
+      // preamble-visible byte count used by needsCompaction).
+      mgr.addMessage(session.id, userMsg("hi"));
+      const bigToolOutput = "x".repeat(10000);
+      for (let i = 0; i < 20; i++) {
+        mgr.addMessage(session.id, {
+          role: "tool",
+          content: bigToolOutput,
+          tool_call_id: `call_${i}`,
+        });
+      }
+      // Preamble-visible bytes = just "hi" (~2 bytes / 3 ≈ 0 tokens) → below any threshold.
+      // Old autoCompact would have triggered at ~70k tokens (20 × 10k / 3). New one
+      // uses needsCompaction which filters to preamble-visible rows only.
+      const compacted = mgr.autoCompact("sess", 1000, 5);
+      expect(compacted).toBe(false);
+    });
+
+    test("compacts when preamble-visible bytes exceed threshold", () => {
+      const mgr = new SessionManager(":memory:");
+      const session = mgr.getOrCreateSession("sess", "claude");
+      const bigMsg = "y".repeat(5000);
+      for (let i = 0; i < 50; i++) {
+        mgr.addMessage(session.id, userMsg(bigMsg));
+      }
+      // 50 × 5000 / 3 ≈ 83k tokens — exceeds 10k threshold.
+      const compacted = mgr.autoCompact("sess", 10_000, 10);
+      expect(compacted).toBe(true);
+    });
+  });
 });
