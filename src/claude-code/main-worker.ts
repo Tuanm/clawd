@@ -1076,7 +1076,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   /** Defense-in-depth re-entrancy guard — the outer poll loop already serializes
    *  turns, but if a future refactor accidentally interleaves a second call we
-   *  want a loud failure rather than silent state corruption. */
+   *  want a loud failure rather than silent state corruption.
+   *
+   *  Note: re-injection paths (unsent-text + mark-processed prompts inside
+   *  _runSDKTurnImpl) call runSDKQuery directly, NOT _runSDKTurn — so they
+   *  intentionally do not trip this guard. They share turn state by design. */
   private _turnInFlight = false;
 
   private async _runSDKTurn(prompt: string, messages: any[], isNewTurn = true): Promise<void> {
@@ -1466,10 +1470,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         }
       }
 
-      // Release the abortController so cancelProcessing/setSleeping during the idle
-      // window between turns does not hold onto a stale controller reference.
-      this.abortController = null;
-
       // Save a tool-activity summary for turns where the agent used tools but
       // never called chat_send_message. Without this, tool-only turns leave no
       // trace in the preamble — the agent's work becomes invisible in context.
@@ -1494,6 +1494,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       }
       throw err; // re-throw so the caller's error handling still fires
     } finally {
+      // Always clear the abortController reference so cancelProcessing/setSleeping
+      // during the idle window between turns doesn't act on a stale controller.
+      // Must be in finally so it runs even when commitTurn or post-processing throws.
+      this.abortController = null;
+
       // Flush [CC-Turn] row in finally so it always captures work done this turn,
       // even on abort/interrupt/error paths. Without this, all turnToolLog and
       // turnMessageLog entries are silently lost when runSDKQuery throws.

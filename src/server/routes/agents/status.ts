@@ -215,6 +215,7 @@ export async function handleAgentStatusRoutes(req: Request, url: URL, path: stri
       body.tool_args || {},
       body.status || "started",
       body.result,
+      body.tool_use_id,
     );
     return json({
       ok: true,

@@ -235,39 +235,54 @@ export function buildContextPreamble(sessionName: string, opts: ContextPreambleO
     const messages = manager.getRecentMessagesCompact(session.id, maxMessages, maxContentLength);
     if (messages.length === 0) return "";
 
-    // Build preamble lines from NEWEST to OLDEST and stop once maxLines is exceeded.
-    // Row-based LIMIT alone doesn't bound the preamble because a single [CC-Turn] row
-    // can expand to 150+ inner lines — with maxMessages=50 that's 7500 lines, and the
-    // old `slice(-maxLines)` kept only the trailing 200, silently dropping older work.
-    // Reversed-fill + oldest-first emit + explicit overflow marker is correct.
+    // Build preamble lines with a two-pass strategy so summary rows
+    // ([CONTEXT SUMMARY ...]) are ALWAYS preserved — they carry compacted history
+    // that we can't recover if dropped. Regular rows fill the remaining budget
+    // newest-first. The raw row-based LIMIT alone is insufficient because a single
+    // [CC-Turn] can expand to 150+ inner lines (50 actions × ~3 lines each).
     const seenTimestamps = new Set<string>();
-    const expandedRows: string[][] = [];
-    let totalLines = 0;
+
+    // Pass 1: summary rows (emit unconditionally, preserve chronological order).
+    const summaryLines: string[] = [];
+    const summaryIndices = new Set<number>();
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      const content = msg.content?.trim() ?? "";
+      if (!content.startsWith("[CONTEXT SUMMARY")) continue;
+      summaryIndices.add(i);
+      const expanded = expandMessage(msg.role, content, agentLabel, true, seenTimestamps);
+      summaryLines.push(...expanded);
+    }
+
+    // Pass 2: regular rows newest-first, respecting the remaining budget.
+    const remainingBudget = Math.max(0, maxLines - summaryLines.length);
+    const expandedRegularRows: string[][] = [];
+    let totalRegularLines = 0;
     let droppedCount = 0;
 
     for (let i = messages.length - 1; i >= 0; i--) {
+      if (summaryIndices.has(i)) continue;
       const msg = messages[i];
       const content = msg.content?.trim() ?? "";
       if (!content) continue;
-      const isSummaryRow = content.startsWith("[CONTEXT SUMMARY");
-      const expanded = expandMessage(msg.role, content, agentLabel, isSummaryRow, seenTimestamps);
+      const expanded = expandMessage(msg.role, content, agentLabel, false, seenTimestamps);
       if (expanded.length === 0) continue;
-      if (totalLines + expanded.length > maxLines && expandedRows.length > 0) {
-        // Budget exhausted — count remaining (unfetched) rows as dropped and stop.
-        droppedCount = i + 1; // all remaining older rows
+      if (totalRegularLines + expanded.length > remainingBudget && expandedRegularRows.length > 0) {
+        // Count remaining (older, non-summary) rows as dropped.
+        for (let k = 0; k < i; k++) if (!summaryIndices.has(k)) droppedCount++;
         break;
       }
-      expandedRows.unshift(expanded);
-      totalLines += expanded.length;
+      expandedRegularRows.unshift(expanded);
+      totalRegularLines += expanded.length;
     }
 
-    if (expandedRows.length === 0) return "";
+    if (summaryLines.length === 0 && expandedRegularRows.length === 0) return "";
 
-    const lines: string[] = [];
+    const lines: string[] = [...summaryLines];
     if (droppedCount > 0) {
       lines.push(`[${droppedCount} older turn row${droppedCount === 1 ? "" : "s"} omitted from preamble]`);
     }
-    for (const row of expandedRows) {
+    for (const row of expandedRegularRows) {
       lines.push(...row);
     }
     const capped = lines;

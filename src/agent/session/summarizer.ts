@@ -173,7 +173,10 @@ export class SessionSummarizer {
       }
 
       const lastCheckpoint = this.getLastCheckpoint();
-      const lastSummarizedTs = lastCheckpoint?.toTs || "0";
+      // Zero-pad pre-existing unpadded `toTs` (e.g. "49" from before the padding fix)
+      // so lex-comparison against the new 12-digit padded `ts` values is correct.
+      const rawLastTs = lastCheckpoint?.toTs || "0";
+      const lastSummarizedTs = rawLastTs.length < 12 ? rawLastTs.padStart(12, "0") : rawLastTs;
 
       const unsummarizedMessages = messages.filter((m) => m.ts > lastSummarizedTs);
 
