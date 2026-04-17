@@ -451,6 +451,63 @@ describe("SessionManager", () => {
 
   // ── 7. Summarizer checkpoint persistence ─────────────────────────────────────
 
+  describe("setConversationSummary", () => {
+    test("inserts a new summary row (created_at=0) without touching real rows", () => {
+      const session = mgr.createSession("cs-bridge", "m");
+      mgr.addMessage(session.id, userMsg("hi"));
+      mgr.addMessage(session.id, assistantMsg("hello"));
+
+      mgr.setConversationSummary(session.id, "Agent greeted user.");
+
+      const all = mgr.getMessages(session.id);
+      // Summary row sorts first (created_at=0), real rows follow.
+      expect(all.length).toBe(3);
+      expect(all[0].content).toContain("[CONTEXT SUMMARY]");
+      expect(all[0].content).toContain("Agent greeted user.");
+      expect(all[1].content).toBe("hi");
+      expect(all[2].content).toBe("hello");
+    });
+
+    test("replaces any existing summary row (only one at a time)", () => {
+      const session = mgr.createSession("cs-replace", "m");
+      mgr.addMessage(session.id, userMsg("hi"));
+      mgr.setConversationSummary(session.id, "First summary");
+      mgr.setConversationSummary(session.id, "Second summary");
+
+      const summaries = mgr.getCompactionSummariesByName("cs-replace");
+      expect(summaries.length).toBe(1);
+      expect(summaries[0]).toContain("Second summary");
+      expect(summaries[0]).not.toContain("First summary");
+    });
+
+    test("preserves existing [CONTEXT SUMMARY prefix if caller already provided one", () => {
+      const session = mgr.createSession("cs-prefix", "m");
+      mgr.setConversationSummary(session.id, "[CONTEXT SUMMARY - 10 older messages compacted]\n\nBody");
+
+      const summaries = mgr.getCompactionSummariesByName("cs-prefix");
+      expect(summaries.length).toBe(1);
+      // Starts with one [CONTEXT SUMMARY, not two.
+      const prefixCount = (summaries[0].match(/\[CONTEXT SUMMARY/g) || []).length;
+      expect(prefixCount).toBe(1);
+      expect(summaries[0]).toContain("10 older messages compacted");
+    });
+
+    test("invalidates needsCompaction cache", () => {
+      const session = mgr.createSession("cs-cache", "m");
+      mgr.addMessage(session.id, userMsg("x".repeat(300))); // 100 tokens
+      // Prime cache
+      expect(mgr.needsCompaction("cs-cache", 1000)).toBe(false);
+
+      // Add a HUGE summary — counts 0 bytes toward budget (created_at=0 excluded).
+      // Cache must be cleared regardless so the next read sees fresh state.
+      mgr.setConversationSummary(session.id, "x".repeat(100_000));
+
+      // After summary write, cache is invalidated. needsCompaction re-runs the
+      // SUM query; excludes created_at=0 so stays false.
+      expect(mgr.needsCompaction("cs-cache", 1000)).toBe(false);
+    });
+  });
+
   describe("summarizer checkpoint persistence", () => {
     test("saveSummarizerCheckpoint stores checkpoint metadata", () => {
       const session = mgr.createSession("s", "m");

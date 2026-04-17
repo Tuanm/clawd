@@ -245,6 +245,28 @@ export class SessionManager {
       .all(sessionId) as StoredMessage[];
   }
 
+  /**
+   * Replace the session's conversation summary (created_at=0 row) without
+   * touching any real messages. Used by the provider/config transition bridge
+   * to inject a "prior conversation" summary into the system prompt when the
+   * CC session is cleared — the underlying rows must survive so that if the
+   * agent switches back to a provider that consumes them via the legacy
+   * preamble path, the full fidelity history is still available.
+   *
+   * Deletes any existing summary row first so only one remains (consistent
+   * with compactSession's single-summary invariant).
+   */
+  setConversationSummary(sessionId: string, summary: string): void {
+    this.db.run(`DELETE FROM messages WHERE session_id = ? AND created_at = 0`, [sessionId]);
+    const prefixed = summary.startsWith("[CONTEXT SUMMARY") ? summary : `[CONTEXT SUMMARY]\n\n${summary}`;
+    this.db.run(
+      `INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, created_at)
+       VALUES (?, 'user', ?, NULL, NULL, 0)`,
+      [sessionId, prefixed],
+    );
+    this._compactionCache.clear();
+  }
+
   /** Return compaction summary rows (created_at=0) ordered oldest-first. Used by
    *  CC to inject the summary into the system prompt rather than the message stream. */
   getCompactionSummariesByName(sessionName: string): string[] {
