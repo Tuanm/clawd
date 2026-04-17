@@ -21,7 +21,7 @@ import {
   sanitize,
 } from "../agent/plugins/skill-review-plugin";
 import { buildDynamicSystemPrompt, type PromptContext } from "../agent/prompt/builder";
-import { buildContextPreamble } from "../agent/session/context-injector";
+import { buildSdkMessages } from "./build-sdk-messages";
 import { getSessionManager } from "../agent/session/manager";
 import { generateConversationSummary } from "../agent/session/summarizer";
 import { getSkillSet, improveSkillFromCorrections } from "../agent/skills/improvement";
@@ -116,12 +116,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private turnChatSent = false;
   private turnMarkProcessed = false;
   private turnStreamText = "";
-  // Per-turn structured log — thoughts, actions+outputs, messages — serialised to one session row
-  private turnToolLog: Array<{ name: string; subject: string; output: string; ts: number }> = [];
-  private turnMessageLog: Array<{ text: string; ts: number }> = [];
-  /** Wall-clock timestamp captured at turn entry. Used for [Thought] line ordering
-   *  so thoughts always appear before actions, independent of processingStartedAt updates. */
-  private turnStartTs: number | null = null;
+  // Per-turn structured log removed — assistant messages (with text + tool_use blocks)
+  // and tool results are persisted as individual session rows by handleAssistantMessage
+  // and handleToolResult, and rebuilt into the next turn's SDK message stream by
+  // buildSdkMessages(). No separate blob/log needed.
   // Skill improvement state — per-turn tracking for correction-gated improvement
   private turnActivatedSkills = new Set<string>();
   private turnBufferStartIdx = 0;
@@ -695,14 +693,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // All tracking below is best-effort. Each block is independently try-catched
     // so one failure cannot cascade and drop later tracking work.
 
-    // Track chat_send_message: turn flag + message log + trajectory
+    // Track chat_send_message: turn flag + trajectory
+    // (message content is already captured via handleAssistantMessage → session DB,
+    //  no need for a per-turn in-memory log anymore).
     try {
       if (toolName === "mcp__clawd__chat_send_message" && !response?.error) {
         this.turnChatSent = true;
-        const sentText = input?.text;
-        if (sentText) {
-          this.turnMessageLog.push({ text: String(sentText), ts: Date.now() });
-        }
         if (this.trajectoryRecorder) {
           this.trajectoryRecorder.recordAssistantResponse(sanitize(input?.text || ""));
         }
@@ -778,24 +774,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       logger.error(`[handleToolResult] skill_activate tracking failed:`, err);
     }
 
-    // Turn tool log for [CC-Turn] preamble summary
-    try {
-      if (!CONVERSATION_TOOLS.has(shortName)) {
-        const toolOutput = sanitize(truncateToolResult(response).slice(0, 300));
-        if (this.turnToolLog.length < 50) {
-          this.turnToolLog.push({
-            name: shortName,
-            subject: extractSubject(shortName, toolInput),
-            output: toolOutput,
-            ts: Date.now(),
-          });
-        } else if (this.turnToolLog.length === 50) {
-          this.turnToolLog.push({ name: "+more", subject: "", output: "", ts: Date.now() });
-        }
-      }
-    } catch (err) {
-      logger.error(`[handleToolResult] turnToolLog push failed for ${shortName}:`, err);
-    }
+    // (turnToolLog removed: assistant rows with tool_use blocks are already
+    //  persisted via handleAssistantMessage, and tool_result rows via saveToMemory
+    //  above — both are rebuilt into the next turn's SDK message stream by
+    //  buildSdkMessages. No separate per-turn log needed.)
 
     // Skill review buffer + trigger
     try {
@@ -1079,13 +1061,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   /** Process messages with a pre-built prompt (used by interrupt resume path) */
   private async processMessagesWithPrompt(prompt: string, messages: any[]): Promise<void> {
     // isNewTurn=false: interrupt resume continues the same-turn CC session (keep resume:).
-    // Flush [CC-Turn] in a finally so accumulated tool calls / messages from the aborted
-    // main turn + the resume turn are written together as one coherent row.
-    try {
-      await this._runSDKTurn(prompt, messages, false);
-    } finally {
-      this.flushCCTurnRow();
-    }
+    // No [CC-Turn] flush needed — assistant/tool rows are persisted per-message as they
+    // arrive via handleAssistantMessage and handleToolResult, so history is always
+    // complete in the session DB regardless of abort/error/interrupt.
+    return this._runSDKTurn(prompt, messages, false);
   }
 
   private async processMessages(messages: any[], unseen: any[], seenNotProcessed: any[]): Promise<void> {
@@ -1114,21 +1093,30 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
   }
 
-  private async _runSDKTurnImpl(prompt: string, messages: any[], isNewTurn = true): Promise<void> {
+  private async _runSDKTurnImpl(_prompt: string, messages: any[], isNewTurn = true): Promise<void> {
     // On a new turn, discard the previous CC session so context comes from our
     // SQLite store rather than the unbounded ~/.claude/projects/ history.
     if (isNewTurn) this.sessionId = null;
 
-    // Build context preamble BEFORE saveToMemory so the current message is not
-    // included in the history (getRecentMessagesCompact reads the same DB).
-    // Compaction (if needed) is handled here with LLM-generated summaries from
-    // real channel messages — buildContextPreamble runs with autoCompact disabled.
+    // Maybe summarise old history before we rebuild the SDK message stream.
+    // The compaction summary is written as a session row with created_at=0 and
+    // is lifted into the system prompt below (NOT the message stream).
     if (isNewTurn) await this.maybeCompactSession();
-    const contextPreamble = isNewTurn
-      ? buildContextPreamble(this.memorySessionName, { disableAutoCompact: true, agentId: this.config.agentId })
-      : "";
 
-    saveToMemory(this.memorySessionId, "user", prompt);
+    // Persist each channel message as its own user-role row with an attributed
+    // "[timestamp] author: text" prefix. Each becomes a separate SDKUserMessage
+    // when buildSdkMessages rebuilds the stream for the SDK. Skips heartbeats
+    // (ephemeral signals — never persisted, delivered inline below) and retry
+    // turns where the rows were already persisted by the aborted main turn.
+    if (isNewTurn) {
+      for (const msg of messages) {
+        if (msg.kind === "heartbeat") continue;
+        const text = (msg.text || "").trim();
+        if (!text) continue;
+        const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
+        saveToMemory(this.memorySessionId, "user", `[${msg.ts}] ${author}: ${text}`);
+      }
+    }
 
     // Clear the correction-scan dedup set at the start of each NEW turn so
     // fresh turns scan their messages from scratch. Resume turns (isNewTurn=false)
@@ -1300,6 +1288,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       systemPrompt += "\n\n" + memoryContext;
     }
 
+    // Inject compaction summary (if prior turns were summarised). Summary rows
+    // live in the session DB with created_at=0; we lift them into the system
+    // prompt instead of emitting as user messages so the agent sees them as
+    // context, not as synthetic user turns.
+    const summaries = getSessionManager().getCompactionSummariesByName(this.memorySessionName);
+    if (summaries.length > 0) {
+      systemPrompt += `\n\n<prior_conversation_summary>\n${summaries.join("\n\n")}\n</prior_conversation_summary>`;
+    }
+
     // Dynamic: inject active sub-agent count as a system reminder (best-effort)
     try {
       const agentRes = await fetch(`${this.config.chatApiUrl}/mcp`, {
@@ -1334,17 +1331,29 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       this.turnChatSent = false;
       this.turnMarkProcessed = false;
       this.turnStreamText = "";
-      this.turnToolLog = [];
-      this.turnMessageLog = [];
-      this.turnStartTs = Date.now();
     }
 
-    // contextPreamble was computed above (before saveToMemory) to exclude the
-    // current message from the injected history.
-    const promptWithContext = contextPreamble ? `${contextPreamble}\n\n${prompt}` : prompt;
+    // Build the SDK input as an AsyncIterable of role-structured messages from
+    // the session DB. Channel messages are already persisted above (user rows
+    // with "[ts] author: text" format). Heartbeats aren't persisted — we append
+    // them to the stream inline so the agent sees the wake signal this turn
+    // without polluting future turns' history.
+    const sessionName = this.memorySessionName;
+    const heartbeatText = isHeartbeatTurn ? messages[0]?.text : null;
+    async function* sdkPrompt(): AsyncIterable<unknown> {
+      for await (const m of buildSdkMessages(sessionName)) yield m;
+      if (heartbeatText) {
+        yield {
+          type: "user",
+          message: { role: "user", content: [{ type: "text", text: heartbeatText }] },
+          parent_tool_use_id: null,
+          session_id: sessionName,
+        };
+      }
+    }
 
     const sdkOpts = {
-      prompt: promptWithContext,
+      prompt: sdkPrompt(),
       model: model || "sonnet",
       cwd: this.config.projectRoot,
       providerName: this.config.provider,
@@ -1539,67 +1548,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // during the idle window between turns doesn't act on a stale controller.
       // Must be in finally so it runs even when commitTurn or post-processing throws.
       this.abortController = null;
-
-      // Flush [CC-Turn] row in finally so it always captures work done this turn,
-      // even on abort/interrupt/error paths. Without this, all turnToolLog and
-      // turnMessageLog entries are silently lost when runSDKQuery throws.
-      // Only emit for fresh turns — interrupt-resume contributions are merged into
-      // the same turn buffers and the outer caller will flush at its own boundary.
-      // Skip pure heartbeat no-op turns (no chat, no mark, no tools, no meaningful thought)
-      // to avoid polluting the preamble with idle-poll noise.
-      if (isNewTurn) {
-        const isNoOpHeartbeat =
-          isHeartbeatTurn &&
-          !this.turnChatSent &&
-          !this.turnMarkProcessed &&
-          this.turnToolLog.length === 0 &&
-          this.turnStreamText.trim().length < 50;
-        if (!isNoOpHeartbeat) {
-          this.flushCCTurnRow();
-        } else {
-          // Clear buffers to prevent heartbeat residue from leaking into next turn.
-          this.turnToolLog = [];
-          this.turnMessageLog = [];
-          this.turnStreamText = "";
-        }
-      }
-    }
-  }
-
-  /** Write the accumulated turn state (thought, actions, messages) as a single [CC-Turn] row.
-   * Safe to call multiple times — clears the buffers after writing to make re-runs no-ops.
-   *
-   * Uses `turnStartTs` (captured at turn entry) for the thought timestamp so the thought
-   * always orders BEFORE the first action, even if processingStartedAt was updated by
-   * mid-turn onActivity callbacks. */
-  private flushCCTurnRow(): void {
-    if (!this.memorySessionId) return;
-    try {
-      const lines: string[] = [];
-      const thought = this.turnStreamText.trim();
-      if (thought.length > 50) {
-        const turnTs = this.turnStartTs ?? this.processingStartedAt ?? Date.now();
-        const truncated = thought.length > 2000 ? `${thought.slice(0, 2000)} [truncated]` : thought;
-        lines.push(`[${turnTs}] you: [Thought]: ${truncated}`);
-      }
-      for (const action of this.turnToolLog) {
-        const label = action.subject ? `${action.name}(${action.subject})` : action.name;
-        lines.push(`[${action.ts}] you: [Action]: ${label}`);
-        if (action.output) lines.push(`    Output: ${action.output}`);
-      }
-      for (const msg of this.turnMessageLog) {
-        lines.push(`[${msg.ts}] you: ${msg.text}`);
-      }
-      if (lines.length > 0) {
-        saveToMemory(this.memorySessionId, "assistant", `[CC-Turn]:\n${lines.join("\n")}`);
-      }
-    } catch (err) {
-      logger.error("[flushCCTurnRow] failed:", err);
-    } finally {
-      // Clear buffers so re-entry into _runSDKTurn doesn't duplicate entries.
-      this.turnToolLog = [];
-      this.turnMessageLog = [];
-      this.turnStreamText = "";
+      // NOTE: no [CC-Turn] flush anymore — assistant messages (with tool_use blocks)
+      // and tool results are persisted per-message as they arrive via
+      // handleAssistantMessage / handleToolResult, so the session DB already holds
+      // complete per-turn history regardless of abort/error/interrupt. buildSdkMessages
+      // reconstructs the SDK input stream from those rows on the next turn.
     }
   }
 
@@ -1616,12 +1569,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         });
       }
     }
-    // Only persist when there's actual text content. Pure tool-call rows
-    // (empty content + tool_calls array) are redundant with the turnToolLog/[CC-Turn]
-    // flow AND are filtered out by getRecentMessagesCompact at line 302, so they just
-    // bloat the DB and pad autoCompact's byte count without benefit.
+    // Persist whenever there's text OR tool_use content. buildSdkMessages rebuilds
+    // the next turn's assistant messages from these rows — tool_use-only assistant
+    // messages are load-bearing for tool_use↔tool_result pairing on the API side.
     const text = textParts.join("\n");
-    if (text.length > 0) {
+    if (text.length > 0 || toolCalls.length > 0) {
       saveToMemory(this.memorySessionId, "assistant", text, toolCalls.length > 0 ? toolCalls : undefined);
     }
     // Feed assistant text into skill review buffer

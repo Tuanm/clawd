@@ -214,6 +214,30 @@ export class SessionManager {
     }));
   }
 
+  /** Return raw stored rows in chronological order without the Message mapping.
+   *  Used by CC's build-sdk-messages which needs tool_calls as raw JSON text,
+   *  and needs to differentiate tool-role from user-role rows directly. */
+  getAllStoredMessages(sessionId: string): StoredMessage[] {
+    return this.db
+      .query("SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC")
+      .all(sessionId) as StoredMessage[];
+  }
+
+  /** Return compaction summary rows (created_at=0) ordered oldest-first. Used by
+   *  CC to inject the summary into the system prompt rather than the message stream. */
+  getCompactionSummariesByName(sessionName: string): string[] {
+    const session = this.db
+      .query("SELECT id FROM sessions WHERE name = ? ORDER BY updated_at DESC LIMIT 1")
+      .get(sessionName) as { id: string } | null;
+    if (!session) return [];
+    const rows = this.db
+      .query(
+        `SELECT content FROM messages WHERE session_id = ? AND created_at = 0 AND content IS NOT NULL ORDER BY id ASC`,
+      )
+      .all(session.id) as Array<{ content: string }>;
+    return rows.map((r) => r.content).filter((c) => c && c.trim().length > 0);
+  }
+
   getRecentMessages(sessionId: string, limit = 50): Message[] {
     const rows = this.db
       .query(

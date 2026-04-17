@@ -29,7 +29,10 @@ import { getSafeEnvVars } from "../agent/utils/sandbox";
 // ============================================================================
 
 export interface SDKQueryOptions {
-  prompt: string;
+  /** Prompt for the turn. Either a single string (wrapped as one user message)
+   *  or an AsyncIterable of role-structured messages (used by the CC main worker
+   *  to feed the SDK proper user+assistant turn history with attributed senders). */
+  prompt: string | AsyncIterable<unknown>;
   model: string;
   cwd: string;
   systemPrompt: string;
@@ -408,7 +411,11 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
   const options: Options = opts.resume ? { ...baseOptions, resume: opts.resume } : baseOptions;
 
   const runStream = async (runOptions: Options): Promise<void> => {
-    const stream = query({ prompt: opts.prompt, options: runOptions });
+    // Cast prompt: the public SDK type names the iterable element as SDKUserMessage,
+    // but the SDK runtime discriminates on `.type` and handles assistant-role
+    // entries on the same channel (see build-sdk-messages.ts). We pass mixed
+    // user/assistant role messages in the iterable path.
+    const stream = query({ prompt: opts.prompt as any, options: runOptions });
     for await (const message of stream) {
       processMessage(message, callbacks, (sid) => {
         sessionId = sid;
