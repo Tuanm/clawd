@@ -73,9 +73,15 @@ let _defaultSessionManager: SessionManager | null = null;
 export class SessionManager {
   private db: Database;
   private _sessionUpdateTimes = new Map<string, number>(); // per-session debounce
-  // needsCompaction result is cached per session for 30s to avoid a SUM aggregate
-  // query on every new turn. Invalidated when the session is compacted.
-  private _compactionCache = new Map<string, { result: boolean; expiresAt: number }>();
+  // needsCompaction byte-count is cached per session name for 30s to avoid a
+  // SUM aggregate query on every new turn. We cache the BYTE count, not the
+  // boolean result — different callers may pass different maxTokens thresholds
+  // (100_000 in prod, various values in tests), and a boolean cache would
+  // return stale results when the threshold changes.
+  // Invalidated on any mutation that changes the byte-count aggregate or
+  // frees a session name for reuse: addMessage, updateMessageContent,
+  // clearMessages, deleteSession, purgeOldSessions, compactSession.
+  private _compactionCache = new Map<string, { bytes: number; expiresAt: number }>();
   private static readonly COMPACTION_CACHE_TTL_MS = 30_000;
 
   constructor(dbPath?: string) {
@@ -638,30 +644,34 @@ export class SessionManager {
   needsCompaction(name: string, maxTokens: number = 50000): boolean {
     const now = Date.now();
     const cached = this._compactionCache.get(name);
-    if (cached && now < cached.expiresAt) return cached.result;
+    let bytes: number;
+    if (cached && now < cached.expiresAt) {
+      bytes = cached.bytes;
+    } else {
+      const session = this.db
+        .query("SELECT id FROM sessions WHERE name = ? ORDER BY updated_at DESC LIMIT 1")
+        .get(name) as { id: string } | null;
+      if (!session) return false;
 
-    const session = this.db
-      .query("SELECT id FROM sessions WHERE name = ? ORDER BY updated_at DESC LIMIT 1")
-      .get(name) as { id: string } | null;
-    if (!session) return false;
+      // Count all stream-relevant bytes: user (channel messages), tool (tool
+      // results materialised as user content in the rebuild), and assistant rows
+      // (both legacy-prefixed and new-format). Summary rows are excluded via
+      // created_at > 0 since they live in the system prompt, not the message stream.
+      const row = this.db
+        .query(
+          `SELECT COALESCE(SUM(LENGTH(COALESCE(content, ''))), 0) as bytes
+           FROM messages
+           WHERE session_id = ?
+             AND created_at > 0
+             AND (role = 'user' OR role = 'tool' OR role = 'assistant')`,
+        )
+        .get(session.id) as { bytes: number } | null;
 
-    // Count all stream-relevant bytes: user (channel messages), tool (tool
-    // results materialised as user content in the rebuild), and assistant rows
-    // (both legacy-prefixed and new-format). Summary rows are excluded via
-    // created_at > 0 since they live in the system prompt, not the message stream.
-    const row = this.db
-      .query(
-        `SELECT COALESCE(SUM(LENGTH(COALESCE(content, ''))), 0) as bytes
-         FROM messages
-         WHERE session_id = ?
-           AND created_at > 0
-           AND (role = 'user' OR role = 'tool' OR role = 'assistant')`,
-      )
-      .get(session.id) as { bytes: number } | null;
+      bytes = row?.bytes || 0;
+      this._compactionCache.set(name, { bytes, expiresAt: now + SessionManager.COMPACTION_CACHE_TTL_MS });
+    }
 
-    const result = Math.ceil((row?.bytes || 0) / 3) > maxTokens;
-    this._compactionCache.set(name, { result, expiresAt: now + SessionManager.COMPACTION_CACHE_TTL_MS });
-    return result;
+    return Math.ceil(bytes / 3) > maxTokens;
   }
 
   /**
