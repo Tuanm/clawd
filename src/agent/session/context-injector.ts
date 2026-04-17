@@ -104,17 +104,13 @@ function expandMessage(
     // Only surface output that is meaningful for conversational context:
     //   [Sent to chat]:    what the agent visibly said to the channel
     //   [Actions taken]:   summary of tools used in a tool-only turn
-    //   [Reasoning]:       streaming analysis saved when the agent didn't send it to
-    //                      chat (e.g. proposed a solution and asked for confirmation)
     // Raw streaming text blobs (no prefix) are skipped — they're verbose
     // internal reasoning captured for the Thoughts UI, not for context.
     const prefix = trimmed.startsWith("[Sent to chat]:")
       ? "[Sent to chat]:"
       : trimmed.startsWith("[Actions taken]:")
         ? "[Actions taken]:"
-        : trimmed.startsWith("[Reasoning]:")
-          ? "[Reasoning]:"
-          : null;
+        : null;
     if (!prefix) return [];
 
     const text = trimmed.slice(prefix.length).trim();
