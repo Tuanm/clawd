@@ -11,7 +11,10 @@ export function initMemorySession(sessionName: string, model: string): string | 
     const sessions = getSessionManager();
     const session = sessions.getOrCreateSession(sessionName, model);
     return session.id;
-  } catch {
+  } catch (err) {
+    // Silent failure here means the agent runs with NO persistence — preamble will
+    // be empty every turn, [CC-Turn] writes become no-ops. Log so operators notice.
+    console.error(`[initMemorySession] Failed to initialise session "${sessionName}":`, err);
     return null;
   }
 }
@@ -32,5 +35,9 @@ export function saveToMemory(
       tool_calls: toolCalls,
       tool_call_id: toolCallId,
     });
-  } catch {}
+  } catch (err) {
+    // Persistence failures are recoverable (next turn will try again) but the
+    // operator should know when the session DB is in trouble.
+    console.error(`[saveToMemory] Failed to persist ${role} message:`, err);
+  }
 }

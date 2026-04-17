@@ -594,22 +594,29 @@ export class SessionManager {
   }
 
   /**
-   * Auto-compact a session if it exceeds token limits
+   * Auto-compact a session if it exceeds token limits.
+   * Uses `needsCompaction`'s preamble-only byte count to match the same
+   * definition of "size" the preamble builder uses — avoids firing compaction
+   * when the session is big in unused tool-result bytes that never reach the LLM.
+   *
    * @param name - Session name
    * @param maxTokens - Token threshold to trigger compaction
    * @param keepCount - Messages to keep after compaction
    * @returns true if compaction was performed
    */
   autoCompact(name: string, maxTokens: number = 50000, keepCount: number = 30): boolean {
-    // Single stats query used for both check and logging (avoids redundant DB scan)
+    if (!this.needsCompaction(name, maxTokens)) return false;
+
+    // Log with full stats for observability — the compaction decision used the
+    // filtered byte count, but the log includes the total for operator context.
     const stats = this.getSessionStatsByName(name);
-    if (!stats || stats.estimatedTokens <= maxTokens) return false;
+    if (!stats) return false;
 
     console.log(
-      `[SessionManager] Session "${name}" exceeds token limit (${stats.estimatedTokens} > ${maxTokens}), compacting...`,
+      `[SessionManager] Session "${name}" exceeds preamble token limit (compacting ${stats.messageCount} rows, ~${stats.estimatedTokens} total tokens)`,
     );
 
-    const summary = `Conversation summary: approximately ${stats.messageCount} prior messages compacted (${stats.estimatedTokens} estimated tokens).`;
+    const summary = `Conversation summary: approximately ${stats.messageCount} prior messages compacted.`;
     const deleted = this.compactSessionByName(name, keepCount, summary);
     return deleted > 0;
   }

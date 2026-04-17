@@ -235,21 +235,42 @@ export function buildContextPreamble(sessionName: string, opts: ContextPreambleO
     const messages = manager.getRecentMessagesCompact(session.id, maxMessages, maxContentLength);
     if (messages.length === 0) return "";
 
-    const lines: string[] = [];
+    // Build preamble lines from NEWEST to OLDEST and stop once maxLines is exceeded.
+    // Row-based LIMIT alone doesn't bound the preamble because a single [CC-Turn] row
+    // can expand to 150+ inner lines — with maxMessages=50 that's 7500 lines, and the
+    // old `slice(-maxLines)` kept only the trailing 200, silently dropping older work.
+    // Reversed-fill + oldest-first emit + explicit overflow marker is correct.
     const seenTimestamps = new Set<string>();
+    const expandedRows: string[][] = [];
+    let totalLines = 0;
+    let droppedCount = 0;
 
-    for (const msg of messages) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
       const content = msg.content?.trim() ?? "";
       if (!content) continue;
       const isSummaryRow = content.startsWith("[CONTEXT SUMMARY");
       const expanded = expandMessage(msg.role, content, agentLabel, isSummaryRow, seenTimestamps);
-      lines.push(...expanded);
+      if (expanded.length === 0) continue;
+      if (totalLines + expanded.length > maxLines && expandedRows.length > 0) {
+        // Budget exhausted — count remaining (unfetched) rows as dropped and stop.
+        droppedCount = i + 1; // all remaining older rows
+        break;
+      }
+      expandedRows.unshift(expanded);
+      totalLines += expanded.length;
     }
 
-    if (lines.length === 0) return "";
+    if (expandedRows.length === 0) return "";
 
-    // Apply hard line cap — keep the most recent lines when over limit
-    const capped = lines.length > maxLines ? lines.slice(-maxLines) : lines;
+    const lines: string[] = [];
+    if (droppedCount > 0) {
+      lines.push(`[${droppedCount} older turn row${droppedCount === 1 ? "" : "s"} omitted from preamble]`);
+    }
+    for (const row of expandedRows) {
+      lines.push(...row);
+    }
+    const capped = lines;
 
     return [
       "<conversation_history>",

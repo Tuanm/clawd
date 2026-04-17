@@ -324,6 +324,9 @@ export interface StreamEntry {
   timestamp: number;
   toolName?: string;
   toolArgs?: any;
+  /** SDK-generated unique id for this tool invocation — used for start/end pairing
+   *  so concurrent same-named tool calls don't cross-pair. */
+  toolUseId?: string;
 }
 
 export interface StreamingAgentInfo {
@@ -331,6 +334,9 @@ export interface StreamingAgentInfo {
   avatarColor: string;
   entries: StreamEntry[];
   completed?: boolean; // true when agent finished streaming (entries preserved for dialog)
+  /** Wall-clock ms when `completed` was set — used by the periodic GC
+   *  to evict long-idle cached entries even if the dialog never opens. */
+  completedAt?: number;
 }
 
 // Per-channel state interface
@@ -1852,6 +1858,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             timestamp: data.timestamp || Date.now(),
             toolName: data.tool_name,
             toolArgs: data.tool_args,
+            toolUseId: data.tool_use_id,
           });
           streamingVersionRef.current++;
 
@@ -1911,11 +1918,13 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             });
           } else {
             // Agent stopped streaming - remove from active tracking but KEEP output entries
-            // The dialog's cachedOutputRef handles display; entries are only fully cleared when dialog closes
+            // The dialog's cachedOutputRef handles display; entries are cleared when dialog closes
+            // or by the periodic GC (streamingOutputGc effect) after 10 minutes idle.
             const key = `${msgChannel}:${data.agent_id}`;
             const info = streamingOutputRef.current.get(key);
             if (info) {
               info.completed = true; // Mark as completed, don't delete entries
+              info.completedAt = Date.now();
             }
             streamingVersionRef.current++;
 
@@ -2264,6 +2273,21 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       }
     }
   }, [activeChannel]);
+
+  // Periodic GC for completed streaming output that is never observed by the dialog.
+  // Without this, long sessions with many agents accumulate cached entries indefinitely.
+  useEffect(() => {
+    const STALE_MS = 10 * 60 * 1000; // 10 minutes
+    const interval = setInterval(() => {
+      const now = Date.now();
+      for (const [key, info] of streamingOutputRef.current.entries()) {
+        if (info.completed && info.completedAt && now - info.completedAt > STALE_MS) {
+          streamingOutputRef.current.delete(key);
+        }
+      }
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Stable callback for marking messages as seen (passed to MessageList)
   const handleMarkSeen = useCallback(
