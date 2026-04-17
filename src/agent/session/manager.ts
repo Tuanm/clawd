@@ -159,6 +159,11 @@ export class SessionManager {
       this.db.run("DELETE FROM messages WHERE session_id = ?", [id]);
       this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
     })();
+    // Cached needsCompaction results are keyed by session name, which may be
+    // reused by a future createSession. Clear so the next needsCompaction
+    // reads the fresh state instead of returning a stale result from the
+    // deleted session.
+    this._compactionCache.clear();
   }
 
   // ============================================================================
@@ -269,6 +274,8 @@ export class SessionManager {
    */
   updateMessageContent(sessionId: string, messageId: number, content: string): void {
     this.db.run("UPDATE messages SET content = ? WHERE id = ? AND session_id = ?", [content, messageId, sessionId]);
+    // Content mutation changes the byte-count aggregate needsCompaction approximates.
+    this._compactionCache.clear();
   }
 
   /**
@@ -409,6 +416,7 @@ export class SessionManager {
 
   clearMessages(sessionId: string) {
     this.db.run("DELETE FROM messages WHERE session_id = ?", [sessionId]);
+    this._compactionCache.clear();
   }
 
   // ============================================================================
@@ -697,6 +705,8 @@ export class SessionManager {
         this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
       }
     })();
+    // Names of purged sessions may be reused by future createSession calls.
+    this._compactionCache.clear();
     console.log(`[SessionManager] Purged ${old.length} sessions older than ${maxAgeDays} days`);
     return old.length;
   }
