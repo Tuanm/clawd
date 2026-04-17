@@ -1143,7 +1143,19 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // by keepCount in compactSession, so they survive the summarisation.
     // Compaction summary rows have created_at=0 and are lifted into the system
     // prompt below (NOT the message stream).
-    if (isNewTurn) await this.maybeCompactSession();
+    //
+    // Try/catch: compaction is BEST-EFFORT. An LLM failure inside
+    // generateConversationSummary must NOT abort the turn — if it did, the
+    // incoming messages would already be persisted (above) but the turn would
+    // not run, and the next poll would re-persist them (duplicate rows). Log
+    // the failure and proceed with whatever uncompacted history exists.
+    if (isNewTurn) {
+      try {
+        await this.maybeCompactSession();
+      } catch (err) {
+        logger.warn(`maybeCompactSession failed (non-fatal, proceeding uncompacted): ${err}`);
+      }
+    }
 
     // Clear the correction-scan dedup set at the start of each NEW turn so
     // fresh turns scan their messages from scratch. Resume turns (isNewTurn=false)
