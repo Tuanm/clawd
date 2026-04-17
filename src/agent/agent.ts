@@ -63,6 +63,28 @@ const logSilentError = (context: string, err: any) => {
   console.warn(`${YELLOW}[Silent Error] ${context}: ${errMsg}${RESET}`);
 };
 
+/**
+ * Strip `<think>...</think>` (and `<thinking>...</thinking>`) reasoning blocks
+ * from assistant text before persisting to the session DB.
+ *
+ * Why: some models (notably MiniMax-M2.7-highspeed) emit their chain-of-thought
+ * inline in the response text. Persisting those blocks into conversation
+ * history causes the model to see its own past reasoning on later turns and
+ * repeat the patterns — e.g. "Now I need to respond to the user" becomes a
+ * template the model keeps re-firing, leading to duplicate replies.
+ *
+ * Also normalises excess whitespace left behind after the strip. Returns the
+ * trimmed result (empty string if the input was reasoning-only).
+ */
+export function stripReasoningBlocks(text: string | null | undefined): string {
+  if (!text) return "";
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -1024,6 +1046,41 @@ export class Agent {
   /** Count of consecutive text-only responses (no tool calls) for re-expansion trigger */
   private _consecutiveTextOnlyResponses = 0;
 
+  /** Successful chat_send_message calls in the current run() invocation since
+   *  the last productive tool call (file_read / bash / web_search / edit /
+   *  memo / etc.). Reset to 0 when a productive tool runs successfully.
+   *
+   *  Legitimate patterns (ack + progress + final) interleave sends with
+   *  productive work → counter never grows.
+   *
+   *  Pathological runaway (observed on MiniMax-M2.7-highspeed: 4 consecutive
+   *  `chat_send_message` calls with only `chat_mark_processed` in between)
+   *  trips the cap because `chat_mark_processed` is non-productive.
+   *
+   *  When _turnSendsSinceLastWork exceeds _maxSendsWithoutWork, subsequent
+   *  chat_send_message tool calls short-circuit with a structured
+   *  tool_result informing the agent its reply is already delivered and
+   *  that further messaging requires real work in between. */
+  private _turnSendsSinceLastWork = 0;
+  private readonly _maxSendsWithoutWork = 1;
+  /** Absolute per-run cap — safety net against pathological send+work ping-pong. */
+  private _turnSendCount = 0;
+  private readonly _maxSendsPerTurn = 10;
+
+  /** Tools that are NOT considered productive work — sends between these
+   *  don't reset the "sends since last work" counter. Chat control,
+   *  metadata queries, and status reads live here. Anything else (files,
+   *  shell, search, edit, memo, todo, spawn, etc.) is productive. */
+  private readonly _NON_PRODUCTIVE_TOOLS = new Set([
+    "chat_send_message",
+    "chat_mark_processed",
+    "chat_poll_and_ack",
+    "chat_search",
+    "list_agents",
+    "get_project_root",
+    "get_current_time",
+  ]);
+
   private filterToolsByUsage(tools: ToolDefinition[], iteration: number): ToolDefinition[] {
     if (iteration <= this._toolFilterWarmupIterations || this._usedTools.size === 0) {
       return tools; // Send all tools during warmup
@@ -1093,6 +1150,48 @@ export class Agent {
 
     // Track tool usage for smart filtering after warmup
     this.recordToolUsage(toolCall.function.name);
+
+    // Per-turn chat_send_message throttle. Two guards:
+    //   (a) absolute ceiling per run (safety net against pathological
+    //       send+work ping-pong)
+    //   (b) "sends without productive work in between" — legitimate
+    //       ack/progress/final patterns interleave sends with real work,
+    //       so the counter resets whenever a productive tool runs. A
+    //       confused model that fires chat_send_message repeatedly
+    //       without doing any work in between trips this guard.
+    // Short-circuits with a structured tool_result so the agent sees the
+    // outcome and can proceed with mark_processed / other tools / end.
+    if (toolCall.function.name === "chat_send_message") {
+      if (this._turnSendCount >= this._maxSendsPerTurn) {
+        return {
+          args,
+          result: {
+            success: true,
+            output: JSON.stringify({
+              ok: false,
+              skipped: true,
+              reason: "per_turn_send_cap_reached",
+              message: `Reached the absolute per-turn chat_send_message cap (${this._maxSendsPerTurn}). Further messages are suppressed. End the turn or continue with non-chat tool calls.`,
+            }),
+          },
+        };
+      }
+      if (this._turnSendsSinceLastWork >= this._maxSendsWithoutWork) {
+        return {
+          args,
+          result: {
+            success: true,
+            output: JSON.stringify({
+              ok: false,
+              skipped: true,
+              reason: "no_productive_work_since_last_send",
+              message:
+                "A chat_send_message was just delivered and no productive tool has run since. To send another message, do real work first (read a file, run a command, search, edit, etc.). Acknowledgement + progress + final-result patterns are fine if interleaved with actual work. Otherwise proceed with chat_mark_processed or end the turn.",
+            }),
+          },
+        };
+      }
+    }
 
     // Allow plugins to transform tool arguments before execution
     const transformedArgs = this.plugins ? await this.plugins.transformToolArgs(toolCall.function.name, args) : args;
@@ -1204,6 +1303,20 @@ export class Agent {
         result = compressed.result;
       } catch {
         // C26: graceful degradation — keep original result
+      }
+    }
+
+    // Track tool usage against the per-turn send guards. A successful
+    // chat_send_message increments both counters. Any productive tool
+    // (not in the non-productive allowlist) resets the
+    // sends-since-last-work counter, enabling legitimate ack+progress+final
+    // patterns while still catching runaway loops.
+    if (result.success) {
+      if (toolCall.function.name === "chat_send_message") {
+        this._turnSendCount++;
+        this._turnSendsSinceLastWork++;
+      } else if (!this._NON_PRODUCTIVE_TOOLS.has(toolCall.function.name)) {
+        this._turnSendsSinceLastWork = 0;
       }
     }
 
@@ -1653,6 +1766,9 @@ export class Agent {
   async run(userMessage: string, sessionName?: string, interruptChecker?: InterruptChecker): Promise<AgentResult> {
     // Reset cancelled flag for new run
     this._cancelled = false;
+    // Reset per-turn send counters — enforces the runaway-loop guards below.
+    this._turnSendsSinceLastWork = 0;
+    this._turnSendCount = 0;
 
     // Ensure session exists
     if (!this.session && sessionName) {
@@ -2333,7 +2449,7 @@ export class Agent {
             try {
               this.sessions.addMessage(session.id, {
                 role: "assistant",
-                content: `${content}\n\n[stream error: ${errorMsg}]`,
+                content: `${stripReasoningBlocks(content)}\n\n[stream error: ${errorMsg}]`,
               });
             } catch {
               /* ignore */
@@ -2429,11 +2545,12 @@ export class Agent {
           if (toolCalls.length > 0) {
             logInterrupt(`Handling ${toolCalls.length} pending tool_calls after interrupt`);
             // Had tool calls - must add tool_results for ALL of them (API requires it)
-            // Save assistant message with tool_calls
+            // Save assistant message with tool_calls (stripped of inline
+            // reasoning blocks — see stripReasoningBlocks docstring).
             try {
               this.sessions.addMessage(session.id, {
                 role: "assistant",
-                content: content || null,
+                content: stripReasoningBlocks(content) || null,
                 tool_calls: toolCalls,
               });
             } catch (err) {
@@ -2468,7 +2585,7 @@ export class Agent {
             try {
               this.sessions.addMessage(session.id, {
                 role: "assistant",
-                content: `${content}\n\n[interrupted by new message]`,
+                content: `${stripReasoningBlocks(content)}\n\n[interrupted by new message]`,
               });
             } catch (err) {
               logSilentError("session.addMessage (interrupt content)", err);
@@ -2491,11 +2608,12 @@ export class Agent {
           consecutiveStreamErrors = 0; // Reset on successful response
           this._consecutiveTextOnlyResponses++; // Track for tool re-expansion
 
-          // Save assistant response
+          // Save assistant response (strip inline reasoning blocks; they
+          // confuse later turns when the agent re-reads its own history).
           try {
             this.sessions.addMessage(session.id, {
               role: "assistant",
-              content,
+              content: stripReasoningBlocks(content),
             });
           } catch (err) {
             logSilentError("session.addMessage (final)", err);
@@ -2509,18 +2627,22 @@ export class Agent {
           consecutiveStreamErrors = 0; // Reset on successful response
           this._consecutiveTextOnlyResponses = 0; // Reset — agent is using tools
 
-          // Save assistant message with tool calls
+          // Save assistant message with tool calls. Strip reasoning blocks
+          // from content before persistence — the model sees its own saved
+          // history on later turns and duplicates reasoning patterns if
+          // <think> leaks through.
           try {
             this.sessions.addMessage(session.id, {
               role: "assistant",
-              content: content || null,
+              content: stripReasoningBlocks(content) || null,
               tool_calls: toolCalls,
             });
           } catch (err) {
             logSilentError("session.addMessage (toolCalls)", err);
           }
 
-          // Add to messages for next iteration
+          // Add to messages for next iteration (keep full content including
+          // reasoning for same-run continuity — stripping is DB-only).
           messages.push({
             role: "assistant",
             content: content || null,
