@@ -647,69 +647,74 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const result = truncateToolResult(response);
     const status = response?.error || response?.isError || result.startsWith("Error: ") ? "error" : "completed";
     const description = formatToolDescription(toolName, input);
+    const shortName = toolName.replace(/^mcp__clawd__/, "");
 
-    // Track whether the agent successfully sent a message this turn (CC SDK uses mcp__ prefix)
-    if (toolName === "mcp__clawd__chat_send_message" && !response?.error) {
-      this.turnChatSent = true;
-      // Save sent text to memory so context preamble reflects prior responses.
-      // Without this, tool-call-only turns (no text output) leave no trace in the preamble,
-      // causing the agent to re-answer 'Previously Seen' messages it already responded to.
-      const sentText = input?.text;
-      if (sentText) {
-        this.turnMessageLog.push({ text: String(sentText), ts: Date.now() });
-      }
-      // Record the visible assistant response for trajectory (only on successful delivery)
-      if (this.trajectoryRecorder && !response?.error) {
-        this.trajectoryRecorder.recordAssistantResponse(sanitize(input?.text || ""));
-      }
-    }
-    // Track whether chat_mark_processed was called this turn
-    if (toolName === "mcp__clawd__chat_mark_processed" && !response?.error) {
-      this.turnMarkProcessed = true;
-    }
+    // Broadcasts are unconditional — fire first so no exception in tracking can drop them.
+    broadcastAgentToolCall(channel, agentId, toolName, input, "started");
+    broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`);
+    saveToMemory(
+      this.memorySessionId,
+      "tool",
+      `${description}\n${result}`,
+      undefined,
+      toolUseId || `tool_${toolName}_${Date.now()}`,
+    );
 
-    // Fire skill improvement at task completion when corrections were captured this turn.
-    // CC captures corrections from incoming user messages (non-CC uses beforeCompaction hook).
-    if (
-      (toolName === "chat_mark_processed" || toolName === "mcp__clawd__chat_mark_processed") &&
-      !(response as any)?.error
-    ) {
-      const correctionsSnapshot = [...this.pendingCorrections];
-      const activatedSnapshot = [...this.turnActivatedSkills];
-      this.pendingCorrections = [];
-      this.turnActivatedSkills = new Set();
-      this.turnBufferStartIdx = this.skillReviewBuffer.length;
-
-      if (correctionsSnapshot.length > 0 && activatedSnapshot.length > 0) {
-        const { projectRoot } = this.config;
-        const MAX_TURN_SLICE = 8_000;
-        const rawSlice = this.skillReviewBuffer
-          .slice(this.turnBufferStartIdx)
-          .map((e) => `[${e.role}] ${e.content}`)
-          .join("\n");
-        const turnSlice =
-          rawSlice.length > MAX_TURN_SLICE ? rawSlice.slice(0, MAX_TURN_SLICE) + " [truncated]" : rawSlice;
-        for (const skillName of activatedSnapshot) {
-          if (this.skillsBeingImproved.has(skillName)) continue;
-          this.skillsBeingImproved.add(skillName);
-          improveSkillFromCorrections(skillName, correctionsSnapshot, turnSlice, projectRoot)
-            .finally(() => this.skillsBeingImproved.delete(skillName))
-            .catch((err) => console.error("[SkillImprovement] CC path:", err));
+    // All tracking below is best-effort — exceptions must not affect the broadcast above.
+    try {
+      // Track whether the agent successfully sent a message this turn (CC SDK uses mcp__ prefix)
+      if (toolName === "mcp__clawd__chat_send_message" && !response?.error) {
+        this.turnChatSent = true;
+        const sentText = input?.text;
+        if (sentText) {
+          this.turnMessageLog.push({ text: String(sentText), ts: Date.now() });
+        }
+        if (this.trajectoryRecorder) {
+          this.trajectoryRecorder.recordAssistantResponse(sanitize(input?.text || ""));
         }
       }
-    }
 
-    if (toolName === "skill_activate" || toolName === "mcp__clawd__skill_activate") {
-      const ok = !(response as any)?.error && !truncateToolResult(response).includes("not found");
-      const skillName = (toolInput as any)?.name;
-      if (ok && typeof skillName === "string" && skillName.length > 0) {
-        this.turnActivatedSkills.add(skillName);
+      // Track whether chat_mark_processed was called this turn
+      if (toolName === "mcp__clawd__chat_mark_processed" && !response?.error) {
+        this.turnMarkProcessed = true;
       }
-    }
 
-    const shortName = toolName.replace(/^mcp__clawd__/, "");
-    if (!CONVERSATION_TOOLS.has(shortName)) {
-      try {
+      // Skill improvement: fire at task completion when corrections were captured
+      if ((toolName === "chat_mark_processed" || toolName === "mcp__clawd__chat_mark_processed") && !response?.error) {
+        const correctionsSnapshot = [...this.pendingCorrections];
+        const activatedSnapshot = [...this.turnActivatedSkills];
+        this.pendingCorrections = [];
+        this.turnActivatedSkills = new Set();
+        this.turnBufferStartIdx = this.skillReviewBuffer.length;
+
+        if (correctionsSnapshot.length > 0 && activatedSnapshot.length > 0) {
+          const { projectRoot } = this.config;
+          const MAX_TURN_SLICE = 8_000;
+          const rawSlice = this.skillReviewBuffer
+            .slice(this.turnBufferStartIdx)
+            .map((e) => `[${e.role}] ${e.content}`)
+            .join("\n");
+          const turnSlice =
+            rawSlice.length > MAX_TURN_SLICE ? rawSlice.slice(0, MAX_TURN_SLICE) + " [truncated]" : rawSlice;
+          for (const skillName of activatedSnapshot) {
+            if (this.skillsBeingImproved.has(skillName)) continue;
+            this.skillsBeingImproved.add(skillName);
+            improveSkillFromCorrections(skillName, correctionsSnapshot, turnSlice, projectRoot)
+              .finally(() => this.skillsBeingImproved.delete(skillName))
+              .catch((err) => console.error("[SkillImprovement] CC path:", err));
+          }
+        }
+      }
+
+      if (toolName === "skill_activate" || toolName === "mcp__clawd__skill_activate") {
+        const ok = !response?.error && !truncateToolResult(response).includes("not found");
+        const skillName = (toolInput as any)?.name;
+        if (ok && typeof skillName === "string" && skillName.length > 0) {
+          this.turnActivatedSkills.add(skillName);
+        }
+      }
+
+      if (!CONVERSATION_TOOLS.has(shortName)) {
         const toolOutput = sanitize(truncateToolResult(response).slice(0, 300));
         if (this.turnToolLog.length < 50) {
           this.turnToolLog.push({
@@ -721,34 +726,24 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         } else if (this.turnToolLog.length === 50) {
           this.turnToolLog.push({ name: "+more", subject: "", output: "", ts: Date.now() });
         }
-      } catch (err) {
-        logger.error(`[handleToolResult] turnToolLog push failed for ${shortName}:`, err);
       }
-    }
 
-    // Feed skill review buffer — strip mcp__clawd__ prefix for readability
-    this.sessionToolCallCount++;
-    this.addToSkillReviewBuffer({
-      role: "tool",
-      content: sanitize(truncateToolResult(response).slice(0, 200)),
-      toolName: shortName,
-    });
-    this.maybeRunSkillReview();
-    if (this.trajectoryRecorder && !CONVERSATION_TOOLS.has(shortName)) {
-      const trResult = sanitize(truncateToolResult(response).slice(0, 2000));
-      const trSuccess = !(response as any)?.error && !(response as any)?.isError && !trResult.startsWith("Error:");
-      this.trajectoryRecorder.recordToolCall(shortName, toolInput, trResult, trSuccess);
-    }
+      this.sessionToolCallCount++;
+      this.addToSkillReviewBuffer({
+        role: "tool",
+        content: sanitize(truncateToolResult(response).slice(0, 200)),
+        toolName: shortName,
+      });
+      this.maybeRunSkillReview();
 
-    broadcastAgentToolCall(channel, agentId, toolName, input, "started");
-    broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`);
-    saveToMemory(
-      this.memorySessionId,
-      "tool",
-      `${description}\n${result}`,
-      undefined,
-      toolUseId || `tool_${toolName}_${Date.now()}`,
-    );
+      if (this.trajectoryRecorder && !CONVERSATION_TOOLS.has(shortName)) {
+        const trResult = sanitize(truncateToolResult(response).slice(0, 2000));
+        const trSuccess = !response?.error && !response?.isError && !trResult.startsWith("Error:");
+        this.trajectoryRecorder.recordToolCall(shortName, toolInput, trResult, trSuccess);
+      }
+    } catch (err) {
+      logger.error(`[handleToolResult] tracking failed for ${shortName}:`, err);
+    }
   }
 
   // --------------------------------------------------------------------------
