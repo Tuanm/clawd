@@ -56,6 +56,16 @@ export interface PromptContext {
    * where tools are injected directly without a prefix.
    */
   mcpPrefix?: string;
+  /**
+   * Whether the agent receives channel messages as role-structured SDK input
+   * (CC agent: each message is a separate user-role turn with "[ts] author: text"
+   * content). When false/undefined the messages come via the legacy preamble
+   * format with `## Previously Seen` / `## New Messages` sections in a single
+   * prompt string (non-CC agents). The chat section adapts instructions to
+   * match — misleading an agent about where its messages live will make it
+   * fail to recognise incoming input.
+   */
+  roleStructuredInput?: boolean;
 }
 
 // ============================================================================
@@ -221,6 +231,9 @@ function sectionSafety(ctx: PromptContext): string {
 
 function sectionChat(ctx: PromptContext): string {
   const p = ctx.mcpPrefix || "";
+  const messageFormat = ctx.roleStructuredInput
+    ? `- Channel messages arrive as separate user-role turns in this conversation, each with the content format \`[timestamp] author: text\` (author is \`human\` for a human user, otherwise an agent/system id). ALL messages in this format — including the most recent — are directed to you and need handling. Call ${p}chat_send_message to respond, then ${p}chat_mark_processed with the timestamp for EVERY such message you've addressed, even ones from earlier turns that you didn't mark processed yet.`
+    : `- The prompt may contain two message sections: \`## Previously Seen (not yet processed)\` (messages you saw last turn but didn't finish processing) and \`## New Messages\` (brand-new messages). Call ${p}chat_mark_processed for messages in BOTH sections once handled`;
   return `# Communication
 - ${p}chat_send_message(text): the ONLY way humans see your responses — channel/agent_id/user auto-injected
 - ${p}chat_mark_processed(timestamp): mark messages as handled — channel/agent_id auto-injected
@@ -229,7 +242,7 @@ function sectionChat(ctx: PromptContext): string {
 - Wrap copiable content (commands, code, URLs, paths) in markdown code blocks
 - On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, never mention heartbeats in chat
 - If ${p}chat_send_message fails, RETRY immediately
-- The prompt may contain two message sections: \`## Previously Seen (not yet processed)\` (messages you saw last turn but didn't finish processing) and \`## New Messages\` (brand-new messages). Call ${p}chat_mark_processed for messages in BOTH sections once handled`;
+${messageFormat}`;
 }
 
 // ============================================================================
