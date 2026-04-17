@@ -64,9 +64,10 @@ export interface ContextPreambleOpts {
  * Storage format:
  *   role='user'      → full formatted prompt blob — contains all channel
  *                      participants' lines, a header, and a REMINDER footer
- *   role='assistant' → EITHER "[Sent to chat]: <text>" (visible response)
- *                              "[Actions taken]: <tool list>" (tool-only turn)
- *                              raw streaming text (skipped — noisy, UI-only)
+ *   role='assistant' → "[CC-Turn]:\n..." structured turn log (CC agents, current format)
+ *                      "[Sent to chat]: <text>" (legacy — rendered as "you: <text>")
+ *                      "[Actions taken]: <list>" (legacy — rendered as "you: [Action]: <list>")
+ *                      raw streaming text (skipped — noisy, UI-only)
  *
  * Compaction summary rows (content starts with "[CONTEXT SUMMARY") are
  * rendered as a [System] block.
@@ -108,17 +109,18 @@ function expandMessage(
       return inner ? inner.split("\n").filter((l) => l.trim()) : [];
     }
 
-    // Legacy rows (non-CC agents): surface [Sent to chat] and [Actions taken] only.
+    // Legacy rows (non-CC agents or older CC sessions before [CC-Turn] format).
+    // Render consistently with the CC-Turn format using "you" as the label.
     // Raw streaming text blobs (no prefix) are skipped — verbose, UI-only.
-    const prefix = trimmed.startsWith("[Sent to chat]:")
-      ? "[Sent to chat]:"
-      : trimmed.startsWith("[Actions taken]:")
-        ? "[Actions taken]:"
-        : null;
-    if (!prefix) return [];
-
-    const text = trimmed.slice(prefix.length).trim();
-    return text ? [`[${agentLabel}]: ${text}`] : [];
+    if (trimmed.startsWith("[Sent to chat]:")) {
+      const text = trimmed.slice("[Sent to chat]:".length).trim();
+      return text ? [`you: ${text}`] : [];
+    }
+    if (trimmed.startsWith("[Actions taken]:")) {
+      const text = trimmed.slice("[Actions taken]:".length).trim();
+      return text ? [`you: [Action]: ${text}`] : [];
+    }
+    return [];
   }
 
   // role='user': extract individual [timestamp] sender: text lines.
