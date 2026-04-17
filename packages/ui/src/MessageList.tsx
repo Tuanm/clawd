@@ -1509,18 +1509,23 @@ function groupToolEntries(entries: StreamEntry[]): GroupedItem[] {
     const entry = entries[i];
 
     if (entry.type === "tool_start") {
-      // Match by toolUseId first (correct for concurrent same-named calls),
-      // fall back to toolName for legacy events without an id.
+      // Match by toolUseId first (correct for concurrent same-named calls).
+      // Fall back to name match when either side lacks an id — covers:
+      //   - transitional state (mixed server/client upgrades)
+      //   - legacy events without ids
+      //   - servers that broadcast without tool_use_id
       let matchIdx = -1;
       for (let j = i + 1; j < entries.length; j++) {
         if (consumed.has(j)) continue;
         const candidate = entries[j];
         if (candidate.type !== "tool_end" && candidate.type !== "tool_error") continue;
-        const idMatch = entry.toolUseId && candidate.toolUseId && entry.toolUseId === candidate.toolUseId;
+        const bothHaveIds = !!(entry.toolUseId && candidate.toolUseId);
+        const idMatch = bothHaveIds && entry.toolUseId === candidate.toolUseId;
+        // Name-fallback only runs when at least one side lacks an id. When both sides
+        // have ids, only an exact id match counts — otherwise two concurrent same-name
+        // calls could cross-pair.
         const nameMatch =
-          !entry.toolUseId &&
-          !candidate.toolUseId &&
-          normalizeToolName(candidate.toolName || "") === normalizeToolName(entry.toolName || "");
+          !bothHaveIds && normalizeToolName(candidate.toolName || "") === normalizeToolName(entry.toolName || "");
         if (idMatch || nameMatch) {
           matchIdx = j;
           break;

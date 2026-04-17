@@ -156,11 +156,29 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
     }
   }
 
+  // FIFO-keyed tool id tracker: onToolCall pushes, onToolResult pops. Ensures start/end
+  // events pair correctly in the UI's groupToolEntries even for concurrent same-name tools.
+  let toolCallCounter = 0;
+  const pendingToolIds = new Map<string, string[]>();
+
+  function nextToolUseId(toolName: string): string {
+    const id = `ct-${Date.now()}-${++toolCallCounter}`;
+    const queue = pendingToolIds.get(toolName);
+    if (queue) queue.push(id);
+    else pendingToolIds.set(toolName, [id]);
+    return id;
+  }
+
+  function popToolUseId(toolName: string): string | undefined {
+    return pendingToolIds.get(toolName)?.shift();
+  }
+
   async function streamToolCall(
     toolName: string,
     toolArgs: any,
     status: "started" | "completed" | "error" = "started",
     result?: any,
+    toolUseId?: string,
   ): Promise<void> {
     try {
       await timedFetch(`${apiUrl}/api/agent.streamToolCall`, {
@@ -171,6 +189,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
           channel: config.channel,
           tool_name: toolName,
           tool_args: toolArgs,
+          tool_use_id: toolUseId,
           status,
           result,
         }),
@@ -838,8 +857,9 @@ LONG-TERM MEMORY:
         setAgentStreaming(true).catch((err) => {
           console.error("[ClawdChat] setAgentStreaming failed:", err);
         });
-        // Stream tool call to chat UI
-        await streamToolCall(name, args, "started");
+        // Stream tool call to chat UI with a generated id so onToolResult can pair correctly.
+        const toolUseId = nextToolUseId(name);
+        await streamToolCall(name, args, "started", undefined, toolUseId);
       },
 
       async onToolResult(name: string, result: any, _ctx: PluginContext) {
@@ -852,7 +872,9 @@ LONG-TERM MEMORY:
               ? result.error || result.output || "Unknown error"
               : result.output || ""
             : result;
-        await streamToolCall(name, {}, status, resultText);
+        // Pair with the oldest pending id for this tool name (FIFO).
+        const toolUseId = popToolUseId(name);
+        await streamToolCall(name, {}, status, resultText, toolUseId);
       },
 
       async onInterrupt(message: string, _ctx: PluginContext) {
