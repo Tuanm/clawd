@@ -833,17 +833,28 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const lines: string[] = [];
     for (const row of rowsToDelete) {
       const content = (row.content || "").trim();
-      if (!content) continue;
+      if (!content) {
+        // Tool-use-only assistant rows have empty content but a tool_calls field.
+        // Surface a short marker so the summary reflects that tools were invoked.
+        if (row.role === "assistant" && row.tool_calls) {
+          lines.push(`[you]: (used tools)`);
+        }
+        continue;
+      }
       if (content.startsWith("[CC-Turn]:")) {
-        // Structured turn row — strip the marker, pass inner lines through verbatim
-        // (they already include timestamps, actor labels, and truncated outputs).
+        // Legacy structured turn row — strip the marker, pass inner lines through.
         const inner = content.slice("[CC-Turn]:".length).trim();
         if (inner) lines.push(inner);
       } else if (content.startsWith("[Sent to chat]:") || content.startsWith("[Actions taken]:")) {
-        // Legacy assistant rows — include raw for context
         lines.push(`[you]: ${content.slice(0, 600)}`);
+      } else if (row.role === "assistant") {
+        // New-format: agent's own text message or text+tool_use assistant row.
+        lines.push(`[you]: ${content.slice(0, 600)}`);
+      } else if (row.role === "tool") {
+        // Tool result — materialised as a user tool_result in the rebuilt stream.
+        lines.push(`[tool-result]: ${content.replace(/\s+/g, " ").slice(0, 400)}`);
       } else if (row.role === "user") {
-        // User-role rows may be formatted prompt blobs; truncate aggressively
+        // Channel message row (new format: "[ts] author: text") or legacy prompt blob.
         lines.push(`[user]: ${content.replace(/\s+/g, " ").slice(0, 400)}`);
       }
     }
@@ -1093,6 +1104,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
   }
 
+  // _prompt is kept in the signature for API compatibility with _runSDKTurn callers
+  // (processMessages / processMessagesWithPrompt pass it). In the role-structured
+  // refactor the actual turn input is rebuilt from session rows by buildSdkMessages,
+  // so _prompt is unused here — channel messages are persisted below and rebuilt.
   private async _runSDKTurnImpl(_prompt: string, messages: any[], isNewTurn = true): Promise<void> {
     // On a new turn, discard the previous CC session so context comes from our
     // SQLite store rather than the unbounded ~/.claude/projects/ history.
@@ -1105,17 +1120,18 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     // Persist each channel message as its own user-role row with an attributed
     // "[timestamp] author: text" prefix. Each becomes a separate SDKUserMessage
-    // when buildSdkMessages rebuilds the stream for the SDK. Skips heartbeats
-    // (ephemeral signals — never persisted, delivered inline below) and retry
-    // turns where the rows were already persisted by the aborted main turn.
-    if (isNewTurn) {
-      for (const msg of messages) {
-        if (msg.kind === "heartbeat") continue;
-        const text = (msg.text || "").trim();
-        if (!text) continue;
-        const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
-        saveToMemory(this.memorySessionId, "user", `[${msg.ts}] ${author}: ${text}`);
-      }
+    // when buildSdkMessages rebuilds the stream for the SDK. Runs on BOTH new
+    // turns and interrupt-resume turns — the resume path receives the NEW
+    // messages that triggered the interrupt (distinct from the already-persisted
+    // main-turn batch), and those must be recorded here so they appear in this
+    // turn's stream and in all future turns' rebuilt history.
+    // Heartbeats are never persisted — they're delivered inline below.
+    for (const msg of messages) {
+      if (msg.kind === "heartbeat") continue;
+      const text = (msg.text || "").trim();
+      if (!text) continue;
+      const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
+      saveToMemory(this.memorySessionId, "user", `[${msg.ts}] ${author}: ${text}`);
     }
 
     // Clear the correction-scan dedup set at the start of each NEW turn so
@@ -1340,6 +1356,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // without polluting future turns' history.
     const sessionName = this.memorySessionName;
     const heartbeatText = isHeartbeatTurn ? messages[0]?.text : null;
+    // Resolve the session UUID so the inline heartbeat uses the same session_id
+    // as messages emitted by buildSdkMessages (consistency on the iterable).
+    const sessionUuid = getSessionManager().getSession(sessionName)?.id ?? sessionName;
     async function* sdkPrompt(): AsyncIterable<unknown> {
       for await (const m of buildSdkMessages(sessionName)) yield m;
       if (heartbeatText) {
@@ -1347,7 +1366,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           type: "user",
           message: { role: "user", content: [{ type: "text", text: heartbeatText }] },
           parent_tool_use_id: null,
-          session_id: sessionName,
+          session_id: sessionUuid,
         };
       }
     }

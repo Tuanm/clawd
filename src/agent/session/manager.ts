@@ -467,15 +467,7 @@ export class SessionManager {
         `SELECT * FROM messages
          WHERE session_id = ?
            AND id < ?
-           AND tool_call_id IS NULL
-           AND (
-             role = 'user'
-             OR (role = 'assistant' AND (
-               content LIKE '[Sent to chat]:%'
-               OR content LIKE '[Actions taken]:%'
-               OR content LIKE '[CC-Turn]:%'
-             ))
-           )
+           AND (role = 'user' OR role = 'tool' OR role = 'assistant')
          ORDER BY created_at ASC, id ASC`,
       )
       .all(sessionId, threshold.id) as StoredMessage[];
@@ -637,22 +629,17 @@ export class SessionManager {
       .get(name) as { id: string } | null;
     if (!session) return false;
 
-    // Count only preamble-visible bytes — same filter as getRecentMessagesCompact.
-    // Streaming text blobs and tool results are excluded to avoid premature compaction.
+    // Count all stream-relevant bytes: user (channel messages), tool (tool
+    // results materialised as user content in the rebuild), and assistant rows
+    // (both legacy-prefixed and new-format). Summary rows are excluded via
+    // created_at > 0 since they live in the system prompt, not the message stream.
     const row = this.db
       .query(
         `SELECT COALESCE(SUM(LENGTH(COALESCE(content, ''))), 0) as bytes
          FROM messages
          WHERE session_id = ?
-           AND tool_call_id IS NULL
-           AND (
-             role = 'user'
-             OR (role = 'assistant' AND (
-               content LIKE '[Sent to chat]:%'
-               OR content LIKE '[Actions taken]:%'
-               OR content LIKE '[CC-Turn]:%'
-             ))
-           )`,
+           AND created_at > 0
+           AND (role = 'user' OR role = 'tool' OR role = 'assistant')`,
       )
       .get(session.id) as { bytes: number } | null;
 

@@ -113,22 +113,25 @@ describe("buildSdkMessages", () => {
     expect(out[0].message.content[0].type).toBe("tool_use");
   });
 
-  test("repairs orphan tool_use by injecting synthetic tool_result filler", async () => {
+  test("repairs orphan tool_use by merging filler into next user message", async () => {
     const session = mgr.getOrCreateSession("s5", "model");
     // Simulate a crash mid-tool-execution: assistant called a tool but no result persisted.
     addAssistant(session.id, "", [{ id: "orphan1", name: "bash", input: { command: "echo hi" } }]);
     addUser(session.id, "[3000] human: are you there?");
 
     const out = (await collect("s5")) as any[];
-    // Expect: assistant(tool_use) → synthetic user(tool_result) → user(text)
-    expect(out.length).toBe(3);
+    // Expected: assistant(tool_use) → user(filler tool_result + channel text MERGED)
+    // Merging keeps tool_results for a given assistant contiguous in one user message,
+    // which matches the stricter Anthropic Messages API pairing requirement.
+    expect(out.length).toBe(2);
     expect(out[0].type).toBe("assistant");
     expect(out[1].type).toBe("user");
     expect(out[1].message.content[0].type).toBe("tool_result");
     expect(out[1].message.content[0].tool_use_id).toBe("call_orphan1");
     expect(out[1].message.content[0].is_error).toBe(true);
     expect(out[1].message.content[0].content).toContain("interrupted");
-    expect(out[2].message.content[0].text).toContain("are you there?");
+    expect(out[1].message.content[1].type).toBe("text");
+    expect(out[1].message.content[1].text).toContain("are you there?");
   });
 
   test("skips legacy [CC-Turn] rows", async () => {
@@ -173,6 +176,58 @@ describe("buildSdkMessages", () => {
 
     const out = (await collect("s9")) as any[];
     expect(out[1].message.content[0].is_error).toBe(true);
+  });
+
+  test("partial orphan — filler merges with FIRST following user to keep tool_result batch contiguous", async () => {
+    const session = mgr.getOrCreateSession("partial", "model");
+    // Assistant calls two tools; only one gets a result before crash/interrupt.
+    addAssistant(session.id, "", [
+      { id: "a1", name: "bash", input: { command: "ls" } },
+      { id: "a2", name: "bash", input: { command: "pwd" } },
+    ]);
+    // Real result for a1 only
+    addToolResult(session.id, "call_a1", "ls output");
+    // Channel message follows (e.g. user asked a follow-up while a2 was pending)
+    addUser(session.id, "[1000] human: any update?");
+
+    const out = (await collect("partial")) as any[];
+    // Expected sequence — filler for orphan a2 merges into the FIRST user message
+    // after the assistant (the one already carrying tool_result a1), so ALL
+    // tool_results for the assistant batch end up in ONE user message. Meeting
+    // the stricter Anthropic Messages API pairing rule.
+    //   [0] assistant(tool_use a1, tool_use a2)
+    //   [1] user(filler a2 is_error + tool_result a1)  ← filler prepended
+    //   [2] user(channel text) unchanged
+    expect(out.length).toBe(3);
+    expect(out[0].type).toBe("assistant");
+    expect(out[1].type).toBe("user");
+    // Both tool_results present in [1], fillers first
+    expect(out[1].message.content.length).toBe(2);
+    expect(out[1].message.content[0].type).toBe("tool_result");
+    expect(out[1].message.content[0].tool_use_id).toBe("call_a2");
+    expect(out[1].message.content[0].is_error).toBe(true);
+    expect(out[1].message.content[1].type).toBe("tool_result");
+    expect(out[1].message.content[1].tool_use_id).toBe("call_a1");
+    // Channel text preserved as a separate user message
+    expect(out[2].type).toBe("user");
+    expect(out[2].message.content[0].type).toBe("text");
+    expect(out[2].message.content[0].text).toContain("any update?");
+  });
+
+  test("orphan at end of stream emits standalone filler user message", async () => {
+    const session = mgr.getOrCreateSession("tail-orphan", "model");
+    addAssistant(session.id, "", [{ id: "tail1", name: "bash", input: {} }]);
+    // No following user message at all
+
+    const out = (await collect("tail-orphan")) as any[];
+    expect(out.length).toBe(2);
+    expect(out[0].type).toBe("assistant");
+    expect(out[1].type).toBe("user");
+    expect(out[1].message.content[0]).toMatchObject({
+      type: "tool_result",
+      tool_use_id: "call_tail1",
+      is_error: true,
+    });
   });
 
   test("chronological order preserved", async () => {
