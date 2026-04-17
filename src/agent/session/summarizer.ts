@@ -387,37 +387,54 @@ const SUMMARY_RETRY_DELAY_MS = 2_000;
  * Resolve which LLM to use for summarization from ~/.clawd/config.json's
  * `memory` block. Shape:
  *   "memory": { "provider": "minimax", "model": "MiniMax-M2.7-highspeed" }
- * Either field may be omitted; provider undefined = Copilot (legacy default).
  *
- * The `overrideModel` argument is a CALLER hint (e.g. the calling agent's
- * configured model like "sonnet" / "default"). It is IGNORED when a
- * memory.provider is configured — those strings are conversation-LLM
- * shorthand and may be invalid for the memory provider (e.g. MiniMax
- * rejects "default" as an unknown model). Memory config wins when present.
- * When no memory config is set, the override is applied to the Copilot
- * fallback path since both use the same Copilot model namespace.
+ * Both fields support aliases defined under providers.{provider}.models in
+ * config.json (e.g. "default", "sonnet", "opus"). Aliases are resolved
+ * against the RESOLVED provider via mapModelName, so a caller passing
+ * agent-shorthand like "default" / "sonnet" gets translated to the real
+ * model name the memory provider's API recognises.
+ *
+ * Resolution priority:
+ *   1. memory.provider set:
+ *      - use memory.model if present (alias-mapped through memory.provider)
+ *      - else use overrideModel (alias-mapped through memory.provider)
+ *      - else use provider default via getModelForProvider
+ *   2. memory.model only (no provider):
+ *      - legacy Copilot path + alias-mapped memory.model
+ *   3. No memory config:
+ *      - legacy Copilot path + alias-mapped overrideModel (if any)
  */
 function resolveMemoryLlm(overrideModel?: string): { provider?: string; model?: string } {
   try {
     // Dynamic require to avoid load-order issues in tests that mock config-file.
     const { loadConfigFile } = require("../../config/config-file") as typeof import("../../config/config-file");
+    const { mapModelName, getModelForProvider } =
+      require("../api/provider-config") as typeof import("../api/provider-config");
     const memCfg = loadConfigFile().memory;
+
     if (typeof memCfg === "object" && memCfg && memCfg.provider) {
-      // Memory provider configured — use its own model exclusively.
-      return { provider: memCfg.provider, model: memCfg.model };
+      const provider = memCfg.provider;
+      const rawModel = memCfg.model || overrideModel;
+      // If no explicit model anywhere, fall back to the provider's default.
+      // mapModelName returns the input if there's no alias match — safe to
+      // always run it.
+      const model = rawModel ? mapModelName(rawModel, provider) : getModelForProvider(provider);
+      return { provider, model };
     }
     if (typeof memCfg === "object" && memCfg?.model) {
-      // Memory model without provider → defaults to Copilot; override is
-      // ignored to avoid "default" leaking in.
-      return { provider: undefined, model: memCfg.model };
+      // Memory model without provider → Copilot. Map the alias against
+      // copilot's alias table (e.g. "sonnet" → "claude-sonnet-4.5").
+      return { provider: undefined, model: mapModelName(memCfg.model, "copilot") };
+    }
+    if (overrideModel) {
+      // No memory config. Apply the caller override on the Copilot path,
+      // alias-mapped against copilot's table.
+      return { provider: undefined, model: mapModelName(overrideModel, "copilot") };
     }
   } catch {
-    // Config load failure → fall through to Copilot default below.
+    // Config / module load failure → fall through to Copilot default below.
   }
-  // No memory config. Use the caller's override only if it's an actual model
-  // name (reject sentinel "default" / empty string).
-  const safeOverride = overrideModel && overrideModel !== "default" ? overrideModel : undefined;
-  return { provider: undefined, model: safeOverride };
+  return { provider: undefined, model: undefined };
 }
 
 /**
