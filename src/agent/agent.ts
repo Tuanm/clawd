@@ -32,6 +32,7 @@ import { createStatePersistencePlugin } from "./plugins/state-persistence-plugin
 import { buildDynamicSystemPrompt, type PromptContext } from "./prompt/builder";
 import { type Checkpoint, CheckpointManager } from "./session/checkpoint";
 import { getSessionManager, type Session, type SessionManager } from "./session/manager";
+import { generateConversationSummary } from "./session/summarizer";
 import {
   compressMessage,
   fitToBudget,
@@ -706,54 +707,49 @@ export class Agent {
   }
 
   /**
-   * Generate an LLM summary of messages being compacted (like Copilot CLI)
+   * Generate an LLM summary of messages being compacted.
+   *
+   * Routes through `generateConversationSummary` so the memory LLM config
+   * (`~/.clawd/config.json` → `memory.provider` / `memory.model`) is the
+   * single source of truth for summarization — identical behaviour to
+   * CC agents' `maybeCompactSession` and the risky-change bridge.
+   *
+   * Previously this used `this.client.complete()` with a `fastModel`
+   * override, which bypassed the memory config entirely. Unified for
+   * consistency across CC and non-CC workers.
    */
   private async generateCompactionSummary(messages: Message[]): Promise<string> {
+    // Filter to user/assistant content (tool results are separately handled
+    // in more structured summarisation flows, but the non-CC agent path
+    // historically excluded them — preserve that).
+    const relevantMessages = messages.filter((m) => (m.role === "user" || m.role === "assistant") && m.content);
+
+    if (relevantMessages.length === 0) {
+      return `[${messages.length} messages compacted - mostly tool calls]`;
+    }
+
+    // Build conversation text. Keep the per-message cap at 2000 chars to
+    // bound each line; generateConversationSummary applies its own 24000-
+    // char overall truncation after that.
+    const conversationText = relevantMessages
+      .map((m) => `${m.role.toUpperCase()}: ${(m.content || "").slice(0, 2000)}`)
+      .join("\n\n");
+
     try {
-      // Format messages for summarization (exclude tool results, focus on content)
-      const relevantMessages = messages.filter((m) => (m.role === "user" || m.role === "assistant") && m.content);
-
-      if (relevantMessages.length === 0) {
-        return `[${messages.length} messages compacted - mostly tool calls]`;
-      }
-
-      // Build conversation text for summarization — use model's context minus output + overhead
-      const modelLimit = MODEL_TOKEN_LIMITS[this.config.model] ?? 128_000;
-      const maxInputTokens = modelLimit - 4096 - 1000; // reserve 4K output + 1K prompt overhead
-      const maxInputChars = maxInputTokens * 3; // ~3 chars/token
-      let conversationText = "";
-      for (const m of relevantMessages) {
-        const entry = `${m.role.toUpperCase()}: ${(m.content || "").slice(0, 2000)}\n\n`;
-        if (conversationText.length + entry.length > maxInputChars) break;
-        conversationText += entry;
-      }
-
-      const summaryPrompt = `Summarize this conversation concisely. Focus on: tasks requested, key decisions, current progress, unfinished work, and critical context for continuing.
-
-CONVERSATION:
-${conversationText}
-
-SUMMARY:`;
-
-      // Use fast model for compaction summaries to reduce cost/latency
-      const summaryModel = this.config.fastModel || "claude-haiku-4.5";
-      const response = await this.client.complete({
-        model: summaryModel,
-        messages: [{ role: "user", content: summaryPrompt }],
-        max_tokens: 4096,
-      });
-
-      const summary = response.choices[0]?.message?.content?.trim();
-      if (summary) {
-        return summary;
-      }
+      // Pass this.config.model as the override hint; resolveMemoryLlm will
+      // map it through aliases if needed (e.g. "sonnet" → MiniMax-M2.7-highspeed)
+      // when a memory provider is configured.
+      const summary = await generateConversationSummary(conversationText, messages.length, this.config.model);
+      if (summary?.trim()) return summary.trim();
     } catch (err) {
       if (this.config.verbose) {
         console.error("[Agent] Failed to generate LLM summary:", err);
       }
     }
 
-    // Fallback: count-based summary
+    // Fallback: count-based summary (generateConversationSummary has its
+    // own heuristic fallback, but if the whole call throws we still want
+    // something written).
     const userMsgCount = messages.filter((m) => m.role === "user").length;
     const assistantMsgCount = messages.filter((m) => m.role === "assistant").length;
     const toolMsgCount = messages.filter((m) => m.role === "tool").length;
