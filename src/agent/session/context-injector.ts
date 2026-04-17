@@ -178,7 +178,7 @@ function expandMessage(
     const snippet = text.replace(/\[truncated\]$/, "").trim();
     if (!snippet) continue;
     const label = sender === "human" ? "human" : sender;
-    extracted.push(`[${label}]: ${snippet}`);
+    extracted.push(`[${ts}] ${label}: ${snippet}`);
   }
 
   // Fallback for plain-text content (no formatted lines found) — used by
