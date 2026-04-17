@@ -1370,17 +1370,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         saveToMemory(this.memorySessionId, "assistant", `[Actions taken]: ${summary}`);
       }
 
-      // Save streaming reasoning text so the agent retains its analysis in the next turn.
-      // Without this, turns where the agent streams a full analysis and then asks a
-      // confirmation question lose all context — the next turn only sees the short
-      // "[Sent to chat]: Should I proceed?" with no details of the proposed solution.
-      // Truncated to 3000 chars to keep the preamble concise.
-      const reasoningText = this.turnStreamText.trim();
-      if (reasoningText.length > 100 && this.memorySessionId) {
-        const truncated = reasoningText.length > 3000 ? reasoningText.slice(0, 3000) + " [truncated]" : reasoningText;
-        saveToMemory(this.memorySessionId, "assistant", `[Reasoning]: ${truncated}`);
-      }
-
       if (this.turnMarkProcessed && this.trajectoryRecorder) {
         this.trajectoryRecorder.commitTurn();
       } else if (!this.turnMarkProcessed && this.trajectoryRecorder) {
