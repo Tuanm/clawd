@@ -1320,6 +1320,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       otherAgents: otherAgents.length > 0 ? otherAgents : undefined,
       otherAgentStatuses: Object.keys(otherAgentStatuses).length > 0 ? otherAgentStatuses : undefined,
       mcpPrefix: "mcp__clawd__",
+      // CC agents consume channel messages via the role-structured SDK iterable,
+      // not via a preamble string. The chat section of the system prompt needs
+      // to describe the new format so the agent knows where its input lives.
+      roleStructuredInput: true,
     };
     let systemPrompt = buildDynamicSystemPrompt(ccCtx);
 
