@@ -1378,7 +1378,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // Replaces the separate [Sent to chat] / [Actions taken] rows — one row per turn
       // gives the agent a coherent replay of its reasoning and work in the next turn.
       if (this.memorySessionId) {
-        const { agentId } = this.config;
         const lines: string[] = [];
 
         // Thought — the agent's streaming reasoning for this turn (one blob, lightweight version)
@@ -1386,19 +1385,19 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         if (thought.length > 50) {
           const turnTs = this.processingStartedAt ?? Date.now();
           const truncated = thought.length > 2000 ? `${thought.slice(0, 2000)} [truncated]` : thought;
-          lines.push(`[${turnTs}] ${agentId}: [Thought]: ${truncated}`);
+          lines.push(`[${turnTs}] you: [Thought]: ${truncated}`);
         }
 
         // Actions with truncated output
         for (const action of this.turnToolLog) {
           const label = action.subject ? `${action.name}(${action.subject})` : action.name;
-          lines.push(`[${action.ts}] ${agentId}: [Action]: ${label}`);
+          lines.push(`[${action.ts}] you: [Action]: ${label}`);
           if (action.output) lines.push(`    Output: ${action.output}`);
         }
 
         // Chat messages sent this turn (no prefix — just the text)
         for (const msg of this.turnMessageLog) {
-          lines.push(`[${msg.ts}] ${agentId}: ${msg.text}`);
+          lines.push(`[${msg.ts}] you: ${msg.text}`);
         }
 
         if (lines.length > 0) {
@@ -1524,7 +1523,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
 
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI. Once you have fully addressed all messages, call mcp__clawd__chat_mark_processed with the latest message timestamp.]`,
     );
     return parts.join("\n");
   }
@@ -1553,7 +1552,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     parts.push(...olderLines, ...newestLines);
 
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI. Once you have fully addressed all messages, call mcp__clawd__chat_mark_processed with the latest message timestamp.]`,
     );
     return parts.join("\n");
   }
@@ -1611,7 +1610,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     parts.push(...newMsgLines);
 
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI. Once you have fully addressed all messages, call mcp__clawd__chat_mark_processed with the latest message timestamp.]`,
     );
     return parts.join("\n");
   }
