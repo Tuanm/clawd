@@ -423,6 +423,41 @@ export class SessionManager {
   }
 
   /**
+   * Return the rows that a subsequent compactSession(keepCount) would delete.
+   * Used by callers that want to LLM-summarize the deleted content before
+   * compaction. Includes user prompts, [CC-Turn] assistant rows, and legacy
+   * [Sent to chat]/[Actions taken] rows — the same filter as the preamble,
+   * so the summary matches what the agent would have seen.
+   *
+   * Returns empty array if fewer rows than keepCount exist.
+   */
+  getMessagesToCompact(sessionId: string, keepCount: number = 50): StoredMessage[] {
+    // Mirror compactSession's threshold logic: keep IDs >= threshold, delete below.
+    const threshold = this.db
+      .query(`SELECT id FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?`)
+      .get(sessionId, keepCount - 1) as { id: number } | null;
+    if (!threshold) return [];
+
+    return this.db
+      .query(
+        `SELECT * FROM messages
+         WHERE session_id = ?
+           AND id < ?
+           AND tool_call_id IS NULL
+           AND (
+             role = 'user'
+             OR (role = 'assistant' AND (
+               content LIKE '[Sent to chat]:%'
+               OR content LIKE '[Actions taken]:%'
+               OR content LIKE '[CC-Turn]:%'
+             ))
+           )
+         ORDER BY created_at ASC, id ASC`,
+      )
+      .all(sessionId, threshold.id) as StoredMessage[];
+  }
+
+  /**
    * Compact a session by keeping only recent messages and creating a summary
    * @param sessionId - Session to compact
    * @param keepCount - Number of recent messages to keep
@@ -551,6 +586,15 @@ export class SessionManager {
 
     if (!session) return 0;
     return this.compactSession(session.id, keepCount, summaryPrefix);
+  }
+
+  /** By-name wrapper around getMessagesToCompact. */
+  getMessagesToCompactByName(name: string, keepCount: number = 50): StoredMessage[] {
+    const session = this.db
+      .query("SELECT id FROM sessions WHERE name = ? ORDER BY updated_at DESC LIMIT 1")
+      .get(name) as { id: string } | null;
+    if (!session) return [];
+    return this.getMessagesToCompact(session.id, keepCount);
   }
 
   /**

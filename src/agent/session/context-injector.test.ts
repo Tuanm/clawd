@@ -89,7 +89,9 @@ describe("buildContextPreamble", () => {
     expect(result).toContain("<conversation_history>");
     expect(result).toContain("</conversation_history>");
     expect(result).toContain("[Human]: Hello, world!");
-    expect(result).toContain("[Assistant]: Hi there!");
+    // Legacy [Sent to chat] rows render as "you: <text>" in the current format
+    // (unified with [CC-Turn] rows — agent recognises its own messages).
+    expect(result).toContain("you: Hi there!");
   });
 
   test("labels plain user messages as [Human] (fallback) and filters raw assistant text", () => {
@@ -103,19 +105,22 @@ describe("buildContextPreamble", () => {
     expect(result).toContain("[Human]: u");
     // Raw assistant blob must NOT appear — only [Sent to chat]: prefixed lines are surfaced
     expect(result).not.toContain("[Assistant]: a");
+    expect(result).not.toContain("you: a");
   });
 
-  test("uses agentId as label for assistant turns when provided", () => {
+  test("renders [Sent to chat] as 'you: <text>' regardless of agentId (unified format)", () => {
     const session = mgr.getOrCreateSession(SESSION, "model");
     mgr.addMessage(session.id, assistantMsg("[Sent to chat]: Done!"));
 
     const result = buildContextPreamble(SESSION, opts({ agentId: "claude-1" }));
 
-    expect(result).toContain("[claude-1]: Done!");
-    expect(result).not.toContain("[Assistant]:");
+    expect(result).toContain("you: Done!");
+    // agentId is no longer used as the legacy-row label — we use 'you' for consistency
+    // with [CC-Turn] rows so the agent recognises its own messages uniformly.
+    expect(result).not.toContain("[claude-1]: Done!");
   });
 
-  test("extracts per-sender lines from formatted prompt blobs", () => {
+  test("extracts per-sender lines from formatted prompt blobs (with timestamps)", () => {
     const session = mgr.getOrCreateSession(SESSION, "model");
     // Simulate a real formatMessageLine() style prompt
     const prompt = [
@@ -131,9 +136,10 @@ describe("buildContextPreamble", () => {
 
     const result = buildContextPreamble(SESSION, opts({ agentId: "claude-1" }));
 
-    expect(result).toContain("[human]: hey can you fix the auth bug");
-    expect(result).toContain("[verify-agent]: I checked the auth module, found an issue");
-    expect(result).toContain("[claude-1]: On it!");
+    // Current format preserves timestamps for channel-message lines.
+    expect(result).toContain("[1705001234567] human: hey can you fix the auth bug");
+    expect(result).toContain("[1705001235678] verify-agent: I checked the auth module, found an issue");
+    expect(result).toContain("you: On it!");
     // Boilerplate must not appear
     expect(result).not.toContain("# Messages on Channel");
     expect(result).not.toContain("REMINDER");
@@ -152,7 +158,7 @@ describe("buildContextPreamble", () => {
 
     expect(result).not.toContain("command output here");
     expect(result).toContain("[Human]: Run a command");
-    expect(result).toContain("[Assistant]: Done!");
+    expect(result).toContain("you: Done!");
   });
 
   // ── 4. Tool-call-only assistant messages excluded ────────────────────────
@@ -226,7 +232,7 @@ describe("buildContextPreamble", () => {
     const result = buildContextPreamble(SESSION, opts());
 
     expect((result.match(/\[Human\]:/g) ?? []).length).toBe(0);
-    expect(result).toContain("[Assistant]: Real response");
+    expect(result).toContain("you: Real response");
   });
 
   test("returns empty string when all messages have empty content", () => {
@@ -278,5 +284,97 @@ describe("buildContextPreamble", () => {
     mgr.addMessage(session.id, toolCallMsg("t1"));
     mgr.addMessage(session.id, toolResultMsg("t1", "some output"));
     expect(buildContextPreamble(SESSION, opts())).toBe("");
+  });
+
+  describe("summary row preservation", () => {
+    test("summary rows always appear in preamble even when line budget is exhausted", () => {
+      const session = mgr.getOrCreateSession(SESSION, "model");
+      // Add many rows then compact — this produces a real summary row with created_at=0.
+      for (let i = 0; i < 100; i++) {
+        mgr.addMessage(session.id, userMsg(`[${1000 + i}] human: old message ${i}`));
+      }
+      mgr.compactSession(session.id, 5, "Summary body here");
+      // Now add many more regular rows that would exceed maxLines on their own.
+      for (let i = 0; i < 50; i++) {
+        mgr.addMessage(session.id, userMsg(`[${2000 + i}] human: new message ${i}`));
+      }
+
+      const preamble = buildContextPreamble(SESSION, { ...opts(), maxLines: 10 });
+      // Summary must appear — preserved unconditionally.
+      expect(preamble).toContain("Context summary");
+      expect(preamble).toContain("Summary body here");
+    });
+
+    test("emits 'N older turn rows omitted' marker when line budget truncates older regular rows", () => {
+      const session = mgr.getOrCreateSession(SESSION, "model");
+      // 30 user rows — each expands to 1 line.
+      for (let i = 0; i < 30; i++) {
+        mgr.addMessage(session.id, userMsg(`[${1000 + i}] human: msg ${i}`));
+      }
+
+      const preamble = buildContextPreamble(SESSION, { ...opts(), maxLines: 5 });
+      expect(preamble).toMatch(/\[\d+ older turn rows? omitted from preamble\]/);
+    });
+
+    test("summary rows do not count toward the dropped count", () => {
+      const session = mgr.getOrCreateSession(SESSION, "model");
+      // Create a summary via real compaction
+      for (let i = 0; i < 10; i++) {
+        mgr.addMessage(session.id, userMsg(`[${1000 + i}] human: old ${i}`));
+      }
+      mgr.compactSession(session.id, 1, "body");
+      // Now add many new regular rows
+      for (let i = 0; i < 20; i++) {
+        mgr.addMessage(session.id, userMsg(`[${2000 + i}] human: msg ${i}`));
+      }
+
+      const preamble = buildContextPreamble(SESSION, { ...opts(), maxLines: 3 });
+      // The summary is always preserved; dropped count should exclude it.
+      const match = preamble.match(/\[(\d+) older turn rows? omitted from preamble\]/);
+      expect(match).toBeTruthy();
+      const droppedCount = Number(match![1]);
+      // Summary row is preserved (not counted). Dropped count is the regular rows
+      // that didn't fit after subtracting the summary's line usage from budget.
+      expect(droppedCount).toBeGreaterThan(0);
+    });
+
+    test("preamble with only summary rows (no regular rows) still renders", () => {
+      const session = mgr.getOrCreateSession(SESSION, "model");
+      for (let i = 0; i < 10; i++) {
+        mgr.addMessage(session.id, userMsg(`old ${i}`));
+      }
+      mgr.compactSession(session.id, 0, "key points here");
+      const preamble = buildContextPreamble(SESSION, opts());
+      expect(preamble).toContain("<conversation_history>");
+      expect(preamble).toContain("key points here");
+    });
+  });
+
+  describe("[CC-Turn] rendering", () => {
+    test("passes [CC-Turn] inner lines through verbatim", () => {
+      const session = mgr.getOrCreateSession(SESSION, "model");
+      const ccTurn =
+        "[CC-Turn]:\n[1000] you: [Thought]: thinking\n[1001] you: [Action]: file_view(x.ts)\n    Output: code";
+      mgr.addMessage(session.id, assistantMsg(ccTurn));
+      const preamble = buildContextPreamble(SESSION, opts());
+      expect(preamble).toContain("[1000] you: [Thought]: thinking");
+      expect(preamble).toContain("[1001] you: [Action]: file_view(x.ts)");
+      expect(preamble).toContain("    Output: code");
+    });
+
+    test("renders legacy [Sent to chat] as 'you: <text>'", () => {
+      const session = mgr.getOrCreateSession(SESSION, "model");
+      mgr.addMessage(session.id, assistantMsg("[Sent to chat]: hello world"));
+      const preamble = buildContextPreamble(SESSION, opts());
+      expect(preamble).toContain("you: hello world");
+      expect(preamble).not.toContain("[Sent to chat]");
+    });
+
+    test("renders legacy [Actions taken] as 'you: [Action]: <list>'", () => {
+      const session = mgr.getOrCreateSession(SESSION, "model");
+      mgr.addMessage(session.id, assistantMsg("[Actions taken]: file_view(x.ts), bash('ls')"));
+      const preamble = buildContextPreamble(SESSION, opts());
+      expect(preamble).toContain("you: [Action]: file_view(x.ts), bash('ls')");
+    });
   });
 });

@@ -240,4 +240,19 @@ export const chatMigrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 52,
+    description: "agent_seen.pending_seen_ts_json for crash-safe seen-but-unprocessed tracking",
+    up: (db) => {
+      // SQLite ALTER TABLE for adding a column is safe. JSON column holds the
+      // in-memory pendingSeenTimestamps set so the CC worker can restore it
+      // after a crash and correctly classify resumed messages as "seenNotProcessed"
+      // rather than treating them as fresh (which would cause duplicate replies).
+      try {
+        db.exec(`ALTER TABLE agent_seen ADD COLUMN pending_seen_ts_json TEXT`);
+      } catch {
+        // Column already exists from a prior partial migration — ignore.
+      }
+    },
+  },
 ];

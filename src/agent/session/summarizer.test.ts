@@ -127,6 +127,73 @@ describe("SessionSummarizer - Option C: In-memory checkpoints", () => {
     });
   });
 
+  describe("padded-index backward compatibility", () => {
+    it("should use zero-padded ts so lex comparison matches numeric order", () => {
+      // Simulates the output of fetchDbMessages — indices are padded to 12 digits.
+      const messages = Array.from({ length: 12 }, (_, i) => ({
+        ts: i.toString().padStart(12, "0"),
+        user: "UHUMAN",
+        text: `Message ${i}`,
+      }));
+
+      // With padded values, string comparison matches numeric order.
+      // Without padding, "10" < "9" would break checkpoint watermark filtering.
+      expect(messages[10].ts > messages[9].ts).toBe(true);
+      expect(messages[9].ts > messages[1].ts).toBe(true);
+    });
+
+    it("should handle pre-existing unpadded toTs via the _doSummarize comparison path", async () => {
+      // Create messages at indices 0..59 (padded).
+      const messages = Array.from({ length: 60 }, (_, i) => ({
+        ts: i.toString().padStart(12, "0"),
+        user: "UHUMAN",
+        text: `Message ${i}`,
+      }));
+
+      spyOn(summarizer as any, "fetchDbMessages").mockReturnValue(messages);
+
+      // Inject a legacy unpadded checkpoint (toTs="49") simulating a DB upgraded from
+      // before the padding fix. Without the zero-pad fallback in _doSummarize, the
+      // comparison "000000000050" > "49" would be false (string comparison: '0' < '4')
+      // and all messages would be treated as unsummarized.
+      (summarizer as any).checkpoints = [
+        {
+          id: "legacy",
+          createdAt: new Date().toISOString(),
+          fromTs: "0",
+          toTs: "49", // UNPADDED — pre-fix format
+          messageCount: 50,
+          summary: "Legacy summary",
+        },
+      ];
+
+      // Stub createSummary so we can observe the count without invoking the LLM.
+      let summarizedCount: number | null = null;
+      spyOn(summarizer as any, "createSummary").mockImplementation((msgs: any) => {
+        summarizedCount = msgs.length;
+        return Promise.resolve();
+      });
+
+      await summarizer.checkAndSummarize();
+
+      // Post-padding fix: the legacy "49" gets zero-padded to "000000000049", so
+      // messages 50..59 are correctly identified as unsummarized (10 messages).
+      // Without keepRecentCount trimming (default 20), slicing for summary happens at
+      // unsummarized.length - keepRecentCount = 10 - 20 = negative → slice(0, -20) → []
+      // So createSummary would not be called — but the key point is that the
+      // filter correctly identified only 10 unsummarized messages, not all 60.
+      // We verify this indirectly: if the padding fix didn't apply, all 60 messages
+      // would be "unsummarized" and trigger different branches.
+      // Easiest observable proof: checkpoints array should still have just the legacy one.
+      const checkpoints = (summarizer as any).checkpoints;
+      expect(checkpoints.length).toBe(1);
+      expect(checkpoints[0].toTs).toBe("49");
+      // Also verify createSummary was not called (since only 10 are unsummarized,
+      // below the threshold-keepRecentCount gate).
+      expect(summarizedCount).toBeNull();
+    });
+  });
+
   describe("getSummarizedContext()", () => {
     it("should return empty string when no checkpoints exist", () => {
       const context = summarizer.getSummarizedContext();
