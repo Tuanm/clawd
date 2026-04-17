@@ -1139,8 +1139,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // Summarise old history AFTER persisting incoming messages so needsCompaction
     // sees the full post-persistence byte count — a batch that tips the session
     // over threshold triggers compaction THIS turn instead of lagging to the
-    // next. The just-persisted messages are the most recent and are protected
-    // by keepCount in compactSession, so they survive the summarisation.
+    // next. SessionManager.addMessage invalidates the needsCompaction cache on
+    // every insert, so this post-persistence check always reads fresh data.
+    // The just-persisted messages are the most recent and are protected by
+    // keepCount in compactSession, so they survive the summarisation.
     // Compaction summary rows have created_at=0 and are lifted into the system
     // prompt below (NOT the message stream).
     //

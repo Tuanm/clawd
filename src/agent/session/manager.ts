@@ -190,6 +190,14 @@ export class SessionManager {
       ],
     );
 
+    // Invalidate the needsCompaction cache: the just-inserted row changed the
+    // byte-count aggregate the cache is approximating, so callers that check
+    // needsCompaction after addMessage (e.g. the CC worker's compact-after-
+    // persistence flow) must see fresh data instead of a stale cached result.
+    // Simpler to clear the whole cache than track per-session invalidation —
+    // needsCompaction rebuilds in a single indexed SUM query.
+    this._compactionCache.clear();
+
     // Update session timestamp (batched: at most once per 5 seconds per session)
     const nowMs = Date.now();
     const lastUpdate = this._sessionUpdateTimes.get(sessionId) || 0;
