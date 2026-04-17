@@ -2573,12 +2573,31 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         // Intentionally swallowed — channel MCP tool execution is best-effort; falls through to local tool handler
       }
 
-      // Auto-inject channel and agent_id into local chat tool calls only
-      const enrichedArgs = {
+      // Auto-inject channel and agent_id into local chat tool calls only.
+      // Also inject `_project_root` for tools that can save files locally
+      // (chat_download_file, convert_to_markdown) so CC agents get the same
+      // "auto-save to {projectRoot}/.clawd/files/" behaviour non-CC agents
+      // get via the clawd-chat plugin's transformToolArgs hook. Without this,
+      // CC agents fall through to the metadata-only branch of
+      // chat_download_file and never get `local_path` — breaking the
+      // system-prompt contract that says "saves into the project root".
+      const needsProjectRoot = name === "chat_download_file" || name === "convert_to_markdown";
+      const enrichedArgs: Record<string, unknown> = {
         ...(toolArgs || {}),
         channel: (toolArgs?.channel as string) || channel,
         agent_id: (toolArgs?.agent_id as string) || agentId,
       };
+      if (needsProjectRoot && !enrichedArgs._project_root) {
+        try {
+          const { getAgentProjectRoot } = await import("../routes/agents");
+          const pr = getAgentProjectRoot(db, channel, agentId);
+          if (pr) enrichedArgs._project_root = pr;
+        } catch {
+          // Best-effort — if lookup fails the tool falls through to its
+          // metadata-only branch, which still works (agent can use
+          // chat_read_file_range instead of the saved copy).
+        }
+      }
 
       const result = await executeToolCall(name, enrichedArgs);
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
