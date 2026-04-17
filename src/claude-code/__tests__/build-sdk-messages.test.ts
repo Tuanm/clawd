@@ -294,6 +294,84 @@ describe("SessionManager.getCompactionSummariesByName", () => {
   });
 });
 
+describe("buildSdkPromptWithHeartbeat emits only current-turn messages", () => {
+  // Production flow (see main-worker.ts): only rows persisted THIS turn are
+  // emitted to the SDK iterable. Historical context comes from CC's own
+  // session file via `resume:`. Replaying history via the iterable doesn't
+  // work — the SDK treats every user message as a live turn, so the agent
+  // would re-answer past messages and re-execute past tool_use blocks.
+
+  test("emits only rows whose ids are in currentTurnRowIds", async () => {
+    const session = mgr.getOrCreateSession("current-only", "model");
+    const idOld1 = mgr.addMessage(session.id, { role: "user", content: "[500] human: old-1" });
+    const idOld2 = mgr.addMessage(session.id, { role: "assistant", content: "past reply" });
+    const idNew = mgr.addMessage(session.id, { role: "user", content: "[1000] human: current" });
+
+    const out: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("current-only", null, {
+      _manager: mgr,
+      currentTurnRowIds: new Set([idNew]),
+    })) {
+      out.push(m);
+    }
+
+    expect(out.length).toBe(1);
+    expect(out[0].message.content[0].text).toBe("[1000] human: current");
+    void idOld1;
+    void idOld2;
+  });
+
+  test("emits nothing from history when currentTurnRowIds is empty/missing", async () => {
+    const session = mgr.getOrCreateSession("empty-current", "model");
+    mgr.addMessage(session.id, { role: "user", content: "[500] human: old" });
+
+    const outMissing: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("empty-current", null, { _manager: mgr })) outMissing.push(m);
+    expect(outMissing.length).toBe(0);
+
+    const outEmpty: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("empty-current", null, {
+      _manager: mgr,
+      currentTurnRowIds: new Set(),
+    }))
+      outEmpty.push(m);
+    expect(outEmpty.length).toBe(0);
+    void session;
+  });
+
+  test("heartbeat is emitted even when currentTurnRowIds is empty (pure wake signal)", async () => {
+    mgr.getOrCreateSession("hb-only", "model");
+
+    const out: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("hb-only", "[HEARTBEAT]", {
+      _manager: mgr,
+      currentTurnRowIds: new Set(),
+    })) {
+      out.push(m);
+    }
+
+    expect(out.length).toBe(1);
+    expect(out[0].message.content[0].text).toBe("[HEARTBEAT]");
+  });
+
+  test("multiple current-turn messages are all emitted in insertion order", async () => {
+    const session = mgr.getOrCreateSession("multi-current", "model");
+    const idA = mgr.addMessage(session.id, { role: "user", content: "[1000] human: first" });
+    const idB = mgr.addMessage(session.id, { role: "user", content: "[2000] other-agent: second" });
+
+    const out: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("multi-current", null, {
+      _manager: mgr,
+      currentTurnRowIds: new Set([idA, idB]),
+    }))
+      out.push(m);
+
+    expect(out.length).toBe(2);
+    expect(out[0].message.content[0].text).toBe("[1000] human: first");
+    expect(out[1].message.content[0].text).toBe("[2000] other-agent: second");
+  });
+});
+
 describe("buildSdkPromptWithHeartbeat", () => {
   test("appends heartbeat with session.id (UUID), not session name", async () => {
     const session = mgr.getOrCreateSession("hb-session-name", "claude");
@@ -313,12 +391,15 @@ describe("buildSdkPromptWithHeartbeat", () => {
     expect(hb.session_id).not.toBe("hb-session-name");
   });
 
-  test("heartbeat and buildSdkMessages rows share the same session_id", async () => {
+  test("heartbeat and current-turn rows share the same session_id", async () => {
     const session = mgr.getOrCreateSession("shared-sid", "claude");
-    addUser(session.id, "hi");
+    const idCurrent = mgr.addMessage(session.id, { role: "user", content: "hi" });
 
     const out: any[] = [];
-    for await (const m of buildSdkPromptWithHeartbeat("shared-sid", "[HEARTBEAT]", { _manager: mgr })) {
+    for await (const m of buildSdkPromptWithHeartbeat("shared-sid", "[HEARTBEAT]", {
+      _manager: mgr,
+      currentTurnRowIds: new Set([idCurrent]),
+    })) {
       out.push(m);
     }
 
@@ -331,18 +412,22 @@ describe("buildSdkPromptWithHeartbeat", () => {
 
   test("omits heartbeat when heartbeatText is null/undefined/empty", async () => {
     const session = mgr.getOrCreateSession("no-hb", "claude");
-    addUser(session.id, "just a user msg");
+    const idCurrent = mgr.addMessage(session.id, { role: "user", content: "just a user msg" });
+    const ids = new Set([idCurrent]);
 
     const outNull: any[] = [];
-    for await (const m of buildSdkPromptWithHeartbeat("no-hb", null, { _manager: mgr })) outNull.push(m);
-    expect(outNull.length).toBe(1); // only the user msg
+    for await (const m of buildSdkPromptWithHeartbeat("no-hb", null, { _manager: mgr, currentTurnRowIds: ids }))
+      outNull.push(m);
+    expect(outNull.length).toBe(1); // only the current user msg
 
     const outUndef: any[] = [];
-    for await (const m of buildSdkPromptWithHeartbeat("no-hb", undefined, { _manager: mgr })) outUndef.push(m);
+    for await (const m of buildSdkPromptWithHeartbeat("no-hb", undefined, { _manager: mgr, currentTurnRowIds: ids }))
+      outUndef.push(m);
     expect(outUndef.length).toBe(1);
 
     const outEmpty: any[] = [];
-    for await (const m of buildSdkPromptWithHeartbeat("no-hb", "", { _manager: mgr })) outEmpty.push(m);
+    for await (const m of buildSdkPromptWithHeartbeat("no-hb", "", { _manager: mgr, currentTurnRowIds: ids }))
+      outEmpty.push(m);
     expect(outEmpty.length).toBe(1); // empty string is falsy, heartbeat omitted
   });
 

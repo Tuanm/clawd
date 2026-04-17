@@ -232,7 +232,7 @@ function sectionSafety(ctx: PromptContext): string {
 function sectionChat(ctx: PromptContext): string {
   const p = ctx.mcpPrefix || "";
   const messageFormat = ctx.roleStructuredInput
-    ? `- Channel messages arrive as separate user-role turns in this conversation, each with the content format \`[timestamp] author: text\` (author is \`human\` for a human user, otherwise an agent/system id). ALL messages in this format — including the most recent — are directed to you and need handling. Call ${p}chat_send_message to respond, then ${p}chat_mark_processed with the timestamp for EVERY such message you've addressed, even ones from earlier turns that you didn't mark processed yet.`
+    ? `- Each NEW channel message arrives as a user-role turn with the content format \`[timestamp] author: text\` (author is \`human\` for a human user, otherwise an agent/system id). Respond only to the new messages in THIS turn — prior turns are shown as conversation history and are already handled. For each new message: call ${p}chat_send_message to respond, then ${p}chat_mark_processed with its timestamp.`
     : `- The prompt may contain two message sections: \`## Previously Seen (not yet processed)\` (messages you saw last turn but didn't finish processing) and \`## New Messages\` (brand-new messages). Call ${p}chat_mark_processed for messages in BOTH sections once handled`;
   return `# Communication
 - ${p}chat_send_message(text): the ONLY way humans see your responses — channel/agent_id/user auto-injected
