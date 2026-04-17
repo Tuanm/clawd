@@ -113,8 +113,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private turnChatSent = false;
   private turnMarkProcessed = false;
   private turnStreamText = "";
-  // Per-tool log for [Actions taken] — ordered, includes primary subject argument
-  private turnToolLog: Array<{ name: string; subject: string }> = [];
+  // Per-turn structured log — thoughts, actions+outputs, messages — serialised to one session row
+  private turnToolLog: Array<{ name: string; subject: string; output: string; ts: number }> = [];
+  private turnMessageLog: Array<{ text: string; ts: number }> = [];
   // Skill improvement state — per-turn tracking for correction-gated improvement
   private turnActivatedSkills = new Set<string>();
   private turnBufferStartIdx = 0;
@@ -654,8 +655,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // Without this, tool-call-only turns (no text output) leave no trace in the preamble,
       // causing the agent to re-answer 'Previously Seen' messages it already responded to.
       const sentText = input?.text;
-      if (sentText && this.memorySessionId) {
-        saveToMemory(this.memorySessionId, "assistant", `[Sent to chat]: ${sentText}`);
+      if (sentText) {
+        this.turnMessageLog.push({ text: String(sentText), ts: Date.now() });
       }
       // Record the visible assistant response for trajectory (only on successful delivery)
       if (this.trajectoryRecorder && !response?.error) {
@@ -708,11 +709,16 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     const shortName = toolName.replace(/^mcp__clawd__/, "");
     if (!CONVERSATION_TOOLS.has(shortName)) {
+      const toolOutput = sanitize(truncateToolResult(response).slice(0, 300));
       if (this.turnToolLog.length < 50) {
-        this.turnToolLog.push({ name: shortName, subject: extractSubject(shortName, toolInput) });
+        this.turnToolLog.push({
+          name: shortName,
+          subject: extractSubject(shortName, toolInput),
+          output: toolOutput,
+          ts: Date.now(),
+        });
       } else if (this.turnToolLog.length === 50) {
-        // Mark overflow so the preamble summary is clearly partial
-        this.turnToolLog.push({ name: "+more", subject: "" });
+        this.turnToolLog.push({ name: "+more", subject: "", output: "", ts: Date.now() });
       }
     }
 
@@ -1190,6 +1196,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     this.turnMarkProcessed = false;
     this.turnStreamText = "";
     this.turnToolLog = [];
+    this.turnMessageLog = [];
 
     // contextPreamble was computed above (before saveToMemory) to exclude the
     // current message from the injected history.
@@ -1363,11 +1370,36 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // Save a tool-activity summary for turns where the agent used tools but
       // never called chat_send_message. Without this, tool-only turns leave no
       // trace in the preamble — the agent's work becomes invisible in context.
-      // Format: "file_view(src/auth.ts), bash("bun test"), file_edit(src/auth.ts)"
-      // so the agent knows WHAT it operated on, not just which tool types it used.
-      if (!this.turnChatSent && this.memorySessionId && this.turnToolLog.length > 0) {
-        const summary = this.turnToolLog.map((e) => (e.subject ? `${e.name}(${e.subject})` : e.name)).join(", ");
-        saveToMemory(this.memorySessionId, "assistant", `[Actions taken]: ${summary}`);
+      // Build a single structured turn row: [Thought] + [Action]+Output + messages.
+      // Replaces the separate [Sent to chat] / [Actions taken] rows — one row per turn
+      // gives the agent a coherent replay of its reasoning and work in the next turn.
+      if (this.memorySessionId) {
+        const { agentId } = this.config;
+        const lines: string[] = [];
+
+        // Thought — the agent's streaming reasoning for this turn (one blob, lightweight version)
+        const thought = this.turnStreamText.trim();
+        if (thought.length > 50) {
+          const turnTs = this.processingStartedAt ?? Date.now();
+          const truncated = thought.length > 2000 ? `${thought.slice(0, 2000)} [truncated]` : thought;
+          lines.push(`[${turnTs}] ${agentId}: [Thought]: ${truncated}`);
+        }
+
+        // Actions with truncated output
+        for (const action of this.turnToolLog) {
+          const label = action.subject ? `${action.name}(${action.subject})` : action.name;
+          lines.push(`[${action.ts}] ${agentId}: [Action]: ${label}`);
+          if (action.output) lines.push(`    Output: ${action.output}`);
+        }
+
+        // Chat messages sent this turn (no prefix — just the text)
+        for (const msg of this.turnMessageLog) {
+          lines.push(`[${msg.ts}] ${agentId}: ${msg.text}`);
+        }
+
+        if (lines.length > 0) {
+          saveToMemory(this.memorySessionId, "assistant", `[CC-Turn]:\n${lines.join("\n")}`);
+        }
       }
 
       if (this.turnMarkProcessed && this.trajectoryRecorder) {

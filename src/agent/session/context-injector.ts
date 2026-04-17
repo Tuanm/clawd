@@ -101,11 +101,15 @@ function expandMessage(
   }
 
   if (role === "assistant") {
-    // Only surface output that is meaningful for conversational context:
-    //   [Sent to chat]:    what the agent visibly said to the channel
-    //   [Actions taken]:   summary of tools used in a tool-only turn
-    // Raw streaming text blobs (no prefix) are skipped — they're verbose
-    // internal reasoning captured for the Thoughts UI, not for context.
+    // [CC-Turn] rows are pre-formatted structured turn logs containing [Thought],
+    // [Action]+Output, and plain message lines — pass through directly as-is.
+    if (trimmed.startsWith("[CC-Turn]:")) {
+      const inner = trimmed.slice("[CC-Turn]:".length).trim();
+      return inner ? inner.split("\n").filter((l) => l.trim()) : [];
+    }
+
+    // Legacy rows (non-CC agents): surface [Sent to chat] and [Actions taken] only.
+    // Raw streaming text blobs (no prefix) are skipped — verbose, UI-only.
     const prefix = trimmed.startsWith("[Sent to chat]:")
       ? "[Sent to chat]:"
       : trimmed.startsWith("[Actions taken]:")
