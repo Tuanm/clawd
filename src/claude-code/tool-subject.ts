@@ -1,5 +1,5 @@
 /**
- * Tool subject extraction for [Actions taken] preamble summaries.
+ * Tool subject extraction for [CC-Turn] preamble [Action] entries.
  *
  * Extracts the primary "subject" argument from a CC agent tool call so the
  * preamble shows `file_view(src/auth.ts)` instead of just `file_view`.
@@ -25,7 +25,7 @@ function truncate(s: string, maxChars: number): string {
 }
 
 /**
- * Extract the primary "subject" argument from a tool call for the [Actions taken] summary.
+ * Extract the primary "subject" argument from a tool call for the [CC-Turn] [Action] entry.
  * Returns a short string like "src/auth.ts" or `"bun test"` to give the agent
  * context on WHAT it operated on, not just which tool type it used.
  *

@@ -54,7 +54,7 @@ const MAX_MESSAGE_LENGTH = 10000;
 const MAX_COMBINED_PROMPT_LENGTH = 40000;
 const MAX_WAKEUP_MESSAGES = 3; // On wakeup, only process this many recent messages
 
-// Tools that manage conversation flow — excluded from the [Actions taken] summary
+// Tools that manage conversation flow — excluded from the [CC-Turn] [Action] entries
 // since they are implementation mechanics, not agent work visible to the user.
 const CONVERSATION_TOOLS = new Set(["chat_send_message", "chat_mark_processed"]);
 

@@ -268,7 +268,7 @@ export class SessionManager {
     //
     // Query 1: all compaction summary rows (always kept, always pinned to front).
     // Query 2: most recent `limit` preamble-relevant regular rows.
-    //   Includes: user prompts + [Sent to chat] + [Actions taken] + [CC-Turn] assistant rows.
+    //   Includes: user prompts + [CC-Turn] assistant rows (current) + legacy [Sent to chat] / [Actions taken] rows.
     //   Excludes: raw streaming text blobs, tool results — they never appear in
     //   the preamble and would waste the limit window if counted.
     //   Note: [CONTEXT SUMMARY…] rows are role='user' so already in Query 1.
