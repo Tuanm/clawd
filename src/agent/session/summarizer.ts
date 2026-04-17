@@ -384,17 +384,60 @@ const SUMMARY_MAX_ATTEMPTS = 3;
 const SUMMARY_RETRY_DELAY_MS = 2_000;
 
 /**
+ * Resolve which LLM to use for summarization from ~/.clawd/config.json's
+ * `memory` block. Shape:
+ *   "memory": { "provider": "minimax", "model": "MiniMax-M2.7-highspeed" }
+ * Either field may be omitted; provider undefined = Copilot (legacy default).
+ *
+ * The `overrideModel` argument is a CALLER hint (e.g. the calling agent's
+ * configured model like "sonnet" / "default"). It is IGNORED when a
+ * memory.provider is configured — those strings are conversation-LLM
+ * shorthand and may be invalid for the memory provider (e.g. MiniMax
+ * rejects "default" as an unknown model). Memory config wins when present.
+ * When no memory config is set, the override is applied to the Copilot
+ * fallback path since both use the same Copilot model namespace.
+ */
+function resolveMemoryLlm(overrideModel?: string): { provider?: string; model?: string } {
+  try {
+    // Dynamic require to avoid load-order issues in tests that mock config-file.
+    const { loadConfigFile } = require("../../config/config-file") as typeof import("../../config/config-file");
+    const memCfg = loadConfigFile().memory;
+    if (typeof memCfg === "object" && memCfg && memCfg.provider) {
+      // Memory provider configured — use its own model exclusively.
+      return { provider: memCfg.provider, model: memCfg.model };
+    }
+    if (typeof memCfg === "object" && memCfg?.model) {
+      // Memory model without provider → defaults to Copilot; override is
+      // ignored to avoid "default" leaking in.
+      return { provider: undefined, model: memCfg.model };
+    }
+  } catch {
+    // Config load failure → fall through to Copilot default below.
+  }
+  // No memory config. Use the caller's override only if it's an actual model
+  // name (reject sentinel "default" / empty string).
+  const safeOverride = overrideModel && overrideModel !== "default" ? overrideModel : undefined;
+  return { provider: undefined, model: safeOverride };
+}
+
+/**
  * Generate a conversation summary using an LLM, falling back to heuristics.
  * Retries up to SUMMARY_MAX_ATTEMPTS times with a per-attempt timeout.
- * Used by both SessionSummarizer (via generateSummary) and maybeCompactSession.
+ *
+ * Uses the `memory` block in ~/.clawd/config.json to pick the LLM:
+ *   - `memory.provider` selects the provider (minimax, openai, anthropic, copilot, ollama, or a custom provider name)
+ *   - `memory.model` selects the model (falls back to the caller's `model` arg, then to the provider's default)
+ *   - If no memory block → legacy Copilot + claude-sonnet-4.5 default.
+ *
+ * Used by: SessionSummarizer (via generateSummary), maybeCompactSession,
+ * bridgeConversationSummary. The `model` argument overrides memory.model
+ * when provided (so callers can still force a specific model per-call).
  */
 export async function generateConversationSummary(
   conversationText: string,
   messageCount: number,
   model?: string,
 ): Promise<string> {
-  const { CopilotClient } = await import("../api/client");
-
   const maxChars = 24000;
   const truncated =
     conversationText.length > maxChars
@@ -418,42 +461,65 @@ ${truncated}
 
 Summary:`;
 
-  for (let attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt++) {
-    // CopilotClient resolves its own token via getCopilotToken() / key pool internally
-    const client = new CopilotClient("");
+  const memLlm = resolveMemoryLlm(model);
+  const useFactory = !!memLlm.provider && memLlm.provider !== "copilot" && memLlm.provider !== "claude-code";
+
+  // Helper: run one attempt against whichever client we're using. Returns the
+  // summary text on success, null on failure/timeout.
+  const attemptOnce = async (attempt: number): Promise<string | null> => {
+    let client: { complete: (r: any) => Promise<any>; close?: () => void };
+    let modelForCall: string;
+    try {
+      if (useFactory) {
+        const { createProvider } = await import("../api/factory");
+        client = createProvider(memLlm.provider, memLlm.model) as any;
+        modelForCall = memLlm.model || (client as any).model || "default";
+      } else {
+        const { CopilotClient } = await import("../api/client");
+        client = new CopilotClient("");
+        modelForCall = memLlm.model || "claude-sonnet-4.5";
+      }
+    } catch (err) {
+      console.log(`[Summarizer] Attempt ${attempt} client init failed: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
 
     try {
       const llmCall = client.complete({
-        model: model || "claude-sonnet-4.5",
+        model: modelForCall,
         messages: [{ role: "user", content: prompt }],
         temperature: 0.3,
         max_tokens: 2000,
       });
-
-      // Race against a per-attempt timeout. On timeout, close the client
-      // immediately so the in-flight request is not left dangling.
       const timeoutSignal = new Promise<null>((resolve) => setTimeout(() => resolve(null), SUMMARY_TIMEOUT_MS));
       const response = await Promise.race([llmCall, timeoutSignal]);
-      client.close();
-
+      client.close?.();
       if (!response) {
         console.log(
-          `[Summarizer] Attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} timed out after ${SUMMARY_TIMEOUT_MS / 1000}s`,
+          `[Summarizer] Attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} timed out after ${SUMMARY_TIMEOUT_MS / 1000}s (provider=${memLlm.provider || "copilot"})`,
         );
-      } else {
-        const result = response.choices[0]?.message?.content;
-        if (result && result.trim().length > 50) {
-          console.log(`[Summarizer] LLM summary generated successfully (attempt ${attempt})`);
-          return result.trim();
-        }
-        console.log(`[Summarizer] Attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} returned empty/short result`);
+        return null;
       }
+      const result = response.choices?.[0]?.message?.content;
+      if (result && String(result).trim().length > 50) {
+        console.log(
+          `[Summarizer] LLM summary generated successfully (attempt ${attempt}, provider=${memLlm.provider || "copilot"}, model=${modelForCall})`,
+        );
+        return String(result).trim();
+      }
+      console.log(`[Summarizer] Attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} returned empty/short result`);
+      return null;
     } catch (err) {
-      client.close();
+      client.close?.();
       const msg = err instanceof Error ? err.message : String(err);
-      console.log(`[Summarizer] Attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} failed: ${msg.substring(0, 100)}`);
+      console.log(`[Summarizer] Attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} failed: ${msg.substring(0, 500)}`);
+      return null;
     }
+  };
 
+  for (let attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt++) {
+    const result = await attemptOnce(attempt);
+    if (result) return result;
     if (attempt < SUMMARY_MAX_ATTEMPTS) {
       await new Promise((resolve) => setTimeout(resolve, SUMMARY_RETRY_DELAY_MS));
     }
