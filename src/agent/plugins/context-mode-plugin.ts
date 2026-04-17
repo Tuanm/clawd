@@ -111,47 +111,31 @@ export function createContextModePlugin(config: ContextModeConfig): ContextModeP
         };
       }
 
-      // Fix: Reserve snippet space BEFORE compression so intent snippets don't挤占 truncated content
-      const cap = getToolCap(toolName);
-      const snippetReserve = recentKeywords.length > 0 ? Math.min(Math.floor(cap * 0.15), 1500) : 0;
-
+      // Compression: no snippet reserve. The prior "Relevant excerpt matching
+      // current context" feature was removed — it injected cross-session KB
+      // snippets driven by a rolling 20-word keyword window extracted from
+      // recent tool outputs. In practice the keywords drifted far from current
+      // intent and the injected excerpts were consistently off-topic (observed:
+      // unrelated news articles attached to `bash echo hello` results; stale
+      // code pages attached to `web_search` results). The KB is still populated
+      // via `kb.index` below so the explicit `knowledge_search` tool continues
+      // to work — only the automatic auto-inject is gone.
       const compressed = compressToolOutput(
         toolName,
         result,
         config.sessionId,
         (sid, sourceId, tName, content) => kb.index(sid, sourceId, tName, content),
-        snippetReserve,
+        0,
       );
 
       if (compressed.indexed) {
         totalIndexed++;
-        // Fix: Guard against negative savings — when under-cap content gets indexed AND a snippet is appended,
-        // compressedSize can exceed originalSize (snippet adds bytes). Only credit positive savings.
         const delta = compressed.originalSize - compressed.compressedSize;
         if (delta > 0) totalSaved += delta;
       }
 
-      // 5.1: Intent-driven filtering — append relevant snippet in the pre-reserved space
-      // Runs AFTER compression (and outside the indexed check) so it can add content to under-cap results too
-      if (snippetReserve > 0) {
-        try {
-          const query = recentKeywords.slice(-5).join(" ");
-          const hits = config.channel ? kb.searchByChannel(query, config.channel, 1) : kb.search(query, undefined, 1);
-          if (hits.length > 0 && hits[0].content.length > 0) {
-            const headerLen = 46; // length of "\n\n[Relevant excerpt matching current context]\n"
-            const snippetLen = Math.min(snippetReserve - headerLen - 150, 1500);
-            if (snippetLen > 100) {
-              const snippet = hits[0].content.slice(0, snippetLen);
-              compressed.result.output += `\n\n[Relevant excerpt matching current context]\n${snippet}`;
-              compressed.compressedSize = compressed.result.output.length;
-            }
-          }
-        } catch {
-          // Non-critical — intent filtering is best-effort
-        }
-      }
-
-      // Track keywords from the original output for future intent matching
+      // recentKeywords is still tracked for the `knowledge_search` tool's
+      // ranking signals (see below) but no longer drives auto-snippet injection.
       if (result.output.length > 500) {
         updateRecentKeywords(result.output.slice(0, 2000));
       }
