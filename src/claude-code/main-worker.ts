@@ -709,16 +709,20 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
     const shortName = toolName.replace(/^mcp__clawd__/, "");
     if (!CONVERSATION_TOOLS.has(shortName)) {
-      const toolOutput = sanitize(truncateToolResult(response).slice(0, 300));
-      if (this.turnToolLog.length < 50) {
-        this.turnToolLog.push({
-          name: shortName,
-          subject: extractSubject(shortName, toolInput),
-          output: toolOutput,
-          ts: Date.now(),
-        });
-      } else if (this.turnToolLog.length === 50) {
-        this.turnToolLog.push({ name: "+more", subject: "", output: "", ts: Date.now() });
+      try {
+        const toolOutput = sanitize(truncateToolResult(response).slice(0, 300));
+        if (this.turnToolLog.length < 50) {
+          this.turnToolLog.push({
+            name: shortName,
+            subject: extractSubject(shortName, toolInput),
+            output: toolOutput,
+            ts: Date.now(),
+          });
+        } else if (this.turnToolLog.length === 50) {
+          this.turnToolLog.push({ name: "+more", subject: "", output: "", ts: Date.now() });
+        }
+      } catch (err) {
+        logger.error(`[handleToolResult] turnToolLog push failed for ${shortName}:`, err);
       }
     }
 
