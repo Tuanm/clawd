@@ -339,6 +339,27 @@ describe("SessionManager", () => {
       const compacted = mgr.autoCompact("auto-compact-test", 100, 5);
       expect(compacted).toBe(true);
     });
+
+    test("needsCompaction excludes compaction summary rows (created_at=0) from byte count", () => {
+      // Summary rows live in the system prompt, not the LLM message stream, so
+      // they must not count toward the compaction threshold. Otherwise a large
+      // summary would trigger a feedback loop: compact → big summary → threshold
+      // still exceeded → compact again.
+      const session = mgr.createSession("summary-exclude", "m");
+
+      // Seed a few small messages, then compact with a giant summary. After
+      // compaction the DB contains 1 summary row (created_at=0, ~100KB) and
+      // ≤ keepCount small residual messages whose total bytes are negligible.
+      for (let i = 0; i < 5; i++) {
+        mgr.addMessage(session.id, userMsg(`small ${i}`));
+      }
+      const giantSummary = "s".repeat(100_000); // ~33k estimated tokens if counted
+      mgr.compactSession(session.id, 1, giantSummary);
+
+      // Threshold 1000 tokens: the 100KB summary alone would exceed 33k > 1000
+      // if it were counted. Residual real messages are tiny. Must be false.
+      expect(mgr.needsCompaction("summary-exclude", 1000)).toBe(false);
+    });
   });
 
   // ── 6. updateMessageContent ─────────────────────────────────────────────────

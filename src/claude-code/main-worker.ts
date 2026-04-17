@@ -1071,10 +1071,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   /** Process messages with a pre-built prompt (used by interrupt resume path) */
   private async processMessagesWithPrompt(prompt: string, messages: any[]): Promise<void> {
-    // isNewTurn=false: interrupt resume continues the same-turn CC session (keep resume:).
-    // No [CC-Turn] flush needed — assistant/tool rows are persisted per-message as they
-    // arrive via handleAssistantMessage and handleToolResult, so history is always
-    // complete in the session DB regardless of abort/error/interrupt.
+    // isNewTurn=false: interrupt-resume turn. Persists the new interrupt messages
+    // that triggered the abort (so they appear in this turn's rebuilt stream AND
+    // in future turns' history). The SDK is NOT resumed via sessionId anymore —
+    // the iterable rebuilt by buildSdkMessages carries complete history including
+    // the aborted main turn's partial work (assistant/tool rows persisted as
+    // they arrive via handleAssistantMessage / handleToolResult).
     return this._runSDKTurn(prompt, messages, false);
   }
 
@@ -1109,9 +1111,14 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   // refactor the actual turn input is rebuilt from session rows by buildSdkMessages,
   // so _prompt is unused here — channel messages are persisted below and rebuilt.
   private async _runSDKTurnImpl(_prompt: string, messages: any[], isNewTurn = true): Promise<void> {
-    // On a new turn, discard the previous CC session so context comes from our
-    // SQLite store rather than the unbounded ~/.claude/projects/ history.
-    if (isNewTurn) this.sessionId = null;
+    // Always discard the CC session before the main SDK call. The AsyncIterable
+    // returned by sdkPrompt() carries the full rebuilt conversation history from
+    // our SQLite store, so `resume:` is redundant AND potentially harmful —
+    // combining it with a full-history iterable risks duplicating turns if the
+    // SDK merges resumed state with the replayed iterable.
+    // Re-injection paths below (plain-string prompts) still use this.sessionId,
+    // populated by onSessionId when the main SDK call responds.
+    this.sessionId = null;
 
     // Maybe summarise old history before we rebuild the SDK message stream.
     // The compaction summary is written as a session row with created_at=0 and
@@ -1385,9 +1392,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         },
       },
       mcpServers: this.buildMcpServers(),
-      // New turns start fresh (context injected via preamble above).
-      // Interrupt resumes and re-injections within the same turn continue via sessionId.
-      resume: isNewTurn ? undefined : this.sessionId || undefined,
+      // resume: always undefined — the iterable above carries full rebuilt history
+      // from the session DB. Re-injection calls below (plain-string prompts) still
+      // pass resume: this.sessionId, populated via the onSessionId callback.
+      resume: undefined,
       abortController: this.abortController,
       yolo: this.config.yolo ?? false,
       // Custom CC providers (not the built-in "claude-code") must use mcp__clawd__web_search /
