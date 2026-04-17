@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "../agent/agents/loader";
+import { loadConfigFile } from "../config/config-file";
 import { type AgentMemory, extractKeywords, getAgentMemoryStore } from "../agent/memory/agent-memory";
 import {
   buildSkillReviewPrompt,
@@ -250,6 +251,13 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     try {
       this.restoreSessionId();
       this.memorySessionId = initMemorySession(this.memorySessionName, this.config.model);
+      // Clear any orphan is_streaming=true flag from a prior process crash.
+      // Without this, the UI would show this agent as streaming indefinitely.
+      try {
+        setAgentStreaming(this.config.agentId, this.config.channel, false);
+      } catch {
+        // Non-critical — the flag will be re-set correctly on the first turn.
+      }
       this.trajectoryRecorder = new TrajectoryRecorder(
         this.config.channel,
         this.config.agentId,
@@ -448,8 +456,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
               this.sessionId = null;
               this.persistSessionId(null);
             }
-            // Only log unexpected errors (suppress abort errors from human interrupts and heartbeats)
-            if (!interrupted && !this.wasCancelledByHeartbeat) {
+            // Only log unexpected errors — suppress abort errors from interrupts, heartbeats,
+            // and user-triggered sleep (setSleeping(true) aborts the in-flight SDK call).
+            if (!interrupted && !this.wasCancelledByHeartbeat && !this.sleeping) {
               logger.error(`Error: ${msg}`);
             }
           } finally {
@@ -550,7 +559,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
                 await this.processMessagesWithPrompt(interruptPrompt, resumeInterruptMsgs);
               } catch (err: unknown) {
                 const msg = err instanceof Error ? err.message : String(err);
-                if (!this.wasCancelledByHeartbeat) {
+                if (!this.wasCancelledByHeartbeat && !this.sleeping) {
                   logger.error(`Interrupt processing error: ${msg}`);
                   if (
                     msg.includes("No conversation found") ||
@@ -992,8 +1001,14 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   /** Process messages with a pre-built prompt (used by interrupt resume path) */
   private async processMessagesWithPrompt(prompt: string, messages: any[]): Promise<void> {
-    // isNewTurn=false: interrupt resume continues the same-turn CC session (keep resume:)
-    return this._runSDKTurn(prompt, messages, false);
+    // isNewTurn=false: interrupt resume continues the same-turn CC session (keep resume:).
+    // Flush [CC-Turn] in a finally so accumulated tool calls / messages from the aborted
+    // main turn + the resume turn are written together as one coherent row.
+    try {
+      await this._runSDKTurn(prompt, messages, false);
+    } finally {
+      this.flushCCTurnRow();
+    }
   }
 
   private async processMessages(messages: any[], unseen: any[], seenNotProcessed: any[]): Promise<void> {
@@ -1190,12 +1205,16 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // Detect heartbeat-initiated turns — suppress re-injection for these
     const isHeartbeatTurn = messages.length === 1 && messages[0]?.text?.includes("[HEARTBEAT]");
 
-    // Reset per-turn re-injection state
-    this.turnChatSent = false;
-    this.turnMarkProcessed = false;
-    this.turnStreamText = "";
-    this.turnToolLog = [];
-    this.turnMessageLog = [];
+    // Reset per-turn re-injection state ONLY for fresh turns. Interrupt-resume turns
+    // (isNewTurn=false) must preserve accumulated state from the aborted main turn so
+    // tool calls/messages aren't silently lost.
+    if (isNewTurn) {
+      this.turnChatSent = false;
+      this.turnMarkProcessed = false;
+      this.turnStreamText = "";
+      this.turnToolLog = [];
+      this.turnMessageLog = [];
+    }
 
     // contextPreamble was computed above (before saveToMemory) to exclude the
     // current message from the injected history.
@@ -1369,37 +1388,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // Save a tool-activity summary for turns where the agent used tools but
       // never called chat_send_message. Without this, tool-only turns leave no
       // trace in the preamble — the agent's work becomes invisible in context.
-      // Build a single structured turn row: [Thought] + [Action]+Output + messages.
-      // Replaces the separate [Sent to chat] / [Actions taken] rows — one row per turn
-      // gives the agent a coherent replay of its reasoning and work in the next turn.
-      if (this.memorySessionId) {
-        const lines: string[] = [];
-
-        // Thought — the agent's streaming reasoning for this turn (one blob, lightweight version)
-        const thought = this.turnStreamText.trim();
-        if (thought.length > 50) {
-          const turnTs = this.processingStartedAt ?? Date.now();
-          const truncated = thought.length > 2000 ? `${thought.slice(0, 2000)} [truncated]` : thought;
-          lines.push(`[${turnTs}] you: [Thought]: ${truncated}`);
-        }
-
-        // Actions with truncated output
-        for (const action of this.turnToolLog) {
-          const label = action.subject ? `${action.name}(${action.subject})` : action.name;
-          lines.push(`[${action.ts}] you: [Action]: ${label}`);
-          if (action.output) lines.push(`    Output: ${action.output}`);
-        }
-
-        // Chat messages sent this turn (no prefix — just the text)
-        for (const msg of this.turnMessageLog) {
-          lines.push(`[${msg.ts}] you: ${msg.text}`);
-        }
-
-        if (lines.length > 0) {
-          saveToMemory(this.memorySessionId, "assistant", `[CC-Turn]:\n${lines.join("\n")}`);
-        }
-      }
-
       if (this.turnMarkProcessed && this.trajectoryRecorder) {
         this.trajectoryRecorder.commitTurn();
       } else if (!this.turnMarkProcessed && this.trajectoryRecorder) {
@@ -1420,6 +1408,48 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         this.trajectoryRecorder.abortTurn();
       }
       throw err; // re-throw so the caller's error handling still fires
+    } finally {
+      // Flush [CC-Turn] row in finally so it always captures work done this turn,
+      // even on abort/interrupt/error paths. Without this, all turnToolLog and
+      // turnMessageLog entries are silently lost when runSDKQuery throws.
+      // Only emit for fresh turns — interrupt-resume contributions are merged into
+      // the same turn buffers and the outer caller will flush at its own boundary.
+      if (isNewTurn) {
+        this.flushCCTurnRow();
+      }
+    }
+  }
+
+  /** Write the accumulated turn state (thought, actions, messages) as a single [CC-Turn] row.
+   * Safe to call multiple times — clears the buffers after writing to make re-runs no-ops. */
+  private flushCCTurnRow(): void {
+    if (!this.memorySessionId) return;
+    try {
+      const lines: string[] = [];
+      const thought = this.turnStreamText.trim();
+      if (thought.length > 50) {
+        const turnTs = this.processingStartedAt ?? Date.now();
+        const truncated = thought.length > 2000 ? `${thought.slice(0, 2000)} [truncated]` : thought;
+        lines.push(`[${turnTs}] you: [Thought]: ${truncated}`);
+      }
+      for (const action of this.turnToolLog) {
+        const label = action.subject ? `${action.name}(${action.subject})` : action.name;
+        lines.push(`[${action.ts}] you: [Action]: ${label}`);
+        if (action.output) lines.push(`    Output: ${action.output}`);
+      }
+      for (const msg of this.turnMessageLog) {
+        lines.push(`[${msg.ts}] you: ${msg.text}`);
+      }
+      if (lines.length > 0) {
+        saveToMemory(this.memorySessionId, "assistant", `[CC-Turn]:\n${lines.join("\n")}`);
+      }
+    } catch (err) {
+      logger.error("[flushCCTurnRow] failed:", err);
+    } finally {
+      // Clear buffers so re-entry into _runSDKTurn doesn't duplicate entries.
+      this.turnToolLog = [];
+      this.turnMessageLog = [];
+      this.turnStreamText = "";
     }
   }
 
