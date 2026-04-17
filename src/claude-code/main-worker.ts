@@ -1139,9 +1139,21 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     for (const msg of messages) {
       if (msg.kind === "heartbeat") continue;
       const text = (msg.text || "").trim();
-      if (!text) continue;
+      const hasFiles = Array.isArray(msg.files) && msg.files.length > 0;
+      // Skip only if BOTH text and attachments are empty — an attachment-only
+      // message (common pattern: human pastes a file with no caption) still
+      // needs to be delivered to the agent or the file info is lost.
+      if (!text && !hasFiles) continue;
       const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
-      const rowId = saveToMemory(this.memorySessionId, "user", `[${msg.ts}] ${author}: ${text}`);
+      // Surface attachment filenames inline so the agent knows files exist.
+      // To READ the content it still needs to call the attachment tools
+      // (mcp__clawd__chat_get_message_files / mcp__clawd__chat_download_file /
+      // read_image) — see sectionChat in prompt/builder.ts for guidance.
+      const fileInfo = hasFiles
+        ? `\n[Attached files: ${msg.files.map((f: any) => f.name || "unnamed").join(", ")}]`
+        : "";
+      const line = `[${msg.ts}] ${author}: ${text}${fileInfo}`;
+      const rowId = saveToMemory(this.memorySessionId, "user", line);
       if (rowId !== null) currentTurnRowIds.add(rowId);
     }
 

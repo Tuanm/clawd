@@ -242,7 +242,14 @@ function sectionChat(ctx: PromptContext): string {
 - Wrap copiable content (commands, code, URLs, paths) in markdown code blocks
 - On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, never mention heartbeats in chat
 - If ${p}chat_send_message fails, RETRY immediately
-${messageFormat}`;
+${messageFormat}
+
+## Attachments
+- When a message has files attached, you will see a line like \`[Attached files: name1.pdf, screenshot.png]\` after the message text. The filenames appear inline; the file CONTENT is NOT delivered automatically.
+- To list attachments: ${p}chat_get_message_files(channel, ts) — returns file ids, names, mimetypes, sizes.
+- To read a text/binary attachment: ${p}chat_download_file(file_id) — saves into the project root, then open it with your file-reading tool (e.g. \`file_view\` / \`Read\`).
+- To read an image: use the \`read_image\` tool with the file_id directly (do not download first).
+- If a message references an attachment but you cannot find it, the human probably attached it to an EARLIER message — check the recent history or ask.`;
 }
 
 // ============================================================================
