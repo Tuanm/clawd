@@ -284,12 +284,12 @@ export async function collectSdkMessages(
  * extra user-role message on the iterable so the agent sees it this turn
  * without polluting future turns' rebuilt history.
  *
- * The heartbeat's session_id MUST match the session UUID used by
- * buildSdkMessages — otherwise the SDK could receive messages with mixed
- * session ids on the same iterable. We resolve both through the same
- * `getSession().id` lookup (with a fallback to the session name if the
- * session somehow doesn't exist, which shouldn't happen after
- * initMemorySession).
+ * The heartbeat's session_id MUST match the session UUID used by the rebuilt
+ * rows — otherwise the SDK could receive messages with mixed session ids on
+ * the same iterable. We resolve the session exactly once and pass it into
+ * buildSdkMessagesFromSession; the heartbeat reuses the same session.id.
+ * If the session doesn't exist (shouldn't happen after initMemorySession)
+ * we fall back to sessionName on the heartbeat's session_id.
  */
 export async function* buildSdkPromptWithHeartbeat(
   sessionName: string,
