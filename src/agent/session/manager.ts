@@ -268,7 +268,7 @@ export class SessionManager {
     //
     // Query 1: all compaction summary rows (always kept, always pinned to front).
     // Query 2: most recent `limit` preamble-relevant regular rows.
-    //   Includes: user prompts + [Sent to chat] + [Actions taken] assistant rows.
+    //   Includes: user prompts + [Sent to chat] + [Actions taken] + [CC-Turn] assistant rows.
     //   Excludes: raw streaming text blobs, tool results — they never appear in
     //   the preamble and would waste the limit window if counted.
     //   Note: [CONTEXT SUMMARY…] rows are role='user' so already in Query 1.
@@ -288,6 +288,7 @@ export class SessionManager {
               OR (role = 'assistant' AND (
                 content LIKE '[Sent to chat]:%'
                 OR content LIKE '[Actions taken]:%'
+                OR content LIKE '[CC-Turn]:%'
               ))
             )
           ORDER BY created_at DESC, id DESC LIMIT ?
@@ -581,6 +582,7 @@ export class SessionManager {
              OR (role = 'assistant' AND (
                content LIKE '[Sent to chat]:%'
                OR content LIKE '[Actions taken]:%'
+               OR content LIKE '[CC-Turn]:%'
              ))
            )`,
       )
