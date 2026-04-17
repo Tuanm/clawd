@@ -1509,15 +1509,19 @@ function groupToolEntries(entries: StreamEntry[]): GroupedItem[] {
     const entry = entries[i];
 
     if (entry.type === "tool_start") {
-      // Look ahead for matching tool_end or tool_error with same toolName
+      // Match by toolUseId first (correct for concurrent same-named calls),
+      // fall back to toolName for legacy events without an id.
       let matchIdx = -1;
       for (let j = i + 1; j < entries.length; j++) {
         if (consumed.has(j)) continue;
         const candidate = entries[j];
-        if (
-          (candidate.type === "tool_end" || candidate.type === "tool_error") &&
-          normalizeToolName(candidate.toolName || "") === normalizeToolName(entry.toolName || "")
-        ) {
+        if (candidate.type !== "tool_end" && candidate.type !== "tool_error") continue;
+        const idMatch = entry.toolUseId && candidate.toolUseId && entry.toolUseId === candidate.toolUseId;
+        const nameMatch =
+          !entry.toolUseId &&
+          !candidate.toolUseId &&
+          normalizeToolName(candidate.toolName || "") === normalizeToolName(entry.toolName || "");
+        if (idMatch || nameMatch) {
           matchIdx = j;
           break;
         }

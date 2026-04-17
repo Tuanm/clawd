@@ -281,7 +281,10 @@ export function broadcastAgentToken(
   }
 }
 
-// Broadcast agent tool call events (started/completed/error)
+// Broadcast agent tool call events (started/completed/error).
+// `toolUseId` (optional) is the SDK-generated unique id for this tool invocation.
+// When provided, the UI can pair start/end events by id instead of by toolName —
+// critical for correctness when the same tool is called multiple times in a turn.
 export function broadcastAgentToolCall(
   channel: string,
   agentId: string,
@@ -289,6 +292,7 @@ export function broadcastAgentToolCall(
   toolArgs: any,
   status: string,
   result?: any,
+  toolUseId?: string,
 ) {
   const agent = getAgent(agentId, channel);
   const payload = JSON.stringify({
@@ -297,6 +301,7 @@ export function broadcastAgentToolCall(
     agent_id: agentId,
     tool_name: toolName,
     tool_args: toolArgs,
+    tool_use_id: toolUseId,
     status,
     avatar_color: agent?.avatar_color || "#D97853",
     result: result

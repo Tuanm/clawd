@@ -117,6 +117,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   // Per-turn structured log — thoughts, actions+outputs, messages — serialised to one session row
   private turnToolLog: Array<{ name: string; subject: string; output: string; ts: number }> = [];
   private turnMessageLog: Array<{ text: string; ts: number }> = [];
+  /** Wall-clock timestamp captured at turn entry. Used for [Thought] line ordering
+   *  so thoughts always appear before actions, independent of processingStartedAt updates. */
+  private turnStartTs: number | null = null;
   // Skill improvement state — per-turn tracking for correction-gated improvement
   private turnActivatedSkills = new Set<string>();
   private turnBufferStartIdx = 0;
@@ -282,7 +285,16 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           if (pending.length === 0 && this.heartbeatPending) {
             this.heartbeatPending = false;
             this.sleeping = false;
-            pending = [{ ts: String(Date.now()), user: "UHUMAN", text: "<agent_signal>[HEARTBEAT]</agent_signal>" }];
+            // Structural kind flag is the source of truth for heartbeat detection —
+            // substring match on text is fragile (a real user message could contain [HEARTBEAT]).
+            pending = [
+              {
+                ts: String(Date.now()),
+                user: "UHUMAN",
+                text: "<agent_signal>[HEARTBEAT]</agent_signal>",
+                kind: "heartbeat",
+              },
+            ];
             // Heartbeat is not a "seen" message — don't add to pendingSeenTimestamps
           }
 
@@ -659,8 +671,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const shortName = toolName.replace(/^mcp__clawd__/, "");
 
     // Broadcasts are unconditional — fire first so no exception in tracking can drop them.
-    broadcastAgentToolCall(channel, agentId, toolName, input, "started");
-    broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`);
+    // Thread toolUseId so the UI can pair start/end events by id (correct for
+    // concurrent same-named tool calls within a turn).
+    broadcastAgentToolCall(channel, agentId, toolName, input, "started", undefined, toolUseId);
+    broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`, toolUseId);
     saveToMemory(
       this.memorySessionId,
       "tool",
@@ -669,9 +683,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       toolUseId || `tool_${toolName}_${Date.now()}`,
     );
 
-    // All tracking below is best-effort — exceptions must not affect the broadcast above.
+    // All tracking below is best-effort. Each block is independently try-catched
+    // so one failure cannot cascade and drop later tracking work.
+
+    // Track chat_send_message: turn flag + message log + trajectory
     try {
-      // Track whether the agent successfully sent a message this turn (CC SDK uses mcp__ prefix)
       if (toolName === "mcp__clawd__chat_send_message" && !response?.error) {
         this.turnChatSent = true;
         const sentText = input?.text;
@@ -682,13 +698,21 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           this.trajectoryRecorder.recordAssistantResponse(sanitize(input?.text || ""));
         }
       }
+    } catch (err) {
+      logger.error(`[handleToolResult] chat_send_message tracking failed:`, err);
+    }
 
-      // Track whether chat_mark_processed was called this turn
+    // Track chat_mark_processed flag
+    try {
       if (toolName === "mcp__clawd__chat_mark_processed" && !response?.error) {
         this.turnMarkProcessed = true;
       }
+    } catch (err) {
+      logger.error(`[handleToolResult] mark_processed tracking failed:`, err);
+    }
 
-      // Skill improvement: fire at task completion when corrections were captured
+    // Skill improvement at task completion
+    try {
       if ((toolName === "chat_mark_processed" || toolName === "mcp__clawd__chat_mark_processed") && !response?.error) {
         const correctionsSnapshot = [...this.pendingCorrections];
         const activatedSnapshot = [...this.turnActivatedSkills];
@@ -714,15 +738,39 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           }
         }
       }
+    } catch (err) {
+      logger.error(`[handleToolResult] skill improvement tracking failed:`, err);
+    }
 
+    // skill_activate success tracking with structural check
+    try {
       if (toolName === "skill_activate" || toolName === "mcp__clawd__skill_activate") {
-        const ok = !response?.error && !truncateToolResult(response).includes("not found");
+        const resultText = truncateToolResult(response);
+        let ok = !response?.error && !response?.isError;
+        if (ok && resultText) {
+          try {
+            const parsed = JSON.parse(resultText);
+            if (parsed && typeof parsed === "object") {
+              if (parsed.ok === false || parsed.error) ok = false;
+            }
+          } catch {
+            const lower = resultText.toLowerCase();
+            if (lower.includes("not found") || lower.startsWith("error:") || lower.includes("failed to")) {
+              ok = false;
+            }
+          }
+        }
         const skillName = (toolInput as any)?.name;
         if (ok && typeof skillName === "string" && skillName.length > 0) {
           this.turnActivatedSkills.add(skillName);
         }
       }
+    } catch (err) {
+      logger.error(`[handleToolResult] skill_activate tracking failed:`, err);
+    }
 
+    // Turn tool log for [CC-Turn] preamble summary
+    try {
       if (!CONVERSATION_TOOLS.has(shortName)) {
         const toolOutput = sanitize(truncateToolResult(response).slice(0, 300));
         if (this.turnToolLog.length < 50) {
@@ -736,7 +784,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           this.turnToolLog.push({ name: "+more", subject: "", output: "", ts: Date.now() });
         }
       }
+    } catch (err) {
+      logger.error(`[handleToolResult] turnToolLog push failed for ${shortName}:`, err);
+    }
 
+    // Skill review buffer + trigger
+    try {
       this.sessionToolCallCount++;
       this.addToSkillReviewBuffer({
         role: "tool",
@@ -744,14 +797,19 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         toolName: shortName,
       });
       this.maybeRunSkillReview();
+    } catch (err) {
+      logger.error(`[handleToolResult] skill review tracking failed:`, err);
+    }
 
+    // Trajectory recording
+    try {
       if (this.trajectoryRecorder && !CONVERSATION_TOOLS.has(shortName)) {
         const trResult = sanitize(truncateToolResult(response).slice(0, 2000));
         const trSuccess = !response?.error && !response?.isError && !trResult.startsWith("Error:");
         this.trajectoryRecorder.recordToolCall(shortName, toolInput, trResult, trSuccess);
       }
     } catch (err) {
-      logger.error(`[handleToolResult] tracking failed for ${shortName}:`, err);
+      logger.error(`[handleToolResult] trajectory recording failed:`, err);
     }
   }
 
@@ -1016,7 +1074,24 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     return this._runSDKTurn(prompt, messages);
   }
 
+  /** Defense-in-depth re-entrancy guard — the outer poll loop already serializes
+   *  turns, but if a future refactor accidentally interleaves a second call we
+   *  want a loud failure rather than silent state corruption. */
+  private _turnInFlight = false;
+
   private async _runSDKTurn(prompt: string, messages: any[], isNewTurn = true): Promise<void> {
+    if (this._turnInFlight) {
+      throw new Error("_runSDKTurn re-entry detected — concurrent turns for the same worker are not supported");
+    }
+    this._turnInFlight = true;
+    try {
+      await this._runSDKTurnImpl(prompt, messages, isNewTurn);
+    } finally {
+      this._turnInFlight = false;
+    }
+  }
+
+  private async _runSDKTurnImpl(prompt: string, messages: any[], isNewTurn = true): Promise<void> {
     // On a new turn, discard the previous CC session so context comes from our
     // SQLite store rather than the unbounded ~/.claude/projects/ history.
     if (isNewTurn) this.sessionId = null;
@@ -1202,8 +1277,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       /* best-effort — skip on error */
     }
 
-    // Detect heartbeat-initiated turns — suppress re-injection for these
-    const isHeartbeatTurn = messages.length === 1 && messages[0]?.text?.includes("[HEARTBEAT]");
+    // Detect heartbeat-initiated turns via structural kind flag (set at poll time).
+    // Fallback to substring match for safety with legacy callers.
+    const isHeartbeatTurn =
+      messages.length === 1 && (messages[0]?.kind === "heartbeat" || messages[0]?.text?.includes("[HEARTBEAT]"));
 
     // Reset per-turn re-injection state ONLY for fresh turns. Interrupt-resume turns
     // (isNewTurn=false) must preserve accumulated state from the aborted main turn so
@@ -1214,6 +1291,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       this.turnStreamText = "";
       this.turnToolLog = [];
       this.turnMessageLog = [];
+      this.turnStartTs = Date.now();
     }
 
     // contextPreamble was computed above (before saveToMemory) to exclude the
@@ -1342,11 +1420,14 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         !this.abortController?.signal.aborted &&
         !this.interruptDetected
       ) {
-        const lastTs = this.pendingTimestamps[this.pendingTimestamps.length - 1] || "";
+        // Prefer the last actual pending timestamp; fall back to the last message
+        // in this turn's batch, then to "latest" if both are unavailable.
+        const lastTs =
+          this.pendingTimestamps[this.pendingTimestamps.length - 1] || messages[messages.length - 1]?.ts || "latest";
         const reminderPrompt =
           `[NOTICE: You completed your turn but did not call \`mcp__clawd__chat_mark_processed\` to mark the message(s) as handled. ` +
           `This is required so the same messages are not polled again.\n\n` +
-          `Call \`mcp__clawd__chat_mark_processed(timestamp="${lastTs}")\` now, even if empty.` +
+          `Call \`mcp__clawd__chat_mark_processed(timestamp="${lastTs}")\` now, even if empty. ` +
           `If you intentionally did not need to respond, produce only [SILENT].]`;
 
         // Use a tracked AbortController so the interrupt poller can abort this re-injection too.
@@ -1385,6 +1466,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         }
       }
 
+      // Release the abortController so cancelProcessing/setSleeping during the idle
+      // window between turns does not hold onto a stale controller reference.
+      this.abortController = null;
+
       // Save a tool-activity summary for turns where the agent used tools but
       // never called chat_send_message. Without this, tool-only turns leave no
       // trace in the preamble — the agent's work becomes invisible in context.
@@ -1414,21 +1499,40 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // turnMessageLog entries are silently lost when runSDKQuery throws.
       // Only emit for fresh turns — interrupt-resume contributions are merged into
       // the same turn buffers and the outer caller will flush at its own boundary.
+      // Skip pure heartbeat no-op turns (no chat, no mark, no tools, no meaningful thought)
+      // to avoid polluting the preamble with idle-poll noise.
       if (isNewTurn) {
-        this.flushCCTurnRow();
+        const isNoOpHeartbeat =
+          isHeartbeatTurn &&
+          !this.turnChatSent &&
+          !this.turnMarkProcessed &&
+          this.turnToolLog.length === 0 &&
+          this.turnStreamText.trim().length < 50;
+        if (!isNoOpHeartbeat) {
+          this.flushCCTurnRow();
+        } else {
+          // Clear buffers to prevent heartbeat residue from leaking into next turn.
+          this.turnToolLog = [];
+          this.turnMessageLog = [];
+          this.turnStreamText = "";
+        }
       }
     }
   }
 
   /** Write the accumulated turn state (thought, actions, messages) as a single [CC-Turn] row.
-   * Safe to call multiple times — clears the buffers after writing to make re-runs no-ops. */
+   * Safe to call multiple times — clears the buffers after writing to make re-runs no-ops.
+   *
+   * Uses `turnStartTs` (captured at turn entry) for the thought timestamp so the thought
+   * always orders BEFORE the first action, even if processingStartedAt was updated by
+   * mid-turn onActivity callbacks. */
   private flushCCTurnRow(): void {
     if (!this.memorySessionId) return;
     try {
       const lines: string[] = [];
       const thought = this.turnStreamText.trim();
       if (thought.length > 50) {
-        const turnTs = this.processingStartedAt ?? Date.now();
+        const turnTs = this.turnStartTs ?? this.processingStartedAt ?? Date.now();
         const truncated = thought.length > 2000 ? `${thought.slice(0, 2000)} [truncated]` : thought;
         lines.push(`[${turnTs}] you: [Thought]: ${truncated}`);
       }
@@ -1466,17 +1570,17 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         });
       }
     }
-    if (textParts.length > 0 || toolCalls.length > 0) {
-      saveToMemory(
-        this.memorySessionId,
-        "assistant",
-        textParts.join("\n") || "",
-        toolCalls.length > 0 ? toolCalls : undefined,
-      );
+    // Only persist when there's actual text content. Pure tool-call rows
+    // (empty content + tool_calls array) are redundant with the turnToolLog/[CC-Turn]
+    // flow AND are filtered out by getRecentMessagesCompact at line 302, so they just
+    // bloat the DB and pad autoCompact's byte count without benefit.
+    const text = textParts.join("\n");
+    if (text.length > 0) {
+      saveToMemory(this.memorySessionId, "assistant", text, toolCalls.length > 0 ? toolCalls : undefined);
     }
     // Feed assistant text into skill review buffer
-    const text = textParts.join("\n").trim();
-    if (text) this.addToSkillReviewBuffer({ role: "assistant", content: sanitize(text.slice(0, 500)) });
+    const trimmedText = text.trim();
+    if (trimmedText) this.addToSkillReviewBuffer({ role: "assistant", content: sanitize(trimmedText.slice(0, 500)) });
   }
 
   /** Format a single message line for prompt building */

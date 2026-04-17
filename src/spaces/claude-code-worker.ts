@@ -184,8 +184,16 @@ export class ClaudeCodeSpaceWorker {
     const description = formatToolDescription(toolName, input);
 
     console.log(`[claude-code] hook → ${status}: ${toolName} ${description.slice(0, 60)}`);
-    broadcastAgentToolCall(space.space_channel, agentId, toolName, input, "started");
-    broadcastAgentToolCall(space.space_channel, agentId, toolName, input, status, `${description}\n${result}`);
+    broadcastAgentToolCall(space.space_channel, agentId, toolName, input, "started", undefined, toolUseId);
+    broadcastAgentToolCall(
+      space.space_channel,
+      agentId,
+      toolName,
+      input,
+      status,
+      `${description}\n${result}`,
+      toolUseId,
+    );
     saveToMemory(
       this.memorySessionId,
       "tool",

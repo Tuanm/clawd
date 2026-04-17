@@ -215,9 +215,12 @@ export class SessionSummarizer {
       const limit = (this.config.messageThreshold ?? 50) + (this.config.keepRecentCount ?? 20);
       const messages = manager.getRecentMessages(session.id, limit);
 
-      // Map model-level messages to a Slack-style shape for createSummary()
+      // Map model-level messages to a Slack-style shape for createSummary().
+      // Pad index to 12 digits so lexicographic comparison matches numeric order —
+      // plain String(idx) breaks the checkpoint watermark after 10 messages
+      // because "10" < "9" in string comparison.
       return messages.map((msg, idx) => ({
-        ts: String(idx),
+        ts: idx.toString().padStart(12, "0"),
         user: msg.role === "user" ? "UHUMAN" : "UBOT",
         agent_id: msg.role === "assistant" ? this.config.agentId : null,
         text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""),
