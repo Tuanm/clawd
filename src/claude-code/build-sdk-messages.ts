@@ -19,7 +19,7 @@
  * sources get injected as attributed user messages.
  */
 
-import type { SessionManager, StoredMessage } from "../agent/session/manager";
+import type { Session, SessionManager, StoredMessage } from "../agent/session/manager";
 import { getSessionManager } from "../agent/session/manager";
 
 // ============================================================================
@@ -213,22 +213,19 @@ function repairToolUsePairing(messages: SdkStreamMessage[]): SdkStreamMessage[] 
 // ============================================================================
 
 /**
- * Read stored rows for the session and emit an AsyncIterable of SDK messages
- * suitable for `query({ prompt: thisIterable })`.
+ * Core row→SDK-message conversion for a resolved session. Both public entry
+ * points (buildSdkMessages and buildSdkPromptWithHeartbeat) funnel through
+ * this so the session is looked up exactly once per call.
  *
  * Skips legacy [CC-Turn]/[Sent to chat]/[Actions taken] rows from pre-refactor
  * sessions (clean break — those history items are not re-rendered into the
  * new format). Repairs orphan tool_use blocks from crash/interrupt so the API
  * pairing invariant holds.
  */
-export async function* buildSdkMessages(
-  sessionName: string,
-  opts: { _manager?: SessionManager } = {},
-): AsyncIterable<unknown> {
-  const manager = opts._manager ?? getSessionManager();
-  const session = manager.getSession(sessionName);
-  if (!session) return;
-
+async function* buildSdkMessagesFromSession(
+  session: Session,
+  manager: SessionManager,
+): AsyncIterable<SdkStreamMessage> {
   // Raw rows, chronological. We expose StoredMessage via the manager so the
   // loader doesn't double-parse tool_calls JSON here.
   const rows = manager.getAllStoredMessages(session.id);
@@ -252,6 +249,20 @@ export async function* buildSdkMessages(
   for (const m of repaired) {
     yield m;
   }
+}
+
+/**
+ * Read stored rows for the session and emit an AsyncIterable of SDK messages
+ * suitable for `query({ prompt: thisIterable })`.
+ */
+export async function* buildSdkMessages(
+  sessionName: string,
+  opts: { _manager?: SessionManager } = {},
+): AsyncIterable<unknown> {
+  const manager = opts._manager ?? getSessionManager();
+  const session = manager.getSession(sessionName);
+  if (!session) return;
+  yield* buildSdkMessagesFromSession(session, manager);
 }
 
 /** Test-only: synchronous collection of the iterable's output. */
@@ -286,9 +297,12 @@ export async function* buildSdkPromptWithHeartbeat(
   opts: { _manager?: SessionManager } = {},
 ): AsyncIterable<unknown> {
   const manager = opts._manager ?? getSessionManager();
-  const sessionUuid = manager.getSession(sessionName)?.id ?? sessionName;
+  // Single session lookup: resolve once, reuse for both the rebuilt rows and
+  // the trailing heartbeat so both share a consistent session_id.
+  const session = manager.getSession(sessionName);
+  const sessionUuid = session?.id ?? sessionName;
 
-  for await (const m of buildSdkMessages(sessionName, { _manager: manager })) yield m;
+  if (session) yield* buildSdkMessagesFromSession(session, manager);
 
   if (heartbeatText) {
     yield {
