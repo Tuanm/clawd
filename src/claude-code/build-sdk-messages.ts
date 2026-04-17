@@ -263,3 +263,39 @@ export async function collectSdkMessages(
   for await (const m of buildSdkMessages(sessionName, opts)) out.push(m);
   return out;
 }
+
+/**
+ * Build the SDK prompt iterable for a CC turn, optionally appending an inline
+ * heartbeat message at the end.
+ *
+ * Heartbeats are intentionally NOT persisted (they're ephemeral wake signals,
+ * not conversation content). This helper appends the heartbeat text as an
+ * extra user-role message on the iterable so the agent sees it this turn
+ * without polluting future turns' rebuilt history.
+ *
+ * The heartbeat's session_id MUST match the session UUID used by
+ * buildSdkMessages — otherwise the SDK could receive messages with mixed
+ * session ids on the same iterable. We resolve both through the same
+ * `getSession().id` lookup (with a fallback to the session name if the
+ * session somehow doesn't exist, which shouldn't happen after
+ * initMemorySession).
+ */
+export async function* buildSdkPromptWithHeartbeat(
+  sessionName: string,
+  heartbeatText?: string | null,
+  opts: { _manager?: SessionManager } = {},
+): AsyncIterable<unknown> {
+  const manager = opts._manager ?? getSessionManager();
+  const sessionUuid = manager.getSession(sessionName)?.id ?? sessionName;
+
+  for await (const m of buildSdkMessages(sessionName, { _manager: manager })) yield m;
+
+  if (heartbeatText) {
+    yield {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: heartbeatText }] },
+      parent_tool_use_id: null,
+      session_id: sessionUuid,
+    };
+  }
+}

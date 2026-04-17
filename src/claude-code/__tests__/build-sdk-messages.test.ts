@@ -11,7 +11,7 @@
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { SessionManager } from "../../agent/session/manager";
-import { collectSdkMessages } from "../build-sdk-messages";
+import { buildSdkPromptWithHeartbeat, collectSdkMessages } from "../build-sdk-messages";
 
 let mgr: SessionManager;
 
@@ -291,5 +291,69 @@ describe("SessionManager.getCompactionSummariesByName", () => {
 
   test("returns empty for non-existent session", () => {
     expect(mgr.getCompactionSummariesByName("cs-nope")).toEqual([]);
+  });
+});
+
+describe("buildSdkPromptWithHeartbeat", () => {
+  test("appends heartbeat with session.id (UUID), not session name", async () => {
+    const session = mgr.getOrCreateSession("hb-session-name", "claude");
+    const out: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("hb-session-name", "[HEARTBEAT] wake up", { _manager: mgr })) {
+      out.push(m);
+    }
+
+    // Only the heartbeat — session is empty.
+    expect(out.length).toBe(1);
+    const hb = out[0];
+    expect(hb.type).toBe("user");
+    expect(hb.message.role).toBe("user");
+    expect(hb.message.content[0].text).toBe("[HEARTBEAT] wake up");
+    // session_id must be the UUID, not the lookup name.
+    expect(hb.session_id).toBe(session.id);
+    expect(hb.session_id).not.toBe("hb-session-name");
+  });
+
+  test("heartbeat and buildSdkMessages rows share the same session_id", async () => {
+    const session = mgr.getOrCreateSession("shared-sid", "claude");
+    addUser(session.id, "hi");
+
+    const out: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("shared-sid", "[HEARTBEAT]", { _manager: mgr })) {
+      out.push(m);
+    }
+
+    expect(out.length).toBe(2);
+    expect(out[0].session_id).toBe(session.id);
+    expect(out[1].session_id).toBe(session.id);
+    // Belt-and-suspenders: all messages in a single iterable share one session_id.
+    expect(new Set(out.map((m) => m.session_id)).size).toBe(1);
+  });
+
+  test("omits heartbeat when heartbeatText is null/undefined/empty", async () => {
+    const session = mgr.getOrCreateSession("no-hb", "claude");
+    addUser(session.id, "just a user msg");
+
+    const outNull: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("no-hb", null, { _manager: mgr })) outNull.push(m);
+    expect(outNull.length).toBe(1); // only the user msg
+
+    const outUndef: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("no-hb", undefined, { _manager: mgr })) outUndef.push(m);
+    expect(outUndef.length).toBe(1);
+
+    const outEmpty: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("no-hb", "", { _manager: mgr })) outEmpty.push(m);
+    expect(outEmpty.length).toBe(1); // empty string is falsy, heartbeat omitted
+  });
+
+  test("falls back to sessionName if session does not exist (defensive)", async () => {
+    const out: any[] = [];
+    for await (const m of buildSdkPromptWithHeartbeat("nonexistent-session", "[HEARTBEAT]", { _manager: mgr })) {
+      out.push(m);
+    }
+    // buildSdkMessages returns early for missing sessions, so no stream rows —
+    // but the heartbeat is still emitted with the name as fallback session_id.
+    expect(out.length).toBe(1);
+    expect(out[0].session_id).toBe("nonexistent-session");
   });
 });
