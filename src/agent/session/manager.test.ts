@@ -123,6 +123,32 @@ describe("SessionManager", () => {
       expect(mgr.getSession(session.id)).toBeNull();
       expect(mgr.getMessages(session.id)).toHaveLength(0);
     });
+
+    test("deleteSession + purgeOldSessions clean up internal tracker maps", () => {
+      // _sessionUpdateTimes is an addMessage debounce tracker keyed by session
+      // id. Without cleanup on delete/purge, the Map grows unbounded over long
+      // server lifetimes. Verify both paths remove their entries.
+      // Exercising via the public API: creating a session + inserting populates
+      // the tracker; deleting should remove the entry.
+      const s1 = mgr.createSession("track-1", "m");
+      mgr.addMessage(s1.id, userMsg("a"));
+      const s2 = mgr.createSession("track-2", "m");
+      mgr.addMessage(s2.id, userMsg("b"));
+      const tracker = (mgr as unknown as { _sessionUpdateTimes: Map<string, number> })._sessionUpdateTimes;
+      expect(tracker.has(s1.id)).toBe(true);
+      expect(tracker.has(s2.id)).toBe(true);
+
+      mgr.deleteSession(s1.id);
+      expect(tracker.has(s1.id)).toBe(false);
+      expect(tracker.has(s2.id)).toBe(true);
+
+      // purgeOldSessions deletes sessions whose updated_at < cutoff. Using a
+      // cutoff larger than every session's age forces all remaining sessions
+      // to be purged. maxAgeDays=-1 → cutoff = now + 1 day, so everything is
+      // "older than -1 days ago" from the cutoff's perspective.
+      mgr.purgeOldSessions(-1);
+      expect(tracker.has(s2.id)).toBe(false);
+    });
   });
 
   // ── 2. Message storage and loading ─────────────────────────────────────────

@@ -170,6 +170,9 @@ export class SessionManager {
     // reads the fresh state instead of returning a stale result from the
     // deleted session.
     this._compactionCache.clear();
+    // Remove the debounce tracker entry so the Map doesn't grow unbounded
+    // over long server lifetimes as sessions are created and deleted.
+    this._sessionUpdateTimes.delete(id);
   }
 
   // ============================================================================
@@ -717,6 +720,9 @@ export class SessionManager {
     })();
     // Names of purged sessions may be reused by future createSession calls.
     this._compactionCache.clear();
+    // Remove debounce tracker entries for purged sessions so the Map doesn't
+    // grow unbounded over long server lifetimes.
+    for (const { id } of old) this._sessionUpdateTimes.delete(id);
     console.log(`[SessionManager] Purged ${old.length} sessions older than ${maxAgeDays} days`);
     return old.length;
   }
