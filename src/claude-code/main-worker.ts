@@ -966,11 +966,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         // `memory.{provider,model}` from config (or falls back to the CC
         // agent's own provider). Previously hardcoded CopilotClient which
         // ignored the user's provider choice entirely.
+        //
+        // client.model is the post-mapModelName resolved model — use that
+        // in the completion request so aliases like "sonnet" become the
+        // concrete upstream model name the API actually understands.
         const { createProvider } = await import("../agent/api/factory");
         const client = createProvider(srConfig.provider, srConfig.model);
         const timeoutSignal = new Promise<null>((resolve) => setTimeout(() => resolve(null), 30_000));
         const llmCall = client.complete({
-          model: srConfig.model || "claude-sonnet-4.5", // createProvider also resolves aliases via mapModelName
+          model: client.model,
           messages: [{ role: "user", content: prompt }],
           temperature: 0.3,
           max_tokens: 2000,
