@@ -422,12 +422,16 @@ export class WorkerLoop implements AgentWorker {
       this.remoteWorkerBridge = null;
     }
 
-    // Kill all cloudflare tunnels created by this worker
+    // Tunnels are intentionally persistent now (tmux-backed, survive worker
+    // and process restart). The old destroyAll() SIGTERM'd in-process
+    // cloudflared children on shutdown — inverting that behavior. Kept as
+    // a noop call for backwards compat; use `tunnel_prune` to sweep when
+    // desired, or `tunnelManager.prune({ deadOnly: true })` programmatically.
     try {
       const { TunnelPlugin } = await import("./agent/plugins/tunnel-plugin");
-      TunnelPlugin.destroyAll();
+      TunnelPlugin.destroyAll(); // noop — see TunnelPlugin.destroyAll() docstring.
     } catch {
-      // Intentionally swallowed — TunnelPlugin cleanup is best-effort on shutdown
+      // Intentionally swallowed — TunnelPlugin lookup is best-effort on shutdown.
     }
   }
 

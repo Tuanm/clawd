@@ -1705,9 +1705,15 @@ export class Agent {
 
     const ctx = getAgentContext();
 
-    // Register optional plugins (tunnel, custom scripts, browser)
+    // Register optional plugins (tunnel, custom scripts, browser).
+    // Pass owner context so tmux-backed tunnel metadata records which
+    // channel+agent created each tunnel — used by tunnel_list filters
+    // and tunnel_prune's owner-scoped sweep.
     if (!this._tunnelPluginRegistered) {
-      this._tunnelPluginRegistered = tryRegisterTunnelPlugin(this.toolPluginManager, this.config.verbose);
+      this._tunnelPluginRegistered = tryRegisterTunnelPlugin(this.toolPluginManager, this.config.verbose, {
+        channel: ctx?.channel,
+        agentId: this.agentId,
+      });
     }
     if (!this._customToolPluginRegistered) {
       const configRoot = ctx?.originalProjectRoot || ctx?.projectRoot || getContextProjectRoot();

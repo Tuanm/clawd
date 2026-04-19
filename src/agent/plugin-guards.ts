@@ -22,9 +22,13 @@ import type { ToolPlugin, ToolPluginManager } from "./tools/plugin";
  *
  * @returns true if registered successfully, false if failed
  */
-export function tryRegisterTunnelPlugin(toolPluginManager: ToolPluginManager, verbose?: boolean): boolean {
+export function tryRegisterTunnelPlugin(
+  toolPluginManager: ToolPluginManager,
+  verbose?: boolean,
+  owner?: { channel?: string; agentId?: string },
+): boolean {
   try {
-    toolPluginManager.register(new TunnelPlugin());
+    toolPluginManager.register(new TunnelPlugin(owner?.channel, owner?.agentId));
     return true;
   } catch (err: unknown) {
     if (verbose) {

@@ -1,40 +1,31 @@
 /**
- * Cloudflare Quick Tunnel Plugin
+ * Cloudflare Quick Tunnel Plugin — thin adapter over TmuxTunnelManager.
  *
- * Provides tools to expose local endpoints to the internet via
- * `cloudflared tunnel --url <local-url>`. Tunnels are tracked in-memory
- * and cleaned up on plugin destroy.
+ * Behavior changes from the pre-tmux implementation:
+ *   - Tunnels are tmux-backed and survive Claw'd restart.
+ *   - `tunnel_create` dedupes by localUrl (global pool). If another tunnel is
+ *     already exposing the same local URL, the existing tunnel is returned
+ *     with `reused: true` instead of spawning a second cloudflared process.
+ *   - `tunnel_destroy` works across agents (global-pool semantics).
+ *   - New `tunnel_prune` tool sweeps dead / old / owner-scoped tunnels.
+ *
+ * Ownership context: when instantiated by worker-loop the `channel` and
+ * `agentId` passed to the constructor are recorded in meta.json so
+ * tunnel_list / tunnel_prune can filter by owner. The MCP HTTP handler for
+ * CC agents constructs the plugin with the request's channel+agent too.
  *
  * Tools:
- *   - tunnel_create  — start a quick tunnel for a local URL
- *   - tunnel_destroy — stop a running tunnel
- *   - tunnel_list    — list all active tunnels
+ *   - tunnel_create  — start a quick tunnel for a local URL (idempotent)
+ *   - tunnel_destroy — stop a running tunnel by id
+ *   - tunnel_list    — enumerate tunnels (optionally filtered)
+ *   - tunnel_prune   — bulk-destroy by owner / age / status
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
 import type { ToolResult } from "../tools/definitions";
 import type { ToolPlugin, ToolRegistration } from "../tools/plugin";
+import { type PruneFilter, type TunnelStatus, tunnelManager } from "./tunnel-manager";
 
-// ============================================================================
-// Types
-// ============================================================================
-
-interface TunnelRecord {
-  id: string;
-  localUrl: string;
-  publicUrl: string;
-  pid: number;
-  process: ChildProcess;
-  createdAt: number;
-  metricsPort?: number;
-}
-
-// ============================================================================
-// Shared tunnel state (persists across agent sessions within the same process)
-// ============================================================================
-
-const globalTunnels = new Map<string, TunnelRecord>();
-let globalIdCounter = 0;
+const VALID_STATUSES: readonly TunnelStatus[] = ["running", "reconnecting", "dead"];
 
 // ============================================================================
 // Plugin
@@ -42,7 +33,16 @@ let globalIdCounter = 0;
 
 export class TunnelPlugin implements ToolPlugin {
   readonly name = "tunnel";
-  private tunnels = globalTunnels;
+  private readonly channel?: string;
+  private readonly agentId?: string;
+
+  /** Constructor takes optional owner context. Non-CC worker-loop passes it
+   *  via `createTunnelPlugin(channel, agentId)` below; CC MCP handler does
+   *  the same on each request. */
+  constructor(channel?: string, agentId?: string) {
+    this.channel = channel;
+    this.agentId = agentId;
+  }
 
   getTools(): ToolRegistration[] {
     return [
@@ -51,15 +51,13 @@ export class TunnelPlugin implements ToolPlugin {
         description:
           "Create a Cloudflare Quick Tunnel to expose a local endpoint to the internet. " +
           "Returns a public *.trycloudflare.com URL. No Cloudflare account required. " +
-          "The tunnel stays alive until explicitly destroyed or the agent session ends.",
+          "Tunnels survive Claw'd server restart (tmux-backed). " +
+          "If a tunnel already exists for the same local URL, it is returned (reused=true) " +
+          "instead of creating a second cloudflared process.",
         parameters: {
           url: {
             type: "string",
             description: 'Local URL to expose, e.g. "http://localhost:3000" or "http://127.0.0.1:8080"',
-          },
-          label: {
-            type: "string",
-            description: "Optional human-readable label for this tunnel",
           },
         },
         required: ["url"],
@@ -67,11 +65,13 @@ export class TunnelPlugin implements ToolPlugin {
       },
       {
         name: "tunnel_destroy",
-        description: "Stop and remove a running Cloudflare Quick Tunnel by its ID.",
+        description:
+          "Stop and remove a running Cloudflare Quick Tunnel by its id. " +
+          "Works across agents — any agent can destroy any tunnel.",
         parameters: {
           id: {
             type: "string",
-            description: "Tunnel ID returned by tunnel_create (e.g. tunnel-1)",
+            description: "Tunnel id returned by tunnel_create",
           },
         },
         required: ["id"],
@@ -79,10 +79,59 @@ export class TunnelPlugin implements ToolPlugin {
       },
       {
         name: "tunnel_list",
-        description: "List all active Cloudflare Quick Tunnels with their public URLs, local URLs, and uptime.",
-        parameters: {},
+        description:
+          "List Cloudflare Quick Tunnels with their public/local URLs, status (running/reconnecting/dead), " +
+          "uptime, and owner (channel + agent). Optional filters narrow the result.",
+        parameters: {
+          mine: {
+            type: "boolean",
+            description: "If true, return only tunnels this agent created (default: false — show all).",
+          },
+          channel: {
+            type: "string",
+            description: "Filter by owner channel.",
+          },
+          local_url: {
+            type: "string",
+            description: "Filter by local URL (exact match).",
+          },
+          status: {
+            type: "string",
+            description: "Filter by status: running | reconnecting | dead",
+          },
+        },
         required: [],
-        handler: async () => this.handleList(),
+        handler: async (args) => this.handleList(args),
+      },
+      {
+        name: "tunnel_prune",
+        description:
+          "Bulk-destroy tunnels matching a filter. Useful to reap dead tunnels or clean up after a channel. " +
+          "At least one filter is required to prevent accidental wipes.",
+        parameters: {
+          dead_only: {
+            type: "boolean",
+            description: "Only destroy tunnels whose tmux session is gone (dead status).",
+          },
+          older_than_seconds: {
+            type: "number",
+            description: "Only destroy tunnels older than this many seconds since creation.",
+          },
+          local_url: {
+            type: "string",
+            description: "Only destroy tunnels for this local URL.",
+          },
+          channel: {
+            type: "string",
+            description: "Only destroy tunnels owned by this channel.",
+          },
+          agent_id: {
+            type: "string",
+            description: "Only destroy tunnels owned by this agent.",
+          },
+        },
+        required: [],
+        handler: async (args) => this.handlePrune(args),
       },
     ];
   }
@@ -93,11 +142,8 @@ export class TunnelPlugin implements ToolPlugin {
 
   private async handleCreate(args: Record<string, any>): Promise<ToolResult> {
     const localUrl = args.url as string;
-    if (!localUrl) {
-      return { success: false, output: "", error: "url is required" };
-    }
+    if (!localUrl) return { success: false, output: "", error: "url is required" };
 
-    // Validate URL format
     try {
       const parsed = new URL(localUrl);
       if (!["http:", "https:"].includes(parsed.protocol)) {
@@ -107,59 +153,41 @@ export class TunnelPlugin implements ToolPlugin {
       return { success: false, output: "", error: `Invalid URL: ${localUrl}` };
     }
 
-    // Check cloudflared availability
     try {
-      const { execFileSync } = await import("node:child_process");
-      execFileSync("cloudflared", ["--version"], { timeout: 5000 });
-    } catch {
-      return {
-        success: false,
-        output: "",
-        error:
-          "cloudflared is not installed. Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/",
-      };
-    }
-
-    const id = args.label ? `tunnel-${this.slugify(args.label)}` : `tunnel-${++globalIdCounter}`;
-    if (this.tunnels.has(id)) {
-      return {
-        success: false,
-        output: "",
-        error: `Tunnel "${id}" already exists. Destroy it first or use a different label.`,
-      };
-    }
-
-    try {
-      const publicUrl = await this.startTunnel(id, localUrl);
-      const record = this.tunnels.get(id)!;
+      const result = await tunnelManager.create({
+        localUrl,
+        channel: this.channel,
+        agentId: this.agentId,
+      });
       return {
         success: true,
         output: JSON.stringify({
-          id,
-          public_url: publicUrl,
-          local_url: localUrl,
-          pid: record.pid,
-          message: `Tunnel created. Public URL: ${publicUrl}`,
+          id: result.id,
+          public_url: result.publicUrl,
+          local_url: result.localUrl,
+          reused: result.reused,
+          owner: result.owner,
+          message: result.reused
+            ? `Tunnel reused (already exposing ${result.localUrl} at ${result.publicUrl})`
+            : `Tunnel created. Public URL: ${result.publicUrl}`,
         }),
       };
     } catch (err: unknown) {
       return {
         success: false,
         output: "",
-        error: `Failed to create tunnel: ${err instanceof Error ? err.message : String(err)}`,
+        error: err instanceof Error ? err.message : String(err),
       };
     }
   }
 
   private async handleDestroy(args: Record<string, any>): Promise<ToolResult> {
     const id = args.id as string;
-    if (!id) {
-      return { success: false, output: "", error: "id is required" };
-    }
+    if (!id) return { success: false, output: "", error: "id is required" };
 
-    const record = this.tunnels.get(id);
-    if (!record) {
-      const available = [...this.tunnels.keys()];
+    const existing = tunnelManager.get(id);
+    if (!existing) {
+      const available = tunnelManager.list().map((t) => t.id);
       return {
         success: false,
         output: "",
@@ -167,157 +195,135 @@ export class TunnelPlugin implements ToolPlugin {
       };
     }
 
-    this.killTunnel(record);
-    this.tunnels.delete(id);
-
+    tunnelManager.destroy(id);
     return {
       success: true,
       output: JSON.stringify({
         id,
-        message: `Tunnel "${id}" destroyed (was exposing ${record.localUrl} at ${record.publicUrl})`,
+        message: `Tunnel "${id}" destroyed (was exposing ${existing.localUrl} at ${existing.publicUrl ?? "(url not captured)"}).`,
       }),
     };
   }
 
-  private async handleList(): Promise<ToolResult> {
-    const now = Date.now();
-    const list = [...this.tunnels.values()].map((t) => ({
-      id: t.id,
-      public_url: t.publicUrl,
-      local_url: t.localUrl,
-      pid: t.pid,
-      uptime_seconds: Math.round((now - t.createdAt) / 1000),
-    }));
+  private async handleList(args: Record<string, any>): Promise<ToolResult> {
+    const filter: { channel?: string; agentId?: string; status?: TunnelStatus; localUrl?: string } = {};
 
+    // mine=true requires an agentId on the plugin instance — otherwise we'd
+    // silently ignore the filter and surprise the caller with unscoped results.
+    if (args.mine === true) {
+      if (!this.agentId) {
+        return {
+          success: false,
+          output: "",
+          error:
+            "Cannot use mine=true: this plugin instance has no agent context. Pass channel/agent_id explicitly instead.",
+        };
+      }
+      filter.agentId = this.agentId;
+    }
+    if (args.channel) filter.channel = args.channel as string;
+    if (args.local_url) filter.localUrl = args.local_url as string;
+    if (args.status !== undefined) {
+      if (!VALID_STATUSES.includes(args.status as TunnelStatus)) {
+        return {
+          success: false,
+          output: "",
+          error: `Invalid status filter "${args.status}". Must be one of: ${VALID_STATUSES.join(", ")}.`,
+        };
+      }
+      filter.status = args.status as TunnelStatus;
+    }
+
+    const rows = tunnelManager.list(filter);
     return {
       success: true,
       output: JSON.stringify({
-        count: list.length,
-        tunnels: list,
+        count: rows.length,
+        tunnels: rows.map((r) => ({
+          id: r.id,
+          public_url: r.publicUrl,
+          local_url: r.localUrl,
+          status: r.status,
+          uptime_seconds: r.uptimeSeconds,
+          channel: r.channel,
+          agent_id: r.agentId,
+        })),
+      }),
+    };
+  }
+
+  private async handlePrune(args: Record<string, any>): Promise<ToolResult> {
+    const filter: PruneFilter = {};
+    if (args.dead_only === true) filter.deadOnly = true;
+    if (typeof args.older_than_seconds === "number") {
+      if (args.older_than_seconds < 0 || !Number.isFinite(args.older_than_seconds)) {
+        return {
+          success: false,
+          output: "",
+          error: `older_than_seconds must be a non-negative finite number; got ${args.older_than_seconds}.`,
+        };
+      }
+      filter.olderThanMs = args.older_than_seconds * 1000;
+    }
+    if (args.local_url) filter.localUrl = args.local_url as string;
+    if (args.channel) filter.channel = args.channel as string;
+    if (args.agent_id) filter.agentId = args.agent_id as string;
+
+    // The guard rejects "trivial" filters that match everything:
+    //   - empty filter                       → {} matches all
+    //   - {older_than_seconds: 0}            → olderThanMs=0, matches all
+    //   - {dead_only: false}                 → NOT set (not true), doesn't matter
+    // Any non-zero older_than_seconds, or ANY of the string/boolean filters
+    // set to a meaningful value, counts as non-trivial.
+    const hasNonTrivialFilter =
+      filter.deadOnly === true ||
+      (filter.olderThanMs !== undefined && filter.olderThanMs > 0) ||
+      !!filter.localUrl ||
+      !!filter.channel ||
+      !!filter.agentId;
+    if (!hasNonTrivialFilter) {
+      return {
+        success: false,
+        output: "",
+        error:
+          "tunnel_prune requires at least one non-trivial filter " +
+          "(dead_only=true, older_than_seconds>0, local_url, channel, or agent_id) " +
+          "to prevent accidentally wiping all tunnels.",
+      };
+    }
+
+    const removed = tunnelManager.prune(filter);
+    return {
+      success: true,
+      output: JSON.stringify({
+        removed_count: removed.length,
+        removed_ids: removed,
       }),
     };
   }
 
   // --------------------------------------------------------------------------
-  // Tunnel lifecycle
-  // --------------------------------------------------------------------------
-
-  private startTunnel(id: string, localUrl: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const proc = spawn("cloudflared", ["tunnel", "--url", localUrl, "--no-autoupdate"], {
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-      });
-
-      let stderr = "";
-      let resolved = false;
-
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          this.killTunnel({ process: proc } as TunnelRecord);
-          reject(new Error("Tunnel creation timed out after 30s. cloudflared stderr:\n" + stderr));
-        }
-      }, 30_000);
-
-      // cloudflared prints the URL to stderr
-      proc.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString();
-        const match = stderr.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-        if (match && !resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-
-          const metricsMatch = stderr.match(/metrics server on ([\d.:]+)\/metrics/);
-          const record: TunnelRecord = {
-            id,
-            localUrl,
-            publicUrl: match[0],
-            pid: proc.pid!,
-            process: proc,
-            createdAt: Date.now(),
-            metricsPort: metricsMatch ? parseInt(metricsMatch[1].split(":").pop()!) : undefined,
-          };
-          this.tunnels.set(id, record);
-
-          // Auto-cleanup if process exits unexpectedly
-          proc.on("exit", () => {
-            this.tunnels.delete(id);
-          });
-
-          // Unref so the tunnel doesn't prevent agent from exiting
-          proc.unref();
-
-          resolve(match[0]);
-        }
-      });
-
-      proc.on("error", (err) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          reject(err);
-        }
-      });
-
-      proc.on("exit", (code) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          reject(new Error(`cloudflared exited with code ${code}. stderr:\n${stderr}`));
-        }
-      });
-    });
-  }
-
-  private killTunnel(record: TunnelRecord): void {
-    try {
-      // Kill the process group (detached process)
-      if (record.process.pid) {
-        process.kill(-record.process.pid, "SIGTERM");
-      }
-    } catch {
-      // Process may already be dead
-      try {
-        record.process.kill("SIGTERM");
-      } catch {
-        // Ignore
-      }
-    }
-  }
-
-  // --------------------------------------------------------------------------
-  // Cleanup
+  // Plugin lifecycle — tunnels are intentionally persistent.
   // --------------------------------------------------------------------------
 
   async destroy(): Promise<void> {
-    // No-op: tunnels persist across agent sessions.
-    // Use TunnelPlugin.destroyAll() for process-level cleanup.
+    // No-op: tunnels are tmux-backed and survive plugin/worker/process exit.
+    // Use TunnelPlugin.destroyAll() below to reap them on graceful shutdown,
+    // OR invoke `tunnel_prune` / `tunnel_destroy` explicitly.
   }
 
-  /** Kill all tunnels globally. Call on process shutdown. */
+  /**
+   * Legacy no-op kept for backwards compatibility with worker-loop.ts which
+   * calls `TunnelPlugin.destroyAll()` on stop. The prior implementation
+   * SIGTERM'd all in-process cloudflared children; with tmux-backed tunnels
+   * that would defeat the whole point (persistence across restart), so this
+   * is deliberately a noop now.
+   *
+   * Callers who want to kill tunnels on shutdown should use
+   * `tunnelManager.prune({ ... })` with whatever filter is appropriate
+   * (usually `deadOnly: true` to just reap already-dead entries).
+   */
   static destroyAll(): void {
-    for (const record of globalTunnels.values()) {
-      try {
-        if (record.process.pid) process.kill(-record.process.pid, "SIGTERM");
-      } catch {
-        try {
-          record.process.kill("SIGTERM");
-        } catch {}
-      }
-    }
-    globalTunnels.clear();
-  }
-
-  // --------------------------------------------------------------------------
-  // Helpers
-  // --------------------------------------------------------------------------
-
-  private slugify(s: string): string {
-    return s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 32);
+    // Intentional noop — see docstring.
   }
 }
