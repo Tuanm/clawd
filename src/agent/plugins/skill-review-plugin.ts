@@ -19,7 +19,12 @@ export interface SkillReviewConfig {
   reviewInterval?: number;
   /** Minimum tool calls before first review (default: 10) */
   minToolCallsBeforeFirstReview?: number;
-  /** Model for review agent (default: inherit parent's model) */
+  /** Provider for the review sub-agent. When unset, the sub-agent uses
+   *  whatever provider is currently selected (same as its parent). */
+  reviewProvider?: string;
+  /** Model for the review sub-agent. When unset, the sub-agent falls back
+   *  to its runner default — NOT the parent's model. Callers that want
+   *  "inherit parent's model" must pass the parent's model explicitly. */
   reviewModel?: string;
   /** Max skills to create per review (default: 2) */
   maxSkillsPerReview?: number;
@@ -297,6 +302,7 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
         maxIterations: 10,
         // depth: actual depth = parent depth + 1 (runner.ts:394). From Agent (depth 0) → depth 1.
         allowSubAgents: false,
+        provider: config.reviewProvider,
         model: config.reviewModel,
         systemPrompt: `You are a skill reviewer. Analyze the transcript and output JSON.`,
       });

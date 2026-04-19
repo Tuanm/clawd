@@ -453,6 +453,59 @@ describe("onToolResult hook", () => {
   });
 });
 
+// ── Test: provider + model pass-through to spawnAgent ───────────────────────
+// Locks the wiring so future refactors can't silently drop reviewProvider
+// or reviewModel on the way to spawnAgent. Reviews only fire on
+// chat_mark_processed (task boundary), hence the tool name choice below.
+
+describe("reviewProvider + reviewModel pass-through", () => {
+  test("forwards both provider and model to spawnAgent verbatim", async () => {
+    const spawnAgentFn = makeMockSpawnAgentFn();
+    const { plugin } = createSkillReviewPlugin(
+      {
+        apiUrl: "http://localhost:3000",
+        channel: "test",
+        reviewInterval: 1,
+        minToolCallsBeforeFirstReview: 1,
+        maxSkillsPerReview: 2,
+        reviewCooldownMs: 0,
+        reviewProvider: "anthropic",
+        reviewModel: "claude-haiku-4.5",
+      },
+      { spawnAgentFn: spawnAgentFn as any },
+    );
+
+    await plugin.hooks.onToolResult("chat_mark_processed", { success: true, output: "ok" }, {} as any);
+
+    expect(spawnAgentFn.mock.calls.length).toBe(1);
+    const spawnArgs = spawnAgentFn.mock.calls[0][0];
+    expect(spawnArgs.provider).toBe("anthropic");
+    expect(spawnArgs.model).toBe("claude-haiku-4.5");
+  });
+
+  test("leaves both undefined when caller doesn't set them", async () => {
+    const spawnAgentFn = makeMockSpawnAgentFn();
+    const { plugin } = createSkillReviewPlugin(
+      {
+        apiUrl: "http://localhost:3000",
+        channel: "test",
+        reviewInterval: 1,
+        minToolCallsBeforeFirstReview: 1,
+        maxSkillsPerReview: 2,
+        reviewCooldownMs: 0,
+      },
+      { spawnAgentFn: spawnAgentFn as any },
+    );
+
+    await plugin.hooks.onToolResult("chat_mark_processed", { success: true, output: "ok" }, {} as any);
+
+    expect(spawnAgentFn.mock.calls.length).toBe(1);
+    const spawnArgs = spawnAgentFn.mock.calls[0][0];
+    expect(spawnArgs.provider).toBeUndefined();
+    expect(spawnArgs.model).toBeUndefined();
+  });
+});
+
 // ── Test: runReview Cooldown Logic ────────────────────────────────────────────
 
 describe("runReview cooldown and guards", () => {

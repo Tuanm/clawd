@@ -12,7 +12,13 @@ export interface SkillReviewPluginOptions {
   reviewInterval?: number;
   /** Minimum tool calls before first review (default: 10) */
   minToolCallsBeforeFirstReview?: number;
-  /** Model for review agent (default: inherit parent's model) */
+  /** Provider for the review sub-agent. Pass-through: whatever the caller
+   *  sets reaches spawnAgent unchanged. Agent.ts fills in parent's provider
+   *  when this is unset; direct callers that bypass Agent get runner defaults. */
+  reviewProvider?: string;
+  /** Model for the review sub-agent. Pass-through: whatever the caller sets
+   *  reaches spawnAgent unchanged. Agent.ts fills in parent's model when
+   *  this is unset; direct callers that bypass Agent get runner defaults. */
   reviewModel?: string;
   /** Max skills to create per review (default: 2) */
   maxSkillsPerReview?: number;
@@ -105,6 +111,7 @@ export function loadSkillReviewConfigFromEnv(): SkillReviewPluginOptions | null 
     minToolCallsBeforeFirstReview: DEFAULT_SKILL_REVIEW_CONFIG.minToolCallsBeforeFirstReview,
     maxSkillsPerReview: DEFAULT_SKILL_REVIEW_CONFIG.maxSkillsPerReview,
     reviewCooldownMs: DEFAULT_SKILL_REVIEW_CONFIG.reviewCooldownMs,
+    reviewProvider: process.env.CLAWD_SKILL_REVIEW_PROVIDER,
     reviewModel: process.env.CLAWD_SKILL_REVIEW_MODEL,
     projectRoot: process.env.CLAWD_PROJECT_ROOT,
   };
