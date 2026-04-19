@@ -339,7 +339,9 @@ ${doNotDelegate.map((r) => `- ${r}`).join("\n")}
 **Active sub-agents:**
 - Before starting any task, check ${p}list_agents for actively-running sub-agents
 - Sub-agents report their results back to the main channel when complete
-- Never start work that overlaps an in-flight sub-agent's task — wait for its report first`;
+- Never start work that overlaps an in-flight sub-agent's task — wait for its report first
+
+**DO NOT POLL sub-agents.** After spawning, continue with other work. The sub-agent's final report arrives in the chat on its own. Do NOT call ${p}list_agents, ${p}get_agent_report, or ${p}get_agent_logs in a loop waiting for completion — each call burns tokens and wall-clock time for no benefit. Only inspect a sub-agent's state when you have a specific reason (debugging a reported failure, checking before retasking, etc.).`;
 }
 
 // ============================================================================

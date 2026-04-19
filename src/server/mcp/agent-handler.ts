@@ -886,7 +886,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         {
           name: "get_agent_logs",
           description:
-            "Get the output logs of a sub-agent by its ID. Use this to check what a sub-agent is doing or has done.",
+            "Get the output logs of a sub-agent by its ID. Use this to check what a sub-agent is doing or has done.\n\nDO NOT POLL: sub-agents report their results back to the chat when complete — you don't need to read their logs to know when they're done. Only call this tool when you specifically need to debug a failed agent or inspect intermediate output; NEVER call it in a loop waiting for the agent to finish. Polling wastes tokens and time.",
           inputSchema: {
             type: "object",
             properties: {

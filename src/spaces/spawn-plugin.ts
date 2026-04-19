@@ -90,7 +90,7 @@ export function createSpawnAgentPlugin(
         {
           name: "list_agents",
           description:
-            "List agents. Use type='running' for spawned sub-agents, type='available' for agent files you can spawn, or omit for both. Use query to search available agents by keyword.",
+            "List agents. Use type='running' for spawned sub-agents, type='available' for agent files you can spawn, or omit for both. Use query to search available agents by keyword.\n\nDO NOT POLL: sub-agents report their results back to the chat when complete. Do not call this tool in a loop to wait for completion — that wastes tokens and time. Call it at most once to check current state, then move on to other work. The final report arrives on its own.",
           parameters: {
             type: {
               type: "string",
@@ -169,7 +169,7 @@ export function createSpawnAgentPlugin(
         {
           name: "get_agent_report",
           description:
-            "Get a spawned sub-agent's result, status, or error report by ID. Works for running, completed, or failed agents. Use to check on sub-agents you spawned earlier.",
+            "Get a spawned sub-agent's result, status, or error report by ID. Works for running, completed, or failed agents. Use to check on sub-agents you spawned earlier.\n\nDO NOT POLL: sub-agents report their results back to the chat automatically when complete — you will see the final report in the conversation without calling this tool. Use this tool at most once when you specifically need the structured result; NEVER call it in a loop waiting for the agent to finish. Polling wastes tokens and time.",
           parameters: {
             agent_id: { type: "string", description: "The sub-agent ID (from list_agents output)" },
           },
