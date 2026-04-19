@@ -124,7 +124,11 @@ export interface AgentConfig {
     reviewInterval?: number;
     /** Minimum tool calls before first review (default: 10) */
     minToolCallsBeforeFirstReview?: number;
-    /** Model for review sub-agent (default: inherit parent's model) */
+    /** Provider for the review sub-agent. When unset, Agent falls back to
+     *  the parent's provider so review calls always hit a real endpoint. */
+    reviewProvider?: string;
+    /** Model for the review sub-agent. When unset, Agent falls back to the
+     *  parent's model (NOT the runner's hardcoded default). */
     reviewModel?: string;
     /** Max skills to create per review (default: 2) */
     maxSkillsPerReview?: number;
@@ -810,12 +814,20 @@ export class Agent {
     if (this.config.skillReview?.apiUrl && this.config.skillReview?.channel) {
       try {
         const { createSkillReviewPlugin } = await import("./plugins/skill-review-plugin");
+        // Final resolution: if the memory-config didn't supply provider/model
+        // (reviewProvider / reviewModel), fall back to the parent agent's
+        // provider/model so the docstring promise "inherit parent's …" holds.
+        // The runner's hardcoded default ("claude-sonnet-4.5") is no longer
+        // reachable through this path.
+        const parentProvider = this.config.provider;
+        const parentModel = this.getModel();
         const { plugin: skillReviewPlugin } = createSkillReviewPlugin({
           apiUrl: this.config.skillReview.apiUrl,
           channel: this.config.skillReview.channel,
           reviewInterval: this.config.skillReview.reviewInterval,
           minToolCallsBeforeFirstReview: this.config.skillReview.minToolCallsBeforeFirstReview,
-          reviewModel: this.config.skillReview.reviewModel,
+          reviewProvider: this.config.skillReview.reviewProvider ?? parentProvider,
+          reviewModel: this.config.skillReview.reviewModel ?? parentModel,
           maxSkillsPerReview: this.config.skillReview.maxSkillsPerReview,
           reviewCooldownMs: this.config.skillReview.reviewCooldownMs,
         });
