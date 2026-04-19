@@ -2499,7 +2499,10 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       if (name.startsWith("tunnel_")) {
         try {
           const { TunnelPlugin } = await import("../../agent/plugins/tunnel-plugin");
-          const tunnelPlugin = new TunnelPlugin();
+          // Pass owner context so tmux-backed metadata records which
+          // channel+agent created each tunnel (used by tunnel_list filters
+          // and tunnel_prune).
+          const tunnelPlugin = new TunnelPlugin(channel, agentId);
           const tools = tunnelPlugin.getTools();
           const tool = tools.find((t) => t.name === name);
           if (tool) {
