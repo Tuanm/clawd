@@ -18,6 +18,7 @@ import { resolveToolAliases } from "./agents/loader";
 import type { CompletionRequest, Message, ToolCall, ToolDefinition } from "./api/client";
 import { createProvider } from "./api/factory";
 import { AllKeysSuspendedError } from "./api/key-pool";
+import { mapModelName } from "./api/provider-config";
 import type { LLMProvider } from "./api/providers";
 import { MODEL_TOKEN_LIMITS as CENTRALIZED_MODEL_LIMITS, getThresholds } from "./constants/context-limits";
 import { formatToolResult, parseToolArguments } from "./core/loop";
@@ -819,15 +820,28 @@ export class Agent {
         // provider/model so the docstring promise "inherit parent's …" holds.
         // The runner's hardcoded default ("claude-sonnet-4.5") is no longer
         // reachable through this path.
+        //
+        // Alias resolution happens HERE, not in worker-loop.ts, because
+        // aliases must be mapped against the EFFECTIVE provider. Mapping
+        // a raw memory.model against an undefined memory.provider would
+        // do a legacy cross-provider search that could return a model
+        // name alien to the effective provider (e.g. anthropic's
+        // "claude-opus-4-6" while the effective provider is copilot).
+        // SubAgent.runner passes `this.model` verbatim into completion
+        // requests, so an unresolved alias would reach the upstream API
+        // and fail — we resolve here instead.
         const parentProvider = this.config.provider;
-        const parentModel = this.getModel();
+        const parentModel = this.getModel(); // already resolved via client.model
+        const effectiveProvider = this.config.skillReview.reviewProvider ?? parentProvider;
+        const rawReviewModel = this.config.skillReview.reviewModel;
+        const effectiveModel = rawReviewModel ? mapModelName(rawReviewModel, effectiveProvider) : parentModel;
         const { plugin: skillReviewPlugin } = createSkillReviewPlugin({
           apiUrl: this.config.skillReview.apiUrl,
           channel: this.config.skillReview.channel,
           reviewInterval: this.config.skillReview.reviewInterval,
           minToolCallsBeforeFirstReview: this.config.skillReview.minToolCallsBeforeFirstReview,
-          reviewProvider: this.config.skillReview.reviewProvider ?? parentProvider,
-          reviewModel: this.config.skillReview.reviewModel ?? parentModel,
+          reviewProvider: effectiveProvider,
+          reviewModel: effectiveModel,
           maxSkillsPerReview: this.config.skillReview.maxSkillsPerReview,
           reviewCooldownMs: this.config.skillReview.reviewCooldownMs,
         });
