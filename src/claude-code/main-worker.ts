@@ -137,7 +137,14 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private skillReviewInProgress = false;
   // Cached skill review config — built once from runtime values (avoids re-reading env on every tool call)
   private _srConfig:
-    | { reviewInterval: number; minToolCalls: number; cooldownMs: number; maxSkills: number; model?: string }
+    | {
+        reviewInterval: number;
+        minToolCalls: number;
+        cooldownMs: number;
+        maxSkills: number;
+        provider?: string;
+        model?: string;
+      }
     | null
     | "disabled" = null;
 
@@ -894,14 +901,20 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         process.env.CLAWD_SKILL_REVIEW_ENABLED === "false"
           ? "disabled"
           : (() => {
+              // Honor `memory.{provider,model}` from ~/.clawd/config.json the
+              // same way the plugin-based path does (worker-loop.ts). When
+              // unset, fall back to the CC agent's own provider/model so the
+              // review runs against a known-working endpoint.
               const memCfg = loadConfigFile().memory;
+              const memProvider = typeof memCfg === "object" && memCfg?.provider ? memCfg.provider : undefined;
               const memModel = typeof memCfg === "object" && memCfg?.model ? memCfg.model : undefined;
               return {
                 reviewInterval: parseInt(process.env.CLAWD_SKILL_REVIEW_INTERVAL ?? "20", 10),
                 minToolCalls: parseInt(process.env.CLAWD_SKILL_REVIEW_MIN_TOOLS ?? "10", 10),
                 cooldownMs: parseInt(process.env.CLAWD_SKILL_REVIEW_COOLDOWN_MS ?? "300000", 10),
                 maxSkills: parseInt(process.env.CLAWD_SKILL_REVIEW_MAX_SKILLS ?? "2", 10),
-                model: memModel,
+                provider: memProvider ?? this.config.provider,
+                model: memModel ?? this.config.model,
               };
             })();
     }
@@ -949,11 +962,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // Fire-and-forget — don't block the agent turn
     (async () => {
       try {
-        const { CopilotClient } = await import("../agent/api/client");
-        const client = new CopilotClient("");
+        // Use the provider-agnostic factory so the review honors
+        // `memory.{provider,model}` from config (or falls back to the CC
+        // agent's own provider). Previously hardcoded CopilotClient which
+        // ignored the user's provider choice entirely.
+        const { createProvider } = await import("../agent/api/factory");
+        const client = createProvider(srConfig.provider, srConfig.model);
         const timeoutSignal = new Promise<null>((resolve) => setTimeout(() => resolve(null), 30_000));
         const llmCall = client.complete({
-          model: srConfig.model || "claude-sonnet-4.5", // srConfig.model is seeded from memory.model in config
+          model: srConfig.model || "claude-sonnet-4.5", // createProvider also resolves aliases via mapModelName
           messages: [{ role: "user", content: prompt }],
           temperature: 0.3,
           max_tokens: 2000,
