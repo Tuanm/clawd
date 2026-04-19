@@ -465,7 +465,7 @@ registerTool(
 
 registerTool(
   "list_agents",
-  "List all spawned sub-agents and their current status. Useful to check which agents are running before using kill_agent.",
+  "List all spawned sub-agents and their current status. Useful to check which agents are running before using kill_agent.\n\nDO NOT POLL: sub-agents report their results back to the chat when complete. Do not call this tool in a loop to wait for completion — that wastes tokens and time. Call it at most once to check current state, then move on to other work. The final report arrives on its own.",
   {
     type: {
       type: "string",
@@ -590,7 +590,7 @@ registerTool(
 
 registerTool(
   "get_agent_logs",
-  "Get the output logs of a sub-agent by its ID. Use start_line/end_line to read specific line ranges (1-indexed, inclusive), or tail to get the last N lines.",
+  "Get the output logs of a sub-agent by its ID. Use start_line/end_line to read specific line ranges (1-indexed, inclusive), or tail to get the last N lines.\n\nDO NOT POLL: sub-agents report their results back to the chat when complete — you don't need to read their logs to know when they're done. Only call this tool when you specifically need to debug a failed agent or inspect intermediate output; NEVER call it in a loop waiting for the agent to finish. Polling wastes tokens and time.",
   {
     agent_id: {
       type: "string",
@@ -671,7 +671,7 @@ registerTool(
 
 registerTool(
   "get_agent_report",
-  "Get a sub-agent's structured result, status, or error by ID. Use to check on sub-agents you spawned earlier — returns status, result data, and any error message.",
+  "Get a sub-agent's structured result, status, or error by ID. Use to check on sub-agents you spawned earlier — returns status, result data, and any error message.\n\nDO NOT POLL: sub-agents report their results back to the chat automatically when complete — you will see the final report in the conversation without calling this tool. Use this tool at most once when you specifically need the structured result; NEVER call it in a loop waiting for the agent to finish. Polling wastes tokens and time.",
   {
     agent_id: {
       type: "string",

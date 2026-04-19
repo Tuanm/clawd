@@ -74,7 +74,7 @@ export const AGENT_MCP_TOOLS = [
   {
     name: "list_agents",
     description:
-      "List spawned sub-agents and their status. Supports filtering by name/query and status, and limits results to avoid large outputs.",
+      "List spawned sub-agents and their status. Supports filtering by name/query and status, and limits results to avoid large outputs.\n\nDO NOT POLL: sub-agents report their results back to the chat when complete. Do not call this tool in a loop to wait for completion — that wastes tokens and time. Call it at most once to check current state, then move on to other work. The final report arrives on its own.",
     inputSchema: {
       type: "object",
       properties: {
@@ -106,7 +106,8 @@ export const AGENT_MCP_TOOLS = [
   },
   {
     name: "get_agent_report",
-    description: "Get a sub-agent's result or status by ID.",
+    description:
+      "Get a sub-agent's result or status by ID.\n\nDO NOT POLL: sub-agents report their results back to the chat automatically when complete — you will see the final report in the conversation without calling this tool. Use this tool at most once when you specifically need the structured result; NEVER call it in a loop waiting for the agent to finish. Polling wastes tokens and time.",
     inputSchema: {
       type: "object",
       properties: {
