@@ -19,8 +19,8 @@
  *     the legacy preamble path (full history), fidelity is intact.
  */
 
-import { generateConversationSummary } from "./summarizer";
 import { getSessionManager, type SessionManager, type StoredMessage } from "./manager";
+import { generateConversationSummary } from "./summarizer";
 
 /** Format stored rows into line-oriented text suitable for LLM summarization.
  *  Mirrors the formatting in main-worker.ts `maybeCompactSession` so the

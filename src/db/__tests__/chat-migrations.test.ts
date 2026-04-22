@@ -6,8 +6,8 @@
  * agent_seen.pending_seen_ts_json for crash-safe seen-but-unprocessed tracking.
  */
 
-import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { describe, expect, test } from "bun:test";
 import { runMigrations } from "../migrations";
 import { chatMigrations } from "../migrations/chat-migrations";
 
