@@ -161,8 +161,8 @@ Three agents are available by default (source: "built-in"):
 
 | Agent | Description | Model | Tools |
 |-------|-------------|-------|-------|
-| `explore` | Fast read-only codebase explorer for file discovery and pattern analysis | Haiku | view, grep, glob, bash, today, **get_environment**, web_search, web_fetch |
-| `plan` | Research agent for gathering context before implementation planning | inherit | view, grep, glob, bash, today, **get_environment**, web_search, web_fetch |
+| `explore` | Fast read-only codebase explorer for file discovery and pattern analysis | Haiku | view, grep, glob, bash, today, web_search, web_fetch |
+| `plan` | Research agent for gathering context before implementation planning | inherit | view, grep, glob, bash, today, web_search, web_fetch |
 | `general` | Capable general-purpose agent for complex multi-step tasks | inherit | all |
 
 Built-in agents can be overridden by custom agents with the same name using the 4-directory priority system.

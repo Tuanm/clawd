@@ -78,9 +78,6 @@ import { toolDefinitions as _td } from "./registry";
 
 const _READ_ONLY_TOOL_NAMES = new Set([
   "today",
-  "get_environment",
-  "get_project_root",
-  "get_system_info",
   "view",
   "grep",
   "glob",

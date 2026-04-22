@@ -533,25 +533,6 @@ Execute a shell command on the host machine. Runs outside the Claude Code sandbo
 
 **Note:** On Windows, use PowerShell syntax.
 
-### get_environment
-
-Get working environment information.
-
-**Parameters:** None
-
-**Returns:**
-```json
-{
-  "os": "linux",
-  "arch": "x64",
-  "shell": "/bin/bash",
-  "home": "/home/user",
-  "project_root": "/project",
-  "cwd": "/project",
-  "hint": "Unix machine. Use bash syntax."
-}
-```
-
 ### today
 
 Get today's date and current time.

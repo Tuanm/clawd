@@ -1654,12 +1654,15 @@ export class WorkerLoop implements AgentWorker {
           const promptContext: PromptContext = {
             agentId: this.config.agentId,
             channel: this.config.channel,
-            projectRoot: this.config.projectRoot,
+            // Use the resolved (normalized, absolute) project root — same value
+            // that sandbox/file tools see via AgentContext. Ensures the prompt
+            // and tool runtime agree on cwd.
+            projectRoot: resolvedProjectRoot,
             isSpaceAgent: !!this.config.isSpaceAgent,
             availableTools: toolDefinitions.map((t) => t.function.name),
             platform: process.platform,
             model,
-            gitRepo: existsSync(join(this.config.projectRoot, ".git")),
+            gitRepo: existsSync(join(resolvedProjectRoot, ".git")),
             browserEnabled: false, // updated below if browser plugin registers
             contextMode: this.config.contextMode,
             agentFileConfig: this.config.agentFileConfig,

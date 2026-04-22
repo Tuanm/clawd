@@ -118,7 +118,6 @@ const BUILTIN_TOOLS = new Set([
   "article_update",
   "article_delete",
   "chat_send_article",
-  "get_project_root",
   // Browser plugin tools
   "browser_status",
   "browser_navigate",

@@ -9,6 +9,7 @@
  * Sub-agent:  ~800 tokens (stripped to essentials)
  */
 
+import { arch as osArch, userInfo as osUserInfo } from "node:os";
 import type { AgentFileConfig } from "../agents/loader";
 import { listAgentFiles } from "../agents/loader";
 import { CLAUDE_CODE_RUNTIME_BLOCK, MAIN_AGENT_RUNTIME_BLOCK } from "./shared";
@@ -132,12 +133,32 @@ ${runtimeBlock}`;
 // ============================================================================
 
 function sectionEnvironment(ctx: PromptContext): string {
+  const isWindows = ctx.platform === "win32";
+  const shell = isWindows ? process.env.COMSPEC || "cmd.exe" : process.env.SHELL || "/bin/bash";
+  const shellType = isWindows
+    ? shell.toLowerCase().includes("powershell")
+      ? "powershell"
+      : "cmd"
+    : (shell.split("/").pop() ?? "sh");
+  const user = (() => {
+    try {
+      return osUserInfo().username;
+    } catch {
+      return "unknown";
+    }
+  })();
+  const runtime = typeof Bun !== "undefined" ? `Bun ${Bun.version}` : `Node ${process.version}`;
+  const shellSyntaxHint = isWindows ? "PowerShell/cmd syntax" : "bash syntax";
+
   const lines = ["# Environment"];
-  lines.push(`- Working directory: ${ctx.projectRoot}`);
-  lines.push(`- Platform: ${ctx.platform}`);
+  lines.push(`- Working directory (project root): ${ctx.projectRoot}`);
+  lines.push(`- Platform: ${ctx.platform} (${osArch()})`);
+  lines.push(`- Shell: ${shell} [${shellType}] — use ${shellSyntaxHint} in bash commands`);
+  lines.push(`- User: ${user}`);
+  lines.push(`- Runtime: ${runtime}`);
   lines.push(`- Git repository: ${ctx.gitRepo ? "yes" : "no"}`);
   lines.push(`- Model: ${ctx.model}`);
-  lines.push(`- All file tools accept relative paths (resolved from project root)`);
+  lines.push(`- File tools accept relative paths (resolved from project root) or absolute paths`);
   return lines.join("\n");
 }
 

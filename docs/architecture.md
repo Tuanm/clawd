@@ -208,7 +208,7 @@ clawd/
 │   │   ├── manager.ts          # Space lifecycle management
 │   │   ├── worker.ts           # Space worker orchestrator
 │   │   ├── spawn-plugin.ts     # spawn_agent tool
-│   │   ├── plugin.ts           # complete_task, get_environment
+│   │   ├── plugin.ts           # complete_task
 │   │   └── db.ts               # spaces table schema
 │   ├── scheduler/              # Scheduled jobs (cron, interval, once)
 │   │   ├── manager.ts          # Scheduler tick loop
@@ -612,7 +612,7 @@ Each iteration:
 - Results are reassembled in the original order before injection into context
 - Configurable via `parallelTools` in config (default: `true`); set to `false` to force sequential
 
-**16 built-in tools** are marked `readOnly: true`: file view/glob/grep, web fetch/search, today, get_environment, list_agents, and several memory-read tools.
+**Built-in read-only tools** marked `readOnly: true`: file view/glob/grep, web fetch/search, today, list_agents, and several memory-read tools.
 
 #### Dynamic System Prompt Builder
 
@@ -785,7 +785,7 @@ Tool Dispatcher
     ├── Memo tools (memo_save, memo_recall, memo_delete, memo_pin, memo_unpin)
     ├── Task tools (task_add, task_list, task_complete, etc.)
     ├── Job tools (job_submit, job_status, job_wait, etc.)
-    ├── Utility tools (get_environment, today, convert_to_markdown)
+    ├── Utility tools (today, convert_to_markdown)
     └── Channel MCP Tools (from connected MCP servers for this channel)
     │
     ▼
@@ -1205,7 +1205,7 @@ sequenceDiagram
 - **Context seeding**: Parent can pass `context` parameter to reduce sub-agent cold start
 - **Result delivery**: Sub-agent calls `complete_task(result)` which posts the result to the parent channel and locks the space (preventing further messages)
 - **Sub-agent naming**: Sub-agents use friendly names with UUID suffix (e.g., "code-reviewer-a1b2c3") and get colored avatars
-- **Sub-agent tools**: Limited to `complete_task`, `chat_mark_processed`, `get_environment`, `today` — no `chat_send_message` or other tools
+- **Sub-agent tools**: Limited to `complete_task`, `chat_mark_processed`, `today` — no `chat_send_message` or other tools. Environment info (OS/shell/cwd/arch) is injected into the system prompt instead of being fetched via a tool.
 
 **Parent tools for sub-agents**: `retask_agent` allows re-tasking a completed sub-agent without cold start.
 

@@ -143,7 +143,7 @@ You are Claw'd, an autonomous AI assistant that can execute tasks using tools.
 You have access to tools defined in the tool schema — use them as needed.
 
 ## Guidelines
-1. At the start of a new session, call get_environment to know your OS, shell, and project root
+1. Environment info (OS, shell, project root, etc.) is already in the "# Environment" section above — do NOT probe with a tool
 2. All file tools accept relative paths (resolved from project root) — no need to prepend project root
 3. Use OS-native shell syntax in bash tool (PowerShell/cmd on Windows, bash on Linux/macOS)
 4. Use tools to gather information before answering questions about code or files
@@ -151,10 +151,10 @@ You have access to tools defined in the tool schema — use them as needed.
 6. Always verify your changes with view/grep after editing
 7. If a task requires multiple steps, break them into kanban tasks and track progress
 8. Be concise in your responses
-8. Use chat_search to recall past conversations when relevant
-9. Commands timeout after 30s - use job_submit for long-running tasks (builds, tests, installs)
-10. Activate relevant skills when working on specialized tasks
-11. Keep your kanban board updated to stay organized
+9. Use chat_search to recall past conversations when relevant
+10. Commands timeout after 30s - use job_submit for long-running tasks (builds, tests, installs)
+11. Activate relevant skills when working on specialized tasks
+12. Keep your kanban board updated to stay organized
 
 ## Task & Plan Usage
 
@@ -1001,12 +1001,9 @@ export class Agent {
           filtered.push(tool);
         }
       }
-      // Also ensure get_environment and today are available (from built-in tools)
+      // Also ensure `today` is available (from built-in tools)
       for (const tool of tools) {
-        if (
-          (tool.function.name === "get_environment" || tool.function.name === "today") &&
-          !filtered.some((t) => t.function.name === tool.function.name)
-        ) {
+        if (tool.function.name === "today" && !filtered.some((t) => t.function.name === tool.function.name)) {
           filtered.push(tool);
         }
       }
@@ -1083,7 +1080,6 @@ export class Agent {
     "chat_poll_and_ack",
     "chat_search",
     "list_agents",
-    "get_project_root",
     "get_current_time",
   ]);
 
@@ -1103,7 +1099,6 @@ export class Agent {
     const alwaysInclude = new Set([
       "chat_send_message",
       "chat_mark_processed",
-      "get_project_root",
       "complete_task",
       "spawn_agent",
       "list_agents",
