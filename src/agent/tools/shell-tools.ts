@@ -11,17 +11,8 @@
 
 import { spawn } from "node:child_process";
 import { bustReadOnceCache } from "../utils/read-once";
-import {
-  getContextAgentId,
-  getSandboxProjectRoot,
-  getShellArgs,
-  isSandboxEnabled,
-  isSandboxReady,
-  registerTool,
-  resolveSafePath,
-  validatePath,
-  wrapCommandForSandbox,
-} from "./registry";
+import { getContextAgentId, getSandboxProjectRoot, getShellArgs, registerTool, resolveSafePath } from "./registry";
+import { enforceSandboxPolicy } from "./sandbox-command";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────────
 
@@ -110,7 +101,8 @@ registerTool(
   },
   ["command"],
   async ({ command, timeout = 30000, cwd, description, run_in_background }) => {
-    // Background mode: delegate to job_submit (tmux-based, survives agent exit)
+    // Background mode: delegate to tmux (persistent, survives agent exit).
+    // Same policy as foreground — must still block .env and validate cwd.
     if (run_in_background) {
       if (!isTmuxAvailable()) {
         return {
@@ -119,138 +111,57 @@ registerTool(
           error: "Background execution requires tmux. Install with: apt install tmux (or brew install tmux on macOS)",
         };
       }
+      const bgOutcome = await enforceSandboxPolicy({
+        command,
+        cwd: cwd ? resolveSafePath(cwd) : undefined,
+        operation: "bash cwd",
+      });
+      if (!bgOutcome.ok) {
+        return { success: false, output: "", error: bgOutcome.error };
+      }
       try {
         const { tmuxJobManager } = await import("../jobs/tmux-manager");
         const name = description || command.slice(0, 40).replace(/[^a-zA-Z0-9-_]/g, "_");
-        const jobId = tmuxJobManager.submit(name, command);
+        const jobId = tmuxJobManager.submit(name, bgOutcome.wrapped);
         return {
           success: true,
-          output: `Background job started: ${jobId}\nUse job_status(job_id="${jobId}") to check output.`,
+          output: `${bgOutcome.notice}Background job started: ${jobId}\nUse job_status(job_id="${jobId}") to check output.`,
         };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         return { success: false, output: "", error: `Failed to start background job: ${message}` };
       }
     }
-    let workDir = cwd ? resolveSafePath(cwd) : undefined;
 
-    // When sandbox enabled, use platform-specific isolation (bwrap on Linux, sandbox-exec on macOS)
-    if (isSandboxEnabled()) {
-      const projectRoot = getSandboxProjectRoot();
-      workDir = workDir || projectRoot;
-
-      // Validate cwd is within allowed paths
-      const cwdError = validatePath(workDir, "bash cwd");
-      if (cwdError) {
-        return { success: false, output: "", error: cwdError };
-      }
-
-      // Block commands that try to access .env files (but allow .env.example)
-      const envFilePattern = /(?:^|[^a-zA-Z0-9_.])\.env(?!\.[a-zA-Z]*example)(?:\.[a-zA-Z0-9_]*)?(?:[^a-zA-Z0-9_.]|$)/;
-      if (envFilePattern.test(command)) {
-        return {
-          success: false,
-          output: "",
-          error:
-            "SANDBOX RESTRICTION: Access to .env files is blocked for security reasons. " +
-            "These files may contain secrets. Use .env.example as a template instead.",
-        };
-      }
-
-      const sandboxNotice = `[SANDBOX MODE] You can ONLY access: ${projectRoot} and /tmp. All other paths are blocked.\n\n`;
-
-      // Use kernel-level isolation (bwrap on Linux, sandbox-exec on macOS) if initialized
-      if (isSandboxReady()) {
-        try {
-          const wrappedCommand = await wrapCommandForSandbox(command, workDir);
-          return new Promise((resolve) => {
-            const proc = spawn("bash", ["-c", wrappedCommand], { timeout }); // lgtm[js/shell-command-injection-from-environment]
-            let timedOut = false;
-
-            const timeoutId = setTimeout(() => {
-              timedOut = true;
-              proc.kill("SIGKILL");
-            }, timeout);
-
-            let stdout = "";
-            let stderr = "";
-            let outputBytes = 0;
-
-            proc.stdout?.on("data", (data: Buffer) => {
-              if (outputBytes < MAX_BASH_OUTPUT) {
-                stdout += data.toString();
-                outputBytes += data.length;
-              }
-            });
-            proc.stderr?.on("data", (data: Buffer) => {
-              if (outputBytes < MAX_BASH_OUTPUT) {
-                stderr += data.toString();
-                outputBytes += data.length;
-              }
-            });
-
-            proc.on("close", (code: number | null) => {
-              clearTimeout(timeoutId);
-              const truncated = outputBytes >= MAX_BASH_OUTPUT ? "\n[OUTPUT TRUNCATED: exceeded 10MB limit]" : "";
-              if (timedOut) {
-                bustBashWriteCache(command);
-                resolve({
-                  success: false,
-                  output: stdout.trim() + truncated,
-                  error:
-                    `TIMEOUT: Command exceeded ${timeout / 1000}s limit. ` +
-                    `For long-running tasks, use job_submit instead.`,
-                });
-                return;
-              }
-              const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "") + truncated;
-              bustBashWriteCache(command);
-              resolve({
-                success: code === 0,
-                output: sandboxNotice + (output.trim() || "(no output)"),
-                error: code !== 0 ? `Exit code: ${code}` : undefined,
-              });
-            });
-
-            proc.on("error", (err) => {
-              clearTimeout(timeoutId);
-              bustBashWriteCache(command);
-              resolve({
-                success: false,
-                output: "",
-                error: `Sandbox error: ${err.message}`,
-              });
-            });
-          });
-        } catch (sandboxErr: unknown) {
-          const message = sandboxErr instanceof Error ? sandboxErr.message : String(sandboxErr);
-          return {
-            success: false,
-            output: "",
-            error: `Sandbox wrapping failed: ${message}`,
-          };
-        }
-      }
-      // Fallback: sandbox enabled but kernel-level sandbox not initialized
-      // (e.g., missing dependencies). Still apply path validation above.
+    const outcome = await enforceSandboxPolicy({
+      command,
+      cwd: cwd ? resolveSafePath(cwd) : undefined,
+      operation: "bash cwd",
+    });
+    if (!outcome.ok) {
+      return { success: false, output: "", error: outcome.error };
     }
+    const { wrapped, workDir, sandboxed, notice } = outcome;
 
-    // Non-sandboxed mode - run directly (cross-platform shell)
     return new Promise((resolve) => {
-      const [shell, shellArgs] = getShellArgs(command);
+      // Sandboxed (kernel wrap): run via bash -c directly — bwrap/sandbox-exec
+      // manage cwd + env internally. Non-sandboxed: use cross-platform shell
+      // with interactive-prompt suppression for package managers and git.
+      const [shell, shellArgs] = sandboxed ? ["bash", ["-c", wrapped]] : getShellArgs(wrapped);
       const proc = spawn(shell, shellArgs, {
         timeout,
-        cwd: workDir,
-        env: {
-          ...process.env,
-          // Suppress interactive prompts (targeted — don't set CI=true as it breaks tmux/others)
-          DEBIAN_FRONTEND: "noninteractive",
-          GIT_TERMINAL_PROMPT: "0",
-          HOMEBREW_NO_AUTO_UPDATE: "1",
-          CONDA_YES: "1",
-          PIP_NO_INPUT: "1",
-        },
-      });
+        cwd: sandboxed ? undefined : workDir,
+        env: sandboxed
+          ? undefined
+          : {
+              ...process.env,
+              DEBIAN_FRONTEND: "noninteractive",
+              GIT_TERMINAL_PROMPT: "0",
+              HOMEBREW_NO_AUTO_UPDATE: "1",
+              CONDA_YES: "1",
+              PIP_NO_INPUT: "1",
+            },
+      }); // lgtm[js/shell-command-injection-from-environment]
       let timedOut = false;
 
       const timeoutId = setTimeout(() => {
@@ -293,7 +204,7 @@ registerTool(
         bustBashWriteCache(command);
         resolve({
           success: code === 0,
-          output: output.trim() || "(no output)",
+          output: notice + (output.trim() || "(no output)"),
           error: code !== 0 ? `Exit code: ${code}` : undefined,
         });
       });
@@ -304,7 +215,7 @@ registerTool(
         resolve({
           success: false,
           output: "",
-          error: err.message,
+          error: sandboxed ? `Sandbox error: ${err.message}` : err.message,
         });
       });
     });
@@ -348,21 +259,18 @@ if (isTmuxAvailable()) {
     },
     ["name", "command"],
     async ({ name, command }) => {
+      // Same policy gate as bash — blocks .env and validates cwd, then wraps
+      // with bwrap/sandbox-exec when sandbox is ready.
+      const outcome = await enforceSandboxPolicy({ command, operation: "job cwd" });
+      if (!outcome.ok) {
+        return { success: false, output: "", error: outcome.error };
+      }
       try {
         const { tmuxJobManager } = await import("../jobs/tmux-manager");
-
-        // When sandbox enabled, wrap the command with platform-specific sandboxing
-        // (tmux-manager runs commands directly; sandboxing is enforced here at tool level)
-        let sandboxedCommand = command;
-        if (isSandboxReady()) {
-          sandboxedCommand = await wrapCommandForSandbox(command);
-        }
-
-        const jobId = tmuxJobManager.submit(name, sandboxedCommand);
-
+        const jobId = tmuxJobManager.submit(name, outcome.wrapped);
         return {
           success: true,
-          output: `Job submitted: ${jobId}\nName: ${name}\nUse job_status or job_logs with this ID to check progress.`,
+          output: `${outcome.notice}Job submitted: ${jobId}\nName: ${name}\nUse job_status or job_logs with this ID to check progress.`,
         };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -645,8 +553,16 @@ if (isTmuxAvailable()) {
         return { success: false, error: "Session name must be alphanumeric (a-z, A-Z, 0-9, _, -)", output: "" };
       }
 
-      const projectRoot = getSandboxProjectRoot();
-      const workDir = cwd || projectRoot;
+      // Same sandbox policy as bash — block .env, validate cwd, wrap when ready.
+      const outcome = await enforceSandboxPolicy({
+        command,
+        cwd: cwd ? resolveSafePath(cwd) : undefined,
+        operation: "tmux cwd",
+      });
+      if (!outcome.ok) {
+        return { success: false, output: "", error: outcome.error };
+      }
+      const { wrapped, workDir, sandboxed, notice } = outcome;
       const socket = getTmuxSocket();
 
       // Check if session exists
@@ -654,38 +570,44 @@ if (isTmuxAvailable()) {
       const sessions = listResult.success ? listResult.output.split("\n").filter(Boolean) : [];
       const sessionExists = sessions.includes(session);
 
-      // Build the command - cd to workdir first (single-quote escape workDir to prevent injection)
+      // When sandboxed, bwrap/sandbox-exec handles cwd internally — prepending
+      // `cd 'workDir' && …` would point at the host path and leak outside the
+      // sandbox. Otherwise, cd into workDir in the host shell as before.
       const escapedDir = workDir.replace(/'/g, "'\\''");
-      const cdCmd = `cd '${escapedDir}' && ${command}`;
+      const fullCmd = sandboxed ? wrapped : `cd '${escapedDir}' && ${wrapped}`;
 
       if (!sessionExists) {
         // Create new session and send command
-        const createResult = await execTmux(["-L", socket, "new-session", "-d", "-s", session, cdCmd]);
+        const createResult = await execTmux(["-L", socket, "new-session", "-d", "-s", session, fullCmd]);
         if (!createResult.success) {
           return { success: false, error: createResult.error || "Failed to create session", output: "" };
         }
         return {
           success: true,
-          output: JSON.stringify({
-            session,
-            status: "created",
-            command: command.slice(0, 100) + (command.length > 100 ? "..." : ""),
-            cwd: workDir,
-          }),
+          output:
+            notice +
+            JSON.stringify({
+              session,
+              status: "created",
+              command: command.slice(0, 100) + (command.length > 100 ? "..." : ""),
+              cwd: workDir,
+            }),
         };
       } else {
         // Send command to existing session (run in the default pane)
-        const sendResult = await execTmux(["-L", socket, "send-keys", "-t", session, cdCmd, "C-m"]);
+        const sendResult = await execTmux(["-L", socket, "send-keys", "-t", session, fullCmd, "C-m"]);
         if (!sendResult.success) {
           return { success: false, error: sendResult.error || "Failed to send command", output: "" };
         }
         return {
           success: true,
-          output: JSON.stringify({
-            session,
-            status: "command_sent",
-            command: command.slice(0, 100) + (command.length > 100 ? "..." : ""),
-          }),
+          output:
+            notice +
+            JSON.stringify({
+              session,
+              status: "command_sent",
+              command: command.slice(0, 100) + (command.length > 100 ? "..." : ""),
+            }),
         };
       }
     },
