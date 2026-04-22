@@ -19,6 +19,7 @@ import { createMemoryPlugin, isMemoryEnabled } from "./agent/plugins/memory-plug
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 import type { PromptContext } from "./agent/prompt/builder";
 import { runWithAgentContext, setProjectHash, toolDefinitions } from "./agent/tools/definitions";
+import { sendChatFallback } from "./agent/utils/chat-fallback";
 import { setDebug } from "./agent/utils/debug";
 import { initializeSandbox } from "./agent/utils/sandbox";
 import { smartTruncate } from "./agent/utils/smart-truncation";
@@ -786,11 +787,7 @@ export class WorkerLoop implements AgentWorker {
             // Skip for: heartbeat turns, continuation prompts, cancelled turns, or if already called.
             if (!execResult.markProcessed && !isContinuation && !this.wasCancelledByHeartbeat && !wlInterrupted) {
               const lastTs = result.pending[result.pending.length - 1]?.ts || "";
-              const reminderPrompt =
-                `[NOTICE: You completed your turn but did not call \`chat_mark_processed\` to mark the message(s) as handled. ` +
-                `This is required so the same messages are not polled again.\n\n` +
-                `Call \`chat_mark_processed(timestamp="${lastTs}")\` now, even if empty. ` +
-                `If you intentionally did not need to respond, produce only [SILENT].]`;
+              const reminderPrompt = `[Call \`chat_mark_processed(timestamp="${lastTs}")\` to mark the message(s) as handled — otherwise they'll be polled again.]`;
 
               try {
                 await this.executePrompt(reminderPrompt, this.sessionName);
@@ -1862,6 +1859,8 @@ export class WorkerLoop implements AgentWorker {
 
             // Re-injection: if agent produced ANY text but never called chat_send_message,
             // send one ephemeral follow-up prompt so it can deliver the response.
+            // If re-injection ALSO fails to call the tool, fall back to posting the
+            // agent's text directly (unless it explicitly opted out with [SILENT]).
             // Skip for heartbeat turns and cancelled turns.
             if (
               !turnChatSent &&
@@ -1870,24 +1869,47 @@ export class WorkerLoop implements AgentWorker {
               !this.wasCancelledByHeartbeat
             ) {
               const reinjectionPrompt =
-                "[NOTICE: Your previous turn produced output but did not call `chat_send_message` to deliver it — the human cannot see what you wrote.\n\n" +
-                "If you intended to respond to the human, call `chat_send_message` with your response now.\n" +
-                "If you intentionally chose not to respond, produce only [SILENT] and do nothing else.]";
+                "[Your previous text wasn't delivered — call `chat_send_message` to send it now, or reply only `[SILENT]` to skip.]";
 
+              let reinjContent = "";
               try {
                 const reinjResult = await callContext.run({ agentId, channel }, () =>
                   agent!.run(reinjectionPrompt, sessionName),
                 );
-                // If agent replied [SILENT] or produced nothing, discard silently
-                const reinjText = reinjResult.content?.trim() ?? "";
-                if (reinjText && reinjText.includes("[SILENT]")) {
-                  this.log("Re-injection: agent replied [SILENT], discarding");
-                } else {
-                  this.log(`Re-injection: agent responded (${reinjText.length} chars)`);
-                }
+                reinjContent = reinjResult.content ?? "";
               } catch (err) {
                 // Re-injection is best-effort — ignore errors
                 this.log(`Re-injection failed: ${err}`);
+              }
+
+              // Fallback rescue: if re-injection still didn't trigger chat_send_message,
+              // post the reinj text directly. [SILENT] is honored as explicit opt-out.
+              if (turnChatSent) {
+                this.log(`Re-injection: agent called chat_send_message`);
+              } else {
+                const outcome = await sendChatFallback({
+                  apiUrl: chatApiUrl,
+                  channel,
+                  agentId,
+                  userId: this.config.isSpaceAgent ? `UWORKER-${agentId}` : "UBOT",
+                  reinjectionText: reinjContent,
+                  authHeaders: this.authHeaders(),
+                });
+                switch (outcome.kind) {
+                  case "silent_accepted":
+                    this.log("Re-injection fallback: [SILENT] accepted");
+                    break;
+                  case "empty_discarded":
+                    this.log("Re-injection fallback: empty output, discarded");
+                    break;
+                  case "fallback_sent":
+                    this.log(`Re-injection fallback: sent (${outcome.chars} chars)`);
+                    turnChatSent = true;
+                    break;
+                  case "fallback_failed":
+                    this.log(`Re-injection fallback: failed — ${outcome.error}`);
+                    break;
+                }
               }
             }
 
