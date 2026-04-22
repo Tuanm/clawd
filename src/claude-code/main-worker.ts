@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "../agent/agents/loader";
 import { type AgentMemory, extractKeywords, getAgentMemoryStore } from "../agent/memory/agent-memory";
@@ -1327,10 +1327,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       logger.debug(`Could not query other agents: ${err}`);
     }
 
+    const resolvedProjectRoot = resolve(this.config.projectRoot);
     const ccCtx: PromptContext = {
       agentId: this.config.agentId,
       channel: this.config.channel,
-      projectRoot: this.config.projectRoot,
+      projectRoot: resolvedProjectRoot,
       isSpaceAgent: false,
       availableTools: [
         "bash",
@@ -1356,7 +1357,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       ],
       platform: process.platform,
       model: this.config.model || "sonnet",
-      gitRepo: false,
+      gitRepo: existsSync(join(resolvedProjectRoot, ".git")),
       browserEnabled: false,
       contextMode: false,
       agentFileConfig: this.config.agentFileConfig,

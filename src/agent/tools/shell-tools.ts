@@ -1,24 +1,24 @@
 /**
- * Shell Tools — today, get_environment, bash, job_submit/status/logs/list/cancel, tmux tools
+ * Shell Tools — today, bash, job_submit/status/logs/list/cancel, tmux tools
  *
  * Registers shell execution tools into the shared tool registry.
  * Tmux-dependent tools are only registered when tmux is available.
+ *
+ * Note: environment info (OS, shell, project root, arch, user, runtime) is
+ * injected directly into the agent system prompt via builder.ts —
+ * `get_environment` as a tool has been removed to save a round-trip.
  */
 
 import { spawn } from "node:child_process";
 import { bustReadOnceCache } from "../utils/read-once";
 import {
   getContextAgentId,
-  getSafeWindowsShell,
   getSandboxProjectRoot,
   getShellArgs,
-  IS_WINDOWS,
   isSandboxEnabled,
   isSandboxReady,
   registerTool,
   resolveSafePath,
-  runInSandbox,
-  tools,
   validatePath,
   wrapCommandForSandbox,
 } from "./registry";
@@ -90,55 +90,6 @@ registerTool(
       output: `${day}, ${date} ${time}`,
     };
   },
-);
-
-// ============================================================================
-// Tool: Get Environment (combined system info + project root)
-// ============================================================================
-
-registerTool(
-  "get_environment",
-  "Get working environment: OS, shell, project root, and runtime. Call at session start. All file tools accept relative paths (resolved from project root).",
-  {},
-  [],
-  async () => {
-    const os = await import("node:os");
-    const platform = os.platform();
-    const isWindows = platform === "win32";
-    const shell = isWindows ? getSafeWindowsShell() : process.env.SHELL || "/bin/bash";
-    const projectRoot = getSandboxProjectRoot();
-    return {
-      success: true,
-      output: JSON.stringify(
-        {
-          project_root: projectRoot,
-          os: platform,
-          arch: os.arch(),
-          shell,
-          shell_type: isWindows
-            ? shell.toLowerCase().includes("powershell")
-              ? "powershell"
-              : "cmd"
-            : shell.split("/").pop(),
-          user: os.userInfo().username,
-          runtime: `Bun ${Bun.version}`,
-          hint: isWindows
-            ? "Windows machine. Use PowerShell/cmd syntax. File paths accept relative (from project_root) or absolute."
-            : "Unix machine. Use bash syntax. File paths accept relative (from project_root) or absolute.",
-        },
-        null,
-        2,
-      ),
-    };
-  },
-);
-
-// Backward compatibility aliases
-registerTool("get_project_root", "Alias for get_environment.", {}, [], async () =>
-  tools.get("get_environment")!({} as any),
-);
-registerTool("get_system_info", "Alias for get_environment.", {}, [], async () =>
-  tools.get("get_environment")!({} as any),
 );
 
 /** Maximum bytes to accumulate from a single bash command's stdout+stderr combined */

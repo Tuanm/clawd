@@ -52,7 +52,6 @@ export const CLAWD_TOOL_NAME_MAP: Record<string, string> = {
   glob: "mcp__clawd__file_glob",
   grep: "mcp__clawd__file_grep",
   today: "mcp__clawd__today",
-  get_environment: "mcp__clawd__get_environment",
   web_search: "mcp__clawd__web_search",
   web_fetch: "mcp__clawd__web_fetch",
   custom_script: "mcp__clawd__custom_script",

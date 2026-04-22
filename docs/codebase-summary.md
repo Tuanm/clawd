@@ -178,8 +178,8 @@ Three agents available by default with source: "built-in":
 
 | Agent | Description | Model | Tools |
 |-------|-------------|-------|-------|
-| `explore` | Fast read-only codebase explorer for discovery and pattern analysis | Haiku | view, grep, glob, bash, today, get_environment, web_search, web_fetch |
-| `plan` | Research agent for gathering context before planning | inherit | view, grep, glob, bash, today, get_environment, web_search, web_fetch |
+| `explore` | Fast read-only codebase explorer for discovery and pattern analysis | Haiku | view, grep, glob, bash, today, web_search, web_fetch |
+| `plan` | Research agent for gathering context before planning | inherit | view, grep, glob, bash, today, web_search, web_fetch |
 | `general` | Capable general-purpose agent for complex multi-step tasks | inherit | all |
 
 Built-in agents can be overridden by custom agents with the same name via the 4-directory priority system.
@@ -449,7 +449,7 @@ Agents delegate work via `spawn_agent(task, agent="code-reviewer")`:
 - `list_agents(type="running")` shows spawned sub-agents with status, errors, and agent file used
 - `get_agent_report(id)` fetches specific sub-agent's full result or error
 - `agent` parameter optional — without it, sub-agent inherits parent's configuration (backward compatible)
-- **Sub-agent tools** — Limited to `complete_task`, `chat_mark_processed`, `get_environment`, `today` (no chat_send_message)
+- **Sub-agent tools** — Limited to `complete_task`, `chat_mark_processed`, `today` (no chat_send_message). Environment info (OS/shell/cwd) injected into system prompt.
 
 **Constraints:**
 - Max 9 concurrent spaces per channel

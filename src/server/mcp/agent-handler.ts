@@ -860,12 +860,6 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       // Utility tools
       const utilityToolDefs = [
         {
-          name: "get_environment",
-          description:
-            "Get working environment: OS, shell, project root, and runtime. Call at session start. All file tools accept relative paths (resolved from project root).",
-          inputSchema: { type: "object", properties: {}, required: [] },
-        },
-        {
           name: "today",
           description:
             "Get today's date and current time. Use this when you need to know what day it is, the current time, or calculate relative dates.",
@@ -2237,42 +2231,11 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       }
 
       // Handle utility tools
-      if (
-        name === "get_environment" ||
-        name === "today" ||
-        name === "convert_to_markdown" ||
-        name === "get_agent_logs" ||
-        name === "bash"
-      ) {
+      if (name === "today" || name === "convert_to_markdown" || name === "get_agent_logs" || name === "bash") {
         try {
           const args = toolArgs || {};
           let text = "";
           switch (name) {
-            case "get_environment": {
-              const os = await import("node:os");
-              const platform = os.platform();
-              const isWindows = platform === "win32";
-              const shell = isWindows ? process.env.COMSPEC || "cmd.exe" : process.env.SHELL || "/bin/bash";
-              text = JSON.stringify(
-                {
-                  os: platform,
-                  arch: os.arch(),
-                  shell,
-                  shell_type: isWindows
-                    ? shell.toLowerCase().includes("powershell")
-                      ? "powershell"
-                      : "cmd"
-                    : shell.split("/").pop(),
-                  user: os.userInfo().username,
-                  runtime: `Bun ${Bun.version}`,
-                  cwd: process.cwd(),
-                  hint: isWindows ? "Windows machine. Use PowerShell/cmd syntax." : "Unix machine. Use bash syntax.",
-                },
-                null,
-                2,
-              );
-              break;
-            }
             case "today": {
               const now = new Date();
               const date = now.toLocaleDateString("en-CA");
