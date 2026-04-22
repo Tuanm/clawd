@@ -11,7 +11,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { type AgentFileConfig, buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "../agent/agents/loader";
-import { loadConfigFile } from "../config/config-file";
 import { type AgentMemory, extractKeywords, getAgentMemoryStore } from "../agent/memory/agent-memory";
 import {
   buildSkillReviewPrompt,
@@ -21,11 +20,12 @@ import {
   sanitize,
 } from "../agent/plugins/skill-review-plugin";
 import { buildDynamicSystemPrompt, type PromptContext } from "../agent/prompt/builder";
-import { buildSdkPromptWithHeartbeat } from "./build-sdk-messages";
 import { getSessionManager } from "../agent/session/manager";
 import { generateConversationSummary } from "../agent/session/summarizer";
 import { getSkillSet, improveSkillFromCorrections } from "../agent/skills/improvement";
 import { getSkillManager } from "../agent/skills/manager";
+import { sendChatFallback } from "../agent/utils/chat-fallback";
+import { loadConfigFile } from "../config/config-file";
 import { db, getAgent, markMessagesSeen, setAgentStreaming } from "../server/database";
 import { getPendingMessages } from "../server/routes/messages";
 import {
@@ -37,6 +37,7 @@ import {
 } from "../server/websocket";
 import { createLogger } from "../utils/logger";
 import type { AgentHealthSnapshot, AgentWorker } from "../worker-loop";
+import { buildSdkPromptWithHeartbeat } from "./build-sdk-messages";
 import { initMemorySession, saveToMemory } from "./memory";
 import { runSDKQuery } from "./sdk";
 import { extractSubject } from "./tool-subject";
@@ -1502,6 +1503,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
       // Re-injection: if agent produced ANY text but never called chat_send_message,
       // send one ephemeral follow-up prompt so it can deliver the response.
+      // If re-injection ALSO fails to call the tool, fall back to posting the
+      // agent's text directly (unless it explicitly opted out with [SILENT]).
       // Skip for: heartbeat turns, cancelled/aborted turns, interrupted turns (resume handles it).
       // REQUIRE this.sessionId: re-injection sends a plain-string prompt with
       // `resume: this.sessionId` to continue context. If sessionId is null (main
@@ -1517,9 +1520,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         !!this.sessionId
       ) {
         const reinjectionPrompt =
-          "[NOTICE: Your previous turn produced output but did not call `mcp__clawd__chat_send_message` to deliver it — the human cannot see what you wrote.\n\n" +
-          "If you intended to respond to the human, call `mcp__clawd__chat_send_message` with your response now.\n" +
-          "If you intentionally chose not to respond, produce only [SILENT] and do nothing else.]";
+          "[Your previous text wasn't delivered — call `mcp__clawd__chat_send_message` to send it now, or reply only `[SILENT]` to skip.]";
 
         // Use a fresh AbortController for re-injection (the original may have been aborted).
         // Update this.abortController so cancelProcessing()/setSleeping() can still cancel it.
@@ -1557,9 +1558,33 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           logger.error(`Re-injection failed: ${err}`);
         }
 
-        // If agent replied [SILENT], produced nothing, or already sent via chat_send_message, discard
-        if (reinjectionText.trim() && !reinjectionText.includes("[SILENT]") && !this.turnChatSent) {
-          broadcastAgentToken(channel, agentId, reinjectionText);
+        // Fallback rescue: if re-injection still didn't trigger chat_send_message,
+        // post the reinj text directly. [SILENT] is honored as explicit opt-out.
+        if (this.turnChatSent) {
+          logger.info("Re-injection: agent called chat_send_message");
+        } else {
+          const outcome = await sendChatFallback({
+            apiUrl: this.config.chatApiUrl,
+            channel,
+            agentId,
+            userId: "UBOT",
+            reinjectionText,
+          });
+          switch (outcome.kind) {
+            case "silent_accepted":
+              logger.info("Re-injection fallback: [SILENT] accepted");
+              break;
+            case "empty_discarded":
+              logger.info("Re-injection fallback: empty output, discarded");
+              break;
+            case "fallback_sent":
+              logger.info(`Re-injection fallback: sent (${outcome.chars} chars)`);
+              this.turnChatSent = true;
+              break;
+            case "fallback_failed":
+              logger.warn(`Re-injection fallback: failed — ${outcome.error}`);
+              break;
+          }
         }
       }
 
@@ -1582,11 +1607,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         // in this turn's batch, then to "latest" if both are unavailable.
         const lastTs =
           this.pendingTimestamps[this.pendingTimestamps.length - 1] || messages[messages.length - 1]?.ts || "latest";
-        const reminderPrompt =
-          `[NOTICE: You completed your turn but did not call \`mcp__clawd__chat_mark_processed\` to mark the message(s) as handled. ` +
-          `This is required so the same messages are not polled again.\n\n` +
-          `Call \`mcp__clawd__chat_mark_processed(timestamp="${lastTs}")\` now, even if empty. ` +
-          `If you intentionally did not need to respond, produce only [SILENT].]`;
+        const reminderPrompt = `[Call \`mcp__clawd__chat_mark_processed(timestamp="${lastTs}")\` to mark the message(s) as handled — otherwise they'll be polled again.]`;
 
         // Use a tracked AbortController so the interrupt poller can abort this re-injection too.
         const markProcessedAbort = new AbortController();

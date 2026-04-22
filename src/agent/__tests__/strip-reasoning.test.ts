@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { stripReasoningBlocks } from "../agent";
+import { stripReasoningBlocks } from "../utils/strip-reasoning";
 
 describe("stripReasoningBlocks", () => {
   test("returns empty string for null / undefined / empty", () => {
