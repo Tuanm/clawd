@@ -884,10 +884,10 @@ export class MCPManager extends EventEmitter {
         console.log(`[MCP] Server "${serverName}" tools: ${connection.tools.map((t) => t.name).join(", ") || "none"}`);
       }
       for (const tool of connection.tools) {
-        // Strip server prefix so the agent can call `chat_send_message` directly
+        // Strip server prefix so the agent can call `reply_human` directly
         // without needing to know the MCP server name. The server prefix is still
         // useful for disambiguation (tool namespacing), but the agent shouldn't
-        // need it for standard tools like chat_send_message.
+        // need it for standard tools like reply_human.
         definitions.push({
           type: "function",
           function: {

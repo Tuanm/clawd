@@ -1150,13 +1150,12 @@ Sub-agents have limited tool access for safety:
 
 **Allowed:**
 - `complete_task` — Report completion
-- `chat_mark_processed` — Mark messages seen
 - `today` — Get current date/time
 
 > Environment info (OS, shell, project root, arch, user, runtime) is injected into the system prompt — no tool needed.
 
 **Blocked:**
-- `chat_send_message` — Cannot post to parent channel directly
+- `reply_human` — Cannot post to parent channel directly
 - File/git tools — Inherit from parent config
 - Browser tools — Inherit from parent config
 

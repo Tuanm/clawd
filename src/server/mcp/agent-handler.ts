@@ -643,7 +643,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
         {
           name: "article_create",
           description:
-            "Create a new article (blog post, documentation, etc.). The article is stored and can be published to the channel. Provide content via one of: 'content' (raw markdown), 'file_id' (uploaded file from chat_upload_local_file), or 'message_ts' (existing chat message timestamp).",
+            "Create a new article (blog post, documentation, etc.). The article is stored and can be published to the channel. Provide content via one of: 'content' (raw markdown), 'file_id' (uploaded file from upload_file), or 'message_ts' (existing chat message timestamp).",
           inputSchema: {
             type: "object",
             properties: {
@@ -655,7 +655,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               file_id: {
                 type: "string",
                 description:
-                  "File ID from chat_upload_local_file — file content is used as article body (mutually exclusive with content and message_ts)",
+                  "File ID from upload_file — file content is used as article body (mutually exclusive with content and message_ts)",
               },
               message_ts: {
                 type: "string",
@@ -723,7 +723,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
           },
         },
         {
-          name: "chat_send_article",
+          name: "send_article",
           description:
             "Send an article as a message to the chat. Posts an article card to the channel that links to the full article page.",
           inputSchema: {
@@ -739,7 +739,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       // Memory tools
       const memoryToolDefs = [
         {
-          name: "chat_search",
+          name: "memory_search",
           description:
             "Search past conversation history in the current channel. Filter by time range, keywords, or role.",
           inputSchema: {
@@ -1808,7 +1808,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       }
 
       // Handle article tools
-      if (name.startsWith("article_") || name === "chat_send_article") {
+      if (name.startsWith("article_") || name === "send_article") {
         try {
           const { randomUUID } = await import("crypto");
           const args = toolArgs || {};
@@ -1988,7 +1988,7 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               });
               break;
             }
-            case "chat_send_article": {
+            case "send_article": {
               const article = db.query("SELECT * FROM articles WHERE id = ?").get(args.article_id as string) as any;
               if (!article) {
                 text = JSON.stringify({ ok: false, error: "Article not found" });
@@ -2038,14 +2038,14 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
       }
 
       // Handle memory tools
-      if (name === "chat_search" || name === "memory_summary") {
+      if (name === "memory_search" || name === "memory_summary") {
         try {
           const { getMemoryManager } = await import("../../agent/memory/memory");
           const memory = getMemoryManager();
           const args = toolArgs || {};
           let text = "";
           switch (name) {
-            case "chat_search": {
+            case "memory_search": {
               // Auto-scope to current channel unless a specific session_id is provided.
               // Session names follow the pattern "{channel}-{agentId}", so filtering
               // by "{channel}-" prefix limits results to the current channel's history.
@@ -2258,8 +2258,10 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               }
               const { writeFile, mkdir } = await import("node:fs/promises");
               const { basename, extname, join } = await import("node:path");
-              const { homedir } = await import("node:os");
-              const filesDir = join(homedir(), ".clawd", "files");
+              // Prefer injected project root; fall back to CWD so the .md never lands
+              // in the user's home dir (which leaks outputs across projects).
+              const projectRoot = (args._project_root as string | undefined) || process.cwd();
+              const filesDir = join(projectRoot, ".clawd", "files");
               await mkdir(filesDir, { recursive: true });
               const base = basename(filePath, extname(filePath)).replace(/[^a-zA-Z0-9._-]/g, "_") || "converted";
               const mdPath = join(filesDir, `${base}.md`);
@@ -2541,13 +2543,13 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
 
       // Auto-inject channel and agent_id into local chat tool calls only.
       // Also inject `_project_root` for tools that can save files locally
-      // (chat_download_file, convert_to_markdown) so CC agents get the same
+      // (download_file, convert_to_markdown) so CC agents get the same
       // "auto-save to {projectRoot}/.clawd/files/" behaviour non-CC agents
       // get via the clawd-chat plugin's transformToolArgs hook. Without this,
       // CC agents fall through to the metadata-only branch of
-      // chat_download_file and never get `local_path` — breaking the
+      // download_file and never get `local_path` — breaking the
       // system-prompt contract that says "saves into the project root".
-      const needsProjectRoot = name === "chat_download_file" || name === "convert_to_markdown";
+      const needsProjectRoot = name === "download_file" || name === "convert_to_markdown";
       const enrichedArgs: Record<string, unknown> = {
         ...(toolArgs || {}),
         channel: (toolArgs?.channel as string) || channel,

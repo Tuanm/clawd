@@ -151,7 +151,7 @@ When the `agent` parameter is provided:
 - Sub-agent is restricted to the agent file's **tools** (if specified)
 - Sub-agent's **directives** and **language** are applied
 - Sub-agent's **maxTurns** limits iteration count
-- Sub-agent **cannot use `chat_send_message`** — must return results via `complete_task(result)`
+- Sub-agent **cannot use `reply_human`** — must return results via `complete_task(result)`
 
 Without the `agent` parameter, `spawn_agent` creates an anonymous sub-agent that inherits the parent's configuration (existing behavior, unchanged).
 
@@ -257,7 +257,7 @@ Agents have access to long-term memory via these tools:
 | `memo_delete` | Delete a memory by ID | `id` |
 | `memo_pin` | Pin memory for always-loading | `id` |
 | `memo_unpin` | Unpin previously pinned memory | `id` |
-| `chat_search` | Search conversation history | `keywords`, `start_time`, `end_time`, `role` |
+| `memory_search` | Search conversation history | `keywords`, `start_time`, `end_time`, `role` |
 | `memory_summary` | Get session summary | `session_id` |
 
 **Categories:** `fact`, `preference`, `decision`, `lesson`, `correction`

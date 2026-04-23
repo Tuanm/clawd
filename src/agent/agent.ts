@@ -137,7 +137,7 @@ export type InterruptChecker = () => Promise<string | null>; // Returns new mess
 // Default System Prompt
 // ============================================================================
 
-const DEFAULT_SYSTEM_PROMPT = `IMPORTANT: You MUST use chat_send_message tool to respond to users. Never respond with plain text.
+const DEFAULT_SYSTEM_PROMPT = `IMPORTANT: You MUST call reply_human exactly once at the end of every turn. Never respond with plain text.
 
 You are Claw'd, an autonomous AI assistant that can execute tasks using tools.
 You have access to tools defined in the tool schema — use them as needed.
@@ -151,7 +151,7 @@ You have access to tools defined in the tool schema — use them as needed.
 6. Always verify your changes with view/grep after editing
 7. If a task requires multiple steps, break them into kanban tasks and track progress
 8. Be concise in your responses
-9. Use chat_search to recall past conversations when relevant
+9. Use memory_search to recall past conversations when relevant
 10. Commands timeout after 30s - use job_submit for long-running tasks (builds, tests, installs)
 11. Activate relevant skills when working on specialized tasks
 12. Keep your kanban board updated to stay organized
@@ -196,7 +196,7 @@ CLAIMING TASKS:
 
 ## Response Format
 - When using tools, call them directly without explanation
-- After completing a task, summarize results via chat_send_message (if in a chat channel)
+- After completing a task, summarize results via reply_human (if in a chat channel)
 - If you encounter errors, try alternative approaches
 
 ## Context Awareness
@@ -236,22 +236,26 @@ Guidelines:
 - Keep artifacts focused — one concept per artifact; use multiple artifacts for distinct pieces
 
 ## Chat Tools (when connected to a chat channel)
-You are in a chat channel. The ONLY way to communicate with humans is via chat tools.
+You are in a chat channel. The ONLY way to communicate with humans is via reply_human.
 
-- **chat_send_message**: Send a reply - this is the ONLY way humans see your responses
-- **chat_mark_processed**: Mark message as handled (if you don't need to respond)
+- **reply_human**: End the current turn. Sends text to the channel AND marks the triggering
+  human message as processed in one call. This is MANDATORY — every turn must end with
+  exactly one reply_human call.
 
 CRITICAL RULES:
-- Humans CANNOT see your text output — they can ONLY see messages sent via chat_send_message
-- ALWAYS use chat_send_message to send ANY response to users
-- ALWAYS use chat_mark_processed after sending a message
+- Humans CANNOT see your text output — they can ONLY see what you pass as reply_human(text=...)
+- ALWAYS end the turn with reply_human
 - Do NOT output text intended for users — it will never reach them
 
 Pattern for responding to users:
-1. Call chat_send_message(text="your message") — channel, agent_id, user are auto-injected
-2. Call chat_mark_processed(timestamp="msg_ts") — channel, agent_id are auto-injected
+1. Do the work (tools).
+2. Call reply_human(text="your message", timestamp="<triggering human msg ts>")
+   — channel, agent_id, user are auto-injected.
 
-If you don't need to respond (just acking), you can skip chat_send_message and just call chat_mark_processed.`;
+If you don't need to send anything (pure ack, or heartbeat with nothing to say):
+- Call reply_human(text="", timestamp="<triggering ts>")  OR
+- Call reply_human(text="[SILENT]", timestamp="<triggering ts>")
+Both forms still mark the human message processed without sending a visible reply.`;
 
 // Token limits by model — use centralized module, keep local alias for existing references
 const MODEL_TOKEN_LIMITS = CENTRALIZED_MODEL_LIMITS;
@@ -995,7 +999,7 @@ export class Agent {
     // Sub-agents: ensure critical tools survive allowlist filtering
     if (this.config.promptContext?.isSpaceAgent) {
       // complete_task is a plugin tool that may be filtered by agent file allowlist — force re-add
-      const forceInclude = new Set(["complete_task", "chat_mark_processed"]);
+      const forceInclude = new Set(["complete_task"]);
       for (const tool of pluginTools) {
         if (forceInclude.has(tool.function.name) && !filtered.some((t) => t.function.name === tool.function.name)) {
           filtered.push(tool);
@@ -1007,10 +1011,10 @@ export class Agent {
           filtered.push(tool);
         }
       }
-      // Remove chat tools (except chat_mark_processed)
-      filtered = filtered.filter(
-        (t) => !t.function.name.startsWith("chat_") || t.function.name === "chat_mark_processed",
-      );
+      // Sub-agents cannot talk to humans directly — strip all chat tools AND reply_human.
+      // Only the top-level orchestrator may close a turn with reply_human; sub-agents
+      // report back to their parent via complete_task instead.
+      filtered = filtered.filter((t) => !t.function.name.startsWith("chat_") && t.function.name !== "reply_human");
     }
 
     this._toolsCache = filtered;
@@ -1043,27 +1047,27 @@ export class Agent {
     ],
     task: ["todo_write", "todo_read", "todo_update"],
     job: ["job_submit", "job_status", "job_cancel", "job_wait"],
-    memory: ["chat_search", "memory_summary"],
+    memory: ["memory_search", "memory_summary"],
   };
 
   /** Count of consecutive text-only responses (no tool calls) for re-expansion trigger */
   private _consecutiveTextOnlyResponses = 0;
 
-  /** Successful chat_send_message calls in the current run() invocation since
-   *  the last productive tool call (file_read / bash / web_search / edit /
-   *  memo / etc.). Reset to 0 when a productive tool runs successfully.
+  /** Successful reply_human calls in the current run() invocation since the
+   *  last productive tool call (file_read / bash / web_search / edit / memo /
+   *  etc.). Reset to 0 when a productive tool runs successfully.
    *
-   *  Legitimate patterns (ack + progress + final) interleave sends with
-   *  productive work → counter never grows.
+   *  Legitimate patterns (progress + final) interleave replies with productive
+   *  work → counter never grows.
    *
-   *  Pathological runaway (observed on MiniMax-M2.7-highspeed: 4 consecutive
-   *  `chat_send_message` calls with only `chat_mark_processed` in between)
-   *  trips the cap because `chat_mark_processed` is non-productive.
+   *  Pathological runaway trips the cap when the agent calls reply_human
+   *  repeatedly with only non-productive tools (polls, searches, silent
+   *  replies) between them.
    *
    *  When _turnSendsSinceLastWork exceeds _maxSendsWithoutWork, subsequent
-   *  chat_send_message tool calls short-circuit with a structured
-   *  tool_result informing the agent its reply is already delivered and
-   *  that further messaging requires real work in between. */
+   *  reply_human calls short-circuit with a structured tool_result informing
+   *  the agent its reply is already delivered and that further messaging
+   *  requires real work in between. */
   private _turnSendsSinceLastWork = 0;
   private readonly _maxSendsWithoutWork = 1;
   /** Absolute per-run cap — safety net against pathological send+work ping-pong. */
@@ -1075,10 +1079,9 @@ export class Agent {
    *  metadata queries, and status reads live here. Anything else (files,
    *  shell, search, edit, memo, todo, spawn, etc.) is productive. */
   private readonly _NON_PRODUCTIVE_TOOLS = new Set([
-    "chat_send_message",
-    "chat_mark_processed",
-    "chat_poll_and_ack",
-    "chat_search",
+    "reply_human",
+    "pollack",
+    "memory_search",
     "list_agents",
     "get_current_time",
   ]);
@@ -1097,8 +1100,7 @@ export class Agent {
 
     // Always-include set: chat tools, system tools
     const alwaysInclude = new Set([
-      "chat_send_message",
-      "chat_mark_processed",
+      "reply_human",
       "complete_task",
       "spawn_agent",
       "list_agents",
@@ -1152,17 +1154,17 @@ export class Agent {
     // Track tool usage for smart filtering after warmup
     this.recordToolUsage(toolCall.function.name);
 
-    // Per-turn chat_send_message throttle. Two guards:
+    // Per-turn reply_human throttle. Two guards:
     //   (a) absolute ceiling per run (safety net against pathological
     //       send+work ping-pong)
     //   (b) "sends without productive work in between" — legitimate
-    //       ack/progress/final patterns interleave sends with real work,
+    //       progress+final patterns interleave replies with real work,
     //       so the counter resets whenever a productive tool runs. A
-    //       confused model that fires chat_send_message repeatedly
-    //       without doing any work in between trips this guard.
+    //       confused model that fires reply_human repeatedly without
+    //       doing any work in between trips this guard.
     // Short-circuits with a structured tool_result so the agent sees the
-    // outcome and can proceed with mark_processed / other tools / end.
-    if (toolCall.function.name === "chat_send_message") {
+    // outcome and can proceed with other tools or end the turn.
+    if (toolCall.function.name === "reply_human") {
       if (this._turnSendCount >= this._maxSendsPerTurn) {
         return {
           args,
@@ -1172,7 +1174,7 @@ export class Agent {
               ok: false,
               skipped: true,
               reason: "per_turn_send_cap_reached",
-              message: `Reached the absolute per-turn chat_send_message cap (${this._maxSendsPerTurn}). Further messages are suppressed. End the turn or continue with non-chat tool calls.`,
+              message: `Reached the absolute per-turn reply_human cap (${this._maxSendsPerTurn}). Further messages are suppressed. End the turn or continue with non-chat tool calls.`,
             }),
           },
         };
@@ -1187,7 +1189,7 @@ export class Agent {
               skipped: true,
               reason: "no_productive_work_since_last_send",
               message:
-                "A chat_send_message was just delivered and no productive tool has run since. To send another message, do real work first (read a file, run a command, search, edit, etc.). Acknowledgement + progress + final-result patterns are fine if interleaved with actual work. Otherwise proceed with chat_mark_processed or end the turn.",
+                "A reply_human was just delivered and no productive tool has run since. To send another message, do real work first (read a file, run a command, search, edit, etc.). Progress + final-result patterns are fine if interleaved with actual work. Otherwise end the turn.",
             }),
           },
         };
@@ -1308,12 +1310,12 @@ export class Agent {
     }
 
     // Track tool usage against the per-turn send guards. A successful
-    // chat_send_message increments both counters. Any productive tool
+    // reply_human increments both counters. Any productive tool
     // (not in the non-productive allowlist) resets the
-    // sends-since-last-work counter, enabling legitimate ack+progress+final
+    // sends-since-last-work counter, enabling legitimate progress+final
     // patterns while still catching runaway loops.
     if (result.success) {
-      if (toolCall.function.name === "chat_send_message") {
+      if (toolCall.function.name === "reply_human") {
         this._turnSendCount++;
         this._turnSendsSinceLastWork++;
       } else if (!this._NON_PRODUCTIVE_TOOLS.has(toolCall.function.name)) {

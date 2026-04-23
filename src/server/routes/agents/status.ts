@@ -137,7 +137,7 @@ export async function handleAgentStatusRoutes(req: Request, url: URL, path: stri
       `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
        VALUES (?, ?, ?, ?, strftime('%s', 'now'))
        ON CONFLICT(agent_id, channel) DO UPDATE SET
-       last_processed_ts = excluded.last_processed_ts, updated_at = excluded.updated_at`,
+       last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), excluded.last_processed_ts), updated_at = excluded.updated_at`,
       [agentId, channel, lastProcessedTs, lastProcessedTs],
     );
     broadcastUpdate(channel, {

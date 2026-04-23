@@ -90,7 +90,7 @@ const BUILTIN_TOOLS = new Set([
   "list_agents",
   "get_agent_report",
   "get_agent_logs",
-  "chat_search",
+  "memory_search",
   "memory_summary",
   "skill_list",
   "skill_search",
@@ -117,7 +117,7 @@ const BUILTIN_TOOLS = new Set([
   "article_list",
   "article_update",
   "article_delete",
-  "chat_send_article",
+  "send_article",
   // Browser plugin tools
   "browser_status",
   "browser_navigate",

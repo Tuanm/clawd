@@ -74,7 +74,7 @@ export function extractSubject(shortName: string, toolInput: unknown): string {
     case "memo_pin":
     case "memo_unpin":
       return String(input.id ?? "");
-    case "chat_search": {
+    case "memory_search": {
       // schema uses `keywords` (array), not `query`
       const kw = Array.isArray(input.keywords) ? input.keywords.join(" ") : (input.keywords ?? "");
       return truncate(sanitizeSubject(String(kw)), 40);

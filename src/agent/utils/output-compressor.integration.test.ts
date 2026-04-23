@@ -41,11 +41,10 @@ describe("compressToolOutput — tool type coverage", () => {
     ["browser_navigate", 512, "at-cap"],
     ["browser_navigate", 2000, "truncated"],
     ["browser_screenshot", 256, "at-cap"],
-    ["chat_get_message", 10240, "at-cap"],
-    ["chat_get_history", 10240, "at-cap"],
+    ["query_messages", 10240, "at-cap"],
     ["convert_to_markdown", 20480, "at-cap"],
     ["convert_to_markdown", 60000, "truncated"],
-    ["chat_search", 6144, "at-cap"],
+    ["memory_search", 6144, "at-cap"],
     ["tmux_capture", 8192, "at-cap"],
     ["article_get", 10240, "at-cap"],
     ["knowledge_search", 4096, "at-cap"],
@@ -97,16 +96,14 @@ describe("compressToolOutput — tool type coverage", () => {
       glob: 6144,
       view: 10240,
       chat_get_message_files: 4096,
-      chat_download_file: 4096,
+      download_file: 4096,
       convert_to_markdown: 20480,
       chat_read_file_range: 10240,
-      chat_get_history: 10240,
-      chat_get_message: 10240,
-      chat_query_messages: 10240,
-      chat_poll_and_ack: 10240,
+      query_messages: 10240,
+      pollack: 10240,
       git_diff: 8192,
       git_log: 8192,
-      chat_search: 6144,
+      memory_search: 6144,
       web_fetch: 10240,
       tmux_capture: 8192,
       article_get: 10240,
@@ -539,11 +536,11 @@ describe("compressToolOutput — index generation correctness", () => {
   test("indexFn receives correct toolName and sessionId", () => {
     const result: ToolResult = { success: true, output: makeOutput(5000) };
     const indexFn = mockIndexFn();
-    compressToolOutput("clawd__chat_get_history", result, "my-session-42", indexFn);
+    compressToolOutput("clawd__query_messages", result, "my-session-42", indexFn);
     expect(indexFn).toHaveBeenCalledWith(
       "my-session-42",
-      expect.stringMatching(/^clawd__chat_get_history-\d+-[a-z0-9]+$/),
-      "clawd__chat_get_history",
+      expect.stringMatching(/^clawd__query_messages-\d+-[a-z0-9]+$/),
+      "clawd__query_messages",
       expect.any(String),
     );
   });

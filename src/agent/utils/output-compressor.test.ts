@@ -35,7 +35,7 @@ describe("getToolCap", () => {
 
   test("strips MCP serverName__ prefix and matches base name", () => {
     expect(getToolCap("clawd__knowledge_search")).toBe(4096); // exact match
-    expect(getToolCap("chat-mcp-server__chat_get_message")).toBe(2048); // exact match
+    expect(getToolCap("chat-mcp-server__query_messages")).toBe(4096); // exact match
     // Non-listed base: falls through to default
     expect(getToolCap("unknown-server__some_tool")).toBe(32768);
   });
@@ -65,7 +65,7 @@ describe("isExempt", () => {
   });
 
   test("METADATA_ONLY_TOOLS are exempt", () => {
-    const tools = ["chat_send_message", "chat_mark_processed", "chat_upload_file", "chat_upload_local_file"];
+    const tools = ["reply_human", "upload_file"];
     for (const t of tools) {
       expect(isExempt(t, successResult)).toBe(true);
     }
@@ -106,9 +106,9 @@ describe("compressToolOutput", () => {
       expect(compressed.indexed).toBe(false);
     });
 
-    test("chat_send_message passes through unchanged", () => {
+    test("reply_human passes through unchanged", () => {
       const result: ToolResult = { success: true, output: makeOutput(20000) };
-      const compressed = compressToolOutput("chat_send_message", result, "session1");
+      const compressed = compressToolOutput("reply_human", result, "session1");
       expect(compressed.result.output).toBe(result.output);
       expect(compressed.indexed).toBe(false);
     });

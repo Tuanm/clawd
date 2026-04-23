@@ -502,7 +502,7 @@ For full details and examples, see **[docs/custom-tools.md](docs/custom-tools.md
 | `memo_delete` | Delete specific memories from long-term storage |
 | `memo_pin` | Pin important memories for quick access |
 | `memo_unpin` | Unpin memories from quick access |
-| `chat_search` | Search past conversation history in the current channel |
+| `memory_search` | Search past conversation history in the current channel |
 | `memory_summary` | Get conversation session summaries |
 | `knowledge_search` | Search indexed tool outputs from the knowledge base |
 | `get_agent_logs` | View sub-agent output logs for debugging |
