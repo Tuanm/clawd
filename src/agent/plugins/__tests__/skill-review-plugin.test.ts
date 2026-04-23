@@ -456,7 +456,7 @@ describe("onToolResult hook", () => {
 // ── Test: provider + model pass-through to spawnAgent ───────────────────────
 // Locks the wiring so future refactors can't silently drop reviewProvider
 // or reviewModel on the way to spawnAgent. Reviews only fire on
-// chat_mark_processed (task boundary), hence the tool name choice below.
+// reply_human (turn end = task boundary), hence the tool name choice below.
 
 describe("reviewProvider + reviewModel pass-through", () => {
   test("forwards both provider and model to spawnAgent verbatim", async () => {
@@ -475,7 +475,7 @@ describe("reviewProvider + reviewModel pass-through", () => {
       { spawnAgentFn: spawnAgentFn as any },
     );
 
-    await plugin.hooks.onToolResult("chat_mark_processed", { success: true, output: "ok" }, {} as any);
+    await plugin.hooks.onToolResult("reply_human", { success: true, output: "ok" }, {} as any);
 
     expect(spawnAgentFn.mock.calls.length).toBe(1);
     const spawnArgs = spawnAgentFn.mock.calls[0][0];
@@ -497,7 +497,7 @@ describe("reviewProvider + reviewModel pass-through", () => {
       { spawnAgentFn: spawnAgentFn as any },
     );
 
-    await plugin.hooks.onToolResult("chat_mark_processed", { success: true, output: "ok" }, {} as any);
+    await plugin.hooks.onToolResult("reply_human", { success: true, output: "ok" }, {} as any);
 
     expect(spawnAgentFn.mock.calls.length).toBe(1);
     const spawnArgs = spawnAgentFn.mock.calls[0][0];
@@ -532,7 +532,7 @@ describe("runReview cooldown and guards", () => {
     expect(spawnAgentFn.mock.calls.length).toBe(0);
   });
 
-  test("triggers review when tool call count reaches threshold (A1: fires on chat_mark_processed)", async () => {
+  test("triggers review when tool call count reaches threshold (A1: fires on reply_human)", async () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
@@ -550,9 +550,9 @@ describe("runReview cooldown and guards", () => {
     for (let i = 0; i < 5; i++) {
       await plugin.hooks.onToolResult("bash", { success: true, output: "ok" }, {} as any);
     }
-    // A1: review fires on task-completion boundary (chat_mark_processed), not mid-task
+    // A1: review fires on task-completion boundary (reply_human = turn end), not mid-task
     expect(spawnAgentFn.mock.calls.length).toBe(0);
-    await plugin.hooks.onToolResult("chat_mark_processed", { success: true, output: "ok" }, {} as any);
+    await plugin.hooks.onToolResult("reply_human", { success: true, output: "ok" }, {} as any);
     // Should have triggered exactly once
     expect(spawnAgentFn.mock.calls.length).toBe(1);
   });

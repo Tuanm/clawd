@@ -208,7 +208,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
         id: Date.now(),
         method: "tools/call",
         params: {
-          name: "chat_send_message",
+          name: "reply_human",
           arguments: {
             channel: config.channel,
             text,
@@ -234,7 +234,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
           id: Date.now(),
           method: "tools/call",
           params: {
-            name: "chat_update_message",
+            name: "update_message",
             arguments: {
               channel: config.channel,
               ts,
@@ -258,10 +258,11 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
           id: Date.now(),
           method: "tools/call",
           params: {
-            name: "chat_get_history",
+            name: "query_messages",
             arguments: {
               channel: config.channel,
               limit,
+              order: "desc",
             },
           },
         }),
@@ -366,7 +367,7 @@ ${recentTopics.join("\n")}`;
         id: Date.now(),
         method: "tools/call",
         params: {
-          name: "chat_query_messages",
+          name: "query_messages",
           arguments: {
             channel: config.channel,
             from_ts: afterTs,
@@ -382,21 +383,13 @@ ${recentTopics.join("\n")}`;
   }
 
   async function markProcessed(ts: string): Promise<void> {
-    await timedFetch(`${apiUrl}/mcp`, {
+    await timedFetch(`${apiUrl}/api/agent.markProcessed`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: Date.now(),
-        method: "tools/call",
-        params: {
-          name: "chat_mark_processed",
-          arguments: {
-            channel: config.channel,
-            timestamp: ts,
-            agent_id: config.agentId,
-          },
-        },
+        agent_id: config.agentId,
+        channel: config.channel,
+        last_processed_ts: ts,
       }),
     });
   }
@@ -560,9 +553,10 @@ Your worker ID is: ${workerId}
 Your agent name is: ${config.agentId}
 Channel: ${config.channel}
 
-When calling chat_send_message, only "text" is required — channel, agent_id, and user are auto-injected.
-Humans CANNOT see your text output — ALWAYS use chat_send_message for ALL responses.
+Every turn MUST end with exactly one call to reply_human(text, timestamp). Only "text" is required — channel, agent_id, and user are auto-injected. Pass timestamp=<triggering message ts> to mark the message processed in the same call.
+Humans CANNOT see your text output — ALWAYS use reply_human for ALL responses.
 Do NOT output text intended for users — it will never reach them.
+To skip replying while still ending the turn, call reply_human(text="[SILENT]", timestamp=<ts>).
 When providing copiable content (commands, code, URLs, paths, config values), ALWAYS wrap it in a markdown code block — users can only copy via the Copy button on code blocks.
 CLAWD.md in the project root is your long-term memory (auto-loaded into your system prompt). Save important information there to remember across sessions. Use docs/, reports/, or plans/ for less critical info.
 If memo_* tools are available, use them to save/recall important facts, decisions, and lessons. Your memories persist across sessions and are scoped to you.
@@ -576,14 +570,15 @@ The chat UI renders <artifact> tags as visual cards. Use them for rich content (
 You are connected to chat channel "${config.channel}" as "${config.agentId}".
 
 IMPORTANT OUTPUT RULES:
-- Humans CANNOT see your text output — they can ONLY see messages sent via chat_send_message
-- ALWAYS use chat_send_message for ALL replies to users
+- Humans CANNOT see your text output — they can ONLY see messages sent via reply_human
+- Every turn MUST end with exactly one call to reply_human(text, timestamp) — this delivers your visible text AND marks the triggering message processed in a single call
+- ALWAYS use reply_human for ALL replies to users
 - Do NOT output text intended for users — it will never reach them
-- When you use chat_mark_processed to skip a message, output only "[SILENT]"
-- For messages from other agents/workers that don't need a response, just mark_processed and output "[SILENT]"
-- IF chat_send_message FAILS (returns ok:false or error), you MUST RETRY immediately with the same parameters
+- To skip replying but still end the turn: reply_human(text="[SILENT]", timestamp=<triggering ts>)
+- For messages from other agents/workers that don't need a response, call reply_human(text="[SILENT]", timestamp=<ts>)
+- IF reply_human FAILS (returns ok:false or error), you MUST RETRY immediately with the same parameters
 
-RICH CONTENT FEATURES (use with chat_send_message):
+RICH CONTENT FEATURES (use with reply_human):
 - html_preview: Include HTML content for rich visual output (charts, diagrams, formatted tables, etc.)
 - code_preview: Include code snippets with syntax highlighting
   - filename: Display name (e.g., "app.ts")
@@ -687,14 +682,15 @@ LONG-TERM MEMORY:
         injectedTimestamps.clear();
 
         // Extract target timestamp from prompt
-        // Use the LAST chat_mark_processed timestamp (the one at the bottom of the prompt,
-        // not one that might appear in quoted/pasted text from the user)
-        const allMarkProcessed = [...message.matchAll(/chat_mark_processed\([^)]*timestamp="([^"]+)"/g)];
+        // Use the LAST reply_human(..., timestamp="...") hint (the one at the bottom of the prompt,
+        // not one that might appear in quoted/pasted text from the user). Also accept the
+        // mcp__clawd__reply_human prefix used by the Claude Code SDK path.
+        const allReplyHints = [...message.matchAll(/reply_human\([^)]*timestamp="([^"]+)"/g)];
         let extractedTs: string | null = null;
 
-        if (allMarkProcessed.length > 0) {
+        if (allReplyHints.length > 0) {
           // Use the LAST match (the system instruction at the bottom of the prompt)
-          extractedTs = allMarkProcessed[allMarkProcessed.length - 1][1];
+          extractedTs = allReplyHints[allReplyHints.length - 1][1];
         } else {
           // Fallback: try injected format - get the LAST timestamp (newest message)
           const allTs = [...message.matchAll(/\[ts:([^\]]+)\]/g)];
@@ -755,7 +751,7 @@ LONG-TERM MEMORY:
           content?.includes("\n[SILENT]");
 
         // DO NOT auto-send agent's text output to chat.
-        // The agent should use chat_send_message tool explicitly.
+        // The agent should call reply_human explicitly to end the turn.
         // Auto-sending causes duplicates when agent uses tool AND outputs text.
 
         // Mark streaming as done
@@ -830,18 +826,31 @@ LONG-TERM MEMORY:
       },
 
       async transformToolArgs(name: string, args: any, _ctx: PluginContext) {
-        // Auto-inject channel + agent_id on ALL chat_* tools (for ALL agent types)
-        // LLM can omit these params — they're filled from plugin config
-        if (name.startsWith("chat_") || name.startsWith("schedule_")) {
+        // Auto-inject channel + agent_id on chat-scoped tools (for ALL agent types).
+        // LLM can omit these params — they're filled from plugin config.
+        // Also strip the mcp__clawd__ prefix used by the Claude Code SDK path so the matching
+        // below works uniformly across provider paths.
+        const bare = name.startsWith("mcp__clawd__") ? name.slice("mcp__clawd__".length) : name;
+        const CHAT_SCOPED_TOOLS = new Set([
+          "reply_human",
+          "pollack",
+          "download_file",
+          "get_artifact_actions",
+          "send_article",
+          "memory_search",
+          "update_message",
+          "query_messages",
+        ]);
+        if (bare.startsWith("chat_") || CHAT_SCOPED_TOOLS.has(bare) || bare.startsWith("schedule_")) {
           if (!args.channel) args = { ...args, channel: config.channel };
           if (!args.agent_id) args = { ...args, agent_id: config.agentId };
         }
-        // Auto-inject user ID for chat_send_message (all agent types)
-        if (name === "chat_send_message" && !args.user) {
+        // Auto-inject user ID for reply_human (all agent types)
+        if (bare === "reply_human" && !args.user) {
           args = { ...args, user: userId };
         }
         // Auto-inject project root for tools that need to save files locally
-        if (name === "chat_download_file" || name === "convert_to_markdown") {
+        if (bare === "download_file" || bare === "convert_to_markdown") {
           // Use original project root for .clawd/files/ — not worktree path
           const { getContextConfigRoot } = require("../../utils/agent-context");
           const configRoot = getContextConfigRoot();
@@ -940,12 +949,9 @@ const MIME_MAP: Record<string, string> = {
  * Create a ToolPlugin that provides agent-side file upload capability.
  *
  * This tool reads files from the agent's LOCAL filesystem and uploads them
- * to the chat server via HTTP multipart POST. This is necessary because:
- * - Agent and server may run on different machines
- * - The MCP chat_upload_file tool requires base64 content as a tool argument,
- *   which causes stream timeouts for large files (the LLM must generate ~24KB
- *   of base64 tokens)
- * - This tool only requires the LLM to pass a short file path string
+ * to the chat server via HTTP multipart POST. Agent and server may run on
+ * different machines; the LLM only has to pass a short file path string
+ * rather than base64 content.
  */
 export function createClawdChatToolPlugin(config: ClawdChatConfig): ToolPlugin {
   const apiUrl = config.apiUrl.replace(/\/$/, "");
@@ -956,14 +962,11 @@ export function createClawdChatToolPlugin(config: ClawdChatConfig): ToolPlugin {
     getTools(): ToolRegistration[] {
       return [
         {
-          name: "chat_upload_local_file",
+          name: "upload_file",
           description: `Upload a file from the agent's local filesystem to the chat server.
 
-**USE THIS INSTEAD OF chat_upload_file** when the file already exists on disk. This avoids the LLM
-having to generate large base64 content as a tool argument (which causes stream timeouts).
-
 The tool reads the file locally, auto-detects MIME type from extension, and uploads it via HTTP
-to the chat server. Returns a file_id that can be used with chat_send_message_with_files.
+to the chat server. Returns a file_id that can be attached via reply_human(file_ids=[...]).
 
 **File Size Limit:** Max 10MB per file. For larger files, upload to a cloud service and share the link instead.
 
@@ -973,22 +976,23 @@ to the chat server. Returns a file_id that can be used with chat_send_message_wi
 - For videos: Upload to YouTube or cloud storage and share the link
 
 **WORKFLOW:**
-1. chat_upload_local_file(file_path="/path/to/image.png", channel="chat-task") -> returns file_id
-2. chat_send_message_with_files(channel="chat-task", text="Here's the file", file_ids=["F..."])
+1. upload_file(file_path="/path/to/image.png", channel="chat-task") -> returns file_id
+2. reply_human(channel="chat-task", text="Here's the file", file_ids=["F..."], timestamp=<ts>)
 
 **COMPLETE EXAMPLE:**
 \`\`\`
-result = chat_upload_local_file(
+result = upload_file(
   file_path="/path/to/screenshot.png",
   channel="chat-task"
 )
 // result: { ok: true, file: { id: "Fxyz123", name: "screenshot.png", ... } }
 
-chat_send_message_with_files(
+reply_human(
   channel="chat-task",
   text="Here's the screenshot",
   file_ids=["Fxyz123"],
-  agent_id="Claw'd"
+  agent_id="Claw'd",
+  timestamp="<triggering human msg ts>"
 )
 \`\`\``,
           parameters: {

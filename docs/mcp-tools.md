@@ -96,7 +96,7 @@ Get the output logs of a sub-agent.
 
 ## Memory
 
-### chat_search
+### memory_search
 
 Search past conversation history with full-text search.
 
@@ -111,7 +111,7 @@ Search past conversation history with full-text search.
 
 **Example:**
 ```json
-chat_search({
+memory_search({
   "keywords": ["API", "authentication"],
   "role": "assistant",
   "limit": 10
@@ -464,7 +464,7 @@ Create a new article.
 |--------------|--------|----------|-------------|
 | `title`      | string | Yes      | Article title |
 | `content`    | string | No*      | Raw markdown content |
-| `file_id`    | string | No*      | Uploaded file ID (from chat_upload_local_file) |
+| `file_id`    | string | No*      | Uploaded file ID (from upload_file) |
 | `message_ts` | string | No*      | Existing chat message timestamp |
 | `tags`       | string | No       | Comma-separated tags |
 | `channel`    | string | No       | Target channel |
@@ -509,7 +509,7 @@ Delete an article.
 |-----------|--------|----------|-------------|
 | `id`      | string | Yes      | Article ID |
 
-### chat_send_article
+### send_article
 
 Send an article to the chat channel.
 
@@ -562,7 +562,7 @@ Tools are exposed via MCP with the `mcp__clawd__` prefix:
 ```
 mcp__clawd__bash
 mcp__clawd__spawn_agent
-mcp__clawd__chat_search
+mcp__clawd__memory_search
 mcp__clawd__memo_save
 ```
 

@@ -290,8 +290,8 @@ functions:
 
 | Event type | Trigger | Payload |
 |---|---|---|
-| `message` | New message posted (HTTP API or MCP `chat_send_message`) | `{ type, channel, message }` |
-| `message_changed` | Message updated or appended (`chat_update_message`, `chat_append_message`) | `{ type, channel, message }` |
+| `message` | New message posted (HTTP API or MCP `reply_human`) | `{ type, channel, message }` |
+| `message_changed` | Message updated or appended (`update_message` replace/append modes) | `{ type, channel, message }` |
 | `agent_streaming` | Agent begins or ends streaming a response | `{ type, channel, agent_id, is_streaming, avatar_color }` |
 | `agent_token` | Streaming token chunk | `{ type, channel, agent_id, token }` |
 | `agent_tool_call` | Tool invoked by agent | `{ type, channel, agent_id, tool, input }` |
@@ -301,7 +301,7 @@ functions:
 | `channel_cleared` | Channel history cleared | `{ type, channel }` |
 | `reaction_added` / `reaction_removed` | Emoji reaction toggled | `{ type, channel, item, reaction, user }` |
 
-The MCP `chat_send_message` tool calls `broadcastMessage()` immediately after inserting to the database, ensuring the UI receives the message in real time without waiting for the 10-second background poll fallback.
+The MCP `reply_human` tool calls `broadcastMessage()` immediately after inserting to the database, ensuring the UI receives the message in real time without waiting for the 10-second background poll fallback.
 
 ---
 
@@ -778,10 +778,10 @@ handleAgentMcpRequest(channel, agentId)
     ▼
 Tool Dispatcher
     │
-    ├── Chat tools (chat_send_message, chat_poll_and_ack, etc.)
+    ├── Chat tools (reply_human, pollack, etc.)
     ├── File tools (read, write, edit)
     ├── Agent tools (spawn_agent, list_agents, get_agent_logs, stop_agent)
-    ├── Memory tools (chat_search, memory_summary)
+    ├── Memory tools (memory_search, memory_summary)
     ├── Memo tools (memo_save, memo_recall, memo_delete, memo_pin, memo_unpin)
     ├── Task tools (task_add, task_list, task_complete, etc.)
     ├── Job tools (job_submit, job_status, job_wait, etc.)
@@ -806,13 +806,13 @@ This enables per-channel MCP server integrations where agents can access channel
 
 | Tool | Purpose |
 |------|---------|
-| `chat_send_message` | Post message to channel |
-| `chat_poll_and_ack` | Poll pending messages, acknowledge processed |
+| `reply_human` | Post message to channel (optionally marks a message processed via `timestamp`) |
+| `pollack` | Poll pending messages, acknowledge processed |
 | `spawn_agent` | Spawn Claude Code sub-agent via SDK |
 | `list_agents` | List running sub-agents |
 | `get_agent_logs` | Get sub-agent output logs (tail optional) |
 | `stop_agent` | Stop a running sub-agent |
-| `chat_search` | Search conversation history via FTS5 |
+| `memory_search` | Search conversation history via FTS5 |
 | `memory_summary` | Get session summary with key topics |
 | `memo_save/recall/delete` | Long-term memory CRUD |
 | `memo_pin/unpin` | Pin memories for always-loading |
@@ -1205,7 +1205,7 @@ sequenceDiagram
 - **Context seeding**: Parent can pass `context` parameter to reduce sub-agent cold start
 - **Result delivery**: Sub-agent calls `complete_task(result)` which posts the result to the parent channel and locks the space (preventing further messages)
 - **Sub-agent naming**: Sub-agents use friendly names with UUID suffix (e.g., "code-reviewer-a1b2c3") and get colored avatars
-- **Sub-agent tools**: Limited to `complete_task`, `chat_mark_processed`, `today` — no `chat_send_message` or other tools. Environment info (OS/shell/cwd/arch) is injected into the system prompt instead of being fetched via a tool.
+- **Sub-agent tools**: Limited to `complete_task`, `today` — no `reply_human` or other tools. Environment info (OS/shell/cwd/arch) is injected into the system prompt instead of being fetched via a tool.
 
 **Parent tools for sub-agents**: `retask_agent` allows re-tasking a completed sub-agent without cold start.
 
@@ -1355,7 +1355,7 @@ The sandbox implementation differs by platform.
 **Enforcement rules (Wave 1–2 hardening):**
 
 - **`sandboxRequired: true`** — Tools that set this flag in their `ToolDefinition` will refuse to execute if called outside the sandbox. The `executeTool` dispatcher checks this flag before invocation.
-- **`chat_upload_local_file`** — Uses `realpathSync` to resolve the full real path before checking it against a project-root allowlist. Prevents symlink-traversal uploads.
+- **`upload_file`** — Uses `realpathSync` to resolve the full real path before checking it against a project-root allowlist. Prevents symlink-traversal uploads.
 - **API/MCP auth guard** — `/api/*` and `/mcp` routes enforce channel-scoped auth. When a `?channel=` param is present, only its matching patterns are checked. Without `?channel=`, auth is only enforced if a global `"*"` catch-all pattern is configured. `/mcp/agent/` and `/mcp/space/` are exempt (agent-internal paths). The internal service token (`INTERNAL_SERVICE_TOKEN`, generated at startup) bypasses auth entirely for in-process self-calls.
 - **WebSocket auth guard** — On WS upgrade, auth is enforced only when: (a) a token is provided but fails validation, or (b) a global `"*"` catch-all is configured. Channel-scoped-only deployments allow WS without a token, since WS has no channel context at upgrade time.
 
@@ -2126,7 +2126,7 @@ When an article is opened at `/articles/{id}`, the UI switches to **article mode
 #### article_create — Multiple Content Sources
 The `article_create` tool (available to all agent types) now accepts three mutually exclusive content sources:
 - `content` — raw markdown string
-- `file_id` — file uploaded via `chat_upload_local_file`; file content used as article body
+- `file_id` — file uploaded via `upload_file`; file content used as article body
 - `message_ts` — timestamp of an existing chat message; message text used as article body
 
 Only `title` is required. This applies to the MCP agent endpoint, the REST endpoint (`/api/articles.create`), and the SDK agent tool.

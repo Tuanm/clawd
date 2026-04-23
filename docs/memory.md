@@ -10,7 +10,7 @@ Claw'd features a multi-layered memory architecture spanning four stores, each s
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 1: MemoryManager (session-level)                           │
 │  ├── Stores: chat messages via FTS5 (messages_fts)              │
-│  ├── Tools: chat_search, memory_summary                         │
+│  ├── Tools: memory_search, memory_summary                      │
 │  └── Purpose: Search past conversations, session summaries        │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 2: KnowledgeBase (tool output indexing)                   │
@@ -393,7 +393,7 @@ Stage a note for wiki integration. Use instead of `memo_save` when adding rich c
 
 ---
 
-### chat_search
+### memory_search
 
 Search past conversation history with full-text search.
 

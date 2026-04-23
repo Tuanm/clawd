@@ -3,7 +3,6 @@
  */
 
 import { statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   ATTACHMENTS_DIR,
@@ -18,7 +17,7 @@ import {
 } from "../database";
 import { analyzeImage, analyzeVideo, editImage, generateImage, getImageQuotaStatus } from "../multimodal";
 import { getOptimizedFile } from "../routes/files";
-import { getConversationHistory, getPendingMessages, postMessage } from "../routes/messages";
+import { getPendingMessages, postMessage } from "../routes/messages";
 import { broadcastMessage, broadcastMessageSeen, broadcastUpdate } from "../websocket";
 import { truncateForAgent } from "./protocol";
 import { _scheduler } from "./shared";
@@ -115,7 +114,7 @@ export async function executeToolCall(
     }
 
     switch (name) {
-      case "chat_poll_and_ack": {
+      case "pollack": {
         const channel = args.channel as string;
         const agentId = (args.agent_id as string) || "default";
         const includeBot = args.include_bot === true;
@@ -244,40 +243,20 @@ export async function executeToolCall(
         break;
       }
 
-      case "chat_mark_processed": {
+      case "reply_human": {
         const channel = args.channel as string;
-        const timestamp = args.timestamp as string;
-        const agentId = (args.agent_id as string) || "default";
-
-        db.run(
-          `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
-           VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-           ON CONFLICT(agent_id, channel) DO UPDATE SET
-           last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), excluded.last_processed_ts), updated_at = excluded.updated_at`,
-          [agentId, channel, timestamp, timestamp],
-        );
-
-        resultText = JSON.stringify(
-          {
-            ok: true,
-            agent_id: agentId,
-            channel,
-            last_processed_ts: timestamp,
-          },
-          null,
-          2,
-        );
-        break;
-      }
-
-      case "chat_send_message": {
-        const channel = args.channel as string;
-        const text = args.text as string;
+        const text = (args.text as string | undefined) ?? "";
         const agentId = args.agent_id as string;
         const userOverride = args.user as string | undefined;
+        const processedTs = args.timestamp as string | undefined;
 
-        // Validate parameter order - detect if agent swapped text and agent_id
-        if (agentId && text) {
+        // SILENT / empty text → skip sending entirely. Still mark processed.
+        const silent = text === "" || text.trim() === "[SILENT]";
+
+        // Validate parameter order BEFORE any DB write — detect if agent swapped text and agent_id.
+        // Running this before markProcessed prevents a swapped-param call from marking the message
+        // processed (which would suppress the re-poll the agent needs to retry correctly).
+        if (!silent && agentId && text) {
           // Check 1: text looks like an agent ID (short, alphanumeric with spaces/apostrophes for names like "Claw'd")
           const textLooksLikeAgentId =
             text.length <= 25 &&
@@ -315,6 +294,30 @@ export async function executeToolCall(
           }
         }
 
+        // Mark human message as processed (folded from chat_mark_processed).
+        let lastProcessedTs: string | undefined;
+        if (processedTs) {
+          const seenAgent = agentId || "default";
+          db.run(
+            `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+             VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+             ON CONFLICT(agent_id, channel) DO UPDATE SET
+             last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), excluded.last_processed_ts), updated_at = excluded.updated_at`,
+            [seenAgent, channel, processedTs, processedTs],
+          );
+          lastProcessedTs = processedTs;
+        }
+
+        if (silent) {
+          resultText = JSON.stringify({
+            ok: true,
+            silent: true,
+            channel,
+            ...(lastProcessedTs && { last_processed_ts: lastProcessedTs }),
+          });
+          break;
+        }
+
         // Use user override if provided, otherwise default to UBOT
         const userId = userOverride || "UBOT";
         const htmlPreview = args.html_preview as string | undefined;
@@ -341,67 +344,27 @@ export async function executeToolCall(
           interactive_json: interactiveJson ? JSON.stringify(interactiveJson) : undefined,
         });
 
+        // Optional file attachments (folded from chat_send_message_with_files).
+        const fileIds = Array.isArray(args.file_ids)
+          ? (args.file_ids as unknown[]).filter((x): x is string => typeof x === "string")
+          : undefined;
+        let attachedFiles: ReturnType<typeof import("../routes/files").attachFilesToMessage> | undefined;
+        if (result.ok && result.ts && fileIds && fileIds.length > 0) {
+          const { attachFilesToMessage } = await import("../routes/files");
+          attachedFiles = attachFilesToMessage(result.ts, fileIds);
+        }
+
         // Broadcast to WebSocket clients so UI updates immediately (no 10s poll wait)
         if (result.ok && result.ts) {
           const rawMsg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(result.ts);
           if (rawMsg) broadcastMessage(channel, rawMsg);
         }
 
-        resultText = JSON.stringify(result);
-        break;
-      }
-
-      case "chat_get_history": {
-        const channel = args.channel as string;
-        const limit = Math.min((args.limit as number) || 50, 200);
-
-        const result = getConversationHistory(channel, limit);
-
-        // Add seen_by to each message
-        if (result.messages) {
-          result.messages = result.messages.map((m) => {
-            const seenBy = getMessageSeenBy(channel, m.ts);
-            const seenByWithColors = seenBy.map((aid) => {
-              const agent = getAgent(aid, channel);
-              return {
-                agent_id: aid,
-                avatar_color: agent?.avatar_color || "#D97853",
-              };
-            });
-            return {
-              ...m,
-              text: truncateForAgent(m.text),
-              seen_by: seenByWithColors,
-            };
-          }) as typeof result.messages;
-        }
-
-        resultText = JSON.stringify(result);
-        break;
-      }
-
-      case "chat_get_message": {
-        const _channel = args.channel as string;
-        const ts = args.ts as string;
-
-        const message = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(ts);
-
-        if (!message) {
-          resultText = JSON.stringify({
-            ok: false,
-            error: "Message not found",
-          });
-        } else {
-          const slackMsg = toSlackMessage(message);
-          resultText = JSON.stringify(
-            {
-              ok: true,
-              message: { ...slackMsg, text: truncateForAgent(slackMsg.text) },
-            },
-            null,
-            2,
-          );
-        }
+        resultText = JSON.stringify({
+          ...result,
+          ...(attachedFiles && { files: attachedFiles }),
+          ...(lastProcessedTs && { last_processed_ts: lastProcessedTs }),
+        });
         break;
       }
 
@@ -469,7 +432,7 @@ export async function executeToolCall(
         break;
       }
 
-      case "chat_download_file": {
+      case "download_file": {
         const fileId = args.file_id as string;
         const projectRoot = args._project_root as string | undefined; // Injected by agent plugin
 
@@ -639,58 +602,7 @@ export async function executeToolCall(
         break;
       }
 
-      case "chat_upload_file": {
-        const contentBase64 = args.content_base64 as string;
-        const filename = args.filename as string;
-        const mimetype = args.mimetype as string;
-        const _channel = args.channel as string;
-
-        // Decode base64 content
-        const buffer = Buffer.from(contentBase64, "base64");
-
-        // Generate file ID and path
-        const id = `F${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-        const ext = filename.split(".").pop() || "";
-        const storedFilename = `${id}.${ext}`;
-        const { ATTACHMENTS_DIR } = await import("../database");
-        const { join } = await import("node:path");
-        const { writeFileSync, mkdirSync, existsSync } = await import("node:fs");
-
-        // Ensure attachments directory exists
-        if (!existsSync(ATTACHMENTS_DIR)) {
-          mkdirSync(ATTACHMENTS_DIR, { recursive: true });
-        }
-
-        const filepath = join(ATTACHMENTS_DIR, storedFilename);
-        writeFileSync(filepath, buffer);
-
-        // Insert file record
-        db.run(`INSERT INTO files (id, name, mimetype, size, path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)`, [
-          id,
-          filename,
-          mimetype,
-          buffer.length,
-          filepath,
-          "UBOT",
-        ]);
-
-        resultText = JSON.stringify(
-          {
-            ok: true,
-            file: {
-              id,
-              name: filename,
-              mimetype,
-              size: buffer.length,
-            },
-          },
-          null,
-          2,
-        );
-        break;
-      }
-
-      case "chat_upload_local_file": {
+      case "upload_file": {
         const filePath = args.file_path as string;
         const _channel = args.channel as string;
         const _agentId = (args.agent_id as string) || "default";
@@ -851,49 +763,6 @@ export async function executeToolCall(
         break;
       }
 
-      case "chat_send_message_with_files": {
-        const channel = args.channel as string;
-        const text = args.text as string;
-        const fileIds = args.file_ids as string[];
-        const agentId = args.agent_id as string;
-
-        // Post the message with agent_id
-        const msgResult = postMessage({
-          channel,
-          text,
-          user: "UBOT",
-          agent_id: agentId,
-        });
-
-        if (msgResult.ok && fileIds && fileIds.length > 0) {
-          // Attach files to the message
-          const { attachFilesToMessage } = await import("../routes/files");
-          const files = attachFilesToMessage(msgResult.ts, fileIds);
-
-          // Broadcast to WebSocket clients so UI updates immediately
-          const updatedMsg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(msgResult.ts);
-          if (updatedMsg) broadcastMessage(channel, updatedMsg);
-
-          resultText = JSON.stringify(
-            {
-              ok: true,
-              ts: msgResult.ts,
-              channel,
-              files,
-            },
-            null,
-            2,
-          );
-        } else {
-          if (msgResult.ok && msgResult.ts) {
-            const rawMsg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(msgResult.ts);
-            if (rawMsg) broadcastMessage(channel, rawMsg);
-          }
-          resultText = JSON.stringify(msgResult);
-        }
-        break;
-      }
-
       case "chat_delete_message": {
         const channel = args.channel as string;
         const ts = args.ts as string;
@@ -906,14 +775,23 @@ export async function executeToolCall(
         break;
       }
 
-      case "chat_update_message": {
+      case "update_message": {
         const channel = args.channel as string;
         const ts = args.ts as string;
         const text = args.text as string;
+        const mode = ((args.mode as string) || "replace").toLowerCase();
+        const separator = args.separator as string | undefined;
 
-        // Import updateMessage from routes
-        const { updateMessage } = await import("../routes/messages");
-        const result = updateMessage({ channel, ts, text });
+        let result: { ok: boolean; error?: string };
+        if (mode === "append") {
+          const { appendMessage } = await import("../routes/messages");
+          result = appendMessage({ channel, ts, text, separator });
+        } else if (mode === "replace") {
+          const { updateMessage } = await import("../routes/messages");
+          result = updateMessage({ channel, ts, text });
+        } else {
+          result = { ok: false, error: `Invalid mode "${mode}" — expected "replace" or "append"` };
+        }
 
         // Broadcast update to WebSocket clients if successful
         if (result.ok) {
@@ -927,7 +805,7 @@ export async function executeToolCall(
         break;
       }
 
-      case "chat_get_artifact_actions": {
+      case "get_artifact_actions": {
         const messageTs = args.message_ts as string;
         const { getArtifactActions: getActions } = await import("../routes/artifact-actions");
         const result = getActions(messageTs, args.channel as string);
@@ -935,42 +813,31 @@ export async function executeToolCall(
         break;
       }
 
-      case "chat_append_message": {
+      case "query_messages": {
         const channel = args.channel as string;
-        const ts = args.ts as string;
-        const text = args.text as string;
-        const separator = args.separator as string | undefined;
-
-        const { appendMessage } = await import("../routes/messages");
-        const result = appendMessage({ channel, ts, text, separator });
-
-        // Broadcast update to WebSocket clients if successful
-        if (result.ok) {
-          const updatedMsg = db.query<Message, [string]>(`SELECT * FROM messages WHERE ts = ?`).get(ts);
-          if (updatedMsg) {
-            broadcastUpdate(channel, toSlackMessage(updatedMsg));
-          }
-        }
-
-        resultText = JSON.stringify(result);
-        break;
-      }
-
-      case "chat_query_messages": {
-        const channel = args.channel as string;
+        const singleTs = args.ts as string | undefined;
         const fromTs = args.from_ts as string | undefined;
         const toTs = args.to_ts as string | undefined;
         const roles = args.roles as string[] | undefined;
+        const userIds = args.user_ids as string[] | undefined;
+        const agentIds = args.agent_ids as string[] | undefined;
         const search = args.search as string | undefined;
         const searchRegex = args.search_regex as string | undefined;
+        const attachmentName = args.attachment_name as string | undefined;
+        const fileId = args.file_id as string | undefined;
         const hasAttachments = args.has_attachments as boolean | undefined;
         const hasImages = args.has_images as boolean | undefined;
         const limit = Math.min(Math.max((args.limit as number) || 100, 1), 500);
+        const order = ((args.order as string) || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
 
         // Build WHERE clause
         const conditions: string[] = ["channel = ?"];
         const params: (string | number)[] = [channel];
 
+        if (singleTs) {
+          conditions.push("ts = ?");
+          params.push(singleTs);
+        }
         if (fromTs) {
           conditions.push("ts > ?");
           params.push(fromTs);
@@ -980,7 +847,6 @@ export async function executeToolCall(
           params.push(toTs);
         }
         if (roles && roles.length > 0) {
-          // Map roles to user patterns
           const roleConditions: string[] = [];
           for (const role of roles) {
             if (role === "bot") roleConditions.push("user = 'UBOT'");
@@ -991,12 +857,22 @@ export async function executeToolCall(
             conditions.push(`(${roleConditions.join(" OR ")})`);
           }
         }
+        if (userIds && userIds.length > 0) {
+          const placeholders = userIds.map(() => "?").join(", ");
+          conditions.push(`user IN (${placeholders})`);
+          for (const u of userIds) params.push(u);
+        }
+        if (agentIds && agentIds.length > 0) {
+          const placeholders = agentIds.map(() => "?").join(", ");
+          conditions.push(`agent_id IN (${placeholders})`);
+          for (const a of agentIds) params.push(a);
+        }
         if (search) {
           conditions.push("text LIKE ?");
           params.push(`%${search}%`);
         }
-        // Note: search_regex is applied post-query (SQLite doesn't support regex natively)
-        if (hasAttachments === true) {
+        // search_regex, attachment_name, file_id applied post-query
+        if (hasAttachments === true || attachmentName || fileId) {
           conditions.push("files_json != '[]' AND files_json IS NOT NULL");
         }
         if (hasImages === true) {
@@ -1004,16 +880,19 @@ export async function executeToolCall(
         }
 
         const whereClause = conditions.join(" AND ");
-        // Fetch more if regex filtering will be applied
-        const fetchLimit = searchRegex ? limit * 10 : limit + 1;
-        const query = `SELECT * FROM messages WHERE ${whereClause} ORDER BY ts ASC LIMIT ?`;
-        params.push(fetchLimit);
+        // Fetch more if regex/post-filters will be applied
+        const needsPostFilter = Boolean(searchRegex || attachmentName || fileId);
+        const fetchLimit = needsPostFilter ? limit * 10 : limit + 1;
+        // ts = ? short-circuit: force asc ordering and limit=1 for single-ts lookup
+        const effectiveOrder = singleTs ? "ASC" : order;
+        const effectiveLimit = singleTs ? 1 : fetchLimit;
+        const query = `SELECT * FROM messages WHERE ${whereClause} ORDER BY ts ${effectiveOrder} LIMIT ?`;
+        params.push(effectiveLimit);
 
         let messages = db.query<Message, (string | number)[]>(query).all(...params);
 
         // Apply regex filter post-query (A-4: run in worker thread with 5s timeout to prevent ReDoS)
         if (searchRegex) {
-          // Validate the regex pattern is syntactically valid first (cheap, no risk)
           try {
             new RegExp(searchRegex, "i");
           } catch (e) {
@@ -1024,7 +903,6 @@ export async function executeToolCall(
             break;
           }
 
-          // Run the actual matching in a worker thread to isolate catastrophic backtracking
           const { Worker } = await import("worker_threads");
           const textsToMatch = messages.map((m) => m.text || "");
           const workerCode = `
@@ -1070,151 +948,50 @@ export async function executeToolCall(
           messages = messages.filter((_, i) => matchResult.matched![i]);
         }
 
-        const hasMore = messages.length > limit;
+        // Post-query attachment filters
+        if (attachmentName || fileId) {
+          const wantName = attachmentName?.toLowerCase();
+          messages = messages.filter((m) => {
+            let files: Array<{ id?: string; name?: string }> = [];
+            try {
+              files = JSON.parse(m.files_json || "[]");
+            } catch {
+              return false;
+            }
+            if (fileId && !files.some((f) => f.id === fileId)) return false;
+            if (wantName && !files.some((f) => (f.name || "").toLowerCase().includes(wantName))) return false;
+            return true;
+          });
+        }
+
+        const hasMore = !singleTs && messages.length > limit;
         if (hasMore) messages = messages.slice(0, limit);
+
+        // Single-ts lookup: backward-compat shape { ok, message } when ts provided
+        if (singleTs) {
+          if (messages.length === 0) {
+            resultText = JSON.stringify({ ok: false, error: "Message not found" });
+          } else {
+            const sm = toSlackMessage(messages[0]);
+            resultText = JSON.stringify({ ok: true, message: { ...sm, text: truncateForAgent(sm.text) } }, null, 2);
+          }
+          break;
+        }
 
         resultText = JSON.stringify(
           {
             ok: true,
             messages: messages.map((m) => {
               const sm = toSlackMessage(m);
-              return { ...sm, text: truncateForAgent(sm.text) };
+              const seenBy = getMessageSeenBy(channel, m.ts);
+              const seenByWithColors = seenBy.map((aid) => {
+                const agent = getAgent(aid, channel);
+                return { agent_id: aid, avatar_color: agent?.avatar_color || "#D97853" };
+              });
+              return { ...sm, text: truncateForAgent(sm.text), seen_by: seenByWithColors };
             }),
             count: messages.length,
             has_more: hasMore,
-          },
-          null,
-          2,
-        );
-        break;
-      }
-
-      case "chat_get_last_summary": {
-        const channel = args.channel as string;
-        const agentId = (args.agent_id as string) || "default";
-
-        // Essential files to include after compaction for context restoration
-        const ESSENTIAL_FILES = [`${homedir()}/.clawd/CLAWD.md`];
-
-        // Read essential files content
-        let essentialFilesContent = "";
-        for (const filePath of ESSENTIAL_FILES) {
-          try {
-            const content = await Bun.file(filePath).text();
-            essentialFilesContent += `\n\n---\n## Essential File: ${filePath}\n\`\`\`markdown\n${content}\n\`\`\`\n`;
-          } catch {
-            // File not found - skip
-          }
-        }
-
-        // Get the most recent summary for this channel/agent
-        const summary = db
-          .query<
-            {
-              id: string;
-              summary: string;
-              from_ts: string;
-              to_ts: string;
-              message_count: number;
-              created_at: number;
-            },
-            [string, string]
-          >(
-            `SELECT id, summary, from_ts, to_ts, message_count, created_at
-           FROM summaries
-           WHERE channel = ? AND agent_id = ?
-           ORDER BY created_at DESC
-           LIMIT 1`,
-          )
-          .get(channel, agentId);
-
-        if (summary) {
-          resultText = JSON.stringify(
-            {
-              ok: true,
-              has_summary: true,
-              summary: truncateForAgent(summary.summary),
-              essential_files: truncateForAgent(essentialFilesContent.trim()) || null,
-              ts: generateTs(), // Current timestamp
-              from_ts: summary.from_ts,
-              to_ts: summary.to_ts,
-              message_count: summary.message_count,
-              summary_id: summary.id,
-              restore_hint: essentialFilesContent
-                ? "Essential files included - read them to restore core knowledge after compaction."
-                : null,
-            },
-            null,
-            2,
-          );
-        } else {
-          // No summary exists - return channel start info
-          const firstMessage = db
-            .query<{ ts: string }, [string]>(`SELECT MIN(ts) as ts FROM messages WHERE channel = ?`)
-            .get(channel);
-
-          resultText = JSON.stringify(
-            {
-              ok: true,
-              has_summary: false,
-              summary: "No prior summary - beginning of conversation",
-              essential_files: truncateForAgent(essentialFilesContent.trim()) || null,
-              from_ts: firstMessage?.ts || "0",
-              to_ts: firstMessage?.ts || "0",
-              message_count: 0,
-              restore_hint: essentialFilesContent
-                ? "Essential files included - read them to restore core knowledge."
-                : null,
-            },
-            null,
-            2,
-          );
-        }
-        break;
-      }
-
-      case "chat_store_summary": {
-        const channel = args.channel as string;
-        const summary = args.summary as string;
-        const fromTs = args.from_ts as string;
-        const toTs = args.to_ts as string;
-        const agentId = (args.agent_id as string) || "default";
-
-        // Validate summary length
-        if (summary.length > 5000) {
-          resultText = JSON.stringify({
-            ok: false,
-            error: "Summary too long (max 5000 characters)",
-          });
-          break;
-        }
-
-        // Count messages in the range
-        const countResult = db
-          .query<{ count: number }, [string, string, string]>(
-            `SELECT COUNT(*) as count FROM messages WHERE channel = ? AND ts >= ? AND ts <= ?`,
-          )
-          .get(channel, fromTs, toTs);
-        const messageCount = countResult?.count || 0;
-
-        // Generate summary ID and insert
-        const summaryId = `S${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-
-        db.run(
-          `INSERT INTO summaries (id, channel, agent_id, summary, from_ts, to_ts, message_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [summaryId, channel, agentId, summary, fromTs, toTs, messageCount],
-        );
-
-        resultText = JSON.stringify(
-          {
-            ok: true,
-            summary_id: summaryId,
-            channel,
-            agent_id: agentId,
-            from_ts: fromTs,
-            to_ts: toTs,
-            message_count: messageCount,
           },
           null,
           2,

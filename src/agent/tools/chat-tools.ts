@@ -1,6 +1,6 @@
 /**
  * Chat Tools — skill_*, todo_write/read/update, spawn_agent, list_agents,
- *              kill_agent, get_agent_report, get_agent_logs, article_*, chat_send_article
+ *              kill_agent, get_agent_report, get_agent_logs, article_*, send_article
  *
  * Registers chat/collaboration tools into the shared tool registry.
  */
@@ -714,7 +714,7 @@ registerTool(
 
 registerTool(
   "article_create",
-  "Create a new article (blog post, documentation, etc.). The article is stored and can be published to the channel. Provide content via one of: 'content' (raw markdown), 'file_id' (uploaded file from chat_upload_local_file), or 'message_ts' (existing chat message timestamp).",
+  "Create a new article (blog post, documentation, etc.). The article is stored and can be published to the channel. Provide content via one of: 'content' (raw markdown), 'file_id' (uploaded file from upload_file), or 'message_ts' (existing chat message timestamp).",
   {
     title: { type: "string", description: "Article title" },
     content: {
@@ -724,7 +724,7 @@ registerTool(
     file_id: {
       type: "string",
       description:
-        "File ID from chat_upload_local_file — file content used as article body (mutually exclusive with content and message_ts)",
+        "File ID from upload_file — file content used as article body (mutually exclusive with content and message_ts)",
     },
     message_ts: {
       type: "string",
@@ -928,7 +928,7 @@ registerTool(
 );
 
 registerTool(
-  "chat_send_article",
+  "send_article",
   "Send an article as a message to the chat. This posts an article card to the channel that links to the full article page.",
   {
     article_id: { type: "string", description: "Article ID to send to chat" },

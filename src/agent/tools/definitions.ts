@@ -81,7 +81,7 @@ const _READ_ONLY_TOOL_NAMES = new Set([
   "view",
   "grep",
   "glob",
-  "chat_search",
+  "memory_search",
   "memory_summary",
   "web_fetch",
   "web_search",

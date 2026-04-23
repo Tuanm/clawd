@@ -1,5 +1,5 @@
 /**
- * Memory Tools — chat_search, memory_summary
+ * Memory Tools — memory_search, memory_summary
  *
  * Registers memory/history search tools into the shared tool registry.
  */
@@ -11,7 +11,7 @@ import { getContextChannel, registerTool } from "./registry";
 // ============================================================================
 
 registerTool(
-  "chat_search",
+  "memory_search",
   "Search past conversation history in the current channel. Filter by time range, keywords, or role.",
   {
     keywords: {

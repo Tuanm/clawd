@@ -279,8 +279,8 @@ describe("extractSubject: unknown/unhandled tools", () => {
   });
 
   test("CONVERSATION_TOOLS fall through to default (empty)", () => {
-    expect(extractSubject("chat_send_message", { message: "hi" })).toBe("");
-    expect(extractSubject("chat_mark_processed", {})).toBe("");
+    expect(extractSubject("reply_human", { text: "hi" })).toBe("");
+    expect(extractSubject("mcp__clawd__reply_human", { text: "hi", timestamp: "123" })).toBe("");
   });
 
   test("tool names are case-sensitive", () => {

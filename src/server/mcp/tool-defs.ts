@@ -6,7 +6,7 @@
 // MCP Tool definitions
 export const MCP_TOOLS = [
   {
-    name: "chat_poll_and_ack",
+    name: "pollack",
     description: `Poll for new messages in a channel and mark them as seen.
 
 This is the primary tool for agents to receive messages. It:
@@ -34,11 +34,11 @@ Returns JSON:
 CRITICAL: If count > 0, you MUST process each message in "pending" array:
 1. Read pending[i].text
 2. Execute the task
-3. Send response via chat_send_message
-4. Call chat_mark_processed(channel, timestamp=pending[i].ts)
+3. End the turn with reply_human(text="<reply or [SILENT]>", timestamp=pending[i].ts).
+   reply_human delivers the reply AND marks the message processed in one call.
 
-IMPORTANT: After processing each message, call chat_mark_processed to prevent
-re-processing on restart. Use this for polling loops. Call every 2-10 seconds.`,
+IMPORTANT: Every turn must end with reply_human to prevent re-processing on
+restart. Use this tool for polling loops, every 2-10 seconds.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -68,64 +68,49 @@ re-processing on restart. Use this for polling loops. Call every 2-10 seconds.`,
     },
   },
   {
-    name: "chat_mark_processed",
-    description: `Mark a message as processed after completing the task.
+    name: "reply_human",
+    description: `Reply to the human and end the current turn.
 
-Call this AFTER successfully processing a message. This prevents the message
-from appearing in "pending" again if the agent restarts.
-
-Args:
-  - channel (string): Channel ID
-  - timestamp (string): Message timestamp that was processed
-  - agent_id (string): Agent identifier (default: "default")
-
-Returns JSON:
-{
-  "ok": true,
-  "last_processed_ts": "..."
-}
-
-Flow: poll_and_ack -> process message -> send response -> mark_processed`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        timestamp: {
-          type: "string",
-          description: "Timestamp of the processed message",
-        },
-      },
-      required: ["timestamp"],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: "chat_send_message",
-    description: `Send a message to a channel.
+MANDATORY: Every turn MUST end with exactly one call to reply_human.
+- To send a reply: pass text with the message content.
+- To skip replying (no user-facing message this turn): pass text="" or text="[SILENT]".
+- If a human message triggered this turn, pass its ts via timestamp to mark it processed
+  (prevents it reappearing as pending on restart). Omit timestamp for proactive/scheduled turns.
+- To attach files: pass file_ids (array) from upload_file.
 
 Args:
   - channel (string): Channel ID (e.g., "chat-task")
-  - text (string): Message text (supports markdown)
+  - text (string): Message text (supports markdown). "" or "[SILENT]" = no message sent.
   - agent_id (string): Agent identifier (e.g., "Claw'd 1")
+  - timestamp (string, optional): Human message ts to mark as processed.
+  - file_ids (string[], optional): Attach files uploaded via upload_file.
 
 Returns JSON:
 {
   "ok": true,
-  "ts": "1234567890.123456",  // Message timestamp/ID
-  "channel": "chat-task"
+  "ts": "1234567890.123456",  // Sent message timestamp (absent when SILENT)
+  "channel": "chat-task",
+  "files": [...],             // Attached files (when file_ids provided)
+  "last_processed_ts": "..."  // When timestamp was provided
 }
 
-Use this to respond to user messages or send notifications.`,
+Flow: poll_and_ack -> do work -> reply_human (marks processed + ends turn).`,
     inputSchema: {
       type: "object",
       properties: {
         text: {
           type: "string",
-          description: "Message text (supports markdown)",
+          description: 'Message text (supports markdown). Pass "" or "[SILENT]" to skip sending.',
+        },
+        timestamp: {
+          type: "string",
+          description:
+            "Optional ts of the human message that triggered this turn. When present, marks it as processed so it won't resurface after restart.",
+        },
+        file_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional file IDs to attach (from upload_file). Ignored when text is empty or [SILENT].",
         },
         html_preview: {
           type: "string",
@@ -184,77 +169,6 @@ Use this to respond to user messages or send notifications.`,
     },
   },
   {
-    name: "chat_get_history",
-    description: `Get conversation history from a channel.
-
-Args:
-  - channel (string): Channel ID
-  - limit (number): Max messages to return (default: 50, max: 200)
-  - before_ts (string): Get messages before this timestamp (for pagination)
-
-Returns JSON:
-{
-  "ok": true,
-  "messages": [...],  // Array of messages, newest first
-  "has_more": boolean // Whether more messages exist
-}
-
-Use this to get context or review past conversations.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: {
-          type: "number",
-          description: "Max messages to return",
-          default: 50,
-        },
-        before_ts: {
-          type: "string",
-          description: "Get messages before this timestamp (for pagination)",
-        },
-      },
-      required: [],
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: true,
-    },
-  },
-  {
-    name: "chat_get_message",
-    description: `Get a specific message by timestamp.
-
-Args:
-  - channel (string): Channel ID
-  - ts (string): Message timestamp/ID
-
-Returns JSON:
-{
-  "ok": true,
-  "message": { ... }  // The message object
-}
-
-Use this to fetch referenced messages (e.g., @msg:timestamp).`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        ts: {
-          type: "string",
-          description: "Message timestamp/ID",
-        },
-      },
-      required: ["ts"],
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: true,
-    },
-  },
-  {
     name: "chat_get_message_files",
     description: `Get all file attachments from a specific message.
 
@@ -300,7 +214,7 @@ Use this to get all attachments from a message at once.
     },
   },
   {
-    name: "chat_download_file",
+    name: "download_file",
     description: `Download a file attachment and save it locally for the agent to access.
 
 Args:
@@ -406,88 +320,12 @@ Examples:
     },
   },
   {
-    name: "chat_upload_file",
-    description: `Upload a file and attach it to a message.
-
-**WORKFLOW FOR ATTACHING FILES TO MESSAGES:**
-1. chat_upload_file → returns file_id
-2. chat_send_message_with_files → sends message with attached files
-
-Args:
-  - content_base64 (string): Base64-encoded file content
-  - filename (string): Original filename with extension
-  - mimetype (string): MIME type (e.g., "text/plain", "image/png")
-  - channel (string): Channel ID (for association)
-
-Returns JSON:
-{
-  "ok": true,
-  "file": {
-    "id": "F...",
-    "name": "filename.txt",
-    "mimetype": "text/plain",
-    "size": 1234
-  }
-}
-
-Use file.id (the file_id) with chat_send_message_with_files to attach the file to a message.
-
-**COMPLETE EXAMPLE:**
-\`\`\`
-// Step 1: Upload the file
-result1 = chat_upload_file(
-  content_base64="SGVsbG8gV29ybGQh",  // "Hello World!" in base64
-  filename="greeting.txt",
-  mimetype="text/plain",
-  channel="chat-task"
-)
-// result1.file.id = "Fxyz123"
-
-// Step 2: Send message with file attachment
-chat_send_message_with_files(
-  channel="chat-task",
-  text="Here's the file you requested:",
-  file_ids=["Fxyz123"],
-  agent_id="MyAgent"
-)
-\`\`\`
-
-The UI will display the file as a clickable attachment with preview for images.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        content_base64: {
-          type: "string",
-          description: "Base64-encoded file content",
-        },
-        filename: {
-          type: "string",
-          description: "Filename with extension",
-        },
-        mimetype: {
-          type: "string",
-          description: "MIME type (e.g., 'text/plain', 'image/png')",
-        },
-      },
-      required: ["content_base64", "filename", "mimetype"],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: true,
-    },
-  },
-  {
-    name: "chat_upload_local_file",
+    name: "upload_file",
     description: `Upload a file from a local filesystem path. Reads the file server-side so the LLM never needs to handle base64 data.
 
-**USE THIS INSTEAD OF chat_upload_file** when the file already exists on disk. This avoids the LLM
-having to generate/output large base64 strings as tool arguments, which can cause stream timeouts.
-
 **WORKFLOW FOR ATTACHING LOCAL FILES TO MESSAGES:**
-1. chat_upload_local_file → returns file_id (reads file from disk)
-2. chat_send_message_with_files → sends message with attached files
+1. upload_file → returns file_id (reads file from disk)
+2. reply_human(file_ids=[...]) → sends message with attached files (ends the turn)
 
 Args:
   - file_path (string): Absolute path to the file on the local filesystem
@@ -506,23 +344,24 @@ Returns JSON:
   }
 }
 
-Use file.id (the file_id) with chat_send_message_with_files to attach the file to a message.
+Use file.id (the file_id) with reply_human's file_ids arg to attach the file to a message.
 
 **COMPLETE EXAMPLE:**
 \`\`\`
 // Step 1: Upload from local path
-result1 = chat_upload_local_file(
+result1 = upload_file(
   file_path="/path/to/icon.png",
   channel="chat-task"
 )
 // result1.file.id = "Fxyz123"
 
-// Step 2: Send message with file attachment
-chat_send_message_with_files(
+// Step 2: Send message with file attachment (ends turn)
+reply_human(
   channel="chat-task",
   text="Here's the icon:",
   file_ids=["Fxyz123"],
-  agent_id="MyAgent"
+  agent_id="MyAgent",
+  timestamp="<triggering human msg ts>"
 )
 \`\`\``,
     inputSchema: {
@@ -542,47 +381,6 @@ chat_send_message_with_files(
         },
       },
       required: ["file_path"],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: true,
-    },
-  },
-  {
-    name: "chat_send_message_with_files",
-    description: `Send a message with file attachments.
-
-Args:
-  - channel (string): Channel ID
-  - text (string): Message text
-  - file_ids (string[]): Array of file IDs from chat_upload_file
-  - agent_id (string): Agent identifier (your agent name)
-
-Returns JSON:
-{
-  "ok": true,
-  "ts": "1234567890.123456",
-  "channel": "chat-task",
-  "files": [...]
-}
-
-Use after uploading files with chat_upload_file.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        text: {
-          type: "string",
-          description: "Message text",
-        },
-        file_ids: {
-          type: "array",
-          items: { type: "string" },
-          description: "Array of file IDs to attach",
-        },
-      },
-      required: ["text", "file_ids"],
     },
     annotations: {
       readOnlyHint: false,
@@ -626,13 +424,16 @@ Note: Deletion is permanent and broadcasts to all connected clients.`,
     },
   },
   {
-    name: "chat_update_message",
-    description: `Update an existing message's text content.
+    name: "update_message",
+    description: `Modify an existing message's text content. Use mode to replace the full text
+or append new content to the end.
 
 Args:
   - channel (string): Channel ID
-  - ts (string): Message timestamp/ID to update
-  - text (string): New text content
+  - ts (string): Message timestamp/ID to modify
+  - text (string): New text content (or text to append)
+  - mode (string, optional): "replace" (default) overwrites the existing text; "append" concatenates
+  - separator (string, optional, mode=append only): Separator between existing and appended text. Default: "\\n\\n"
 
 Returns JSON:
 {
@@ -641,10 +442,19 @@ Returns JSON:
   "ts": "1234567890.123456"
 }
 
-Use this for:
+Use mode="replace" for:
 - Live streaming (update message as content streams in)
 - Corrections/edits to previous messages
 - Progress updates during long operations
+
+Use mode="append" for:
+- Progressive message building (send initial summary, then append details)
+- Breaking up long messages into smaller tool calls for faster streaming
+- Adding follow-up content without overwriting existing text
+
+Tip: End a turn with reply_human (short initial summary), then in a later turn
+use update_message(mode="append") to extend the delivered message. Users see the
+initial response faster while long work continues.
 
 Note: Updates broadcast to all connected WebSocket clients in real-time.`,
     inputSchema: {
@@ -652,11 +462,20 @@ Note: Updates broadcast to all connected WebSocket clients in real-time.`,
       properties: {
         ts: {
           type: "string",
-          description: "Message timestamp/ID to update",
+          description: "Message timestamp/ID to modify",
         },
         text: {
           type: "string",
-          description: "New text content for the message",
+          description: "New text content (or text to append when mode=append)",
+        },
+        mode: {
+          type: "string",
+          enum: ["replace", "append"],
+          description: 'Modification mode — "replace" (default) overwrites; "append" concatenates',
+        },
+        separator: {
+          type: "string",
+          description: 'Separator between existing and appended text when mode=append (default: "\\n\\n")',
         },
       },
       required: ["ts", "text"],
@@ -664,12 +483,12 @@ Note: Updates broadcast to all connected WebSocket clients in real-time.`,
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
-      idempotentHint: true,
+      idempotentHint: false,
       openWorldHint: false,
     },
   },
   {
-    name: "chat_get_artifact_actions",
+    name: "get_artifact_actions",
     description: `Get user responses/actions taken on an interactive artifact.
 
 Use this to read back poll results, form submissions, or approval decisions.
@@ -695,74 +514,28 @@ Returns JSON:
     },
   },
   {
-    name: "chat_append_message",
-    description: `Append text to an existing message. Unlike chat_update_message which replaces the full text,
-this tool appends new content to the end of the current message text.
+    name: "query_messages",
+    description: `Search and query messages in a channel. Replaces chat_get_history, chat_get_message, and chat_query_messages.
 
-Args:
-  - channel (string): Channel ID
-  - ts (string): Message timestamp/ID to append to
-  - text (string): Text to append
-  - separator (string, optional): Separator between existing and appended text. Default: "\\n\\n"
-
-Returns JSON:
-{
-  "ok": true,
-  "channel": "chat-task",
-  "ts": "1234567890.123456"
-}
-
-Use this for:
-- Progressive message building (send initial summary, then append details)
-- Breaking up long messages into smaller tool calls for faster streaming
-- Adding follow-up content without overwriting existing text
-
-Tip: Send a short initial message with chat_send_message, then use chat_append_message
-to add more content. This way users see your initial response faster.
-
-Note: Updates broadcast to all connected WebSocket clients in real-time.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        ts: {
-          type: "string",
-          description: "Message timestamp/ID to append to",
-        },
-        text: {
-          type: "string",
-          description: "Text to append to the existing message",
-        },
-        separator: {
-          type: "string",
-          description: 'Separator between existing and appended text (default: "\\n\\n")',
-        },
-      },
-      required: ["ts", "text"],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: "chat_query_messages",
-    description: `Search and query messages in a channel with powerful filtering.
-
-USE THIS TO FIND MESSAGES IN CONVERSATION HISTORY. Supports text search, regex patterns,
-role filtering, and timestamp ranges. Always use this instead of manual grep/jq filtering.
+Supports exact-timestamp lookup, timestamp ranges, pagination, text/regex search, role and
+user/agent filtering, and attachment filters. Always use this instead of manual grep/jq.
 
 Args:
   - channel (string, required): Channel ID (e.g., "chat-task")
+  - ts (string): Exact message timestamp — returns 0 or 1 messages
+  - from_ts (string): Get messages with ts > from_ts (range start, exclusive)
+  - to_ts (string): Get messages with ts < to_ts (range end / pagination cursor, exclusive). Combine with order="desc" to page newest first.
   - search (string): Text search (case-insensitive substring match)
-  - search_regex (string): Regex pattern for advanced search (JavaScript regex, case-insensitive)
+  - search_regex (string): Regex pattern (JavaScript regex, case-insensitive)
   - roles (string[]): Filter by user roles: "bot", "worker", "human"
-  - from_ts (string): Get messages after this timestamp
-  - to_ts (string): Get messages before this timestamp
-  - has_attachments (boolean): Filter messages with file attachments
+  - user_ids (string[]): Filter by specific user IDs (e.g., "UHUMAN", "UWORKER-xyz")
+  - agent_ids (string[]): Filter by agent_id field on messages
+  - attachment_name (string): Filter messages whose attachment filename contains this substring
+  - file_id (string): Filter messages that have this specific attached file_id
+  - has_attachments (boolean): Filter messages with any file attachment
   - has_images (boolean): Filter messages with image attachments
   - limit (number): Max messages to return (default: 100, max: 500)
+  - order (string): "asc" (default, oldest first) or "desc" (newest first)
 
 Returns JSON:
 {
@@ -776,44 +549,73 @@ Role mapping: UBOT="bot", UWORKER-*="worker", UHUMAN="human"
 
 Examples:
 
-1. Find messages about "codebase research":
-   { "channel": "chat-task", "search": "codebase research" }
+1. Get one specific message:
+   { "channel": "chat-task", "ts": "1234567890.123456" }
 
-2. Find CLI-related discussions with regex:
-   { "channel": "chat-task", "search_regex": "CLI.*architecture|session.*storage" }
+2. Get recent history (newest first):
+   { "channel": "chat-task", "limit": 50, "order": "desc" }
 
-3. Get human messages from the last hour containing "bug":
+3. Find human messages about "bug" since a timestamp:
    { "channel": "chat-task", "roles": ["human"], "search": "bug", "from_ts": "1234567890.000000" }
 
-4. Find bot responses with code blocks:
-   { "channel": "chat-task", "roles": ["bot"], "search_regex": "\\\`\\\`\\\`" }`,
+4. Find messages from a specific agent:
+   { "channel": "chat-task", "agent_ids": ["Claw'd"] }
+
+5. Find messages with an attachment named "report":
+   { "channel": "chat-task", "attachment_name": "report" }
+
+6. Find the message that attached a particular file:
+   { "channel": "chat-task", "file_id": "Fxyz123" }`,
     inputSchema: {
       type: "object",
       properties: {
+        ts: {
+          type: "string",
+          description: "Exact message timestamp — returns 0 or 1 messages",
+        },
+        from_ts: {
+          type: "string",
+          description: "Get messages with ts > from_ts (range start, exclusive)",
+        },
+        to_ts: {
+          type: "string",
+          description:
+            'Get messages with ts < to_ts (range end / pagination cursor, exclusive). Combine with order="desc" to page newest first.',
+        },
         search: {
           type: "string",
           description: "Text search (case-insensitive substring match)",
         },
         search_regex: {
           type: "string",
-          description: "Regex pattern for advanced search (JavaScript regex, case-insensitive)",
+          description: "Regex pattern (JavaScript regex, case-insensitive)",
         },
         roles: {
           type: "array",
           items: { type: "string", enum: ["bot", "worker", "human"] },
           description: "Filter by user roles",
         },
-        from_ts: {
-          type: "string",
-          description: "Get messages after this timestamp",
+        user_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Filter by specific user IDs",
         },
-        to_ts: {
+        agent_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Filter by agent_id field on messages",
+        },
+        attachment_name: {
           type: "string",
-          description: "Get messages before this timestamp",
+          description: "Substring match against attachment filenames",
+        },
+        file_id: {
+          type: "string",
+          description: "Filter messages that have this specific attached file_id",
         },
         has_attachments: {
           type: "boolean",
-          description: "Filter messages with file attachments",
+          description: "Filter messages with any file attachment",
         },
         has_images: {
           type: "boolean",
@@ -821,7 +623,12 @@ Examples:
         },
         limit: {
           type: "number",
-          description: "Max messages to return (default: 100, max: 500)",
+          description: "Max messages to return (default: 50, max: 500)",
+        },
+        order: {
+          type: "string",
+          enum: ["asc", "desc"],
+          description: '"asc" (default, oldest first) or "desc" (newest first)',
         },
       },
       required: [],
@@ -830,90 +637,6 @@ Examples:
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
-      openWorldHint: true,
-    },
-  },
-  {
-    name: "chat_get_last_summary",
-    description: `Get the last conversation summary for a channel.
-
-Args:
-  - channel (string): Channel ID
-  - agent_id (string): Agent identifier (default: "default")
-
-Returns JSON:
-{
-  "ok": true,
-  "summary": "Previous conversation summary...",
-  "ts": "1234567890.000000",       // Summary creation timestamp
-  "from_ts": "...",                // First message in summary
-  "to_ts": "...",                  // Last message in summary
-  "message_count": 150,            // Messages included in summary
-  "has_summary": true
-}
-
-If no summary exists, returns the channel's first message timestamp as from_ts
-with has_summary=false, so you know where the conversation begins.`,
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: true,
-    },
-  },
-  {
-    name: "chat_store_summary",
-    description: `Store a conversation summary for a channel.
-
-Call this after generating a summary of conversation history.
-The summary should include key points, decisions, and technical details.
-
-Args:
-  - channel (string): Channel ID
-  - summary (string): The summary text (max 5000 chars)
-  - from_ts (string): First message timestamp included in summary
-  - to_ts (string): Last message timestamp included in summary
-  - agent_id (string): Agent identifier (default: "default")
-
-Returns JSON:
-{
-  "ok": true,
-  "summary_id": "S...",
-  "channel": "chat-task",
-  "message_count": 150
-}
-
-Best practices:
-- Keep summaries concise but complete (~300-500 words)
-- Include: topics discussed, decisions made, code changes, open questions
-- Reference important message timestamps for future lookup`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        summary: {
-          type: "string",
-          description: "The summary text",
-        },
-        from_ts: {
-          type: "string",
-          description: "First message timestamp in summary",
-        },
-        to_ts: {
-          type: "string",
-          description: "Last message timestamp in summary",
-        },
-      },
-      required: ["summary", "from_ts", "to_ts"],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
       openWorldHint: true,
     },
   },
@@ -1309,7 +1032,7 @@ Requires MiniMax provider (providers.minimax) or GEMINI_API_KEY in ~/.clawd/conf
       properties: {
         file_id: {
           type: "string",
-          description: "ID of the source image file to edit (from chat_download_file or create_image).",
+          description: "ID of the source image file to edit (from download_file or create_image).",
         },
         prompt: {
           type: "string",

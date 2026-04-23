@@ -15,16 +15,14 @@ const TOOL_CAPS: Record<string, number> = {
   view: 10240,
   // edit/create: exempt (handled separately)
   chat_get_message_files: 4096,
-  chat_download_file: 4096,
+  download_file: 4096,
   convert_to_markdown: 20480,
   chat_read_file_range: 10240,
-  chat_get_history: 10240,
-  chat_get_message: 10240,
-  chat_query_messages: 10240,
-  chat_poll_and_ack: 10240,
+  query_messages: 10240,
+  pollack: 10240,
   git_diff: 8192,
   git_log: 8192,
-  chat_search: 6144,
+  memory_search: 6144,
   web_fetch: 10240,
   tmux_capture: 8192,
   article_get: 10240,
@@ -46,12 +44,11 @@ const TOOL_CAPS: Record<string, number> = {
   // MCP serverName__toolName format (e.g., clawd__knowledge_search)
   // These get matched via getEffectiveCap() which strips server prefix
   clawd__knowledge_search: 4096,
-  clawd__chat_get_message: 2048,
-  clawd__chat_get_history: 4096,
-  clawd__chat_poll_and_ack: 2048,
+  clawd__query_messages: 4096,
+  clawd__pollack: 2048,
   "chat-mcp-server__knowledge_search": 4096,
-  "chat-mcp-server__chat_get_message": 2048,
-  "chat-mcp-server__chat_get_history": 4096,
+  "chat-mcp-server__query_messages": 4096,
+  "chat-mcp-server__pollack": 2048,
 };
 
 const DEFAULT_CAP = 32768; // 32KB for unknown tools
@@ -60,12 +57,7 @@ const DEFAULT_CAP = 32768; // 32KB for unknown tools
 const EXEMPT_TOOLS = new Set(["edit", "create"]);
 
 // Metadata-only chat tools — never compress (plan Phase 3B requirement)
-const METADATA_ONLY_TOOLS = new Set([
-  "chat_send_message",
-  "chat_mark_processed",
-  "chat_upload_file",
-  "chat_upload_local_file",
-]);
+const METADATA_ONLY_TOOLS = new Set(["reply_human", "upload_file"]);
 
 // ── Types ──────────────────────────────────────────────────────────
 
