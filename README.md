@@ -528,7 +528,7 @@ Agents can delegate tasks via `spawn_agent(task, agent="agent-name")`:
 - Configurable timeout (default 300s; spawn_agent overrides to 600s), max 9 per channel (no global cap)
 - `context` parameter for seeding sub-agents with parent knowledge
 - `retask_agent(agent_id, task)` — re-task a completed sub-agent without cold-start
-- **Sub-agent tools**: Limited to `complete_task`, `chat_mark_processed`, `today` (no chat_send_message). Environment info (OS/shell/cwd) lives in the system prompt.
+- **Sub-agent tools**: Limited to `complete_task`, `today` (no `reply_human` — sub-agents deliver work via `complete_task`, not chat). Environment info (OS/shell/cwd) lives in the system prompt.
 - **State-based stream timeouts**: CONNECTING (30s), PROCESSING (300s), STREAMING (180s) — not model-based
 
 ### Web Search
