@@ -169,42 +169,118 @@ Flow: poll_and_ack -> do work -> reply_human (marks processed + ends turn).`,
     },
   },
   {
-    name: "chat_get_message_files",
-    description: `Get all file attachments from a specific message.
+    name: "query_files",
+    description: `Search and query file attachments across the channel's message history.
+Mirrors query_messages but scoped to attachments — use this whenever the agent
+needs to locate a file by name, id, mimetype, uploader, or time window.
 
 Args:
-  - channel (string): Channel ID
-  - ts (string): Message timestamp/ID
-  - include_content (boolean): Include base64 content for each file (default: false)
+  - channel (string, required): Channel ID
+  - ts (string): Only files attached to this exact message timestamp
+  - file_id (string): Exact file id lookup — returns 0 or 1 files
+  - from_ts (string): Files on messages with ts > from_ts (exclusive)
+  - to_ts (string): Files on messages with ts < to_ts (exclusive; pagination cursor)
+  - name (string): Substring match against file name (case-insensitive)
+  - mimetype (string): Exact match or prefix (e.g., "image/", "application/pdf")
+  - uploader_ids (string[]): Filter by uploader user IDs (e.g., "UHUMAN", "UWORKER-xyz")
+  - roles (string[]): Filter by uploader role: "bot", "worker", "human"
+  - agent_ids (string[]): Filter by agent_id of the attaching message
+  - limit (number): Max files to return (default: 100, max: 500)
+  - order (string): "asc" (default, oldest first) or "desc" (newest first)
 
 Returns JSON:
 {
   "ok": true,
   "files": [
-    { "id": "F...", "name": "...", "mimetype": "...", "size": number, "content_base64"?: "...", "image_hint"?: "..." }
-  ]
+    {
+      "id": "F...",
+      "name": "...",
+      "mimetype": "...",
+      "size": number,
+      "message_ts": "...",
+      "uploaded_by": "...",
+      "created_at": number,
+      "image_hint"?: "..."
+    }
+  ],
+  "count": number,
+  "has_more": boolean
 }
 
-Use this to get all attachments from a message at once.
+Role mapping: UBOT="bot", UWORKER-*="worker", UHUMAN="human"
 
-**IMPORTANT FOR IMAGES:**
-- By default (include_content=false), images return an \`image_hint\` instead of base64 content
-- The hint explains how to use vision tools (Claude, Gemini, GPT-4V) to analyze images
-- This avoids context token limits from large image base64 data`,
+To read a file's content, follow up with download_file(file_id) — for images use
+read_image, for documents use convert_to_markdown after downloading.
+
+Examples:
+
+1. All files on one message:
+   { "channel": "chat-task", "ts": "1234567890.123456" }
+
+2. Look up one file by id:
+   { "channel": "chat-task", "file_id": "Fxyz123" }
+
+3. Find PDFs uploaded by humans:
+   { "channel": "chat-task", "mimetype": "application/pdf", "roles": ["human"] }
+
+4. Find images by name pattern:
+   { "channel": "chat-task", "mimetype": "image/", "name": "screenshot" }
+
+5. Recent uploads (newest first):
+   { "channel": "chat-task", "limit": 20, "order": "desc" }`,
     inputSchema: {
       type: "object",
       properties: {
         ts: {
           type: "string",
-          description: "Message timestamp/ID",
+          description: "Only files attached to this exact message timestamp",
         },
-        include_content: {
-          type: "boolean",
-          description: "Include base64 content for each file (default: false)",
-          default: false,
+        file_id: {
+          type: "string",
+          description: "Exact file id lookup — returns 0 or 1 files",
+        },
+        from_ts: {
+          type: "string",
+          description: "Files on messages with ts > from_ts (exclusive)",
+        },
+        to_ts: {
+          type: "string",
+          description: "Files on messages with ts < to_ts (exclusive; pagination cursor)",
+        },
+        name: {
+          type: "string",
+          description: "Substring match against file name (case-insensitive)",
+        },
+        mimetype: {
+          type: "string",
+          description: 'Exact or prefix match (e.g., "image/", "application/pdf")',
+        },
+        uploader_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Filter by uploader user IDs",
+        },
+        roles: {
+          type: "array",
+          items: { type: "string", enum: ["bot", "worker", "human"] },
+          description: "Filter by uploader role",
+        },
+        agent_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Filter by agent_id of the attaching message",
+        },
+        limit: {
+          type: "number",
+          description: "Max files to return (default: 100, max: 500)",
+        },
+        order: {
+          type: "string",
+          enum: ["asc", "desc"],
+          description: '"asc" (default, oldest first) or "desc" (newest first)',
         },
       },
-      required: ["ts"],
+      required: [],
     },
     annotations: {
       readOnlyHint: true,
@@ -251,69 +327,6 @@ Use the returned local_path to read the file with view, bash, or other tools.
     },
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: true,
-    },
-  },
-  {
-    name: "chat_read_file_range",
-    description: `Read a portion of a file by byte range or line range. Perfect for large files.
-
-Args:
-  - file_id (string): File ID from message attachments
-  - mode (string): "bytes" or "lines" (default: "bytes")
-  - start (number): Start byte offset or line number (0-indexed)
-  - end (number): End byte offset or line number (exclusive). Omit to read to end.
-  - encoding (string): "utf8" or "base64" (default: "utf8")
-
-Returns JSON:
-{
-  "ok": true,
-  "file_id": "...",
-  "mode": "bytes",
-  "start": 0,
-  "end": 1000,
-  "total_size": 50000,
-  "total_lines": 1200,  // Only for text files
-  "content": "...",     // UTF-8 string or base64
-  "has_more": true
-}
-
-Examples:
-- First 1KB: { file_id: "F...", start: 0, end: 1000 }
-- Lines 0-50: { file_id: "F...", mode: "lines", start: 0, end: 50 }
-- Last 500 bytes: { file_id: "F...", start: -500 }`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        file_id: {
-          type: "string",
-          description: "File ID from message attachments",
-        },
-        mode: {
-          type: "string",
-          enum: ["bytes", "lines"],
-          description: "Read by byte offset or line number (default: bytes)",
-        },
-        start: {
-          type: "number",
-          description: "Start position (0-indexed). Negative values count from end.",
-        },
-        end: {
-          type: "number",
-          description: "End position (exclusive). Omit to read to end.",
-        },
-        encoding: {
-          type: "string",
-          enum: ["utf8", "base64"],
-          description: "Output encoding (default: utf8)",
-        },
-      },
-      required: ["file_id"],
-    },
-    annotations: {
-      readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: true,
@@ -387,40 +400,6 @@ reply_human(
       destructiveHint: false,
       idempotentHint: false,
       openWorldHint: true,
-    },
-  },
-  {
-    name: "chat_delete_message",
-    description: `Delete a specific message from a channel.
-
-Args:
-  - channel (string): Channel ID
-  - ts (string): Message timestamp/ID to delete
-
-Returns JSON:
-{
-  "ok": true,
-  "channel": "chat-task",
-  "ts": "1234567890.123456"
-}
-
-Use this to remove messages (e.g., cleanup, corrections).
-Note: Deletion is permanent and broadcasts to all connected clients.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        ts: {
-          type: "string",
-          description: "Message timestamp/ID to delete",
-        },
-      },
-      required: ["ts"],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: true,
-      openWorldHint: false,
     },
   },
   {

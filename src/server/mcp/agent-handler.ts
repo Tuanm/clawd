@@ -2562,8 +2562,8 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
           if (pr) enrichedArgs._project_root = pr;
         } catch {
           // Best-effort — if lookup fails the tool falls through to its
-          // metadata-only branch, which still works (agent can use
-          // chat_read_file_range instead of the saved copy).
+          // metadata-only branch, which still works (agent can retry
+          // download_file from a context with _project_root injected).
         }
       }
 
