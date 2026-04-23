@@ -19,7 +19,7 @@ import { createMemoryPlugin, isMemoryEnabled } from "./agent/plugins/memory-plug
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 import type { PromptContext } from "./agent/prompt/builder";
 import { runWithAgentContext, setProjectHash, toolDefinitions } from "./agent/tools/definitions";
-import { sendChatFallback } from "./agent/utils/chat-fallback";
+import { MAX_REINJECT_ATTEMPTS, buildReinjectionPrompt, sendChatFallback } from "./agent/utils/chat-fallback";
 import { setDebug } from "./agent/utils/debug";
 import { initializeSandbox } from "./agent/utils/sandbox";
 import { smartTruncate } from "./agent/utils/smart-truncation";
@@ -221,6 +221,11 @@ export class WorkerLoop implements AgentWorker {
   private lastExecutionHadError = false;
   // Set by cancelProcessing() so error detection survives the cancel→return flow
   private wasCancelledByHeartbeat = false;
+
+  // Latest pending-message ts for the currently-processing turn. Threaded into
+  // executePrompt() so the re-injection loop can reference the triggering msg
+  // in reminder prompts.
+  private lastPendingTs: string = "";
 
   constructor(config: WorkerLoopConfig) {
     this.config = config;
@@ -688,7 +693,7 @@ export class WorkerLoop implements AgentWorker {
                 contextLabel,
                 ``,
                 contextDesc,
-                `Here is a summary of the prior conversation (already processed — do NOT call chat_mark_processed for any of these):`,
+                `Here is a summary of the prior conversation (already processed — do NOT pass any of these timestamps to reply_human):`,
                 ``,
                 `--- Prior conversation ---`,
                 convoLines.join("\n"),
@@ -765,6 +770,8 @@ export class WorkerLoop implements AgentWorker {
               prompt = prompt.slice(0, cutPoint) + suffix;
             }
 
+            // Expose triggering-message ts to executePrompt's internal re-injection loop.
+            this.lastPendingTs = result.pending[result.pending.length - 1]?.ts || "";
             const execResult = await this.executePrompt(prompt, this.sessionName);
             lastExecHadUnsentText = !execResult.chatSent && execResult.hadStreamText;
 
@@ -780,21 +787,6 @@ export class WorkerLoop implements AgentWorker {
             if (!execResult.success && !wlInterrupted) {
               this.log("Prompt execution failed");
               await this.sendMessage(`[ERROR] ${execResult.output || "Unexpected error"}`);
-            }
-
-            // Re-injection: if agent completed without calling chat_mark_processed,
-            // send a follow-up prompt so it can mark the messages as processed.
-            // Skip for: heartbeat turns, continuation prompts, cancelled turns, or if already called.
-            if (!execResult.markProcessed && !isContinuation && !this.wasCancelledByHeartbeat && !wlInterrupted) {
-              const lastTs = result.pending[result.pending.length - 1]?.ts || "";
-              const reminderPrompt = `[Call \`chat_mark_processed(timestamp="${lastTs}")\` to mark the message(s) as handled — otherwise they'll be polled again.]`;
-
-              try {
-                await this.executePrompt(reminderPrompt, this.sessionName);
-                this.log("Mark-processed re-injection: ok");
-              } catch (err) {
-                this.log(`Mark-processed re-injection failed: ${err}`);
-              }
             }
           } finally {
             clearInterval(wlInterruptPoller);
@@ -878,6 +870,13 @@ export class WorkerLoop implements AgentWorker {
                   }
                   interruptPrompt = interruptPrompt.slice(0, cutPoint) + suffix;
                 }
+                // Expose latest interrupt-triggering ts so executePrompt's re-injection
+                // loop cites the right timestamp when reminding the agent to call
+                // reply_human. Without this, resume turns would reuse a stale ts.
+                this.lastPendingTs =
+                  (wlResumeInterruptMsgs[wlResumeInterruptMsgs.length - 1] as any)?.ts ||
+                  (wlResumeProcessingMsgs[wlResumeProcessingMsgs.length - 1] as any)?.ts ||
+                  "";
                 const resumeResult = await this.executePrompt(interruptPrompt, this.sessionName);
                 wlLastExecHadUnsentText = !resumeResult.chatSent && resumeResult.hadStreamText;
                 const output = resumeResult.output || "";
@@ -1400,7 +1399,7 @@ export class WorkerLoop implements AgentWorker {
     const subAgentReminder = this.getActiveSubAgentReminder();
     if (subAgentReminder) parts.push(subAgentReminder);
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with reply_human to deliver a visible response.]`,
     );
     return parts.join("\n");
   }
@@ -1434,7 +1433,7 @@ export class WorkerLoop implements AgentWorker {
     const sectionHeader =
       seenNotProcessed.length > 0 && unseen.length === 0
         ? `# Messages on Channel "${channel}" (continuing)\n\nCONTINUATION REQUIRED — you did not call ${
-            isSpaceAgent ? "complete_task" : "chat_mark_processed"
+            isSpaceAgent ? "complete_task" : "reply_human"
           } last turn.`
         : `# Messages on Channel "${channel}" (poll start)`;
 
@@ -1444,7 +1443,7 @@ export class WorkerLoop implements AgentWorker {
       const subAgentReminder = this.getActiveSubAgentReminder();
       if (subAgentReminder) parts.push(subAgentReminder);
       parts.push(
-        `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`,
+        `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with reply_human to deliver a visible response.]`,
       );
     }
 
@@ -1474,7 +1473,7 @@ export class WorkerLoop implements AgentWorker {
     }
 
     const subAgentReminder = this.getActiveSubAgentReminder();
-    return `# Messages on Channel "${channel}" (continuing)\n\nCONTINUATION REQUIRED — you did not call chat_mark_processed last turn.\n\n${messageContext}${subAgentReminder}`;
+    return `# Messages on Channel "${channel}" (continuing)\n\nCONTINUATION REQUIRED — you did not call reply_human last turn.\n\n${messageContext}${subAgentReminder}`;
   }
 
   /** Build interrupt resume prompt with Processing/New split (mirrors CC main worker) */
@@ -1533,7 +1532,7 @@ export class WorkerLoop implements AgentWorker {
     );
     if (hadUnsentText) {
       parts.push(
-        `\n[WARNING: Your previous turn produced text output but did NOT call \`chat_send_message\`. The human cannot see your previous response. If you still need to respond to the earlier task, call \`chat_send_message\` FIRST before processing the new messages.]`,
+        `\n[WARNING: Your previous turn produced text output but did NOT call \`reply_human\`. The human cannot see your previous response. If you still need to respond to the earlier task, call \`reply_human\` FIRST before processing the new messages.]`,
       );
     }
     parts.push(
@@ -1544,7 +1543,7 @@ export class WorkerLoop implements AgentWorker {
     const subAgentReminder = this.getActiveSubAgentReminder();
     if (subAgentReminder) parts.push(subAgentReminder);
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call chat_send_message to send a visible response to the chat UI.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with reply_human to deliver a visible response.]`,
     );
     return parts.join("\n");
   }
@@ -1672,11 +1671,14 @@ export class WorkerLoop implements AgentWorker {
             worktreeBranch: this.config.worktreeBranch,
           };
 
-          // Re-injection tracking: detect if chat_send_message / chat_mark_processed were called this turn.
-          // Heartbeat prompts intentionally skip both — suppress re-injection for them.
+          // Re-injection tracking: detect whether reply_human was called this turn.
+          // reply_human unifies "send message" + "mark processed" — so one signal covers
+          // both the text-delivery and pending-cleanup concerns.
+          // Heartbeat prompts are allowed to skip reply_human — suppress re-injection for them.
           const isHeartbeatTurn = prompt.startsWith("[HEARTBEAT]");
-          let turnChatSent = false;
-          let turnMarkProcessed = false;
+          let turnReplyHuman = false;
+          /** True if reply_human was called AND produced a visible message (text != "" / "[SILENT]"). */
+          let turnReplyVisible = false;
           let turnStreamText = "";
 
           // Build skill review config from runtime values — never from env-only
@@ -1732,13 +1734,19 @@ export class WorkerLoop implements AgentWorker {
             onToolResult: (name, result) => {
               this.lastActivityAt = Date.now();
               this.log(`Tool result: ${name} ${result.success ? "ok" : "err: " + result.error}`);
-              // Track whether the agent successfully sent a message (non-prefixed name in this path)
-              if (name === "chat_send_message" && result.success) {
-                turnChatSent = true;
-              }
-              // Track whether chat_mark_processed was called this turn
-              if (name === "chat_mark_processed" && result.success) {
-                turnMarkProcessed = true;
+              // reply_human is the single signal that ends a turn. A visible reply
+              // (non-SILENT text) also flips turnReplyVisible so the
+              // "unsent text" warning only fires when the agent truly didn't deliver.
+              if (name === "reply_human" && result.success) {
+                turnReplyHuman = true;
+                try {
+                  const parsed = JSON.parse(result.output || "{}");
+                  if (parsed && parsed.silent !== true) turnReplyVisible = true;
+                } catch {
+                  // Malformed output — conservatively treat as visible so we don't
+                  // accidentally re-inject a real reply.
+                  turnReplyVisible = true;
+                }
               }
             },
           };
@@ -1860,42 +1868,55 @@ export class WorkerLoop implements AgentWorker {
 
             this.log(`Agent completed: ${result.iterations} iterations, ${result.toolCalls.length} tool calls`);
 
-            // Re-injection: if agent produced ANY text but never called chat_send_message,
-            // send one ephemeral follow-up prompt so it can deliver the response.
-            // If re-injection ALSO fails to call the tool, fall back to posting the
-            // agent's text directly (unless it explicitly opted out with [SILENT]).
-            // Skip for heartbeat turns and cancelled turns.
-            if (
-              !turnChatSent &&
-              turnStreamText.trim().length > 0 &&
-              !isHeartbeatTurn &&
-              !this.wasCancelledByHeartbeat
-            ) {
-              const reinjectionPrompt =
-                "[Your previous text wasn't delivered — call `chat_send_message` to send it now, or reply only `[SILENT]` to skip.]";
+            // Re-injection: if agent did NOT call reply_human this turn, send
+            // escalating reminders until it complies or we hit MAX_REINJECT_ATTEMPTS.
+            // Skip for heartbeat turns and cancelled turns (heartbeats may
+            // legitimately produce no output).
+            if (!turnReplyHuman && !isHeartbeatTurn && !this.wasCancelledByHeartbeat) {
+              const hadText = turnStreamText.trim().length > 0;
+              const lastTs = this.lastPendingTs || "latest";
+              let lastReinjContent = "";
 
-              let reinjContent = "";
-              try {
-                const reinjResult = await callContext.run({ agentId, channel }, () =>
-                  agent!.run(reinjectionPrompt, sessionName),
-                );
-                reinjContent = reinjResult.content ?? "";
-              } catch (err) {
-                // Re-injection is best-effort — ignore errors
-                this.log(`Re-injection failed: ${err}`);
+              for (let attempt = 1; attempt <= MAX_REINJECT_ATTEMPTS && !turnReplyHuman; attempt++) {
+                if (!this.running || this.wasCancelledByHeartbeat) break;
+                const reinjectionPrompt = buildReinjectionPrompt(attempt, {
+                  toolName: "reply_human",
+                  lastTs,
+                  hadText: hadText || lastReinjContent.trim().length > 0,
+                });
+                try {
+                  const reinjResult = await callContext.run({ agentId, channel }, () =>
+                    agent!.run(reinjectionPrompt, sessionName),
+                  );
+                  lastReinjContent = reinjResult.content ?? "";
+                } catch (err) {
+                  this.log(`Re-injection #${attempt} failed: ${err}`);
+                }
+                if (turnReplyHuman) {
+                  this.log(`Re-injection: agent called reply_human on attempt ${attempt}`);
+                  break;
+                }
+                if (!this.running || this.wasCancelledByHeartbeat) break;
               }
 
-              // Fallback rescue: if re-injection still didn't trigger chat_send_message,
-              // post the reinj text directly. [SILENT] is honored as explicit opt-out.
-              if (turnChatSent) {
-                this.log(`Re-injection: agent called chat_send_message`);
-              } else {
+              // Fallback rescue: loop exhausted without reply_human. If any text
+              // was emitted (main turn or any re-injection attempt), post it
+              // directly. [SILENT] is honored as explicit opt-out. Pure-no-text
+              // turns are left to the next poll cycle. Skip when worker stopped
+              // or heartbeat cancelled — avoids double-posting on a fresh batch.
+              if (
+                !turnReplyHuman &&
+                this.running &&
+                !this.wasCancelledByHeartbeat &&
+                (hadText || lastReinjContent.trim().length > 0)
+              ) {
                 const outcome = await sendChatFallback({
                   apiUrl: chatApiUrl,
                   channel,
                   agentId,
                   userId: this.config.isSpaceAgent ? `UWORKER-${agentId}` : "UBOT",
-                  reinjectionText: reinjContent,
+                  reinjectionText: lastReinjContent || turnStreamText,
+                  processedTs: lastTs && lastTs !== "latest" ? lastTs : undefined,
                   authHeaders: this.authHeaders(),
                 });
                 switch (outcome.kind) {
@@ -1907,12 +1928,19 @@ export class WorkerLoop implements AgentWorker {
                     break;
                   case "fallback_sent":
                     this.log(`Re-injection fallback: sent (${outcome.chars} chars)`);
-                    turnChatSent = true;
+                    turnReplyHuman = true;
+                    turnReplyVisible = true;
                     break;
                   case "fallback_failed":
                     this.log(`Re-injection fallback: failed — ${outcome.error}`);
                     break;
                 }
+              }
+
+              if (!turnReplyHuman) {
+                this.log(
+                  `Re-injection exhausted (${MAX_REINJECT_ATTEMPTS} attempts) — agent never called reply_human; message ${lastTs} will re-poll`,
+                );
               }
             }
 
@@ -1922,8 +1950,8 @@ export class WorkerLoop implements AgentWorker {
             return {
               success: true,
               output: result.content,
-              markProcessed: turnMarkProcessed,
-              chatSent: turnChatSent,
+              markProcessed: turnReplyHuman,
+              chatSent: turnReplyVisible,
               hadStreamText: turnStreamText.trim().length > 0,
             };
           } finally {
