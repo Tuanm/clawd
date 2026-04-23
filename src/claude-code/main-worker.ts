@@ -3,7 +3,7 @@
  *
  * Runs a Claude Code agent via the official SDK as a main channel agent.
  * Polls for messages, runs SDK query() per interaction, and lets Claude Code
- * communicate via Claw'd's MCP tools (chat_send_message, chat_mark_processed, etc.).
+ * communicate via Claw'd's MCP tools (reply_human, pollack, etc.).
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -24,7 +24,7 @@ import { getSessionManager } from "../agent/session/manager";
 import { generateConversationSummary } from "../agent/session/summarizer";
 import { getSkillSet, improveSkillFromCorrections } from "../agent/skills/improvement";
 import { getSkillManager } from "../agent/skills/manager";
-import { sendChatFallback } from "../agent/utils/chat-fallback";
+import { MAX_REINJECT_ATTEMPTS, buildReinjectionPrompt, sendChatFallback } from "../agent/utils/chat-fallback";
 import { loadConfigFile } from "../config/config-file";
 import { db, getAgent, markMessagesSeen, setAgentStreaming } from "../server/database";
 import { getPendingMessages } from "../server/routes/messages";
@@ -58,7 +58,7 @@ const MAX_WAKEUP_MESSAGES = 3; // On wakeup, only process this many recent messa
 
 // Tools that manage conversation flow — excluded from the [CC-Turn] [Action] entries
 // since they are implementation mechanics, not agent work visible to the user.
-const CONVERSATION_TOOLS = new Set(["chat_send_message", "chat_mark_processed"]);
+const CONVERSATION_TOOLS = new Set(["reply_human"]);
 
 // ============================================================================
 // Types
@@ -113,9 +113,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   // Track whether the interrupt poller detected new messages this cycle.
   // Used to skip re-injections when interrupted (mirrors WorkerLoop's !wlInterrupted guard).
   private interruptDetected = false;
-  // Re-injection state: track per-turn whether chat_send_message / chat_mark_processed were called
-  private turnChatSent = false;
-  private turnMarkProcessed = false;
+  // Re-injection state: track per-turn whether reply_human was called.
+  // turnReplyVisible is true only when the reply carried visible text (non-SILENT).
+  private turnReplyHuman = false;
+  private turnReplyVisible = false;
   private turnStreamText = "";
   // Per-turn structured log removed — assistant messages (with text + tool_use blocks)
   // and tool results are persisted as individual session rows by handleAssistantMessage
@@ -385,7 +386,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
                 contextLabel,
                 ``,
                 `${contextDesc}`,
-                `Here is a summary of the prior conversation (already processed — do NOT call chat_mark_processed for any of these):`,
+                `Here is a summary of the prior conversation (already processed — do NOT pass any of these timestamps to reply_human):`,
                 ``,
                 `--- Prior conversation ---`,
                 summary,
@@ -577,7 +578,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
               }, 2000);
 
               try {
-                const hadUnsentText = !this.turnChatSent && this.turnStreamText.trim().length > 0;
+                const hadUnsentText = !this.turnReplyVisible && this.turnStreamText.trim().length > 0;
                 const interruptPrompt = this.formatInterruptPrompt(
                   resumeProcessingMsgs,
                   resumeInterruptMsgs,
@@ -701,32 +702,31 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // All tracking below is best-effort. Each block is independently try-catched
     // so one failure cannot cascade and drop later tracking work.
 
-    // Track chat_send_message: turn flag + trajectory
-    // (message content is already captured via handleAssistantMessage → session DB,
-    //  no need for a per-turn in-memory log anymore).
+    // Track reply_human: turn flag + trajectory.
+    // reply_human unifies send + mark_processed. Silent replies (text="" or
+    // "[SILENT]") still flip turnReplyHuman but NOT turnReplyVisible, so the
+    // "unsent text" warning only fires when the agent truly didn't deliver.
+    // (Message content is already captured via handleAssistantMessage → session DB.)
     try {
-      if (toolName === "mcp__clawd__chat_send_message" && !response?.error) {
-        this.turnChatSent = true;
-        if (this.trajectoryRecorder) {
-          this.trajectoryRecorder.recordAssistantResponse(sanitize(input?.text || ""));
+      if (toolName === "mcp__clawd__reply_human" && !response?.error) {
+        this.turnReplyHuman = true;
+        const rawText = input?.text;
+        const text = typeof rawText === "string" ? rawText : "";
+        const silent = text === "" || text.trim() === "[SILENT]";
+        if (!silent) {
+          this.turnReplyVisible = true;
+          if (this.trajectoryRecorder) {
+            this.trajectoryRecorder.recordAssistantResponse(sanitize(text));
+          }
         }
       }
     } catch (err) {
-      logger.error(`[handleToolResult] chat_send_message tracking failed:`, err);
+      logger.error(`[handleToolResult] reply_human tracking failed:`, err);
     }
 
-    // Track chat_mark_processed flag
+    // Skill improvement at task completion (triggered by reply_human — the turn-ending signal)
     try {
-      if (toolName === "mcp__clawd__chat_mark_processed" && !response?.error) {
-        this.turnMarkProcessed = true;
-      }
-    } catch (err) {
-      logger.error(`[handleToolResult] mark_processed tracking failed:`, err);
-    }
-
-    // Skill improvement at task completion
-    try {
-      if ((toolName === "chat_mark_processed" || toolName === "mcp__clawd__chat_mark_processed") && !response?.error) {
+      if (toolName === "mcp__clawd__reply_human" && !response?.error) {
         const correctionsSnapshot = [...this.pendingCorrections];
         const activatedSnapshot = [...this.turnActivatedSkills];
         this.pendingCorrections = [];
@@ -1169,7 +1169,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
       // Surface attachment filenames inline so the agent knows files exist.
       // To READ the content it still needs to call the attachment tools
-      // (mcp__clawd__chat_get_message_files / mcp__clawd__chat_download_file /
+      // (mcp__clawd__chat_get_message_files / mcp__clawd__download_file /
       // read_image) — see sectionChat in prompt/builder.ts for guidance.
       const fileInfo = hasFiles
         ? `\n[Attached files: ${msg.files.map((f: any) => f.name || "unnamed").join(", ")}]`
@@ -1338,7 +1338,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         "spawn_agent",
         "todo_write",
         "todo_read",
-        "chat_search",
+        "memory_search",
         // Memory tools (same as non-CC agents)
         "memo_save",
         "memo_recall",
@@ -1417,8 +1417,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // (isNewTurn=false) must preserve accumulated state from the aborted main turn so
     // tool calls/messages aren't silently lost.
     if (isNewTurn) {
-      this.turnChatSent = false;
-      this.turnMarkProcessed = false;
+      this.turnReplyHuman = false;
+      this.turnReplyVisible = false;
       this.turnStreamText = "";
     }
 
@@ -1502,74 +1502,108 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         this.persistSessionId(newSessionId);
       }
 
-      // Re-injection: if agent produced ANY text but never called chat_send_message,
-      // send one ephemeral follow-up prompt so it can deliver the response.
-      // If re-injection ALSO fails to call the tool, fall back to posting the
-      // agent's text directly (unless it explicitly opted out with [SILENT]).
-      // Skip for: heartbeat turns, cancelled/aborted turns, interrupted turns (resume handles it).
+      // Re-injection: if agent did NOT call reply_human, send escalating
+      // reminders until it complies or we hit MAX_REINJECT_ATTEMPTS. reply_human
+      // unifies send + mark_processed, so this covers both text-delivery and
+      // pending-cleanup cases.
+      // Skip for: heartbeat turns, cancelled/aborted turns, interrupted turns
+      // (resume handles it).
       // REQUIRE this.sessionId: re-injection sends a plain-string prompt with
       // `resume: this.sessionId` to continue context. If sessionId is null (main
       // SDK threw before onSessionId fired), a fresh-session re-injection would
       // have ZERO history — the model would answer the NOTICE blind. Skip instead.
       if (
-        !this.turnChatSent &&
-        this.turnStreamText.trim().length > 0 &&
+        !this.turnReplyHuman &&
         !this.wasCancelledByHeartbeat &&
         !isHeartbeatTurn &&
         !this.abortController?.signal.aborted &&
         !this.interruptDetected &&
         !!this.sessionId
       ) {
-        const reinjectionPrompt =
-          "[Your previous text wasn't delivered — call `mcp__clawd__chat_send_message` to send it now, or reply only `[SILENT]` to skip.]";
+        const lastTs =
+          this.pendingTimestamps[this.pendingTimestamps.length - 1] || messages[messages.length - 1]?.ts || "latest";
+        const hadText = this.turnStreamText.trim().length > 0;
+        let lastReinjectionText = "";
 
-        // Use a fresh AbortController for re-injection (the original may have been aborted).
-        // Update this.abortController so cancelProcessing()/setSleeping() can still cancel it.
-        const reinjAbort = new AbortController();
-        this.abortController = reinjAbort;
-        let reinjectionText = "";
-        try {
-          await runSDKQuery(
-            {
-              ...sharedSdkOpts,
-              prompt: reinjectionPrompt,
-              resume: this.sessionId || undefined,
-              abortController: reinjAbort,
-            },
-            {
-              onTextDelta: (text) => {
-                reinjectionText += text;
+        for (let attempt = 1; attempt <= MAX_REINJECT_ATTEMPTS && !this.turnReplyHuman; attempt++) {
+          // Break conditions re-checked each iteration — state can change mid-loop.
+          if (this.wasCancelledByHeartbeat || this.interruptDetected) break;
+
+          const reinjectionPrompt = buildReinjectionPrompt(attempt, {
+            toolName: "mcp__clawd__reply_human",
+            lastTs,
+            hadText: hadText || lastReinjectionText.trim().length > 0,
+          });
+
+          // Fresh AbortController per attempt so cancelProcessing()/setSleeping()
+          // can still cancel mid-loop; the worker's cancel path checks this.abortController.
+          const reinjAbort = new AbortController();
+          this.abortController = reinjAbort;
+          let attemptText = "";
+          try {
+            await runSDKQuery(
+              {
+                ...sharedSdkOpts,
+                prompt: reinjectionPrompt,
+                resume: this.sessionId || undefined,
+                abortController: reinjAbort,
               },
-              onThinkingDelta: () => {},
-              onAssistantMessage: () => {},
-              onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
-              onActivity: () => {
-                this.lastActivityAt = Date.now();
+              {
+                onTextDelta: (text) => {
+                  attemptText += text;
+                },
+                onThinkingDelta: () => {},
+                onAssistantMessage: () => {},
+                onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
+                onActivity: () => {
+                  this.lastActivityAt = Date.now();
+                },
+                onSessionId: (sid) => {
+                  if (sid) {
+                    this.sessionId = sid;
+                    this.persistSessionId(sid);
+                  }
+                },
               },
-              onSessionId: (sid) => {
-                if (sid) {
-                  this.sessionId = sid;
-                  this.persistSessionId(sid);
-                }
-              },
-            },
-          );
-        } catch (err) {
-          // Re-injection is best-effort — ignore errors
-          logger.error(`Re-injection failed: ${err}`);
+            );
+          } catch (err) {
+            logger.error(`Re-injection #${attempt} failed: ${err}`);
+          }
+          lastReinjectionText = attemptText;
+
+          if (this.turnReplyHuman) {
+            logger.info(`Re-injection: agent called reply_human on attempt ${attempt}`);
+            break;
+          }
+          // Re-check interrupt/cancel state after the await — new messages or a
+          // heartbeat cancel may have arrived mid-attempt. Without this, the loop
+          // wastes an extra attempt before the top-of-loop guard catches it.
+          if (this.interruptDetected || this.wasCancelledByHeartbeat) break;
+          if (reinjAbort.signal.aborted) break;
         }
 
-        // Fallback rescue: if re-injection still didn't trigger chat_send_message,
-        // post the reinj text directly. [SILENT] is honored as explicit opt-out.
-        if (this.turnChatSent) {
-          logger.info("Re-injection: agent called chat_send_message");
-        } else {
+        // Fallback rescue: re-injection loop exhausted without reply_human. If the
+        // agent emitted visible text at any point this turn, post it directly
+        // (threaded with timestamp so the human message is marked processed too).
+        // [SILENT] is honored as explicit opt-out. Turns with no text fall through
+        // — the next poll cycle will retry on the same unprocessed message.
+        //
+        // Skip fallback when the loop exited due to interrupt/cancel: a fresh
+        // message batch is already in flight, so posting stale text could
+        // double-reply or answer out of context.
+        if (
+          !this.turnReplyHuman &&
+          !this.interruptDetected &&
+          !this.wasCancelledByHeartbeat &&
+          (hadText || lastReinjectionText.trim().length > 0)
+        ) {
           const outcome = await sendChatFallback({
             apiUrl: this.config.chatApiUrl,
             channel,
             agentId,
             userId: "UBOT",
-            reinjectionText,
+            reinjectionText: lastReinjectionText || this.turnStreamText,
+            processedTs: lastTs && lastTs !== "latest" ? lastTs : undefined,
           });
           switch (outcome.kind) {
             case "silent_accepted":
@@ -1580,85 +1614,34 @@ export class ClaudeCodeMainWorker implements AgentWorker {
               break;
             case "fallback_sent":
               logger.info(`Re-injection fallback: sent (${outcome.chars} chars)`);
-              this.turnChatSent = true;
+              this.turnReplyHuman = true;
+              this.turnReplyVisible = true;
               break;
             case "fallback_failed":
               logger.warn(`Re-injection fallback: failed — ${outcome.error}`);
               break;
           }
         }
-      }
 
-      // Re-injection: if agent completed without calling chat_mark_processed,
-      // send a follow-up prompt so it can mark the messages as processed.
-      // Skip for: heartbeat turns, cancelled turns, or if mark_processed was already called.
-      // Dual guard: signal.aborted catches cancelProcessing/setSleeping; interruptDetected catches poller-detected interrupts.
-      // REQUIRE this.sessionId: same reason as the chat-send re-injection above —
-      // a fresh-session reminder with `resume: undefined` sees no history, so
-      // mark_processed would run with no context. Skip; next turn retries.
-      if (
-        !this.turnMarkProcessed &&
-        !this.wasCancelledByHeartbeat &&
-        !isHeartbeatTurn &&
-        !this.abortController?.signal.aborted &&
-        !this.interruptDetected &&
-        !!this.sessionId
-      ) {
-        // Prefer the last actual pending timestamp; fall back to the last message
-        // in this turn's batch, then to "latest" if both are unavailable.
-        const lastTs =
-          this.pendingTimestamps[this.pendingTimestamps.length - 1] || messages[messages.length - 1]?.ts || "latest";
-        const reminderPrompt = `[Call \`mcp__clawd__chat_mark_processed(timestamp="${lastTs}")\` to mark the message(s) as handled — otherwise they'll be polled again.]`;
-
-        // Use a tracked AbortController so the interrupt poller can abort this re-injection too.
-        const markProcessedAbort = new AbortController();
-        this.abortController = markProcessedAbort;
-        try {
-          await runSDKQuery(
-            {
-              ...sharedSdkOpts,
-              prompt: reminderPrompt,
-              resume: this.sessionId || undefined,
-              abortController: markProcessedAbort,
-            },
-            {
-              onTextDelta: () => {},
-              onThinkingDelta: () => {},
-              onAssistantMessage: () => {},
-              onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
-              onActivity: () => {
-                this.lastActivityAt = Date.now();
-              },
-              onSessionId: (sid) => {
-                if (sid) {
-                  this.sessionId = sid;
-                  this.persistSessionId(sid);
-                }
-              },
-            },
+        if (!this.turnReplyHuman) {
+          logger.warn(
+            `Re-injection exhausted (${MAX_REINJECT_ATTEMPTS} attempts) — agent never called reply_human; message ${lastTs} will re-poll`,
           );
-        } catch (err: unknown) {
-          // Best-effort — only log non-abort errors
-          if (!markProcessedAbort.signal.aborted) {
-            const message = err instanceof Error ? err.message : String(err);
-            logger.error(`Mark-processed re-injection failed: ${message}`);
-          }
         }
       }
 
-      // Save a tool-activity summary for turns where the agent used tools but
-      // never called chat_send_message. Without this, tool-only turns leave no
-      // trace in the preamble — the agent's work becomes invisible in context.
-      if (this.turnMarkProcessed && this.trajectoryRecorder) {
+      // Trajectory: commit on successful reply_human, abort otherwise. This
+      // preserves tool-activity summaries only for turns that ended cleanly.
+      if (this.turnReplyHuman && this.trajectoryRecorder) {
         this.trajectoryRecorder.commitTurn();
-      } else if (!this.turnMarkProcessed && this.trajectoryRecorder) {
+      } else if (!this.turnReplyHuman && this.trajectoryRecorder) {
         this.trajectoryRecorder.abortTurn();
       }
 
       // NOTE: improvement cannot trigger from CC path until beforeCompaction hook is
       // wired into the SDK — pendingCorrections is never populated here.
       // This block captures skill activations for future use when corrections are available.
-      if (this.turnMarkProcessed && this.turnActivatedSkills.size > 0) {
+      if (this.turnReplyHuman && this.turnActivatedSkills.size > 0) {
         // CC path: no corrections available — skip improvement for now
         this.turnActivatedSkills = new Set();
       }
@@ -1727,7 +1710,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     if (seenNotProcessed.length > 0 && unseen.length === 0) {
       // All messages are retries — agent previously saw but didn't finish processing
       parts.push(`# Messages on Channel "${this.config.channel}" (continuing)\n`);
-      parts.push(`CONTINUATION REQUIRED — you did not call chat_mark_processed last turn.\n`);
+      parts.push(`CONTINUATION REQUIRED — you did not call reply_human last turn.\n`);
     } else if (unseen.length > 0) {
       parts.push(`# Messages on Channel "${this.config.channel}" (poll start)\n`);
     }
@@ -1759,7 +1742,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       if (unseen.length > 0) {
         parts.push(`## Previously Seen (not yet processed)\n`);
         parts.push(
-          `[NOTE: You already saw these last turn. If the conversation history above shows you responded, do NOT re-answer — just call mcp__clawd__chat_mark_processed with the latest timestamp.]\n`,
+          `[NOTE: You already saw these last turn. If the conversation history above shows you responded, do NOT re-answer — just call mcp__clawd__reply_human with text="[SILENT]" and the latest timestamp.]\n`,
         );
       }
       parts.push(...buildChronological(seenNotProcessed));
@@ -1776,7 +1759,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
 
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI. Once you have fully addressed all messages, call mcp__clawd__chat_mark_processed with the latest message timestamp.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply_human(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
     );
     return parts.join("\n");
   }
@@ -1805,7 +1788,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     parts.push(...olderLines, ...newestLines);
 
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI. Once you have fully addressed all messages, call mcp__clawd__chat_mark_processed with the latest message timestamp.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply_human(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
     );
     return parts.join("\n");
   }
@@ -1817,7 +1800,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     parts.push(`Read them carefully — they may override your current task.\n`);
     if (hadUnsentText) {
       parts.push(
-        `[WARNING: Your previous turn produced text output but did NOT call \`mcp__clawd__chat_send_message\`. The human cannot see your previous response. If you still need to respond to the earlier task, call \`mcp__clawd__chat_send_message\` FIRST before processing the new messages.]\n`,
+        `[WARNING: Your previous turn produced text output but did NOT call \`mcp__clawd__reply_human\`. The human cannot see your previous response. If you still need to respond to the earlier task, call \`mcp__clawd__reply_human\` FIRST before processing the new messages.]\n`,
       );
     }
 
@@ -1863,7 +1846,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     parts.push(...newMsgLines);
 
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. Call mcp__clawd__chat_send_message to send a visible response to the chat UI. Once you have fully addressed all messages, call mcp__clawd__chat_mark_processed with the latest message timestamp.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply_human(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
     );
     return parts.join("\n");
   }

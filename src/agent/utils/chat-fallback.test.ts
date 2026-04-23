@@ -15,7 +15,13 @@ mock.module("../../utils/timed-fetch", () => ({
   },
 }));
 
-const { classifyReinjectionOutput, extractFallbackText, sendChatFallback } = await import("./chat-fallback");
+const {
+  MAX_REINJECT_ATTEMPTS,
+  buildReinjectionPrompt,
+  classifyReinjectionOutput,
+  extractFallbackText,
+  sendChatFallback,
+} = await import("./chat-fallback");
 
 describe("classifyReinjectionOutput", () => {
   test("detects strict [SILENT]", () => {
@@ -48,6 +54,56 @@ describe("classifyReinjectionOutput", () => {
 describe("extractFallbackText", () => {
   test("strips reasoning blocks and trims", () => {
     expect(extractFallbackText("<think>x</think>\n  hello  ")).toBe("hello");
+  });
+});
+
+describe("buildReinjectionPrompt", () => {
+  const opts = { toolName: "reply_human", lastTs: "1700000000.000000", hadText: false };
+
+  test("attempt 1 is polite and mentions re-poll", () => {
+    const p = buildReinjectionPrompt(1, opts);
+    expect(p).toContain("reply_human");
+    expect(p).toContain("1700000000.000000");
+    expect(p.toLowerCase()).toContain("re-poll");
+  });
+
+  test("attempt 2 is firmer and numbers the reminder", () => {
+    const p = buildReinjectionPrompt(2, opts);
+    expect(p).toContain("Reminder #2");
+    expect(p.toUpperCase()).toContain("NOW");
+  });
+
+  test("attempts 3-4 demand reply_human as the ONLY action", () => {
+    for (const attempt of [3, 4]) {
+      const p = buildReinjectionPrompt(attempt, opts);
+      expect(p).toContain(`Reminder #${attempt}`);
+      expect(p).toContain("ONLY");
+    }
+  });
+
+  test("final-tier attempts escalate to FINAL NOTICE and cite the cap", () => {
+    const p = buildReinjectionPrompt(MAX_REINJECT_ATTEMPTS, opts);
+    expect(p).toContain("FINAL NOTICE");
+    expect(p).toContain(String(MAX_REINJECT_ATTEMPTS));
+  });
+
+  test("hadText=true offers <your reply or [SILENT]>, hadText=false forces [SILENT]", () => {
+    const withText = buildReinjectionPrompt(1, { ...opts, hadText: true });
+    const noText = buildReinjectionPrompt(1, { ...opts, hadText: false });
+    expect(withText).toContain("<your reply or [SILENT]>");
+    expect(noText).toContain('"[SILENT]"');
+  });
+
+  test("uses fully-qualified MCP tool name verbatim", () => {
+    const p = buildReinjectionPrompt(2, { ...opts, toolName: "mcp__clawd__reply_human" });
+    expect(p).toContain("mcp__clawd__reply_human");
+  });
+});
+
+describe("MAX_REINJECT_ATTEMPTS", () => {
+  test("is a positive integer safety cap", () => {
+    expect(Number.isInteger(MAX_REINJECT_ATTEMPTS)).toBe(true);
+    expect(MAX_REINJECT_ATTEMPTS).toBeGreaterThan(1);
   });
 });
 
@@ -87,7 +143,7 @@ describe("sendChatFallback", () => {
     expect(capturedCalls.length).toBe(0);
   });
 
-  test("posts chat_send_message with stripped text on real content", async () => {
+  test("posts reply_human with stripped text on real content", async () => {
     const result = await sendChatFallback({
       apiUrl: "http://localhost:9999",
       channel: "#test",
@@ -100,11 +156,29 @@ describe("sendChatFallback", () => {
     expect(capturedCalls[0].url).toBe("http://localhost:9999/mcp");
     const body = JSON.parse(capturedCalls[0].init.body as string);
     expect(body.method).toBe("tools/call");
-    expect(body.params.name).toBe("chat_send_message");
+    expect(body.params.name).toBe("reply_human");
     expect(body.params.arguments.text).toBe("Hello world");
     expect(body.params.arguments.channel).toBe("#test");
     expect(body.params.arguments.agent_id).toBe("agent-x");
     expect(body.params.arguments.user).toBe("UBOT");
+    // timestamp omitted when not provided
+    expect(body.params.arguments.timestamp).toBeUndefined();
+  });
+
+  test("threads processedTs through as timestamp when provided", async () => {
+    const result = await sendChatFallback({
+      apiUrl: "http://localhost:9999",
+      channel: "#test",
+      agentId: "agent-x",
+      userId: "UBOT",
+      reinjectionText: "Hello",
+      processedTs: "1700000000.123",
+    });
+    expect(result.kind).toBe("fallback_sent");
+    expect(capturedCalls.length).toBe(1);
+    const body = JSON.parse(capturedCalls[0].init.body as string);
+    expect(body.params.name).toBe("reply_human");
+    expect(body.params.arguments.timestamp).toBe("1700000000.123");
   });
 
   test("passes through authHeaders when provided", async () => {

@@ -204,8 +204,8 @@ function sectionToolUsage(ctx: PromptContext): string {
 
   rules.push("Call multiple tools in parallel when independent; sequentially when dependent");
 
-  if (hasTool(ctx, "chat_search")) {
-    rules.push("Use chat_search to recall past conversations when relevant");
+  if (hasTool(ctx, "memory_search")) {
+    rules.push("Use memory_search to recall past conversations when relevant");
   }
 
   return `# Tool Usage\n${rules.map((r) => `- ${r}`).join("\n")}`;
@@ -253,22 +253,23 @@ function sectionSafety(ctx: PromptContext): string {
 function sectionChat(ctx: PromptContext): string {
   const p = ctx.mcpPrefix || "";
   const messageFormat = ctx.roleStructuredInput
-    ? `- Each NEW channel message arrives as a user-role turn with the content format \`[timestamp] author: text\` (author is \`human\` for a human user, otherwise an agent/system id). Respond only to the new messages in THIS turn — prior turns are shown as conversation history and are already handled. For each new message: call ${p}chat_send_message to respond, then ${p}chat_mark_processed with its timestamp.`
-    : `- The prompt may contain two message sections: \`## Previously Seen (not yet processed)\` (messages you saw last turn but didn't finish processing) and \`## New Messages\` (brand-new messages). Call ${p}chat_mark_processed for messages in BOTH sections once handled`;
+    ? `- Each NEW channel message arrives as a user-role turn with the content format \`[timestamp] author: text\` (author is \`human\` for a human user, otherwise an agent/system id). Respond only to the new messages in THIS turn — prior turns are shown as conversation history and are already handled. End each turn with ${p}reply_human(text="<reply or [SILENT]>", timestamp="<latest msg ts>") — this delivers the reply AND marks the message processed in one call.`
+    : `- The prompt may contain two message sections: \`## Previously Seen (not yet processed)\` (messages you saw last turn but didn't finish processing) and \`## New Messages\` (brand-new messages). End the turn with ${p}reply_human(text=..., timestamp=<latest ts>) to handle both sections in one go.`;
   return `# Communication
-- ${p}chat_send_message(text): the ONLY way humans see your responses — channel/agent_id/user auto-injected
-- ${p}chat_mark_processed(timestamp): mark messages as handled — channel/agent_id auto-injected
-- Process each message: call ${p}chat_send_message FIRST, then ${p}chat_mark_processed with its [ts] timestamp
-- Do NOT reply in streaming text — your text output is never delivered to users; call ${p}chat_send_message instead
-- Wrap copiable content (commands, code, URLs, paths) in markdown code blocks
-- On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, never mention heartbeats in chat
-- If ${p}chat_send_message fails, RETRY immediately
+- ${p}reply_human(text, timestamp): ends the turn. Delivers visible text AND marks the triggering message processed. channel/agent_id/user auto-injected.
+- text="" or text="[SILENT]" skips the visible reply but still ends the turn and marks processed.
+- Every turn MUST end with exactly one ${p}reply_human call — otherwise the message re-polls next cycle.
+- Do NOT reply in streaming text — your text output is never delivered to users; call ${p}reply_human instead.
+- Wrap copiable content (commands, code, URLs, paths) in markdown code blocks.
+- On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, never mention heartbeats in chat.
+- If ${p}reply_human fails, RETRY immediately.
+- If a system reminder tells you ${p}reply_human was not called (e.g. "Your turn did not end", "Reminder #N", "FINAL NOTICE"), your ONLY permitted next action is ${p}reply_human — no other tool, no analysis, no prose. Call it with text="[SILENT]" and the supplied timestamp if you have nothing to say.
 ${messageFormat}
 
 ## Attachments
 - When a message has files attached, you will see a line like \`[Attached files: name1.pdf, screenshot.png]\` after the message text. The filenames appear inline; the file CONTENT is NOT delivered automatically.
 - To list attachments: ${p}chat_get_message_files(channel, ts) — returns file ids, names, mimetypes, sizes.
-- To read a text/binary attachment: ${p}chat_download_file(file_id) — saves into the project root, then open it with your file-reading tool (e.g. \`file_view\` / \`Read\`).
+- To read a text/binary attachment: ${p}download_file(file_id) — saves into the project root, then open it with your file-reading tool (e.g. \`file_view\` / \`Read\`).
 - To read an image: use the \`read_image\` tool with the file_id directly (do not download first).
 - If a message references an attachment but you cannot find it, the human probably attached it to an EARLIER message — check the recent history or ask.`;
 }
@@ -492,7 +493,7 @@ function sectionSubAgentInstructions(): string {
   return `# MANDATORY: Call complete_task When Done
 You MUST call complete_task(result) with your final result when the task is complete.
 This is the ONLY way to deliver your work. If you don't call it, your work is lost.
-Do NOT use chat_send_message — it is not available to you.`;
+Do NOT use reply_human or any chat_* tools — they are not available to sub-agents.`;
 }
 
 // ============================================================================
