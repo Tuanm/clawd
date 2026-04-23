@@ -1169,8 +1169,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
       // Surface attachment filenames inline so the agent knows files exist.
       // To READ the content it still needs to call the attachment tools
-      // (mcp__clawd__chat_get_message_files / mcp__clawd__download_file /
-      // read_image) — see sectionChat in prompt/builder.ts for guidance.
+      // (mcp__clawd__query_files / mcp__clawd__download_file / read_image)
+      // — see sectionChat in prompt/builder.ts for guidance.
       const fileInfo = hasFiles
         ? `\n[Attached files: ${msg.files.map((f: any) => f.name || "unnamed").join(", ")}]`
         : "";

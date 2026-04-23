@@ -14,10 +14,9 @@ const TOOL_CAPS: Record<string, number> = {
   glob: 6144,
   view: 10240,
   // edit/create: exempt (handled separately)
-  chat_get_message_files: 4096,
+  query_files: 4096,
   download_file: 4096,
   convert_to_markdown: 20480,
-  chat_read_file_range: 10240,
   query_messages: 10240,
   pollack: 10240,
   git_diff: 8192,

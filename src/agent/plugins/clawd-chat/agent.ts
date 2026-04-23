@@ -840,6 +840,7 @@ LONG-TERM MEMORY:
           "memory_search",
           "update_message",
           "query_messages",
+          "query_files",
         ]);
         if (bare.startsWith("chat_") || CHAT_SCOPED_TOOLS.has(bare) || bare.startsWith("schedule_")) {
           if (!args.channel) args = { ...args, channel: config.channel };

@@ -268,7 +268,7 @@ ${messageFormat}
 
 ## Attachments
 - When a message has files attached, you will see a line like \`[Attached files: name1.pdf, screenshot.png]\` after the message text. The filenames appear inline; the file CONTENT is NOT delivered automatically.
-- To list attachments: ${p}chat_get_message_files(channel, ts) — returns file ids, names, mimetypes, sizes.
+- To search attachments: ${p}query_files(ts=..., file_id=..., name=..., mimetype=..., roles=[...]) — returns file ids, names, mimetypes, sizes. Same filter model as ${p}query_messages, scoped to files.
 - To read a text/binary attachment: ${p}download_file(file_id) — saves into the project root, then open it with your file-reading tool (e.g. \`file_view\` / \`Read\`).
 - To read an image: use the \`read_image\` tool with the file_id directly (do not download first).
 - If a message references an attachment but you cannot find it, the human probably attached it to an EARLIER message — check the recent history or ask.`;

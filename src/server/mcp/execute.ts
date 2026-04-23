@@ -368,67 +368,125 @@ export async function executeToolCall(
         break;
       }
 
-      case "chat_get_message_files": {
+      case "query_files": {
         const channel = args.channel as string;
-        const ts = args.ts as string;
-        const includeContent = args.include_content === true;
+        const singleTs = args.ts as string | undefined;
+        const fileId = args.file_id as string | undefined;
+        const fromTs = args.from_ts as string | undefined;
+        const toTs = args.to_ts as string | undefined;
+        const name = args.name as string | undefined;
+        const mimetype = args.mimetype as string | undefined;
+        const uploaderIds = args.uploader_ids as string[] | undefined;
+        const roles = args.roles as string[] | undefined;
+        const agentIds = args.agent_ids as string[] | undefined;
+        const limit = Math.min(Math.max((args.limit as number) || 100, 1), 500);
+        const order = ((args.order as string) || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
 
-        // Get message first to verify it exists
-        const message = db
-          .query<Message, [string, string]>(`SELECT * FROM messages WHERE channel = ? AND ts = ?`)
-          .get(channel, ts);
+        // Files live under messages; JOIN so we can filter by message metadata
+        // (channel, ts range, uploader role/agent). channel scopes the whole query.
+        const conditions: string[] = ["m.channel = ?"];
+        const params: (string | number)[] = [channel];
 
-        if (!message) {
-          resultText = JSON.stringify({
-            ok: false,
-            error: "Message not found",
-          });
-          break;
+        if (singleTs) {
+          conditions.push("f.message_ts = ?");
+          params.push(singleTs);
+        }
+        if (fileId) {
+          conditions.push("f.id = ?");
+          params.push(fileId);
+        }
+        if (fromTs) {
+          conditions.push("m.ts > ?");
+          params.push(fromTs);
+        }
+        if (toTs) {
+          conditions.push("m.ts < ?");
+          params.push(toTs);
+        }
+        if (name) {
+          conditions.push("LOWER(f.name) LIKE ?");
+          params.push(`%${name.toLowerCase()}%`);
+        }
+        if (mimetype) {
+          // Prefix match when value ends with "/" (e.g., "image/"), exact otherwise
+          if (mimetype.endsWith("/")) {
+            conditions.push("f.mimetype LIKE ?");
+            params.push(`${mimetype}%`);
+          } else {
+            conditions.push("f.mimetype = ?");
+            params.push(mimetype);
+          }
+        }
+        if (uploaderIds && uploaderIds.length > 0) {
+          const placeholders = uploaderIds.map(() => "?").join(", ");
+          conditions.push(`f.uploaded_by IN (${placeholders})`);
+          for (const u of uploaderIds) params.push(u);
+        }
+        if (roles && roles.length > 0) {
+          const roleConditions: string[] = [];
+          for (const role of roles) {
+            if (role === "bot") roleConditions.push("f.uploaded_by = 'UBOT'");
+            if (role === "worker") roleConditions.push("f.uploaded_by LIKE 'UWORKER-%'");
+            if (role === "human") roleConditions.push("f.uploaded_by = 'UHUMAN'");
+          }
+          if (roleConditions.length > 0) {
+            conditions.push(`(${roleConditions.join(" OR ")})`);
+          }
+        }
+        if (agentIds && agentIds.length > 0) {
+          const placeholders = agentIds.map(() => "?").join(", ");
+          conditions.push(`m.agent_id IN (${placeholders})`);
+          for (const a of agentIds) params.push(a);
         }
 
-        // Get files attached to this message
-        const files = db
+        const whereClause = conditions.join(" AND ");
+        const effectiveLimit = fileId ? 1 : limit + 1;
+        const query = `
+          SELECT f.id, f.name, f.mimetype, f.size, f.message_ts, f.uploaded_by, f.created_at
+          FROM files f
+          INNER JOIN messages m ON m.ts = f.message_ts
+          WHERE ${whereClause}
+          ORDER BY f.created_at ${order}, f.id ${order}
+          LIMIT ?`;
+        params.push(effectiveLimit);
+
+        const rows = db
           .query<
             {
               id: string;
               name: string;
               mimetype: string;
               size: number;
-              path: string;
+              message_ts: string;
+              uploaded_by: string;
+              created_at: number;
             },
-            [string]
-          >(`SELECT id, name, mimetype, size, path FROM files WHERE message_ts = ?`)
-          .all(ts);
+            (string | number)[]
+          >(query)
+          .all(...params);
 
-        const fileResults = [];
-        for (const file of files) {
-          const fileInfo: Record<string, unknown> = {
-            id: file.id,
-            name: file.name,
-            mimetype: file.mimetype,
-            size: file.size,
+        const hasMore = !fileId && rows.length > limit;
+        const sliced = hasMore ? rows.slice(0, limit) : rows;
+
+        const files = sliced.map((f) => {
+          const entry: Record<string, unknown> = {
+            id: f.id,
+            name: f.name,
+            mimetype: f.mimetype,
+            size: f.size,
+            message_ts: f.message_ts,
+            uploaded_by: f.uploaded_by,
+            created_at: f.created_at,
           };
-
-          // Images NEVER return base64 — always provide hint to use read_image tool
-          if (file.mimetype.toLowerCase().startsWith("image/")) {
-            fileInfo.image_hint =
-              `This is an image file (${file.name}, ${file.mimetype}, ${file.size} bytes). ` +
-              `To analyze or describe this image, use the read_image tool with file_id="${file.id}". ` +
-              `Do NOT attempt to read the image as base64 as it may exceed context limits.`;
-          } else if (includeContent && file.size < 1024 * 1024) {
-            // Include base64 content if requested and file is small enough (<1MB)
-            try {
-              const fileData = await Bun.file(file.path).arrayBuffer();
-              fileInfo.content_base64 = Buffer.from(fileData).toString("base64");
-            } catch {
-              fileInfo.content_error = "Could not read file content";
-            }
+          if ((f.mimetype || "").toLowerCase().startsWith("image/")) {
+            entry.image_hint =
+              `Image file (${f.name}, ${f.mimetype}, ${f.size} bytes). ` +
+              `Use read_image(file_id="${f.id}") to analyse. Do NOT base64-read.`;
           }
+          return entry;
+        });
 
-          fileResults.push(fileInfo);
-        }
-
-        resultText = JSON.stringify({ ok: true, files: fileResults });
+        resultText = JSON.stringify({ ok: true, files, count: files.length, has_more: hasMore });
         break;
       }
 
@@ -499,105 +557,15 @@ export async function executeToolCall(
             } catch (saveErr: unknown) {
               response.hint =
                 `Failed to save file locally: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}. ` +
-                `Use chat_read_file_range(file_id="${file.id}") to read the file content directly.`;
+                `Retry download_file or ask the user to re-upload.`;
             }
           } else {
             response.hint =
-              `File metadata retrieved. Use chat_read_file_range(file_id="${file.id}") to read the file content. ` +
-              `For documents (PDF, DOCX, XLSX, PPTX), use convert_to_markdown(path="${file.path}") to convert to readable text.`;
+              `File metadata retrieved but local save skipped (no project root). ` +
+              `Re-invoke download_file from an agent context with _project_root injected, or use convert_to_markdown(path="${file.path}") on the server-side path for documents.`;
           }
 
           resultText = JSON.stringify(response);
-        }
-        break;
-      }
-
-      case "chat_read_file_range": {
-        const fileId = args.file_id as string;
-        const mode = (args.mode as string) || "bytes";
-        const start = args.start as number | undefined;
-        const end = args.end as number | undefined;
-        const encoding = (args.encoding as string) || "utf8";
-
-        const file = db
-          .query<
-            {
-              id: string;
-              name: string;
-              mimetype: string;
-              size: number;
-              path: string;
-            },
-            [string]
-          >(`SELECT id, name, mimetype, size, path FROM files WHERE id = ?`)
-          .get(fileId);
-
-        if (!file) {
-          resultText = JSON.stringify({ ok: false, error: "File not found" });
-          break;
-        }
-
-        // Block ALL image file content — use read_image tool instead
-        if (file.mimetype.toLowerCase().startsWith("image/")) {
-          resultText = JSON.stringify({
-            ok: false,
-            error: `Cannot read image file content. Use the read_image tool with file_id="${file.id}" to analyze this image instead.`,
-          });
-          break;
-        }
-
-        try {
-          const bunFile = Bun.file(file.path);
-          const fileBuffer = Buffer.from(await bunFile.arrayBuffer());
-
-          let content: string;
-          let actualStart: number;
-          let actualEnd: number;
-          let totalLines: number | undefined;
-
-          if (mode === "lines") {
-            // Read by lines
-            const text = fileBuffer.toString("utf8");
-            const lines = text.split("\n");
-            totalLines = lines.length;
-
-            actualStart = start !== undefined ? (start < 0 ? Math.max(0, lines.length + start) : start) : 0;
-            actualEnd = end !== undefined ? Math.min(end, lines.length) : lines.length;
-
-            const selectedLines = lines.slice(actualStart, actualEnd);
-            content =
-              encoding === "base64"
-                ? Buffer.from(selectedLines.join("\n")).toString("base64")
-                : selectedLines.join("\n");
-          } else {
-            // Read by bytes
-            actualStart = start !== undefined ? (start < 0 ? Math.max(0, file.size + start) : start) : 0;
-            actualEnd = end !== undefined ? Math.min(end, file.size) : file.size;
-
-            const slice = fileBuffer.subarray(actualStart, actualEnd);
-            content = encoding === "base64" ? slice.toString("base64") : slice.toString("utf8");
-          }
-
-          resultText = JSON.stringify(
-            {
-              ok: true,
-              file_id: file.id,
-              mode,
-              start: actualStart,
-              end: actualEnd,
-              total_size: file.size,
-              ...(totalLines !== undefined && { total_lines: totalLines }),
-              content: truncateForAgent(content),
-              has_more: actualEnd < (mode === "lines" ? totalLines || 0 : file.size),
-            },
-            null,
-            2,
-          );
-        } catch (err) {
-          resultText = JSON.stringify({
-            ok: false,
-            error: `Failed to read file: ${err}`,
-          });
         }
         break;
       }
@@ -760,18 +728,6 @@ export async function executeToolCall(
           null,
           2,
         );
-        break;
-      }
-
-      case "chat_delete_message": {
-        const channel = args.channel as string;
-        const ts = args.ts as string;
-
-        // Import deleteMessage from routes
-        const { deleteMessage } = await import("../routes/messages");
-        const result = deleteMessage(channel, ts);
-
-        resultText = JSON.stringify(result);
         break;
       }
 
