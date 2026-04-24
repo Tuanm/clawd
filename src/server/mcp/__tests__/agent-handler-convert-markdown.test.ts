@@ -62,8 +62,11 @@ mock.module("../../../agent/tools/document-converter", () => ({
 }));
 
 // Stub agents route so _project_root injection works without a real DB row.
+// Tests toggle `mockRegisteredProjectRoot` to simulate the agent having (or
+// not having) a registered project root in the agents DB.
+let mockRegisteredProjectRoot: string | null = null;
 mock.module("../../routes/agents", () => ({
-  getAgentProjectRoot: () => null,
+  getAgentProjectRoot: () => mockRegisteredProjectRoot,
 }));
 
 const { handleAgentMcpRequest } = await import("../agent-handler");
@@ -100,6 +103,7 @@ describe("convert_to_markdown path routing", () => {
     // The handler only reads `args.path` to derive the output basename — the
     // source file doesn't need real content because convertToMarkdown is mocked.
     sourceFile = join(tmpProjectRoot, "source.pdf");
+    mockRegisteredProjectRoot = null;
   });
 
   test("saves converted markdown under {_project_root}/.clawd/files/", async () => {
@@ -134,8 +138,9 @@ describe("convert_to_markdown path routing", () => {
     rmSync(tmpProjectRoot, { recursive: true, force: true });
   });
 
-  test("falls back to CWD when _project_root is missing (does NOT use homedir)", async () => {
-    // No _project_root — handler must fall back to process.cwd(), NOT homedir.
+  test("falls back to CWD when _project_root is missing AND agent has no registered root", async () => {
+    // No _project_root arg and getAgentProjectRoot returns null — handler
+    // must fall back to process.cwd(), NOT homedir.
     const text = await callTool("convert_to_markdown", {
       path: sourceFile,
     });
@@ -147,6 +152,43 @@ describe("convert_to_markdown path routing", () => {
     // Cleanup: remove just the file we created, not the whole `.clawd/` tree
     // (other tests or the host repo may legitimately own sibling entries).
     rmSync(expectedMdPath, { force: true });
+    rmSync(tmpProjectRoot, { recursive: true, force: true });
+  });
+
+  test("looks up agent's registered project root when _project_root arg is missing", async () => {
+    // Simulate the CC agent path: args have no _project_root (utility branch
+    // never gets the enriched-args injection), but the agent has a registered
+    // project root in the agents DB. Handler must use that, not fall back to CWD.
+    mockRegisteredProjectRoot = tmpProjectRoot;
+
+    const text = await callTool("convert_to_markdown", {
+      path: sourceFile,
+    });
+
+    const expectedMdPath = join(tmpProjectRoot, ".clawd", "files", "source.md");
+    expect(text).toContain(`Saved to: ${expectedMdPath}`);
+    expect(existsSync(expectedMdPath)).toBe(true);
+    expect(readFileSync(expectedMdPath, "utf-8")).toBe(MARKDOWN_OUTPUT);
+
+    rmSync(tmpProjectRoot, { recursive: true, force: true });
+  });
+
+  test("explicit _project_root arg wins over agent's registered root", async () => {
+    // If both are set, arg takes precedence — matches the `args._project_root
+    // || getAgentProjectRoot(...)` precedence in the handler.
+    const overrideRoot = mkdtempSync(join(tmpdir(), "clawd-convert-override-"));
+    mockRegisteredProjectRoot = tmpProjectRoot; // would-be fallback
+
+    const text = await callTool("convert_to_markdown", {
+      path: sourceFile,
+      _project_root: overrideRoot,
+    });
+
+    const expectedMdPath = join(overrideRoot, ".clawd", "files", "source.md");
+    expect(text).toContain(`Saved to: ${expectedMdPath}`);
+    expect(existsSync(expectedMdPath)).toBe(true);
+
+    rmSync(overrideRoot, { recursive: true, force: true });
     rmSync(tmpProjectRoot, { recursive: true, force: true });
   });
 });

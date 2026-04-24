@@ -2258,9 +2258,21 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               }
               const { writeFile, mkdir } = await import("node:fs/promises");
               const { basename, extname, join } = await import("node:path");
-              // Prefer injected project root; fall back to CWD so the .md never lands
-              // in the user's home dir (which leaks outputs across projects).
-              const projectRoot = (args._project_root as string | undefined) || process.cwd();
+              // Resolve project root: explicit arg → agent's registered project
+              // root → CWD (last resort, keeps .md out of user's home dir).
+              // The enriched-args injection at the executeToolCall path below
+              // never fires for this tool because the utility branch returns
+              // first, so we look up getAgentProjectRoot here directly.
+              let projectRoot = args._project_root as string | undefined;
+              if (!projectRoot) {
+                try {
+                  const { getAgentProjectRoot } = await import("../routes/agents");
+                  projectRoot = getAgentProjectRoot(db, channel, agentId) || undefined;
+                } catch {
+                  // Best-effort — fall through to CWD
+                }
+              }
+              if (!projectRoot) projectRoot = process.cwd();
               const filesDir = join(projectRoot, ".clawd", "files");
               await mkdir(filesDir, { recursive: true });
               const base = basename(filePath, extname(filePath)).replace(/[^a-zA-Z0-9._-]/g, "_") || "converted";
@@ -2543,13 +2555,15 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
 
       // Auto-inject channel and agent_id into local chat tool calls only.
       // Also inject `_project_root` for tools that can save files locally
-      // (download_file, convert_to_markdown) so CC agents get the same
-      // "auto-save to {projectRoot}/.clawd/files/" behaviour non-CC agents
-      // get via the clawd-chat plugin's transformToolArgs hook. Without this,
-      // CC agents fall through to the metadata-only branch of
-      // download_file and never get `local_path` — breaking the
-      // system-prompt contract that says "saves into the project root".
-      const needsProjectRoot = name === "download_file" || name === "convert_to_markdown";
+      // (download_file) so CC agents get the same "auto-save to
+      // {projectRoot}/.clawd/files/" behaviour non-CC agents get via the
+      // clawd-chat plugin's transformToolArgs hook. Without this, CC agents
+      // fall through to the metadata-only branch of download_file and never
+      // get `local_path` — breaking the system-prompt contract that says
+      // "saves into the project root". convert_to_markdown also saves a
+      // .md copy, but runs in the utility branch above and does its own
+      // getAgentProjectRoot lookup there.
+      const needsProjectRoot = name === "download_file";
       const enrichedArgs: Record<string, unknown> = {
         ...(toolArgs || {}),
         channel: (toolArgs?.channel as string) || channel,
