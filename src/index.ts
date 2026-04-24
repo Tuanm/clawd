@@ -211,7 +211,6 @@ const spaceManager = new SpaceManager();
 const spaceWorkerManager = new SpaceWorkerManager(
   {
     chatApiUrl: config.chatApiUrl,
-    projectRoot: config.projectRoot,
     debug: config.debug,
     yolo: config.yolo,
   },

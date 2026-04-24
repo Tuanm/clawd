@@ -31,7 +31,7 @@ export class SpaceWorkerManager {
   private getChannelMcp?: (channel: string) => MCPManager | undefined;
 
   constructor(
-    private config: { chatApiUrl: string; projectRoot: string; debug: boolean; yolo: boolean },
+    private config: { chatApiUrl: string; debug: boolean; yolo: boolean },
     private spaceManager: SpaceManager,
   ) {}
 
@@ -95,7 +95,6 @@ export class SpaceWorkerManager {
         provider: agentConfig.provider,
         projectRoot:
           agentConfig.project ||
-          this.config.projectRoot ||
           (() => {
             throw new Error(
               `[WorkerLoop] projectRoot is required but not found for agent ${agentConfig.agentId}. Ensure channel_agents.project is set.`,

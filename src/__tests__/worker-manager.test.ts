@@ -129,7 +129,6 @@ function makeConfig(): AppConfig {
     port: 3000,
     chatApiUrl: "http://localhost:3000",
     openBrowser: false,
-    projectRoot: "/tmp/clawd-test",
     debug: false,
     yolo: false,
     contextMode: false,

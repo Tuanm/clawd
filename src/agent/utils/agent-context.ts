@@ -13,7 +13,7 @@
  *
  *   // In any code that needs context:
  *   const ctx = getAgentContext();
- *   const root = ctx?.projectRoot || process.cwd();
+ *   const root = ctx?.projectRoot;  // "" when no context — no CWD fallback
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";

@@ -17,8 +17,6 @@ export interface AppConfig {
   chatApiUrl: string;
   /** Whether to open the browser on startup */
   openBrowser: boolean;
-  /** Default project root directory (fallback for agents without project config) */
-  projectRoot: string;
   /** Enable debug logging */
   debug: boolean;
   /** Disable sandbox + unlimited iterations for agents */
@@ -91,7 +89,6 @@ export function loadConfig(): AppConfig {
     port,
     chatApiUrl: `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`,
     openBrowser: !values["no-open-browser"],
-    projectRoot: process.cwd(),
     debug: values.debug || file.debug || false,
     yolo: values.yolo || file.yolo || false,
     contextMode: true,
