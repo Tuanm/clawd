@@ -43,9 +43,11 @@ type ValidateMcpFilePathResult = ValidateMcpFilePathOk | ValidateMcpFilePathErr;
 function validateMcpFilePath(inputPath: string, projectRoot: string): ValidateMcpFilePathResult {
   const yolo = !isSandboxEnabled();
 
-  // In YOLO mode, resolve the path and only block ~/.clawd/config.json
+  // In YOLO mode, resolve the path and only block ~/.clawd/config.json.
+  // Callers (agent-handler, space-handler) already guarantee a valid projectRoot
+  // by erroring out before invoking executeMcpFileTool — no CWD fallback needed.
   if (yolo) {
-    const abs = isAbsolute(inputPath) ? resolve(inputPath) : resolve(projectRoot || process.cwd(), inputPath);
+    const abs = isAbsolute(inputPath) ? resolve(inputPath) : resolve(projectRoot, inputPath);
     let real: string;
     try {
       real = realpathSync(abs);
