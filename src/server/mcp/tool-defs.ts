@@ -181,7 +181,7 @@ Args:
   - from_ts (string): Files on messages with ts > from_ts (exclusive)
   - to_ts (string): Files on messages with ts < to_ts (exclusive; pagination cursor)
   - name (string): Substring match against file name (case-insensitive)
-  - mimetype (string): Exact match or prefix (e.g., "image/", "application/pdf")
+  - mimetype (string): Case-insensitive. Ends with "/" → prefix match (e.g., "image/" matches image/png, image/jpeg). Otherwise exact match (e.g., "application/pdf"). Passing "image" alone will NOT match anything.
   - uploader_ids (string[]): Filter by uploader user IDs (e.g., "UHUMAN", "UWORKER-xyz")
   - roles (string[]): Filter by uploader role: "bot", "worker", "human"
   - agent_ids (string[]): Filter by agent_id of the attaching message
@@ -253,7 +253,8 @@ Examples:
         },
         mimetype: {
           type: "string",
-          description: 'Exact or prefix match (e.g., "image/", "application/pdf")',
+          description:
+            'Case-insensitive. Trailing "/" → prefix match (e.g., "image/"); otherwise exact (e.g., "application/pdf"). "image" alone matches nothing.',
         },
         uploader_ids: {
           type: "array",
