@@ -794,20 +794,17 @@ export async function postSystemMessage(
     return;
   }
 
-  // POST to Claw'd API using the same pattern as ClawdChatAgentPlugin._sendMessage()
-  // Ref: src/agent/plugins/clawd-chat/agent.ts:183-206
+  // Post as a channel system notification — not from the Claw'd agent —
+  // so the UI renders it centered/muted (subtype "bot_message").
   try {
-    await httpFetch(`${apiUrl}/mcp`, {
+    await httpFetch(`${apiUrl}/api/chat.postMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: Date.now(),
-        method: "tools/call",
-        params: {
-          name: "reply",
-          arguments: { channel, text: message },
-        },
+        channel,
+        text: message,
+        user: "USYS",
+        subtype: "bot_message",
       }),
     });
   } catch (err) {
