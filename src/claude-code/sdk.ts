@@ -114,7 +114,7 @@ function createPreToolUseHook(onToolStart?: SDKStreamCallbacks["onToolStart"]): 
     // Wrapped in try/catch: a broadcast failure must never fail the hook itself.
     const allow = (): HookJSONOutput => {
       try {
-        onToolStart?.(input.tool_name, input.tool_input, (input as any).tool_use_id);
+        onToolStart?.(input.tool_name, input.tool_input, input.tool_use_id);
       } catch {
         // best-effort only
       }
@@ -179,6 +179,29 @@ function createPostToolUseHook(
   const hook: HookCallback = async (input: HookInput) => {
     if (input.hook_event_name !== "PostToolUse") return {};
     onToolResult(input.tool_name, input.tool_input, input.tool_response, input.tool_use_id);
+    onActivity?.();
+    return { continue: true };
+  };
+  return { matcher: "*", hooks: [hook] };
+}
+
+/** PostToolUseFailure: SDK-level failures (tool threw, was interrupted, etc.)
+ *  fire this hook instead of PostToolUse. Forward as a synthesized error
+ *  response so onToolResult's error-detection path (`response?.error`) picks
+ *  it up — otherwise a failed tool leaves an orphan "running" indicator
+ *  paired with the PreToolUse start event. */
+function createPostToolUseFailureHook(
+  onToolResult: SDKStreamCallbacks["onToolResult"],
+  onActivity?: SDKStreamCallbacks["onActivity"],
+): HookCallbackMatcher {
+  const hook: HookCallback = async (input: HookInput) => {
+    if (input.hook_event_name !== "PostToolUseFailure") return {};
+    const response = {
+      error: input.error || "Tool execution failed",
+      isError: true,
+      is_interrupt: Boolean(input.is_interrupt),
+    };
+    onToolResult(input.tool_name, input.tool_input, response, input.tool_use_id);
     onActivity?.();
     return { continue: true };
   };
@@ -422,6 +445,7 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     hooks: {
       PreToolUse: [createPreToolUseHook(callbacks.onToolStart)],
       PostToolUse: [createPostToolUseHook(callbacks.onToolResult, callbacks.onActivity)],
+      PostToolUseFailure: [createPostToolUseFailureHook(callbacks.onToolResult, callbacks.onActivity)],
     },
   };
 
