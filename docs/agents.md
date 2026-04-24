@@ -151,7 +151,7 @@ When the `agent` parameter is provided:
 - Sub-agent is restricted to the agent file's **tools** (if specified)
 - Sub-agent's **directives** and **language** are applied
 - Sub-agent's **maxTurns** limits iteration count
-- Sub-agent **cannot use `reply_human`** — must return results via `complete_task(result)`
+- Sub-agent **cannot use `reply`** — must return results via `complete_task(result)`
 
 Without the `agent` parameter, `spawn_agent` creates an anonymous sub-agent that inherits the parent's configuration (existing behavior, unchanged).
 

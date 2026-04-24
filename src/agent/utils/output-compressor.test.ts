@@ -65,7 +65,7 @@ describe("isExempt", () => {
   });
 
   test("METADATA_ONLY_TOOLS are exempt", () => {
-    const tools = ["reply_human", "upload_file"];
+    const tools = ["reply", "upload_file"];
     for (const t of tools) {
       expect(isExempt(t, successResult)).toBe(true);
     }
@@ -106,9 +106,9 @@ describe("compressToolOutput", () => {
       expect(compressed.indexed).toBe(false);
     });
 
-    test("reply_human passes through unchanged", () => {
+    test("reply passes through unchanged", () => {
       const result: ToolResult = { success: true, output: makeOutput(20000) };
-      const compressed = compressToolOutput("reply_human", result, "session1");
+      const compressed = compressToolOutput("reply", result, "session1");
       expect(compressed.result.output).toBe(result.output);
       expect(compressed.indexed).toBe(false);
     });

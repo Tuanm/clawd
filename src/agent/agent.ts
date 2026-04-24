@@ -137,7 +137,7 @@ export type InterruptChecker = () => Promise<string | null>; // Returns new mess
 // Default System Prompt
 // ============================================================================
 
-const DEFAULT_SYSTEM_PROMPT = `IMPORTANT: You MUST call reply_human exactly once at the end of every turn. Never respond with plain text.
+const DEFAULT_SYSTEM_PROMPT = `IMPORTANT: You MUST call reply exactly once at the end of every turn. Never respond with plain text.
 
 You are Claw'd, an autonomous AI assistant that can execute tasks using tools.
 You have access to tools defined in the tool schema — use them as needed.
@@ -196,7 +196,7 @@ CLAIMING TASKS:
 
 ## Response Format
 - When using tools, call them directly without explanation
-- After completing a task, summarize results via reply_human (if in a chat channel)
+- After completing a task, summarize results via reply (if in a chat channel)
 - If you encounter errors, try alternative approaches
 
 ## Context Awareness
@@ -236,25 +236,25 @@ Guidelines:
 - Keep artifacts focused — one concept per artifact; use multiple artifacts for distinct pieces
 
 ## Chat Tools (when connected to a chat channel)
-You are in a chat channel. The ONLY way to communicate with humans is via reply_human.
+You are in a chat channel. The ONLY way to communicate with humans is via reply.
 
-- **reply_human**: End the current turn. Sends text to the channel AND marks the triggering
+- **reply**: End the current turn. Sends text to the channel AND marks the triggering
   human message as processed in one call. This is MANDATORY — every turn must end with
-  exactly one reply_human call.
+  exactly one reply call.
 
 CRITICAL RULES:
-- Humans CANNOT see your text output — they can ONLY see what you pass as reply_human(text=...)
-- ALWAYS end the turn with reply_human
+- Humans CANNOT see your text output — they can ONLY see what you pass as reply(text=...)
+- ALWAYS end the turn with reply
 - Do NOT output text intended for users — it will never reach them
 
 Pattern for responding to users:
 1. Do the work (tools).
-2. Call reply_human(text="your message", timestamp="<triggering human msg ts>")
+2. Call reply(text="your message", timestamp="<triggering human msg ts>")
    — channel, agent_id, user are auto-injected.
 
 If you don't need to send anything (pure ack, or heartbeat with nothing to say):
-- Call reply_human(text="", timestamp="<triggering ts>")  OR
-- Call reply_human(text="[SILENT]", timestamp="<triggering ts>")
+- Call reply(text="", timestamp="<triggering ts>")  OR
+- Call reply(text="[SILENT]", timestamp="<triggering ts>")
 Both forms still mark the human message processed without sending a visible reply.`;
 
 // Token limits by model — use centralized module, keep local alias for existing references
@@ -1012,10 +1012,10 @@ export class Agent {
           filtered.push(tool);
         }
       }
-      // Sub-agents cannot talk to humans directly — strip all chat tools AND reply_human.
-      // Only the top-level orchestrator may close a turn with reply_human; sub-agents
+      // Sub-agents cannot talk to humans directly — strip all chat tools AND reply.
+      // Only the top-level orchestrator may close a turn with reply; sub-agents
       // report back to their parent via complete_task instead.
-      filtered = filtered.filter((t) => !t.function.name.startsWith("chat_") && t.function.name !== "reply_human");
+      filtered = filtered.filter((t) => !t.function.name.startsWith("chat_") && t.function.name !== "reply");
     }
 
     this._toolsCache = filtered;
@@ -1054,19 +1054,19 @@ export class Agent {
   /** Count of consecutive text-only responses (no tool calls) for re-expansion trigger */
   private _consecutiveTextOnlyResponses = 0;
 
-  /** Successful reply_human calls in the current run() invocation since the
+  /** Successful reply calls in the current run() invocation since the
    *  last productive tool call (file_read / bash / web_search / edit / memo /
    *  etc.). Reset to 0 when a productive tool runs successfully.
    *
    *  Legitimate patterns (progress + final) interleave replies with productive
    *  work → counter never grows.
    *
-   *  Pathological runaway trips the cap when the agent calls reply_human
+   *  Pathological runaway trips the cap when the agent calls reply
    *  repeatedly with only non-productive tools (polls, searches, silent
    *  replies) between them.
    *
    *  When _turnSendsSinceLastWork exceeds _maxSendsWithoutWork, subsequent
-   *  reply_human calls short-circuit with a structured tool_result informing
+   *  reply calls short-circuit with a structured tool_result informing
    *  the agent its reply is already delivered and that further messaging
    *  requires real work in between. */
   private _turnSendsSinceLastWork = 0;
@@ -1080,7 +1080,7 @@ export class Agent {
    *  metadata queries, and status reads live here. Anything else (files,
    *  shell, search, edit, memo, todo, spawn, etc.) is productive. */
   private readonly _NON_PRODUCTIVE_TOOLS = new Set([
-    "reply_human",
+    "reply",
     "pollack",
     "memory_search",
     "list_agents",
@@ -1101,7 +1101,7 @@ export class Agent {
 
     // Always-include set: chat tools, system tools
     const alwaysInclude = new Set([
-      "reply_human",
+      "reply",
       "complete_task",
       "spawn_agent",
       "list_agents",
@@ -1155,17 +1155,17 @@ export class Agent {
     // Track tool usage for smart filtering after warmup
     this.recordToolUsage(toolCall.function.name);
 
-    // Per-turn reply_human throttle. Two guards:
+    // Per-turn reply throttle. Two guards:
     //   (a) absolute ceiling per run (safety net against pathological
     //       send+work ping-pong)
     //   (b) "sends without productive work in between" — legitimate
     //       progress+final patterns interleave replies with real work,
     //       so the counter resets whenever a productive tool runs. A
-    //       confused model that fires reply_human repeatedly without
+    //       confused model that fires reply repeatedly without
     //       doing any work in between trips this guard.
     // Short-circuits with a structured tool_result so the agent sees the
     // outcome and can proceed with other tools or end the turn.
-    if (toolCall.function.name === "reply_human") {
+    if (toolCall.function.name === "reply") {
       if (this._turnSendCount >= this._maxSendsPerTurn) {
         return {
           args,
@@ -1175,7 +1175,7 @@ export class Agent {
               ok: false,
               skipped: true,
               reason: "per_turn_send_cap_reached",
-              message: `Reached the absolute per-turn reply_human cap (${this._maxSendsPerTurn}). Further messages are suppressed. End the turn or continue with non-chat tool calls.`,
+              message: `Reached the absolute per-turn reply cap (${this._maxSendsPerTurn}). Further messages are suppressed. End the turn or continue with non-chat tool calls.`,
             }),
           },
         };
@@ -1190,7 +1190,7 @@ export class Agent {
               skipped: true,
               reason: "no_productive_work_since_last_send",
               message:
-                "A reply_human was just delivered and no productive tool has run since. To send another message, do real work first (read a file, run a command, search, edit, etc.). Progress + final-result patterns are fine if interleaved with actual work. Otherwise end the turn.",
+                "A reply was just delivered and no productive tool has run since. To send another message, do real work first (read a file, run a command, search, edit, etc.). Progress + final-result patterns are fine if interleaved with actual work. Otherwise end the turn.",
             }),
           },
         };
@@ -1311,12 +1311,12 @@ export class Agent {
     }
 
     // Track tool usage against the per-turn send guards. A successful
-    // reply_human increments both counters. Any productive tool
+    // reply increments both counters. Any productive tool
     // (not in the non-productive allowlist) resets the
     // sends-since-last-work counter, enabling legitimate progress+final
     // patterns while still catching runaway loops.
     if (result.success) {
-      if (toolCall.function.name === "reply_human") {
+      if (toolCall.function.name === "reply") {
         this._turnSendCount++;
         this._turnSendsSinceLastWork++;
       } else if (!this._NON_PRODUCTIVE_TOOLS.has(toolCall.function.name)) {

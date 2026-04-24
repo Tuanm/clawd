@@ -1155,7 +1155,7 @@ Sub-agents have limited tool access for safety:
 > Environment info (OS, shell, project root, arch, user, runtime) is injected into the system prompt — no tool needed.
 
 **Blocked:**
-- `reply_human` — Cannot post to parent channel directly
+- `reply` — Cannot post to parent channel directly
 - File/git tools — Inherit from parent config
 - Browser tools — Inherit from parent config
 

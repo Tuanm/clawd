@@ -548,8 +548,8 @@ const TOOL_ALIASES: Record<string, string> = {
   CronDelete: "schedule_cancel",
   CronList: "schedule_list",
   // Message/communication tools
-  SendMessage: "reply_human",
-  AskUserQuestion: "reply_human",
+  SendMessage: "reply",
+  AskUserQuestion: "reply",
   // Plan/worktree (pass through — no direct Claw'd equivalents)
   // EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree
 };

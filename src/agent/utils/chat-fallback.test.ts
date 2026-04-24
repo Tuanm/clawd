@@ -58,11 +58,11 @@ describe("extractFallbackText", () => {
 });
 
 describe("buildReinjectionPrompt", () => {
-  const opts = { toolName: "reply_human", lastTs: "1700000000.000000", hadText: false };
+  const opts = { toolName: "reply", lastTs: "1700000000.000000", hadText: false };
 
   test("attempt 1 is polite and mentions re-poll", () => {
     const p = buildReinjectionPrompt(1, opts);
-    expect(p).toContain("reply_human");
+    expect(p).toContain("reply");
     expect(p).toContain("1700000000.000000");
     expect(p.toLowerCase()).toContain("re-poll");
   });
@@ -73,7 +73,7 @@ describe("buildReinjectionPrompt", () => {
     expect(p.toUpperCase()).toContain("NOW");
   });
 
-  test("attempts 3-4 demand reply_human as the ONLY action", () => {
+  test("attempts 3-4 demand reply as the ONLY action", () => {
     for (const attempt of [3, 4]) {
       const p = buildReinjectionPrompt(attempt, opts);
       expect(p).toContain(`Reminder #${attempt}`);
@@ -95,8 +95,8 @@ describe("buildReinjectionPrompt", () => {
   });
 
   test("uses fully-qualified MCP tool name verbatim", () => {
-    const p = buildReinjectionPrompt(2, { ...opts, toolName: "mcp__clawd__reply_human" });
-    expect(p).toContain("mcp__clawd__reply_human");
+    const p = buildReinjectionPrompt(2, { ...opts, toolName: "mcp__clawd__reply" });
+    expect(p).toContain("mcp__clawd__reply");
   });
 });
 
@@ -143,7 +143,7 @@ describe("sendChatFallback", () => {
     expect(capturedCalls.length).toBe(0);
   });
 
-  test("posts reply_human with stripped text on real content", async () => {
+  test("posts reply with stripped text on real content", async () => {
     const result = await sendChatFallback({
       apiUrl: "http://localhost:9999",
       channel: "#test",
@@ -156,7 +156,7 @@ describe("sendChatFallback", () => {
     expect(capturedCalls[0].url).toBe("http://localhost:9999/mcp");
     const body = JSON.parse(capturedCalls[0].init.body as string);
     expect(body.method).toBe("tools/call");
-    expect(body.params.name).toBe("reply_human");
+    expect(body.params.name).toBe("reply");
     expect(body.params.arguments.text).toBe("Hello world");
     expect(body.params.arguments.channel).toBe("#test");
     expect(body.params.arguments.agent_id).toBe("agent-x");
@@ -177,7 +177,7 @@ describe("sendChatFallback", () => {
     expect(result.kind).toBe("fallback_sent");
     expect(capturedCalls.length).toBe(1);
     const body = JSON.parse(capturedCalls[0].init.body as string);
-    expect(body.params.name).toBe("reply_human");
+    expect(body.params.name).toBe("reply");
     expect(body.params.arguments.timestamp).toBe("1700000000.123");
   });
 

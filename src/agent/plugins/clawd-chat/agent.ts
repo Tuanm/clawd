@@ -208,7 +208,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
         id: Date.now(),
         method: "tools/call",
         params: {
-          name: "reply_human",
+          name: "reply",
           arguments: {
             channel: config.channel,
             text,
@@ -553,10 +553,10 @@ Your worker ID is: ${workerId}
 Your agent name is: ${config.agentId}
 Channel: ${config.channel}
 
-Every turn MUST end with exactly one call to reply_human(text, timestamp). Only "text" is required — channel, agent_id, and user are auto-injected. Pass timestamp=<triggering message ts> to mark the message processed in the same call.
-Humans CANNOT see your text output — ALWAYS use reply_human for ALL responses.
+Every turn MUST end with exactly one call to reply(text, timestamp). Only "text" is required — channel, agent_id, and user are auto-injected. Pass timestamp=<triggering message ts> to mark the message processed in the same call.
+Humans CANNOT see your text output — ALWAYS use reply for ALL responses.
 Do NOT output text intended for users — it will never reach them.
-To skip replying while still ending the turn, call reply_human(text="[SILENT]", timestamp=<ts>).
+To skip replying while still ending the turn, call reply(text="[SILENT]", timestamp=<ts>).
 When providing copiable content (commands, code, URLs, paths, config values), ALWAYS wrap it in a markdown code block — users can only copy via the Copy button on code blocks.
 CLAWD.md in the project root is your long-term memory (auto-loaded into your system prompt). Save important information there to remember across sessions. Use docs/, reports/, or plans/ for less critical info.
 If memo_* tools are available, use them to save/recall important facts, decisions, and lessons. Your memories persist across sessions and are scoped to you.
@@ -570,15 +570,15 @@ The chat UI renders <artifact> tags as visual cards. Use them for rich content (
 You are connected to chat channel "${config.channel}" as "${config.agentId}".
 
 IMPORTANT OUTPUT RULES:
-- Humans CANNOT see your text output — they can ONLY see messages sent via reply_human
-- Every turn MUST end with exactly one call to reply_human(text, timestamp) — this delivers your visible text AND marks the triggering message processed in a single call
-- ALWAYS use reply_human for ALL replies to users
+- Humans CANNOT see your text output — they can ONLY see messages sent via reply
+- Every turn MUST end with exactly one call to reply(text, timestamp) — this delivers your visible text AND marks the triggering message processed in a single call
+- ALWAYS use reply for ALL replies to users
 - Do NOT output text intended for users — it will never reach them
-- To skip replying but still end the turn: reply_human(text="[SILENT]", timestamp=<triggering ts>)
-- For messages from other agents/workers that don't need a response, call reply_human(text="[SILENT]", timestamp=<ts>)
-- IF reply_human FAILS (returns ok:false or error), you MUST RETRY immediately with the same parameters
+- To skip replying but still end the turn: reply(text="[SILENT]", timestamp=<triggering ts>)
+- For messages from other agents/workers that don't need a response, call reply(text="[SILENT]", timestamp=<ts>)
+- IF reply FAILS (returns ok:false or error), you MUST RETRY immediately with the same parameters
 
-RICH CONTENT FEATURES (use with reply_human):
+RICH CONTENT FEATURES (use with reply):
 - html_preview: Include HTML content for rich visual output (charts, diagrams, formatted tables, etc.)
 - code_preview: Include code snippets with syntax highlighting
   - filename: Display name (e.g., "app.ts")
@@ -682,10 +682,10 @@ LONG-TERM MEMORY:
         injectedTimestamps.clear();
 
         // Extract target timestamp from prompt
-        // Use the LAST reply_human(..., timestamp="...") hint (the one at the bottom of the prompt,
+        // Use the LAST reply(..., timestamp="...") hint (the one at the bottom of the prompt,
         // not one that might appear in quoted/pasted text from the user). Also accept the
-        // mcp__clawd__reply_human prefix used by the Claude Code SDK path.
-        const allReplyHints = [...message.matchAll(/reply_human\([^)]*timestamp="([^"]+)"/g)];
+        // mcp__clawd__reply prefix used by the Claude Code SDK path.
+        const allReplyHints = [...message.matchAll(/reply\([^)]*timestamp="([^"]+)"/g)];
         let extractedTs: string | null = null;
 
         if (allReplyHints.length > 0) {
@@ -751,7 +751,7 @@ LONG-TERM MEMORY:
           content?.includes("\n[SILENT]");
 
         // DO NOT auto-send agent's text output to chat.
-        // The agent should call reply_human explicitly to end the turn.
+        // The agent should call reply explicitly to end the turn.
         // Auto-sending causes duplicates when agent uses tool AND outputs text.
 
         // Mark streaming as done
@@ -832,7 +832,7 @@ LONG-TERM MEMORY:
         // below works uniformly across provider paths.
         const bare = name.startsWith("mcp__clawd__") ? name.slice("mcp__clawd__".length) : name;
         const CHAT_SCOPED_TOOLS = new Set([
-          "reply_human",
+          "reply",
           "pollack",
           "download_file",
           "get_artifact_actions",
@@ -846,8 +846,8 @@ LONG-TERM MEMORY:
           if (!args.channel) args = { ...args, channel: config.channel };
           if (!args.agent_id) args = { ...args, agent_id: config.agentId };
         }
-        // Auto-inject user ID for reply_human (all agent types)
-        if (bare === "reply_human" && !args.user) {
+        // Auto-inject user ID for reply (all agent types)
+        if (bare === "reply" && !args.user) {
           args = { ...args, user: userId };
         }
         // Auto-inject project root for tools that need to save files locally
@@ -967,7 +967,7 @@ export function createClawdChatToolPlugin(config: ClawdChatConfig): ToolPlugin {
           description: `Upload a file from the agent's local filesystem to the chat server.
 
 The tool reads the file locally, auto-detects MIME type from extension, and uploads it via HTTP
-to the chat server. Returns a file_id that can be attached via reply_human(file_ids=[...]).
+to the chat server. Returns a file_id that can be attached via reply(file_ids=[...]).
 
 **File Size Limit:** Max 10MB per file. For larger files, upload to a cloud service and share the link instead.
 
@@ -978,7 +978,7 @@ to the chat server. Returns a file_id that can be attached via reply_human(file_
 
 **WORKFLOW:**
 1. upload_file(file_path="/path/to/image.png", channel="chat-task") -> returns file_id
-2. reply_human(channel="chat-task", text="Here's the file", file_ids=["F..."], timestamp=<ts>)
+2. reply(channel="chat-task", text="Here's the file", file_ids=["F..."], timestamp=<ts>)
 
 **COMPLETE EXAMPLE:**
 \`\`\`
@@ -988,7 +988,7 @@ result = upload_file(
 )
 // result: { ok: true, file: { id: "Fxyz123", name: "screenshot.png", ... } }
 
-reply_human(
+reply(
   channel="chat-task",
   text="Here's the screenshot",
   file_ids=["Fxyz123"],

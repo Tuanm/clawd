@@ -243,7 +243,7 @@ export async function executeToolCall(
         break;
       }
 
-      case "reply_human": {
+      case "reply": {
         const channel = args.channel as string;
         const text = (args.text as string | undefined) ?? "";
         const agentId = args.agent_id as string;

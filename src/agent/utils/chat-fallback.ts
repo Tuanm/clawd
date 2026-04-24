@@ -1,6 +1,6 @@
 /**
  * Chat fallback — worker-level rescue path for agents that produce visible
- * text but fail to call `reply_human` even after re-injection.
+ * text but fail to call `reply` even after re-injection.
  *
  * Flow (called only after a re-injection round has also failed):
  *   - If reinjection output is exactly "[SILENT]" → agent explicitly opted out
@@ -8,7 +8,7 @@
  *   - Otherwise → POST the text directly to the chat API via /mcp so it
  *     persists to the DB like a real agent message. If `processedTs` is
  *     provided, also marks that human message as processed via the same
- *     `reply_human` call so it won't re-poll after restart.
+ *     `reply` call so it won't re-poll after restart.
  *
  * Bypasses the per-turn throttle (guard lives inside agent.ts) because this
  * is a worker-level rescue, not an agent decision.
@@ -18,7 +18,7 @@ import { timedFetch } from "../../utils/timed-fetch";
 import { stripReasoningBlocks } from "./strip-reasoning";
 
 /**
- * Hard cap on reply_human re-injection retries per turn.
+ * Hard cap on reply re-injection retries per turn.
  * Beyond this, we stop wasting tokens and let the next poll cycle retry on
  * the same (unprocessed) message in a fresh turn.
  */
@@ -30,7 +30,7 @@ export const MAX_REINJECT_ATTEMPTS = 10;
  * stubborn ones eventually get an unambiguous directive.
  *
  * @param attempt 1-indexed attempt number
- * @param opts.toolName Fully-qualified tool name (e.g. "reply_human" or "mcp__clawd__reply_human")
+ * @param opts.toolName Fully-qualified tool name (e.g. "reply" or "mcp__clawd__reply")
  * @param opts.lastTs Timestamp of the triggering message (or "latest")
  * @param opts.hadText True if the agent emitted visible streaming text this turn
  */
@@ -75,7 +75,7 @@ export function extractFallbackText(text: string): string {
 }
 
 /**
- * Send a reply_human as the final rescue after re-injection produced text
+ * Send a reply as the final rescue after re-injection produced text
  * but the agent still didn't call the tool.
  *
  * Returns an outcome describing what happened (for logging).
@@ -106,7 +106,7 @@ export async function sendChatFallback(params: {
         id: Date.now(),
         method: "tools/call",
         params: {
-          name: "reply_human",
+          name: "reply",
           arguments: {
             channel,
             text,
