@@ -56,7 +56,7 @@ const DEFAULT_CAP = 32768; // 32KB for unknown tools
 const EXEMPT_TOOLS = new Set(["edit", "create"]);
 
 // Metadata-only chat tools — never compress (plan Phase 3B requirement)
-const METADATA_ONLY_TOOLS = new Set(["reply_human", "upload_file"]);
+const METADATA_ONLY_TOOLS = new Set(["reply", "upload_file"]);
 
 // ── Types ──────────────────────────────────────────────────────────
 

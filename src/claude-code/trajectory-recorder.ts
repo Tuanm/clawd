@@ -3,7 +3,7 @@
  *
  * Captures per-turn (user_message, tool_calls, assistant_response) snapshots
  * for RL training data export. Saves to the `trajectories` table in chat.db
- * at the end of each successfully completed turn (after reply_human).
+ * at the end of each successfully completed turn (after reply).
  */
 
 import { db } from "../server/database";
@@ -44,7 +44,7 @@ export class TrajectoryRecorder {
   }
 
   // Only the most recent call per turn is preserved — agents that call
-  // reply_human multiple times per turn have only the last response recorded.
+  // reply multiple times per turn have only the last response recorded.
   recordAssistantResponse(text: string): void {
     this.pendingAssistantResponse = text.slice(0, 4_000);
   }
@@ -55,7 +55,7 @@ export class TrajectoryRecorder {
     );
   }
 
-  /** Persist the current turn and advance the turn counter. Call after reply_human succeeds. */
+  /** Persist the current turn and advance the turn counter. Call after reply succeeds. */
   commitTurn(): void {
     // Tool-only turns (no user message and no assistant response) are intentionally
     // not recorded — heartbeat turns and pure tool-execution turns without visible

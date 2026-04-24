@@ -449,7 +449,7 @@ Agents delegate work via `spawn_agent(task, agent="code-reviewer")`:
 - `list_agents(type="running")` shows spawned sub-agents with status, errors, and agent file used
 - `get_agent_report(id)` fetches specific sub-agent's full result or error
 - `agent` parameter optional — without it, sub-agent inherits parent's configuration (backward compatible)
-- **Sub-agent tools** — Limited to `complete_task`, `today` (no `reply_human`). Environment info (OS/shell/cwd) injected into system prompt.
+- **Sub-agent tools** — Limited to `complete_task`, `today` (no `reply`). Environment info (OS/shell/cwd) injected into system prompt.
 
 **Constraints:**
 - Max 9 concurrent spaces per channel
@@ -1080,7 +1080,7 @@ All tool execution runs in isolated sandboxes:
 | `file-tools.ts` | view, write, glob, grep (all `readOnly: true` for reads) |
 | `shell-tools.ts` | bash, exec |
 | `git-tools.ts` | git commit, push, status |
-| `chat-tools.ts` | reply_human, upload_file (realpathSync allowlist) |
+| `chat-tools.ts` | reply, upload_file (realpathSync allowlist) |
 | `web-tools.ts` | web_fetch, web_search (`readOnly: true`) |
 | `memory-tools.ts` | memo_save, memo_recall, memo_delete |
 

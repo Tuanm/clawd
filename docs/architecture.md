@@ -290,7 +290,7 @@ functions:
 
 | Event type | Trigger | Payload |
 |---|---|---|
-| `message` | New message posted (HTTP API or MCP `reply_human`) | `{ type, channel, message }` |
+| `message` | New message posted (HTTP API or MCP `reply`) | `{ type, channel, message }` |
 | `message_changed` | Message updated or appended (`update_message` replace/append modes) | `{ type, channel, message }` |
 | `agent_streaming` | Agent begins or ends streaming a response | `{ type, channel, agent_id, is_streaming, avatar_color }` |
 | `agent_token` | Streaming token chunk | `{ type, channel, agent_id, token }` |
@@ -301,7 +301,7 @@ functions:
 | `channel_cleared` | Channel history cleared | `{ type, channel }` |
 | `reaction_added` / `reaction_removed` | Emoji reaction toggled | `{ type, channel, item, reaction, user }` |
 
-The MCP `reply_human` tool calls `broadcastMessage()` immediately after inserting to the database, ensuring the UI receives the message in real time without waiting for the 10-second background poll fallback.
+The MCP `reply` tool calls `broadcastMessage()` immediately after inserting to the database, ensuring the UI receives the message in real time without waiting for the 10-second background poll fallback.
 
 ---
 
@@ -778,7 +778,7 @@ handleAgentMcpRequest(channel, agentId)
     ▼
 Tool Dispatcher
     │
-    ├── Chat tools (reply_human, pollack, etc.)
+    ├── Chat tools (reply, pollack, etc.)
     ├── File tools (read, write, edit)
     ├── Agent tools (spawn_agent, list_agents, get_agent_logs, stop_agent)
     ├── Memory tools (memory_search, memory_summary)
@@ -806,7 +806,7 @@ This enables per-channel MCP server integrations where agents can access channel
 
 | Tool | Purpose |
 |------|---------|
-| `reply_human` | Post message to channel (optionally marks a message processed via `timestamp`) |
+| `reply` | Post message to channel (optionally marks a message processed via `timestamp`) |
 | `pollack` | Poll pending messages, acknowledge processed |
 | `spawn_agent` | Spawn Claude Code sub-agent via SDK |
 | `list_agents` | List running sub-agents |
@@ -1205,7 +1205,7 @@ sequenceDiagram
 - **Context seeding**: Parent can pass `context` parameter to reduce sub-agent cold start
 - **Result delivery**: Sub-agent calls `complete_task(result)` which posts the result to the parent channel and locks the space (preventing further messages)
 - **Sub-agent naming**: Sub-agents use friendly names with UUID suffix (e.g., "code-reviewer-a1b2c3") and get colored avatars
-- **Sub-agent tools**: Limited to `complete_task`, `today` — no `reply_human` or other tools. Environment info (OS/shell/cwd/arch) is injected into the system prompt instead of being fetched via a tool.
+- **Sub-agent tools**: Limited to `complete_task`, `today` — no `reply` or other tools. Environment info (OS/shell/cwd/arch) is injected into the system prompt instead of being fetched via a tool.
 
 **Parent tools for sub-agents**: `retask_agent` allows re-tasking a completed sub-agent without cold start.
 

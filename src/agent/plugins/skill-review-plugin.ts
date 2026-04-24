@@ -165,7 +165,7 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
   let pendingCorrections: string[] = [];
   let lastCheckpointSnapshot: string | null = null;
 
-  // Per-turn improvement state (reset at reply_human success gate)
+  // Per-turn improvement state (reset at reply success gate)
   const turnActivatedSkills = new Set<string>();
   let turnBufferStartIdx = 0;
 
@@ -446,7 +446,7 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
 
       // Capture skill_activate calls to track which skills were used this turn.
       // Source: response.toolCalls[] (content is a string — cannot be parsed for tool names).
-      // NO resets here — resets happen at reply_human consumption gate only.
+      // NO resets here — resets happen at reply consumption gate only.
       const toolCalls = Array.isArray(response?.toolCalls) ? response.toolCalls : [];
       for (const tc of toolCalls) {
         if (tc?.name !== "skill_activate") continue;
@@ -474,11 +474,11 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
         ts: Date.now(),
       });
 
-      // Skill self-improvement: fire at task completion (reply_human success = turn end).
+      // Skill self-improvement: fire at task completion (reply success = turn end).
       // Skip SILENT replies — those are heartbeat / no-op turns with no content worth reviewing.
       // Snapshot BEFORE any path that might consume pendingCorrections.
       const replyIsSilent = (() => {
-        if (name !== "reply_human") return false;
+        if (name !== "reply") return false;
         try {
           const parsed = typeof result?.output === "string" ? JSON.parse(result.output) : null;
           return parsed?.silent === true;
@@ -486,7 +486,7 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
           return false;
         }
       })();
-      if (name === "reply_human" && result?.success !== false && !replyIsSilent) {
+      if (name === "reply" && result?.success !== false && !replyIsSilent) {
         const correctionsSnapshot = [...pendingCorrections];
         const activatedSnapshot = [...turnActivatedSkills];
         const MAX_TURN_SLICE = 8_000;
@@ -519,11 +519,11 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
         }
       }
 
-      // A1: Fire review after task completion (reply_human = turn end) with delta-based gate.
+      // A1: Fire review after task completion (reply = turn end) with delta-based gate.
       // This replaces the old per-N-tool-call modulo trigger so review fires at task boundaries.
       // Skip SILENT replies — heartbeat turns produce no content worth reviewing.
       if (
-        name === "reply_human" &&
+        name === "reply" &&
         result?.success !== false &&
         !replyIsSilent &&
         !reviewInProgress &&
@@ -805,7 +805,7 @@ export async function postSystemMessage(
         id: Date.now(),
         method: "tools/call",
         params: {
-          name: "reply_human",
+          name: "reply",
           arguments: { channel, text: message },
         },
       }),

@@ -3,7 +3,7 @@
  *
  * Runs a Claude Code agent via the official SDK as a main channel agent.
  * Polls for messages, runs SDK query() per interaction, and lets Claude Code
- * communicate via Claw'd's MCP tools (reply_human, pollack, etc.).
+ * communicate via Claw'd's MCP tools (reply, pollack, etc.).
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -58,7 +58,7 @@ const MAX_WAKEUP_MESSAGES = 3; // On wakeup, only process this many recent messa
 
 // Tools that manage conversation flow — excluded from the [CC-Turn] [Action] entries
 // since they are implementation mechanics, not agent work visible to the user.
-const CONVERSATION_TOOLS = new Set(["reply_human"]);
+const CONVERSATION_TOOLS = new Set(["reply"]);
 
 // ============================================================================
 // Types
@@ -113,7 +113,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   // Track whether the interrupt poller detected new messages this cycle.
   // Used to skip re-injections when interrupted (mirrors WorkerLoop's !wlInterrupted guard).
   private interruptDetected = false;
-  // Re-injection state: track per-turn whether reply_human was called.
+  // Re-injection state: track per-turn whether reply was called.
   // turnReplyVisible is true only when the reply carried visible text (non-SILENT).
   private turnReplyHuman = false;
   private turnReplyVisible = false;
@@ -386,7 +386,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
                 contextLabel,
                 ``,
                 `${contextDesc}`,
-                `Here is a summary of the prior conversation (already processed — do NOT pass any of these timestamps to reply_human):`,
+                `Here is a summary of the prior conversation (already processed — do NOT pass any of these timestamps to reply):`,
                 ``,
                 `--- Prior conversation ---`,
                 summary,
@@ -710,13 +710,13 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // All tracking below is best-effort. Each block is independently try-catched
     // so one failure cannot cascade and drop later tracking work.
 
-    // Track reply_human: turn flag + trajectory.
-    // reply_human unifies send + mark_processed. Silent replies (text="" or
+    // Track reply: turn flag + trajectory.
+    // reply unifies send + mark_processed. Silent replies (text="" or
     // "[SILENT]") still flip turnReplyHuman but NOT turnReplyVisible, so the
     // "unsent text" warning only fires when the agent truly didn't deliver.
     // (Message content is already captured via handleAssistantMessage → session DB.)
     try {
-      if (toolName === "mcp__clawd__reply_human" && !response?.error) {
+      if (toolName === "mcp__clawd__reply" && !response?.error) {
         this.turnReplyHuman = true;
         const rawText = input?.text;
         const text = typeof rawText === "string" ? rawText : "";
@@ -729,12 +729,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         }
       }
     } catch (err) {
-      logger.error(`[handleToolResult] reply_human tracking failed:`, err);
+      logger.error(`[handleToolResult] reply tracking failed:`, err);
     }
 
-    // Skill improvement at task completion (triggered by reply_human — the turn-ending signal)
+    // Skill improvement at task completion (triggered by reply — the turn-ending signal)
     try {
-      if (toolName === "mcp__clawd__reply_human" && !response?.error) {
+      if (toolName === "mcp__clawd__reply" && !response?.error) {
         const correctionsSnapshot = [...this.pendingCorrections];
         const activatedSnapshot = [...this.turnActivatedSkills];
         this.pendingCorrections = [];
@@ -1511,8 +1511,8 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         this.persistSessionId(newSessionId);
       }
 
-      // Re-injection: if agent did NOT call reply_human, send escalating
-      // reminders until it complies or we hit MAX_REINJECT_ATTEMPTS. reply_human
+      // Re-injection: if agent did NOT call reply, send escalating
+      // reminders until it complies or we hit MAX_REINJECT_ATTEMPTS. reply
       // unifies send + mark_processed, so this covers both text-delivery and
       // pending-cleanup cases.
       // Skip for: heartbeat turns, cancelled/aborted turns, interrupted turns
@@ -1539,7 +1539,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           if (this.wasCancelledByHeartbeat || this.interruptDetected) break;
 
           const reinjectionPrompt = buildReinjectionPrompt(attempt, {
-            toolName: "mcp__clawd__reply_human",
+            toolName: "mcp__clawd__reply",
             lastTs,
             hadText: hadText || lastReinjectionText.trim().length > 0,
           });
@@ -1582,7 +1582,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           lastReinjectionText = attemptText;
 
           if (this.turnReplyHuman) {
-            logger.info(`Re-injection: agent called reply_human on attempt ${attempt}`);
+            logger.info(`Re-injection: agent called reply on attempt ${attempt}`);
             break;
           }
           // Re-check interrupt/cancel state after the await — new messages or a
@@ -1592,7 +1592,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           if (reinjAbort.signal.aborted) break;
         }
 
-        // Fallback rescue: re-injection loop exhausted without reply_human. If the
+        // Fallback rescue: re-injection loop exhausted without reply. If the
         // agent emitted visible text at any point this turn, post it directly
         // (threaded with timestamp so the human message is marked processed too).
         // [SILENT] is honored as explicit opt-out. Turns with no text fall through
@@ -1635,12 +1635,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
         if (!this.turnReplyHuman) {
           logger.warn(
-            `Re-injection exhausted (${MAX_REINJECT_ATTEMPTS} attempts) — agent never called reply_human; message ${lastTs} will re-poll`,
+            `Re-injection exhausted (${MAX_REINJECT_ATTEMPTS} attempts) — agent never called reply; message ${lastTs} will re-poll`,
           );
         }
       }
 
-      // Trajectory: commit on successful reply_human, abort otherwise. This
+      // Trajectory: commit on successful reply, abort otherwise. This
       // preserves tool-activity summaries only for turns that ended cleanly.
       if (this.turnReplyHuman && this.trajectoryRecorder) {
         this.trajectoryRecorder.commitTurn();
@@ -1720,7 +1720,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     if (seenNotProcessed.length > 0 && unseen.length === 0) {
       // All messages are retries — agent previously saw but didn't finish processing
       parts.push(`# Messages on Channel "${this.config.channel}" (continuing)\n`);
-      parts.push(`CONTINUATION REQUIRED — you did not call reply_human last turn.\n`);
+      parts.push(`CONTINUATION REQUIRED — you did not call reply last turn.\n`);
     } else if (unseen.length > 0) {
       parts.push(`# Messages on Channel "${this.config.channel}" (poll start)\n`);
     }
@@ -1752,7 +1752,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       if (unseen.length > 0) {
         parts.push(`## Previously Seen (not yet processed)\n`);
         parts.push(
-          `[NOTE: You already saw these last turn. If the conversation history above shows you responded, do NOT re-answer — just call mcp__clawd__reply_human with text="[SILENT]" and the latest timestamp.]\n`,
+          `[NOTE: You already saw these last turn. If the conversation history above shows you responded, do NOT re-answer — just call mcp__clawd__reply with text="[SILENT]" and the latest timestamp.]\n`,
         );
       }
       parts.push(...buildChronological(seenNotProcessed));
@@ -1769,7 +1769,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     }
 
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply_human(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
     );
     return parts.join("\n");
   }
@@ -1798,7 +1798,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     parts.push(...olderLines, ...newestLines);
 
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply_human(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
     );
     return parts.join("\n");
   }
@@ -1810,7 +1810,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     parts.push(`Read them carefully — they may override your current task.\n`);
     if (hadUnsentText) {
       parts.push(
-        `[WARNING: Your previous turn produced text output but did NOT call \`mcp__clawd__reply_human\`. The human cannot see your previous response. If you still need to respond to the earlier task, call \`mcp__clawd__reply_human\` FIRST before processing the new messages.]\n`,
+        `[WARNING: Your previous turn produced text output but did NOT call \`mcp__clawd__reply\`. The human cannot see your previous response. If you still need to respond to the earlier task, call \`mcp__clawd__reply\` FIRST before processing the new messages.]\n`,
       );
     }
 
@@ -1856,7 +1856,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     parts.push(...newMsgLines);
 
     parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply_human(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
+      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
     );
     return parts.join("\n");
   }

@@ -919,7 +919,7 @@ class OllamaProvider implements LLMProvider {
           const msgMatch = newMessagesMatch[1].trim().match(/\] human: (.+)$/);
           const actualMsg = msgMatch ? msgMatch[1].trim() : newMessagesMatch[1].trim();
           // Prepend instruction to use tools - this is more effective than just system prompt
-          userMsg.content = `IMPORTANT: You MUST end the turn using the reply_human tool. Never write plain text. Tool required. User message: ${actualMsg}`;
+          userMsg.content = `IMPORTANT: You MUST end the turn using the reply tool. Never write plain text. Tool required. User message: ${actualMsg}`;
         }
       }
     }
@@ -939,14 +939,14 @@ class OllamaProvider implements LLMProvider {
 
     // Add a strong tool usage instruction for Ollama as a separate system message
     // This is more reliable than mixing with user message
-    const toolInstruction = `CRITICAL: End the turn with exactly ONE reply_human call:
-  reply_human(text="<your reply or [SILENT]>", timestamp="<triggering message ts>", agent_id="<your name>")
+    const toolInstruction = `CRITICAL: End the turn with exactly ONE reply call:
+  reply(text="<your reply or [SILENT]>", timestamp="<triggering message ts>", agent_id="<your name>")
 
-reply_human delivers the visible text AND marks the triggering message processed in one call.
-- Example:  reply_human(text="Hello!", timestamp="123", agent_id="Tuan")
-- Silent:   reply_human(text="[SILENT]", timestamp="123", agent_id="Tuan")
+reply delivers the visible text AND marks the triggering message processed in one call.
+- Example:  reply(text="Hello!", timestamp="123", agent_id="Tuan")
+- Silent:   reply(text="[SILENT]", timestamp="123", agent_id="Tuan")
 
-NEVER skip reply_human! If you skip it, the message will be processed infinitely!`;
+NEVER skip reply! If you skip it, the message will be processed infinitely!`;
     if (systemContent) {
       messages.unshift({
         role: "system",

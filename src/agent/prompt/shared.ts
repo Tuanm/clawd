@@ -28,26 +28,26 @@ export const CLAWD_RUNTIME_NOTICE =
 /**
  * Full runtime block for standard in-process main agents
  * (OpenAI / Anthropic / Copilot / Ollama / custom providers).
- * Tool name: `reply_human` (no MCP prefix — injected by the clawd-chat plugin).
- * reply_human unifies "send visible text" + "mark triggering message processed".
- * Every turn MUST end with exactly one reply_human call.
+ * Tool name: `reply` (no MCP prefix — injected by the clawd-chat plugin).
+ * reply unifies "send visible text" + "mark triggering message processed".
+ * Every turn MUST end with exactly one reply call.
  */
 export const MAIN_AGENT_RUNTIME_BLOCK =
   `${CLAWD_RUNTIME_NOTICE}\n` +
-  `Every turn MUST end with exactly one call to reply_human — this delivers your visible response AND marks the triggering message processed. ` +
+  `Every turn MUST end with exactly one call to reply — this delivers your visible response AND marks the triggering message processed. ` +
   `Pass text="" or text="[SILENT]" to end the turn without sending a visible message.\n` +
-  `If you receive a system reminder that reply_human was not called (wording like "Your turn did not end", "Reminder #N", "FINAL NOTICE"), your ONLY permitted next action is to call reply_human immediately. ` +
-  `Do not perform any other tool calls, do not emit commentary, do not re-analyse — just call reply_human with text="[SILENT]" (or your reply) and the supplied timestamp. This is non-negotiable.\n` +
+  `If you receive a system reminder that reply was not called (wording like "Your turn did not end", "Reminder #N", "FINAL NOTICE"), your ONLY permitted next action is to call reply immediately. ` +
+  `Do not perform any other tool calls, do not emit commentary, do not re-analyse — just call reply with text="[SILENT]" (or your reply) and the supplied timestamp. This is non-negotiable.\n` +
   `You have access to tools defined in the tool schema — use them as needed.`;
 
 /**
  * Full runtime block for Claude Code main workers (claude-code provider).
- * Tool name: `mcp__clawd__reply_human` (full MCP prefix required by the SDK).
+ * Tool name: `mcp__clawd__reply` (full MCP prefix required by the SDK).
  */
 export const CLAUDE_CODE_RUNTIME_BLOCK =
   `${CLAWD_RUNTIME_NOTICE}\n` +
-  `Every turn MUST end with exactly one call to mcp__clawd__reply_human(text, timestamp). This delivers your reply AND marks the triggering message processed. ` +
+  `Every turn MUST end with exactly one call to mcp__clawd__reply(text, timestamp). This delivers your reply AND marks the triggering message processed. ` +
   `Pass text="" or text="[SILENT]" to end the turn without sending a visible message.\n` +
-  `If you receive a system reminder that mcp__clawd__reply_human was not called (wording like "Your turn did not end", "Reminder #N", "FINAL NOTICE"), your ONLY permitted next action is to call mcp__clawd__reply_human immediately. ` +
-  `Do not perform any other tool calls, do not emit commentary, do not re-analyse — just call mcp__clawd__reply_human with text="[SILENT]" (or your reply) and the supplied timestamp. This is non-negotiable.\n` +
+  `If you receive a system reminder that mcp__clawd__reply was not called (wording like "Your turn did not end", "Reminder #N", "FINAL NOTICE"), your ONLY permitted next action is to call mcp__clawd__reply immediately. ` +
+  `Do not perform any other tool calls, do not emit commentary, do not re-analyse — just call mcp__clawd__reply with text="[SILENT]" (or your reply) and the supplied timestamp. This is non-negotiable.\n` +
   `Do NOT reply in streaming text output — the human cannot see it, only the agentic framework can.`;

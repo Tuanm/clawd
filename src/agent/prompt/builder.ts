@@ -253,17 +253,17 @@ function sectionSafety(ctx: PromptContext): string {
 function sectionChat(ctx: PromptContext): string {
   const p = ctx.mcpPrefix || "";
   const messageFormat = ctx.roleStructuredInput
-    ? `- Each NEW channel message arrives as a user-role turn with the content format \`[timestamp] author: text\` (author is \`human\` for a human user, otherwise an agent/system id). Respond only to the new messages in THIS turn — prior turns are shown as conversation history and are already handled. End each turn with ${p}reply_human(text="<reply or [SILENT]>", timestamp="<latest msg ts>") — this delivers the reply AND marks the message processed in one call.`
-    : `- The prompt may contain two message sections: \`## Previously Seen (not yet processed)\` (messages you saw last turn but didn't finish processing) and \`## New Messages\` (brand-new messages). End the turn with ${p}reply_human(text=..., timestamp=<latest ts>) to handle both sections in one go.`;
+    ? `- Each NEW channel message arrives as a user-role turn with the content format \`[timestamp] author: text\` (author is \`human\` for a human user, otherwise an agent/system id). Respond only to the new messages in THIS turn — prior turns are shown as conversation history and are already handled. End each turn with ${p}reply(text="<reply or [SILENT]>", timestamp="<latest msg ts>") — this delivers the reply AND marks the message processed in one call.`
+    : `- The prompt may contain two message sections: \`## Previously Seen (not yet processed)\` (messages you saw last turn but didn't finish processing) and \`## New Messages\` (brand-new messages). End the turn with ${p}reply(text=..., timestamp=<latest ts>) to handle both sections in one go.`;
   return `# Communication
-- ${p}reply_human(text, timestamp): ends the turn. Delivers visible text AND marks the triggering message processed. channel/agent_id/user auto-injected.
+- ${p}reply(text, timestamp): ends the turn. Delivers visible text AND marks the triggering message processed. channel/agent_id/user auto-injected.
 - text="" or text="[SILENT]" skips the visible reply but still ends the turn and marks processed.
-- Every turn MUST end with exactly one ${p}reply_human call — otherwise the message re-polls next cycle.
-- Do NOT reply in streaming text — your text output is never delivered to users; call ${p}reply_human instead.
+- Every turn MUST end with exactly one ${p}reply call — otherwise the message re-polls next cycle.
+- Do NOT reply in streaming text — your text output is never delivered to users; call ${p}reply instead.
 - Wrap copiable content (commands, code, URLs, paths) in markdown code blocks.
 - On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, never mention heartbeats in chat.
-- If ${p}reply_human fails, RETRY immediately.
-- If a system reminder tells you ${p}reply_human was not called (e.g. "Your turn did not end", "Reminder #N", "FINAL NOTICE"), your ONLY permitted next action is ${p}reply_human — no other tool, no analysis, no prose. Call it with text="[SILENT]" and the supplied timestamp if you have nothing to say.
+- If ${p}reply fails, RETRY immediately.
+- If a system reminder tells you ${p}reply was not called (e.g. "Your turn did not end", "Reminder #N", "FINAL NOTICE"), your ONLY permitted next action is ${p}reply — no other tool, no analysis, no prose. Call it with text="[SILENT]" and the supplied timestamp if you have nothing to say.
 ${messageFormat}
 
 ## Attachments
@@ -493,7 +493,7 @@ function sectionSubAgentInstructions(): string {
   return `# MANDATORY: Call complete_task When Done
 You MUST call complete_task(result) with your final result when the task is complete.
 This is the ONLY way to deliver your work. If you don't call it, your work is lost.
-Do NOT use reply_human or any chat_* tools — they are not available to sub-agents.`;
+Do NOT use reply or any chat_* tools — they are not available to sub-agents.`;
 }
 
 // ============================================================================

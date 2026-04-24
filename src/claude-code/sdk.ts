@@ -414,7 +414,7 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
       // Task/agent lifecycle → use mcp__clawd__complete_task / mcp__clawd__stop_agent
       "TaskOutput",
       "TaskStop",
-      // User interaction → use mcp__clawd__reply_human
+      // User interaction → use mcp__clawd__reply
       "AskUserQuestion",
       // CC-internal plan mode — no Claw'd equivalent, not meaningful outside CC UI
       "EnterPlanMode",

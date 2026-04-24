@@ -1,5 +1,5 @@
 /**
- * Unit tests for the `reply_human` handler in execute.ts.
+ * Unit tests for the `reply` handler in execute.ts.
  *
  * Covers the two behaviours that chat_send_message+chat_mark_processed were
  * merged into:
@@ -118,7 +118,7 @@ function parseResult(result: { content: { type: string; text: string }[] }) {
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
-describe("reply_human handler", () => {
+describe("reply handler", () => {
   beforeEach(() => {
     memDb.run("DELETE FROM agent_seen");
     memDb.run("DELETE FROM messages");
@@ -128,7 +128,7 @@ describe("reply_human handler", () => {
   });
 
   test("empty text returns silent:true and skips postMessage", async () => {
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "",
       agent_id: "Claw'd",
@@ -140,7 +140,7 @@ describe("reply_human handler", () => {
   });
 
   test("[SILENT] text returns silent:true and skips postMessage", async () => {
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "[SILENT]",
       agent_id: "Claw'd",
@@ -151,7 +151,7 @@ describe("reply_human handler", () => {
   });
 
   test("timestamp on SILENT call still writes last_processed_ts", async () => {
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "[SILENT]",
       agent_id: "Claw'd",
@@ -165,7 +165,7 @@ describe("reply_human handler", () => {
   });
 
   test("visible text posts the message and returns last_processed_ts", async () => {
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "Hello human",
       agent_id: "Claw'd",
@@ -188,7 +188,7 @@ describe("reply_human handler", () => {
   });
 
   test("no timestamp → no agent_seen row written, no last_processed_ts in result", async () => {
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "Hi",
       agent_id: "Claw'd",
@@ -200,13 +200,13 @@ describe("reply_human handler", () => {
   });
 
   test("last_processed_ts uses MAX — older ts does not regress newer one", async () => {
-    await executeToolCall("reply_human", {
+    await executeToolCall("reply", {
       channel: "test",
       text: "[SILENT]",
       agent_id: "Claw'd",
       timestamp: "1700000005.000",
     });
-    await executeToolCall("reply_human", {
+    await executeToolCall("reply", {
       channel: "test",
       text: "[SILENT]",
       agent_id: "Claw'd",
@@ -218,7 +218,7 @@ describe("reply_human handler", () => {
   test("parameter-swap guard — short text + long agent_id returns PARAMETER_ORDER_ERROR", async () => {
     const longMessage =
       "Hello! This is a long message that was accidentally placed into the agent_id field instead of the text field.";
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "Claw'd",
       agent_id: longMessage,
@@ -230,7 +230,7 @@ describe("reply_human handler", () => {
   });
 
   test("file_ids on visible text attaches files + returns them in result", async () => {
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "Here you go",
       agent_id: "Claw'd",
@@ -250,7 +250,7 @@ describe("reply_human handler", () => {
   });
 
   test("file_ids empty array does NOT trigger attachFilesToMessage", async () => {
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "No attachments",
       agent_id: "Claw'd",
@@ -263,7 +263,7 @@ describe("reply_human handler", () => {
   });
 
   test("file_ids on SILENT reply is ignored (no postMessage, no attach)", async () => {
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "[SILENT]",
       agent_id: "Claw'd",
@@ -277,7 +277,7 @@ describe("reply_human handler", () => {
   });
 
   test("file_ids filters non-string entries", async () => {
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "Mixed",
       agent_id: "Claw'd",
@@ -292,7 +292,7 @@ describe("reply_human handler", () => {
   test("parameter-swap guard fires BEFORE markProcessed — swapped call does NOT regress last_processed_ts", async () => {
     const longMessage =
       "Hello! This is a long message that was accidentally placed into the agent_id field instead of the text field.";
-    const result = await executeToolCall("reply_human", {
+    const result = await executeToolCall("reply", {
       channel: "test",
       text: "Claw'd",
       agent_id: longMessage,

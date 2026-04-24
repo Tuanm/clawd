@@ -262,7 +262,7 @@ export class SubAgent extends EventEmitter {
 You have access to tools for file operations, code execution, and more.
 ${this.allowSubAgents ? "You can spawn sub-agents to parallelize work." : ""}
 Be concise and efficient.
-You are a sub-agent — your plain text output is returned to the parent agent as your final answer. Do NOT call reply_human or any chat_* tools.`;
+You are a sub-agent — your plain text output is returned to the parent agent as your final answer. Do NOT call reply or any chat_* tools.`;
 
     // Use provider-agnostic factory instead of hardcoding CopilotClient.
     // This respects the parent agent's configured provider (OpenAI, Anthropic, etc.).

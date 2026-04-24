@@ -34,10 +34,10 @@ Returns JSON:
 CRITICAL: If count > 0, you MUST process each message in "pending" array:
 1. Read pending[i].text
 2. Execute the task
-3. End the turn with reply_human(text="<reply or [SILENT]>", timestamp=pending[i].ts).
-   reply_human delivers the reply AND marks the message processed in one call.
+3. End the turn with reply(text="<reply or [SILENT]>", timestamp=pending[i].ts).
+   reply delivers the reply AND marks the message processed in one call.
 
-IMPORTANT: Every turn must end with reply_human to prevent re-processing on
+IMPORTANT: Every turn must end with reply to prevent re-processing on
 restart. Use this tool for polling loops, every 2-10 seconds.`,
     inputSchema: {
       type: "object",
@@ -68,10 +68,10 @@ restart. Use this tool for polling loops, every 2-10 seconds.`,
     },
   },
   {
-    name: "reply_human",
+    name: "reply",
     description: `Reply to the human and end the current turn.
 
-MANDATORY: Every turn MUST end with exactly one call to reply_human.
+MANDATORY: Every turn MUST end with exactly one call to reply.
 - To send a reply: pass text with the message content.
 - To skip replying (no user-facing message this turn): pass text="" or text="[SILENT]".
 - If a human message triggered this turn, pass its ts via timestamp to mark it processed
@@ -94,7 +94,7 @@ Returns JSON:
   "last_processed_ts": "..."  // When timestamp was provided
 }
 
-Flow: poll_and_ack -> do work -> reply_human (marks processed + ends turn).`,
+Flow: poll_and_ack -> do work -> reply (marks processed + ends turn).`,
     inputSchema: {
       type: "object",
       properties: {
@@ -339,7 +339,7 @@ Use the returned local_path to read the file with view, bash, or other tools.
 
 **WORKFLOW FOR ATTACHING LOCAL FILES TO MESSAGES:**
 1. upload_file → returns file_id (reads file from disk)
-2. reply_human(file_ids=[...]) → sends message with attached files (ends the turn)
+2. reply(file_ids=[...]) → sends message with attached files (ends the turn)
 
 Args:
   - file_path (string): Absolute path to the file on the local filesystem
@@ -358,7 +358,7 @@ Returns JSON:
   }
 }
 
-Use file.id (the file_id) with reply_human's file_ids arg to attach the file to a message.
+Use file.id (the file_id) with reply's file_ids arg to attach the file to a message.
 
 **COMPLETE EXAMPLE:**
 \`\`\`
@@ -370,7 +370,7 @@ result1 = upload_file(
 // result1.file.id = "Fxyz123"
 
 // Step 2: Send message with file attachment (ends turn)
-reply_human(
+reply(
   channel="chat-task",
   text="Here's the icon:",
   file_ids=["Fxyz123"],
@@ -432,7 +432,7 @@ Use mode="append" for:
 - Breaking up long messages into smaller tool calls for faster streaming
 - Adding follow-up content without overwriting existing text
 
-Tip: End a turn with reply_human (short initial summary), then in a later turn
+Tip: End a turn with reply (short initial summary), then in a later turn
 use update_message(mode="append") to extend the delivered message. Users see the
 initial response faster while long work continues.
 
