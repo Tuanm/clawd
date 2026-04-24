@@ -14,7 +14,7 @@ const TOOL_CAPS: Record<string, number> = {
   glob: 6144,
   view: 10240,
   // edit/create: exempt (handled separately)
-  query_files: 4096,
+  query_files: 10240,
   download_file: 4096,
   convert_to_markdown: 20480,
   query_messages: 10240,

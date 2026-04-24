@@ -408,13 +408,15 @@ export async function executeToolCall(
           params.push(`%${name.toLowerCase()}%`);
         }
         if (mimetype) {
-          // Prefix match when value ends with "/" (e.g., "image/"), exact otherwise
+          // Prefix match when value ends with "/" (e.g., "image/"), exact otherwise.
+          // MIME types are RFC 2045 case-insensitive — compare via LOWER() to be
+          // resilient even if the upload path ever stores non-lowercased values.
           if (mimetype.endsWith("/")) {
-            conditions.push("f.mimetype LIKE ?");
-            params.push(`${mimetype}%`);
+            conditions.push("LOWER(f.mimetype) LIKE ?");
+            params.push(`${mimetype.toLowerCase()}%`);
           } else {
-            conditions.push("f.mimetype = ?");
-            params.push(mimetype);
+            conditions.push("LOWER(f.mimetype) = ?");
+            params.push(mimetype.toLowerCase());
           }
         }
         if (uploaderIds && uploaderIds.length > 0) {
@@ -441,12 +443,14 @@ export async function executeToolCall(
 
         const whereClause = conditions.join(" AND ");
         const effectiveLimit = fileId ? 1 : limit + 1;
+        // Order by the attaching message's ts so pagination via from_ts/to_ts
+        // advances the same cursor it filters on. f.id tiebreaks within a ts.
         const query = `
           SELECT f.id, f.name, f.mimetype, f.size, f.message_ts, f.uploaded_by, f.created_at
           FROM files f
           INNER JOIN messages m ON m.ts = f.message_ts
           WHERE ${whereClause}
-          ORDER BY f.created_at ${order}, f.id ${order}
+          ORDER BY m.ts ${order}, f.id ${order}
           LIMIT ?`;
         params.push(effectiveLimit);
 
