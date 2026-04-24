@@ -138,20 +138,19 @@ describe("convert_to_markdown path routing", () => {
     rmSync(tmpProjectRoot, { recursive: true, force: true });
   });
 
-  test("falls back to CWD when _project_root is missing AND agent has no registered root", async () => {
-    // No _project_root arg and getAgentProjectRoot returns null — handler
-    // must fall back to process.cwd(), NOT homedir.
+  test("errors out when _project_root is missing AND agent has no registered root", async () => {
+    // No silent CWD fallback — a CC agent making MCP calls MUST have a
+    // registered project root; missing it is anomalous, not a default case.
     const text = await callTool("convert_to_markdown", {
       path: sourceFile,
     });
 
-    const cwdFilesDir = join(process.cwd(), ".clawd", "files");
-    const expectedMdPath = join(cwdFilesDir, "source.md");
-    expect(text).toContain(`Saved to: ${expectedMdPath}`);
+    expect(text).toContain("Error:");
+    expect(text).toContain("no project root registered");
+    // Must NOT have written anywhere under CWD.
+    const cwdMdPath = join(process.cwd(), ".clawd", "files", "source.md");
+    expect(existsSync(cwdMdPath)).toBe(false);
 
-    // Cleanup: remove just the file we created, not the whole `.clawd/` tree
-    // (other tests or the host repo may legitimately own sibling entries).
-    rmSync(expectedMdPath, { force: true });
     rmSync(tmpProjectRoot, { recursive: true, force: true });
   });
 

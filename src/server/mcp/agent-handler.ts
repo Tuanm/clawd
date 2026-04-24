@@ -1606,20 +1606,26 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
                   ? Buffer.from(listProc.stdout).toString("utf-8").split("\n").filter(Boolean)
                   : [];
               const sessionExists = sessions.includes(session);
-              // Resolve cwd: explicit arg → agent's registered project root → server CWD.
-              // Without the registered-root lookup, tmux sessions launched by CC
-              // agents would cd into wherever clawd was started from, not the
-              // agent's project tree.
+              // Resolve cwd: explicit arg → agent's registered project root.
+              // No silent CWD fallback — a tmux session cd'd into the
+              // server's launch dir is almost never what the agent wants and
+              // hides misrouted calls.
               let cwd = args.cwd as string | undefined;
               if (!cwd) {
                 try {
                   const { getAgentProjectRoot: getPr } = await import("../routes/agents");
                   cwd = getPr(db, channel, agentId) || undefined;
                 } catch {
-                  // Best-effort — fall through to CWD
+                  // Best-effort — fall through to the error below
                 }
               }
-              if (!cwd) cwd = process.cwd();
+              if (!cwd) {
+                text = JSON.stringify({
+                  ok: false,
+                  error: `No project root registered for agent "${agentId}" in channel "${channel}". Pass an explicit cwd or register the agent first.`,
+                });
+                break;
+              }
               const cdCmd = `cd "${cwd}" && ${args.command as string}`;
               if (!sessionExists) {
                 const r = await execTmuxMcp(["new-session", "-d", "-s", session, cdCmd]);
@@ -2271,21 +2277,26 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               }
               const { writeFile, mkdir } = await import("node:fs/promises");
               const { basename, extname, join } = await import("node:path");
-              // Resolve project root: explicit arg → agent's registered project
-              // root → CWD (last resort, keeps .md out of user's home dir).
+              // Resolve project root: explicit arg → agent's registered root.
               // The enriched-args injection at the executeToolCall path below
               // never fires for this tool because the utility branch returns
               // first, so we look up getAgentProjectRoot here directly.
+              // No silent CWD fallback — writing outside the agent's tree
+              // would leak .md outputs across projects. If neither is
+              // available, it's an anomaly worth surfacing.
               let projectRoot = args._project_root as string | undefined;
               if (!projectRoot) {
                 try {
                   const { getAgentProjectRoot } = await import("../routes/agents");
                   projectRoot = getAgentProjectRoot(db, channel, agentId) || undefined;
                 } catch {
-                  // Best-effort — fall through to CWD
+                  // Best-effort — fall through to the error below
                 }
               }
-              if (!projectRoot) projectRoot = process.cwd();
+              if (!projectRoot) {
+                text = `Error: no project root registered for agent "${agentId}" in channel "${channel}". Cannot write converted Markdown safely.`;
+                break;
+              }
               const filesDir = join(projectRoot, ".clawd", "files");
               await mkdir(filesDir, { recursive: true });
               const base = basename(filePath, extname(filePath)).replace(/[^a-zA-Z0-9._-]/g, "_") || "converted";
@@ -2336,22 +2347,26 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               const description = (args.description as string) || "";
               const runInBackground = (args.run_in_background as boolean) || false;
               const cwdArg = args.cwd as string | undefined;
-              // Resolve workDir: explicit arg → agent's registered project root → server CWD.
-              // Non-CC (in-process) agents' `bash` defaults to the sandbox project
-              // root via enforceSandboxPolicy; CC agents coming through MCP don't
-              // hit that path, so we replicate the intent here. Without this,
-              // `bash npm install` / `git status` etc. run in the server's launch
-              // dir instead of the agent's project tree.
+              // Resolve workDir: explicit arg → agent's registered project root.
+              // Non-CC (in-process) agents' `bash` defaults to the sandbox
+              // project root via enforceSandboxPolicy; CC agents coming
+              // through MCP don't hit that path, so we replicate the intent
+              // here. No silent CWD fallback — running `npm install` /
+              // `git status` in the server's launch dir would be a silent
+              // mis-route we want to surface as an error.
               let workDir = cwdArg;
               if (!workDir) {
                 try {
                   const { getAgentProjectRoot: getPr } = await import("../routes/agents");
                   workDir = getPr(db, channel, agentId) || undefined;
                 } catch {
-                  // Best-effort — fall through to CWD
+                  // Best-effort — fall through to the error below
                 }
               }
-              if (!workDir) workDir = process.cwd();
+              if (!workDir) {
+                text = `Error: no project root registered for agent "${agentId}" in channel "${channel}". Pass an explicit cwd or register the agent first.`;
+                break;
+              }
 
               // Background mode: delegate to tmux job manager
               if (runInBackground) {
