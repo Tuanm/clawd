@@ -674,8 +674,17 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   }
 
   // --------------------------------------------------------------------------
-  // Tool result handler (called by PostToolUse hook in-process)
+  // Tool lifecycle handlers (called by Pre/PostToolUse hooks in-process)
   // --------------------------------------------------------------------------
+
+  /** PreToolUse: fires before the tool actually runs, so the UI can show a
+   *  "running" indicator. Separate from handleToolResult — firing both from
+   *  PostToolUse would collapse the running state to a single tick. */
+  handleToolStart(toolName: string, toolInput: unknown, toolUseId?: string): void {
+    const { channel, agentId } = this.config;
+    const input = (toolInput || {}) as Record<string, any>;
+    broadcastAgentToolCall(channel, agentId, toolName, input, "started", undefined, toolUseId);
+  }
 
   handleToolResult(toolName: string, toolInput: unknown, toolResponse: unknown, toolUseId?: string): void {
     const { channel, agentId } = this.config;
@@ -686,10 +695,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const description = formatToolDescription(toolName, input);
     const shortName = toolName.replace(/^mcp__clawd__/, "");
 
-    // Broadcasts are unconditional — fire first so no exception in tracking can drop them.
-    // Thread toolUseId so the UI can pair start/end events by id (correct for
+    // Terminal event only — the matching "started" was broadcast by handleToolStart
+    // at PreToolUse time. Threaded toolUseId lets the UI pair them (correct for
     // concurrent same-named tool calls within a turn).
-    broadcastAgentToolCall(channel, agentId, toolName, input, "started", undefined, toolUseId);
     broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`, toolUseId);
     saveToMemory(
       this.memorySessionId,
@@ -1478,6 +1486,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         },
         onThinkingDelta: (text) => broadcastAgentToken(channel, agentId, text, "thinking"),
         onAssistantMessage: (content) => this.handleAssistantMessage(content),
+        onToolStart: (name, input, id) => this.handleToolStart(name, input, id),
         onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
         onActivity: () => {
           // Refresh timestamps to prevent stale streaming cleanup AND heartbeat timeout
@@ -1554,6 +1563,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
                 },
                 onThinkingDelta: () => {},
                 onAssistantMessage: () => {},
+                onToolStart: (name, input, id) => this.handleToolStart(name, input, id),
                 onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),
                 onActivity: () => {
                   this.lastActivityAt = Date.now();
