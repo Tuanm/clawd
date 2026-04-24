@@ -450,7 +450,7 @@ Agents delegate work via `spawn_agent(task, agent="code-reviewer")`:
 - `get_agent_report(id)` fetches specific sub-agent's full result or error
 - `agent` parameter optional — without it, sub-agent inherits parent's configuration (backward compatible)
 - **Sub-agent tools** — Limited to `complete_task`, `today` (no `reply`). Environment info (OS/shell/cwd) injected into system prompt.
-- **Skill-creation notifications** — `postSystemMessage` in `skill-review-plugin.ts` POSTs directly to `/api/chat.postMessage` with `subtype: "bot_message"` and `user: "USYS"`; rendered as centered/muted system messages in the UI (not attributed to the agent).
+- **Skill auto-creation** — `skill-review-plugin.ts` (non-CC agents) and `main-worker.ts:maybeRunSkillReview` (CC agents) spawn a background review that creates skills silently; no channel notification.
 - **Pending message filtering** — `getPendingMessages` excludes messages with `subtype IN ('bot_message', 'channel_join')` at the source; applies to worker-loop, main-worker, claude-code-worker, `chat_poll_and_ack`, and `/api/messages.pending`. Prevents agents from acting on system notifications.
 
 **Constraints:**

@@ -1698,9 +1698,6 @@ export class WorkerLoop implements AgentWorker {
           const skillReviewConfig: AgentConfig["skillReview"] =
             process.env.CLAWD_SKILL_REVIEW_ENABLED !== "false"
               ? {
-                  apiUrl: chatApiUrl,
-                  channel,
-                  projectRoot: resolvedProjectRoot,
                   reviewInterval: parseInt(process.env.CLAWD_SKILL_REVIEW_INTERVAL ?? "20", 10),
                   minToolCallsBeforeFirstReview: parseInt(process.env.CLAWD_SKILL_REVIEW_MIN_TOOLS ?? "10", 10),
                   maxSkillsPerReview: parseInt(process.env.CLAWD_SKILL_REVIEW_MAX_SKILLS ?? "2", 10),

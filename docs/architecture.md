@@ -700,7 +700,7 @@ interface Plugin {
 | `state-persistence-plugin` | `plugins/state-persistence-plugin.ts` | Save/restore agent state across restarts |
 | `tunnel-plugin` | `plugins/tunnel-plugin.ts` | Expose local services via tunnels |
 | `spawn-agent-spaces` | `spaces/spawn-plugin.ts` | Sub-agent spawning via spaces system |
-| `skill-review-plugin` | `plugins/skill-review-plugin.ts` | Posts skill-creation notifications via `postSystemMessage` — POSTs directly to `/api/chat.postMessage` with `subtype: "bot_message"` and `user: "USYS"`, rendering as centered/muted system messages (not attributed to the agent) |
+| `skill-review-plugin` | `plugins/skill-review-plugin.ts` | Background skill auto-generation from conversation patterns — creates skills silently (no channel notification) |
 
 ### 6.5 Memory System
 
