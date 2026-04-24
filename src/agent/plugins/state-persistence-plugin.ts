@@ -95,6 +95,12 @@ export function createStatePersistencePlugin(config: StatePersistenceConfig): St
       // multiple agents run from one clawd process).
       const { getContextProjectRoot } = await import("../utils/agent-context");
       const workingDir = getContextProjectRoot();
+      if (!workingDir) {
+        // No agent context — skip environment capture. state-persistence is
+        // an observational plugin; better to record nothing than to record
+        // bogus values from the server's launch dir.
+        return;
+      }
       try {
         const { execSync } = require("child_process");
         const branch = execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", {

@@ -128,10 +128,12 @@ export async function executeTool(toolCall: ToolCall): Promise<ToolResult> {
     const rawArgs = JSON.parse(argsString || "{}");
     const args = normalizeToolArgs(rawArgs);
 
-    // Run before hooks (async, non-blocking)
+    // Run before hooks (async, non-blocking).
+    // getHookManager() returns null outside an agent context or before
+    // initializeHooks has completed — both cases skip hooks silently.
     try {
       const hookManager = getHookManager();
-      if (hookManager.isInitialized()) {
+      if (hookManager?.isInitialized()) {
         hookManager.runBeforeHook(toolName, args);
       }
     } catch {
@@ -144,7 +146,7 @@ export async function executeTool(toolCall: ToolCall): Promise<ToolResult> {
     // Run after hooks (async, non-blocking)
     try {
       const hookManager = getHookManager();
-      if (hookManager.isInitialized()) {
+      if (hookManager?.isInitialized()) {
         hookManager.runAfterHook(toolName, args, result);
       }
     } catch {

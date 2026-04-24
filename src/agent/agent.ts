@@ -44,7 +44,7 @@ import { generateConversationSummary } from "./session/summarizer";
 import { getSkillManager } from "./skills/manager";
 import { executeTools, getSandboxProjectRoot, type ToolResult, toolDefinitions } from "./tools/definitions";
 import { type ToolPlugin, ToolPluginManager } from "./tools/plugin";
-import { getAgentContext, getContextProjectRoot, setAgentSessionId } from "./utils/agent-context";
+import { getAgentContext, getContextConfigRoot, getContextProjectRoot, setAgentSessionId } from "./utils/agent-context";
 import { ContextTracker } from "./utils/context-tracker";
 import { isDebugEnabled } from "./utils/debug";
 import { getMicroCompactor } from "./utils/microcompaction";
@@ -828,6 +828,7 @@ export class Agent {
           reviewModel: effectiveModel,
           maxSkillsPerReview: this.config.skillReview.maxSkillsPerReview,
           reviewCooldownMs: this.config.skillReview.reviewCooldownMs,
+          projectRoot: getContextConfigRoot(),
         });
         await this.plugins.register(skillReviewPlugin);
         console.log("[Agent] Skill review plugin registered");
@@ -3043,9 +3044,9 @@ export class Agent {
       await this.mcpManager.disconnectAll();
     } catch {}
 
-    // Destroy hooks (global, reset for next agent)
+    // Destroy hooks for this agent (per-agent registry).
     try {
-      await destroyHooks();
+      await destroyHooks(this.agentId);
     } catch {}
 
     // Close connections

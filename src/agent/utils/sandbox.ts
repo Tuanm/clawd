@@ -589,9 +589,15 @@ export function getSandboxProjectRoot(): string {
   if (ctx?.projectRoot) {
     return ctx.projectRoot;
   }
-  // Fallback to global (CLI mode / backward compatibility)
+  // Fallback to global (CLI mode): initializeSandbox() or
+  // setSandboxProjectRoot() must have been called during startup.
+  // No silent process.cwd() fallback — the server's launch dir is never
+  // a valid sandbox root for an agent that didn't set its own context.
   if (!sandboxProjectRootFallback) {
-    sandboxProjectRootFallback = process.cwd();
+    throw new Error(
+      "getSandboxProjectRoot: no agent context and no CLI sandbox init. " +
+        "Call initializeSandbox(projectRoot) or setSandboxProjectRoot(root) before using the sandbox.",
+    );
   }
   return sandboxProjectRootFallback;
 }

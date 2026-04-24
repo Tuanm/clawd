@@ -66,20 +66,25 @@ export function getAgentContext(): AgentContext | undefined {
 }
 
 /**
- * Get the project root from context, falling back to process.cwd().
+ * Get the project root from the current agent context.
  * In worktree mode, this returns the worktree path (agent's working directory).
+ *
+ * Returns "" when no context is active. Callers must handle the empty case —
+ * there is deliberately no process.cwd() fallback because the server's launch
+ * directory is never a valid project root for any agent running inside it.
  */
 export function getContextProjectRoot(): string {
   const ctx = getAgentContext();
-  return ctx?.projectRoot || process.cwd();
+  return ctx?.projectRoot || "";
 }
 
 /**
  * Get the original project root (never the worktree path).
  * Use this for .clawd/ config paths (files, agents, tools, skills) which
  * must always reference the real project, not the worktree copy.
- * Falls back to projectRoot if not in worktree mode, then to
- * ~/.clawd/projects/{channel} if channel is available.
+ *
+ * Resolution order: originalProjectRoot → projectRoot → channel-default.
+ * Returns "" when none of those are set. No CWD fallback (see above).
  */
 export function getContextConfigRoot(): string {
   const ctx = getAgentContext();
@@ -91,7 +96,37 @@ export function getContextConfigRoot(): string {
     const { join } = require("node:path");
     return join(homedir(), ".clawd", "projects", ctx.channel);
   }
-  return process.cwd();
+  return "";
+}
+
+/**
+ * Strict variant of getContextProjectRoot — throws when no context is active.
+ * Use from call sites where running without a registered project root is a
+ * programming error (rather than silently falling back to a wrong path).
+ */
+export function requireContextProjectRoot(): string {
+  const root = getContextProjectRoot();
+  if (!root) {
+    throw new Error(
+      "requireContextProjectRoot: no agent context set. " +
+        "This code must run inside runWithAgentContext(...) or receive an explicit projectRoot.",
+    );
+  }
+  return root;
+}
+
+/**
+ * Strict variant of getContextConfigRoot — throws when no context is active.
+ */
+export function requireContextConfigRoot(): string {
+  const root = getContextConfigRoot();
+  if (!root) {
+    throw new Error(
+      "requireContextConfigRoot: no agent context set. " +
+        "This code must run inside runWithAgentContext(...) or receive an explicit projectRoot.",
+    );
+  }
+  return root;
 }
 
 /**

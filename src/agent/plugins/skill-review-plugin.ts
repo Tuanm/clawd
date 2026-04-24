@@ -34,7 +34,10 @@ export interface SkillReviewConfig {
   apiUrl: string;
   /** Channel ID to post skill notifications */
   channel: string;
-  /** Project root for skill storage (optional, auto-detected if not provided) */
+  /** Project root for skill storage. Required when the plugin is created
+   *  outside an agent context; otherwise falls back to the current agent
+   *  context's config root. No CWD fallback — see `projectRoot` resolution
+   *  below. */
   projectRoot?: string;
 }
 
@@ -167,14 +170,10 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
   let turnBufferStartIdx = 0;
 
   // Capture projectRoot in closure for use throughout plugin lifecycle.
-  // PluginContext has no projectRoot — must come from config or getContextConfigRoot().
-  let projectRoot: string;
-  try {
-    projectRoot =
-      config.projectRoot ?? (typeof getContextConfigRoot === "function" ? getContextConfigRoot() : process.cwd());
-  } catch {
-    projectRoot = process.cwd();
-  }
+  // PluginContext has no projectRoot — must come from config or the agent
+  // context (AsyncLocalStorage). No CWD fallback: skills must be scoped to
+  // the agent's own project, never the server's launch dir.
+  const projectRoot = config.projectRoot ?? getContextConfigRoot();
 
   // Conversation buffer (circular, max 500 messages)
   const messageBuffer: Array<{

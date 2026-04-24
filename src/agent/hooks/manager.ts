@@ -213,50 +213,60 @@ export class HookManager {
 }
 
 // ============================================================================
-// Singleton Instance
+// Per-Agent Registry
 // ============================================================================
+//
+// clawd runs many agents concurrently in one process. A single global
+// HookManager lets the first agent's projectRoot/hooks bleed into every
+// subsequent agent (and destroy() from one agent wipes hooks for the rest).
+// Key by agentId and resolve the current agent via AsyncLocalStorage.
 
-let globalHookManager: HookManager | null = null;
+import { getContextAgentId } from "../utils/agent-context";
+
+const hookManagers = new Map<string, HookManager>();
 
 /**
- * Get or create the global hook manager
- * Call initialize() before using
+ * Get the hook manager for the current agent context.
+ *
+ * Returns null when no agent context is active or hooks haven't been
+ * initialized yet. Callers MUST null-check — there is no CWD fallback
+ * because firing hooks against the server's launch dir would be wrong
+ * for every agent that isn't the server itself.
  */
-export function getHookManager(projectRoot?: string, agentId?: string): HookManager {
-  if (!globalHookManager && projectRoot) {
-    globalHookManager = new HookManager(projectRoot, agentId);
-  }
-  if (!globalHookManager) {
-    // Fallback - create with cwd
-    globalHookManager = new HookManager(process.cwd());
-  }
-  return globalHookManager;
+export function getHookManager(agentId?: string): HookManager | null {
+  const id = agentId || getContextAgentId();
+  if (!id) return null;
+  return hookManagers.get(id) ?? null;
 }
 
 /**
- * Initialize the global hook manager
- * Safe to call multiple times
+ * Initialize (or return existing) hook manager for a specific agent.
+ * Safe to call multiple times per agent.
  */
-export async function initializeHooks(projectRoot: string, agentId?: string): Promise<HookManager> {
-  if (globalHookManager) {
-    // Already exists - check if we need to reinitialize
-    if (!globalHookManager.isInitialized()) {
-      await globalHookManager.initialize();
+export async function initializeHooks(projectRoot: string, agentId: string): Promise<HookManager> {
+  let mgr = hookManagers.get(agentId);
+  if (mgr) {
+    if (!mgr.isInitialized()) {
+      await mgr.initialize();
     }
-    return globalHookManager;
+    return mgr;
   }
 
-  globalHookManager = new HookManager(projectRoot, agentId);
-  await globalHookManager.initialize();
-  return globalHookManager;
+  mgr = new HookManager(projectRoot, agentId);
+  hookManagers.set(agentId, mgr);
+  await mgr.initialize();
+  return mgr;
 }
 
 /**
- * Destroy the global hook manager
+ * Destroy the hook manager for a specific agent.
+ * When agentId is omitted, uses current context.
  */
-export async function destroyHooks(): Promise<void> {
-  if (globalHookManager) {
-    await globalHookManager.destroy();
-    globalHookManager = null;
-  }
+export async function destroyHooks(agentId?: string): Promise<void> {
+  const id = agentId || getContextAgentId();
+  if (!id) return;
+  const mgr = hookManagers.get(id);
+  if (!mgr) return;
+  await mgr.destroy();
+  hookManagers.delete(id);
 }
