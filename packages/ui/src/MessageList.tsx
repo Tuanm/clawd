@@ -1973,6 +1973,8 @@ export default function MessageList({
 
   // Character threshold for collapsing messages
   const MESSAGE_COLLAPSE_THRESHOLD = 1500;
+  // Sub-agent reports collapse aggressively to a ~1-line teaser.
+  const AGENT_REPORT_COLLAPSE_THRESHOLD = 120;
 
   // Toggle message expansion
   const toggleExpanded = useCallback((ts: string) => {
@@ -2655,19 +2657,31 @@ export default function MessageList({
                   const singleTextBlock = blocks.length === 1 && blocks[0].type === "text";
                   // Use decoded content length (not raw msg.text) to match the actual truncation boundary.
                   // blocks[0].type === "text" repeats singleTextBlock for TypeScript union narrowing.
-                  const isLong =
+                  const normalIsLong =
                     singleTextBlock &&
                     blocks[0].type === "text" &&
                     blocks[0].content.length > MESSAGE_COLLAPSE_THRESHOLD;
+                  // Agent reports collapse regardless of block structure — flatten
+                  // whitespace so the teaser fits ~1 line even if the full report
+                  // has headers, lists, or code blocks.
+                  const agentReportIsLong = isAgentReport && decodedText.length > AGENT_REPORT_COLLAPSE_THRESHOLD;
+                  const isLong = normalIsLong || agentReportIsLong;
                   const visibleBlocks: MessageBlock[] =
-                    isLong && !isExpanded && blocks[0].type === "text"
+                    agentReportIsLong && !isExpanded
                       ? [
                           {
                             type: "text",
-                            content: `${blocks[0].content.slice(0, MESSAGE_COLLAPSE_THRESHOLD)}...`,
+                            content: `${decodedText.replace(/\s+/g, " ").trim().slice(0, AGENT_REPORT_COLLAPSE_THRESHOLD)}...`,
                           },
                         ]
-                      : blocks;
+                      : normalIsLong && !isExpanded && blocks[0].type === "text"
+                        ? [
+                            {
+                              type: "text",
+                              content: `${blocks[0].content.slice(0, MESSAGE_COLLAPSE_THRESHOLD)}...`,
+                            },
+                          ]
+                        : blocks;
 
                   return (
                     <>
