@@ -16,7 +16,6 @@ import {
   buildSkillReviewPrompt,
   containsCorrection,
   parseSkillRecommendations,
-  postSystemMessage,
   sanitize,
 } from "../agent/plugins/skill-review-plugin";
 import { buildDynamicSystemPrompt, type PromptContext } from "../agent/prompt/builder";
@@ -900,7 +899,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private maybeRunSkillReview(): void {
     // CC agents use this inline implementation rather than the plugin-based one
     // (src/agent/plugins/skill-review-plugin.ts) used by non-CC agents via worker-loop.ts.
-    // Both share buildSkillReviewPrompt/parseSkillRecommendations/postSystemMessage.
+    // Both share buildSkillReviewPrompt/parseSkillRecommendations.
     // The plugin path has richer hooks (compaction, correction detection); this path
     // is simpler because the CC SDK lifecycle doesn't have plugin slots.
     // Lazily initialise — build once from runtime values, not from env-only
@@ -944,7 +943,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     this.skillReviewLastAt = Date.now();
     this.skillReviewLastToolCount = this.sessionToolCallCount;
 
-    const { channel, chatApiUrl, projectRoot } = this.config;
+    const { projectRoot } = this.config;
     const buffer = [...this.skillReviewBuffer];
 
     // Build transcript from buffer
@@ -1019,10 +1018,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             });
             logger.info(`[SkillReview] Created skill: ${skill.name}`);
           }
-        }
-
-        if (created.length > 0) {
-          await postSystemMessage(chatApiUrl, channel, created, skills.length - created.length);
         }
       } catch (err) {
         logger.error(`[SkillReview] Error: ${err}`);

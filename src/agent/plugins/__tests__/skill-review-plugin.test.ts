@@ -2,8 +2,7 @@
  * Unit tests for SkillReviewPlugin
  *
  * Tests: credential redaction, parseSkillRecommendations, runReview logic,
- * onToolResult hook, postSystemMessage SSRF protection, skill collision,
- * content truncation, beforeCompaction hook, isSafeApiUrl SSRF (IPv4 + IPv6).
+ * onToolResult hook, skill collision, content truncation, beforeCompaction hook.
  *
  * All tests use dependency injection (SkillReviewDeps) for isolation.
  * No real LLM calls — spawnAgent is mocked.
@@ -15,7 +14,6 @@ import {
   createSkillReviewPlugin,
   extractCorrections,
   isInjectionFree,
-  isSafeApiUrl,
   parseSkillRecommendations,
   sanitize,
 } from "../skill-review-plugin";
@@ -51,9 +49,7 @@ function makeMockSpawnAgentFn(
 
 // ── Helper: create plugin with minimal deps ───────────────────────────────────
 
-function makePlugin(
-  overrides: { spawnResult?: MockSubAgentResult; reviewInterval?: number; apiUrl?: string; channel?: string } = {},
-) {
+function makePlugin(overrides: { spawnResult?: MockSubAgentResult; reviewInterval?: number } = {}) {
   const {
     spawnResult = {
       agentId: "mock",
@@ -64,13 +60,11 @@ function makePlugin(
       subAgentsSpawned: 0,
     },
     reviewInterval = 20,
-    apiUrl = "http://localhost:3000",
-    channel = "test-channel",
   } = overrides;
 
   const spawnAgentFn = makeMockSpawnAgentFn(spawnResult);
   const { plugin } = createSkillReviewPlugin(
-    { apiUrl, channel, reviewInterval, minToolCallsBeforeFirstReview: 1, maxSkillsPerReview: 2, reviewCooldownMs: 0 },
+    { reviewInterval, minToolCallsBeforeFirstReview: 1, maxSkillsPerReview: 2, reviewCooldownMs: 0 },
     { spawnAgentFn: spawnAgentFn as any },
   );
   return { plugin, spawnAgentFn };
@@ -298,99 +292,6 @@ describe("containsCorrection / extractCorrections", () => {
   });
 });
 
-// ── Test: isSafeApiUrl (SSRF Protection) ─────────────────────────────────────
-
-describe("isSafeApiUrl (SSRF protection)", () => {
-  // Allowed URLs
-  test("allows localhost", () => {
-    expect(isSafeApiUrl("http://localhost:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://127.0.0.1:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://[::1]:3000/mcp")).toBe(true);
-  });
-
-  test("allows .local mDNS", () => {
-    expect(isSafeApiUrl("http://myhost.local:3000/mcp")).toBe(true);
-  });
-
-  test("allows private IPv4 ranges", () => {
-    expect(isSafeApiUrl("http://10.0.0.1:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://10.255.255.255:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://172.16.0.1:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://172.31.255.255:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://192.168.0.1:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://192.168.255.255:3000/mcp")).toBe(true);
-  });
-
-  test("allows IPv6 private ranges (fc00, fd00)", () => {
-    expect(isSafeApiUrl("http://[fc00::1]:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://[fd00::1]:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://[fc00:0000:0000:0000:0000:0000:0000:0001]:3000/mcp")).toBe(true); // expanded
-  });
-
-  test("allows IPv6 link-local (fe80)", () => {
-    expect(isSafeApiUrl("http://[fe80::1]:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://[fe80:0000:0000:0000:0000:0000:0000:0001]:3000/mcp")).toBe(true); // expanded
-  });
-
-  test("allows IPv6 loopback", () => {
-    expect(isSafeApiUrl("http://[::1]:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://::1:3000/mcp")).toBe(true); // no brackets
-  });
-
-  test("allows IPv4-mapped IPv6 (::ffff:x.x.x.x)", () => {
-    // ::ffff:127.0.0.1 maps to 127.0.0.1 (loopback → allowed)
-    expect(isSafeApiUrl("http://[::ffff:127.0.0.1]:3000/mcp")).toBe(true);
-    // ::ffff:10.0.0.1 maps to 10.0.0.1 (private → allowed)
-    expect(isSafeApiUrl("http://[::ffff:10.0.0.1]:3000/mcp")).toBe(true);
-    // ::ffff:8.8.8.8 maps to 8.8.8.8 (public → should be blocked)
-    expect(isSafeApiUrl("http://[::ffff:8.8.8.8]:3000/mcp")).toBe(false);
-  });
-
-  // Blocked URLs
-  test("rejects public IPv4 addresses", () => {
-    expect(isSafeApiUrl("https://1.2.3.4/mcp")).toBe(false);
-    expect(isSafeApiUrl("https://8.8.8.8/mcp")).toBe(false);
-    expect(isSafeApiUrl("https://1.1.1.1/mcp")).toBe(false);
-  });
-
-  test("rejects AWS metadata service (169.254.169.254)", () => {
-    expect(isSafeApiUrl("http://169.254.169.254/latest/meta-data/")).toBe(false);
-  });
-
-  test("rejects public IPv6 addresses", () => {
-    expect(isSafeApiUrl("http://[2001:4860:4860::8888]:3000/mcp")).toBe(false);
-    expect(isSafeApiUrl("http://[2606:4700:4700::1111]:3000/mcp")).toBe(false);
-  });
-
-  test("rejects expanded IPv6 forms that are public", () => {
-    // Expanded form of a public IP
-    const expanded = "http://[2001:0db8:85a3:0000:0000:8a2e:0370:7334]:3000/mcp";
-    expect(isSafeApiUrl(expanded)).toBe(false);
-  });
-
-  test("rejects non-IP hostnames (domain names)", () => {
-    expect(isSafeApiUrl("https://api.example.com/mcp")).toBe(false);
-  });
-
-  test("rejects octal-leading-zero IPs (SSRF bypass: 010.010.010.010 → 8.8.8.8)", () => {
-    // 010 = octal 010 = decimal 8. URL parser normalizes to 8.8.8.8.
-    // Without octal parsing fix, parseIPv4 would see 10.10.10.10 (private → false positive).
-    expect(isSafeApiUrl("http://010.010.010.010:3000/mcp")).toBe(false);
-  });
-
-  test("rejects octal-leading-zero loopback (0177.0.0.1 → 127.0.0.1)", () => {
-    // 0177 = octal 0177 = decimal 127 (loopback). URL parser → 127.0.0.1.
-    // With fix: parseIPv4("0177.0.0.1") → 127.0.0.1 → private → ALLOWED (correct).
-    expect(isSafeApiUrl("http://0177.0.0.1:3000/mcp")).toBe(true);
-  });
-
-  test("rejects invalid octal (09.0.0.1 → Invalid URL → blocked by try/catch)", () => {
-    // "09" is not a valid octet (9 > 7). URL parser throws → blocked.
-    // Our check: parseIPv4 returns null → isPrivateIPv4 never called.
-    expect(isSafeApiUrl("http://09.0.0.1:3000/mcp")).toBe(false);
-  });
-});
-
 // ── Test: onToolResult Hook ───────────────────────────────────────────────────
 
 describe("onToolResult hook", () => {
@@ -402,8 +303,6 @@ describe("onToolResult hook", () => {
     spawnAgentFn = mockSpawnAgent;
     const result = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 3,
         minToolCallsBeforeFirstReview: 1,
         maxSkillsPerReview: 2,
@@ -463,8 +362,6 @@ describe("reviewProvider + reviewModel pass-through", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 1,
         minToolCallsBeforeFirstReview: 1,
         maxSkillsPerReview: 2,
@@ -487,8 +384,6 @@ describe("reviewProvider + reviewModel pass-through", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 1,
         minToolCallsBeforeFirstReview: 1,
         maxSkillsPerReview: 2,
@@ -513,8 +408,6 @@ describe("runReview cooldown and guards", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 1,
         minToolCallsBeforeFirstReview: 10, // high threshold
         maxSkillsPerReview: 2,
@@ -536,8 +429,6 @@ describe("runReview cooldown and guards", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 5,
         minToolCallsBeforeFirstReview: 1,
         maxSkillsPerReview: 2,
@@ -562,8 +453,6 @@ describe("runReview cooldown and guards", () => {
     // Should not throw even with reviewInterval=0
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 0, // edge case
         minToolCallsBeforeFirstReview: 1,
         maxSkillsPerReview: 2,
@@ -585,8 +474,6 @@ describe("onInit hook", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 20,
         minToolCallsBeforeFirstReview: 10,
         maxSkillsPerReview: 2,
@@ -610,8 +497,6 @@ describe("beforeCompaction hook", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 20,
         minToolCallsBeforeFirstReview: 10,
         maxSkillsPerReview: 2,
@@ -630,8 +515,6 @@ describe("beforeCompaction hook", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 20,
         minToolCallsBeforeFirstReview: 10,
         maxSkillsPerReview: 2,
@@ -649,8 +532,6 @@ describe("beforeCompaction hook", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 20,
         minToolCallsBeforeFirstReview: 10,
         maxSkillsPerReview: 2,
@@ -673,8 +554,6 @@ describe("beforeCompaction hook", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 20,
         minToolCallsBeforeFirstReview: 10,
         maxSkillsPerReview: 2,
@@ -699,8 +578,6 @@ describe("onCompaction hook", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 20,
         minToolCallsBeforeFirstReview: 10,
         maxSkillsPerReview: 2,
@@ -724,8 +601,6 @@ describe("onAgentResponse hook", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 20,
         minToolCallsBeforeFirstReview: 10,
         maxSkillsPerReview: 2,
@@ -741,8 +616,6 @@ describe("onAgentResponse hook", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 20,
         minToolCallsBeforeFirstReview: 10,
         maxSkillsPerReview: 2,
@@ -762,8 +635,6 @@ describe("onShutdown hook", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 1,
         minToolCallsBeforeFirstReview: 1,
         maxSkillsPerReview: 2,
@@ -784,8 +655,6 @@ describe("onShutdown hook", () => {
     const spawnAgentFn = makeMockSpawnAgentFn();
     const { plugin } = createSkillReviewPlugin(
       {
-        apiUrl: "http://localhost:3000",
-        channel: "test",
         reviewInterval: 20,
         minToolCallsBeforeFirstReview: 10,
         maxSkillsPerReview: 2,
@@ -797,22 +666,6 @@ describe("onShutdown hook", () => {
     // Shutdown with 0 tool calls — should not crash
     await plugin.hooks.onShutdown();
     expect(spawnAgentFn.mock.calls.length).toBe(0);
-  });
-});
-
-// ── Test: postSystemMessage via mock ─────────────────────────────────────────
-
-describe("postSystemMessage (SSRF at call time)", () => {
-  test("rejects unsafe apiUrl even at call time", async () => {
-    // Test that isSafeApiUrl is called — we test the function directly
-    expect(isSafeApiUrl("https://1.2.3.4/mcp")).toBe(false);
-    expect(isSafeApiUrl("https://169.254.169.254/mcp")).toBe(false);
-    expect(isSafeApiUrl("https://[::ffff:8.8.8.8]/mcp")).toBe(false);
-  });
-
-  test("allows safe apiUrl", async () => {
-    expect(isSafeApiUrl("http://localhost:3000/mcp")).toBe(true);
-    expect(isSafeApiUrl("http://10.0.0.1:3000/mcp")).toBe(true);
   });
 });
 

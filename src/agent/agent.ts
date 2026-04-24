@@ -115,10 +115,6 @@ export interface AgentConfig {
     maxSkillsPerReview?: number;
     /** Cooldown between reviews in ms (default: 300000 = 5 min) */
     reviewCooldownMs?: number;
-    /** Claw'd API server URL for posting notifications */
-    apiUrl: string;
-    /** Channel ID for notifications */
-    channel: string;
   };
 }
 
@@ -796,7 +792,7 @@ export class Agent {
     }
 
     // Register skill-review plugin if configured
-    if (this.config.skillReview?.apiUrl && this.config.skillReview?.channel) {
+    if (this.config.skillReview) {
       try {
         const { createSkillReviewPlugin } = await import("./plugins/skill-review-plugin");
         // Final resolution: if the memory-config didn't supply provider/model
@@ -820,8 +816,6 @@ export class Agent {
         const rawReviewModel = this.config.skillReview.reviewModel;
         const effectiveModel = rawReviewModel ? mapModelName(rawReviewModel, effectiveProvider) : parentModel;
         const { plugin: skillReviewPlugin } = createSkillReviewPlugin({
-          apiUrl: this.config.skillReview.apiUrl,
-          channel: this.config.skillReview.channel,
           reviewInterval: this.config.skillReview.reviewInterval,
           minToolCallsBeforeFirstReview: this.config.skillReview.minToolCallsBeforeFirstReview,
           reviewProvider: effectiveProvider,

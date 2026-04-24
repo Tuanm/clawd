@@ -30,10 +30,6 @@ export interface SkillReviewConfig {
   maxSkillsPerReview?: number;
   /** Cooldown between reviews in ms (default: 300000 = 5 min) */
   reviewCooldownMs?: number;
-  /** Claw'd API server URL — required for posting channel notifications */
-  apiUrl: string;
-  /** Channel ID to post skill notifications */
-  channel: string;
   /** Project root for skill storage. Required when the plugin is created
    *  outside an agent context; otherwise falls back to the current agent
    *  context's config root. No CWD fallback — see `projectRoot` resolution
@@ -137,22 +133,19 @@ Keep it brief.`;
 export interface SkillReviewDeps {
   /** Override spawnAgent for testing (default: real spawnAgent) */
   spawnAgentFn?: typeof spawnAgent;
-  /** Override fetch for testing (default: global fetch) */
-  fetchFn?: typeof fetch;
   /** Override SkillManager for testing (default: getSkillManager()) */
   skillManager?: ReturnType<typeof getSkillManager>;
 }
 
 export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillReviewDeps = {}): { plugin: Plugin } {
   // Allow injection of real or mock implementations for testability
-  const { spawnAgentFn = spawnAgent, fetchFn = fetch, skillManager: injectedSm } = deps;
+  const { spawnAgentFn = spawnAgent, skillManager: injectedSm } = deps;
   const skillManagerInstance = injectedSm ?? getSkillManager();
 
   const reviewInterval = config.reviewInterval ?? DEFAULT_REVIEW_INTERVAL;
   const minToolCalls = config.minToolCallsBeforeFirstReview ?? DEFAULT_MIN_TOOL_CALLS;
   const maxSkills = config.maxSkillsPerReview ?? DEFAULT_MAX_SKILLS;
   const cooldownMs = config.reviewCooldownMs ?? DEFAULT_COOLDOWN_MS;
-  const { apiUrl, channel } = config;
   // Guard: prevent divide-by-zero if reviewInterval is 0 or undefined
   const effectiveInterval = reviewInterval > 0 ? reviewInterval : 20;
   // Auto-create is always ON - no config option
@@ -389,11 +382,6 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
             }
           }
 
-          // Post compact System message to channel (no emojis)
-          if (createdSkills.length > 0) {
-            postSystemMessage(apiUrl, channel, createdSkills, failedSkills.length, fetchFn);
-          }
-
           // Update snapshot after review
           lastCheckpointSnapshot = captureSnapshot();
 
@@ -587,229 +575,6 @@ export function createSkillReviewPlugin(config: SkillReviewConfig, deps: SkillRe
   };
 
   return { plugin };
-}
-
-// ── System Message ─────────────────────────────────────────────────────────
-
-// ── SSRF Protection ─────────────────────────────────────────────────────────
-/**
- * SECURITY: Proper IP range checking for SSRF protection.
- * Uses numeric IP parsing instead of regex to avoid IPv6 bypass attacks.
- * Covers: IPv4 private ranges, IPv4-mapped IPv6, all expanded IPv6 forms.
- */
-function isPrivateIPv4(ip: number): boolean {
-  const b0 = (ip >>> 24) & 0xff;
-  const b1 = (ip >>> 16) & 0xff;
-  return b0 === 10 || (b0 === 172 && b1 >= 16 && b1 <= 31) || (b0 === 192 && b1 === 168) || b0 === 127;
-}
-
-function parseIPv4(hostname: string): number | null {
-  const parts = hostname.split(".");
-  if (parts.length !== 4) return null;
-  // Parse each octet as a C-language octal or decimal integer.
-  // This matches Node.js/Bun URL parser IP normalization per WHATWG URL Standard.
-  // Exploit: without this, "010.010.010.010" (→ 8.8.8.8 public) passes
-  // our private-range check as 10.10.10.10 → SSRF bypass.
-  const nums = parts.map((p) => {
-    // Leading-zero octets → treat as octal (e.g. "010" → 8, "0200" → 128)
-    const n = parseInt(p, p.startsWith("0") && p.length > 1 ? 8 : 10);
-    if (isNaN(n) || n < 0 || n > 255) return null;
-    return n;
-  });
-  if (nums.some((n) => n === null)) return null;
-  return ((nums[0] << 24) | (nums[1] << 16) | (nums[2] << 8) | nums[3]) >>> 0;
-}
-
-function expandIPv6(hostname: string): string[] | null {
-  // Handle loopback and empty
-  const clean = hostname.replace(/^\[|\]$/g, "");
-  if (clean === "::1") return ["0", "0", "0", "0", "0", "0", "0", "1"];
-  if (clean === "::") return ["0", "0", "0", "0", "0", "0", "0", "0"];
-
-  // Handle IPv4-mapped: ::ffff:192.168.1.1
-  const ipv4Mapped = clean.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-  if (ipv4Mapped) {
-    const ip = parseIPv4(ipv4Mapped[1]);
-    if (ip === null) return null;
-    const b = [(ip >>> 24) & 0xff, (ip >>> 16) & 0xff, (ip >>> 8) & 0xff, ip & 0xff];
-    // Return hex strings for all groups so isPrivateIPv6 can parse them
-    return ["0", "0", "0", "0", b[0].toString(16), b[1].toString(16), b[2].toString(16), b[3].toString(16)];
-  }
-
-  // Expand compressed form
-  const parts = clean.split(":");
-  const nonEmpty: string[] = [];
-  let emptyCount = 0;
-
-  for (const p of parts) {
-    if (p === "") {
-      emptyCount++;
-    } else {
-      const n = parseInt(p, 16);
-      if (isNaN(n) || n < 0 || n > 0xffff) return null;
-      nonEmpty.push(p); // Keep hex string so isPrivateIPv6 can parse it
-    }
-  }
-
-  if (emptyCount === 0 && nonEmpty.length === 8) {
-    return nonEmpty;
-  }
-  if (emptyCount === 1) {
-    // Find the :: position in the original parts array
-    const emptyIdx = parts.indexOf("");
-    // filled = nonEmpty entries before the ::
-    const filled = nonEmpty.slice(0, emptyIdx);
-    // tail = nonEmpty entries after the ::
-    const tail = nonEmpty.slice(emptyIdx);
-    const zeros = new Array(8 - nonEmpty.length).fill("0");
-    return [...filled, ...zeros, ...tail];
-  }
-  return null;
-}
-
-function isPrivateIPv6(hostname: string): boolean {
-  try {
-    const clean = hostname.replace(/^\[|\]$/g, "");
-    if (clean === "::1" || clean === "::") return true;
-
-    // Handle IPv4-mapped IPv6 from URL parsing:
-    // Input: [::ffff:127.0.0.1] becomes hostname [::ffff:7f00:1] after URL parsing.
-    // The URL parser converts ::ffff:A.B.C.D to ::ffff:HHLL:X where HHLL is hex
-    // of (A<<8|B) and X is D (single digit). We recover the first two bytes.
-    // This is sufficient to identify 10.x.x.x (private), 127.x.x.x (loopback),
-    // 172.16-31.x.x (private), and 192.168.x.x (private).
-    const ipv4Mapped = clean.match(/^::ffff:([0-9a-f]{1,4}):(\d+)$/i);
-    if (ipv4Mapped) {
-      const hexPart = ipv4Mapped[1];
-      const lastByte = parseInt(ipv4Mapped[2], 10);
-      const hiWord = parseInt(hexPart, 16);
-      const b0 = (hiWord >>> 8) & 0xff; // First IPv4 byte
-      const b1 = hiWord & 0xff; // Second IPv4 byte
-      // With b0 and lastByte (and b1 partial), we can identify:
-      if (b0 === 10) return true; // 10.x.x.x is always private
-      if (b0 === 127) return true; // 127.x.x.x is loopback
-      if (lastByte >= 1 && lastByte <= 9) {
-        // Single-digit last byte — identify known private ranges
-        if (b0 === 172 && b1 >= 16 && b1 <= 31) return true; // 172.16-31.x.x
-        if (b0 === 192 && b1 === 168) return true; // 192.168.x.x
-      }
-      return false; // Cannot determine for multi-digit last bytes — reject
-    }
-
-    // Handle general IPv6 (compressed or expanded)
-    if (/^[0-9a-f]{0,4}(:[0-9a-f]{0,4})+$/i.test(clean)) {
-      const groups = expandIPv6(clean);
-      if (!groups || groups.length !== 8) return false;
-      const g0 = parseInt(groups[0], 16);
-      if (g0 >= 0xfc00 && g0 <= 0xfdff) return true; // fc00::/7
-      if (g0 >= 0xfe80 && g0 <= 0xfeff) return true; // fe80::/10
-      if (g0 === 0) {
-        // Check if loopback (::1)
-        return groups[7] === "1" && groups.slice(0, 7).every((g) => g === "0");
-      }
-      return false;
-    }
-
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-export function isSafeApiUrl(url: string): boolean {
-  // Pre-check: handle unbracketed IPv6 that may cause URL parser to throw
-  // e.g. "http://::1:3000/mcp" → hostname "::1" (per RFC 3986)
-  // These should be treated the same as bracketed forms
-  const ipv6WithoutBrackets = url.match(/^https?:\/\/([0-9a-f:]+):(\d+)\//i);
-  if (ipv6WithoutBrackets) {
-    const potentialIPv6 = ipv6WithoutBrackets[1];
-    if (potentialIPv6.includes("::") || potentialIPv6.includes(":")) {
-      // Likely unbracketed IPv6 — check via isPrivateIPv6
-      if (isPrivateIPv6(potentialIPv6)) return true;
-    }
-  }
-
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname;
-
-    // Allow localhost variants
-    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1") {
-      return true;
-    }
-
-    // Allow .local mDNS
-    if (hostname.endsWith(".local")) {
-      return true;
-    }
-
-    // Check IPv4
-    const ip = parseIPv4(hostname);
-    if (ip !== null) {
-      // Block 169.254.0.0/16 (link-local / AWS metadata service)
-      const b0 = (ip >>> 24) & 0xff;
-      const b1 = (ip >>> 16) & 0xff;
-      if (b0 === 169 && b1 === 254) return false;
-      return isPrivateIPv4(ip);
-    }
-
-    // Check IPv6 (handles all forms: compressed, expanded, IPv4-mapped)
-    if (isPrivateIPv6(hostname)) {
-      return true;
-    }
-
-    // Reject all others (public IPs, unknown hostnames)
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-export async function postSystemMessage(
-  apiUrl: string,
-  channel: string,
-  created: Array<{ name: string; description: string; path: string }>,
-  failedCount: number,
-  httpFetch: typeof fetch = fetch,
-): Promise<void> {
-  const lines: string[] = [];
-
-  for (const skill of created) {
-    // SECURITY: Escape to prevent markdown injection in notification
-    const safeName = skill.name.replace(/[<>[\]]/g, "\\$&");
-    const safeDesc = skill.description.replace(/[<>[\]]/g, "\\$&");
-    const safePath = skill.path.replace(/[<>[\]]/g, "\\$&");
-    lines.push(`Skill created: ${safeName} — ${safeDesc} (${safePath})`);
-  }
-
-  if (failedCount > 0) {
-    lines.push(`${failedCount} skill(s) failed to save`);
-  }
-
-  const message = lines.join("\n");
-
-  // Security: validate apiUrl before making any HTTP request to prevent SSRF
-  if (!isSafeApiUrl(apiUrl)) {
-    console.error("[SkillReview] Rejected unsafe apiUrl:", apiUrl);
-    return;
-  }
-
-  // Post as a channel system notification — not from the Claw'd agent —
-  // so the UI renders it centered/muted (subtype "bot_message").
-  try {
-    await httpFetch(`${apiUrl}/api/chat.postMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        channel,
-        text: message,
-        user: "USYS",
-        subtype: "bot_message",
-      }),
-    });
-  } catch (err) {
-    console.error("[SkillReview] Failed to post system message:", err);
-  }
 }
 
 // ── Semantic Deduplication ────────────────────────────────────────────────
