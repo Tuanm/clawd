@@ -89,14 +89,21 @@ export function createStatePersistencePlugin(config: StatePersistenceConfig): St
         state = loadWorkingState(sessionDir);
       }
 
-      // Capture environment
+      // Capture environment. Use the agent's project root from
+      // AsyncLocalStorage so the recorded workingDir + git branch reflect
+      // the agent's tree, not the server's launch dir (which differs when
+      // multiple agents run from one clawd process).
+      const { getContextProjectRoot } = await import("../utils/agent-context");
+      const workingDir = getContextProjectRoot();
       try {
         const { execSync } = require("child_process");
-        const branch = execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim();
-        const workingDir = process.cwd();
+        const branch = execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", {
+          encoding: "utf-8",
+          cwd: workingDir,
+        }).trim();
         updateEnvironment(state, { branch, workingDir });
       } catch {
-        updateEnvironment(state, { workingDir: process.cwd() });
+        updateEnvironment(state, { workingDir });
       }
     },
 
