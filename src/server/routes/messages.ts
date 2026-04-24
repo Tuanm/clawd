@@ -409,9 +409,12 @@ export function removeReaction(req: ReactionsRequest) {
 // Get pending messages (for agent polling)
 // includeBot=true returns ALL messages (UHUMAN + UBOT) for context understanding
 export function getPendingMessages(channel: string, lastTs?: string, includeBot: boolean = false, limit: number = 100) {
+  // System notifications (channel_join, bot_message) are UI-only — agents should
+  // never see them via polling to avoid mis-processing as actionable messages.
+  const systemFilter = ` AND (subtype IS NULL OR subtype NOT IN ('bot_message', 'channel_join'))`;
   let query = includeBot
-    ? `SELECT * FROM messages WHERE channel = ?`
-    : `SELECT * FROM messages WHERE channel = ? AND user != 'UBOT'`;
+    ? `SELECT * FROM messages WHERE channel = ?${systemFilter}`
+    : `SELECT * FROM messages WHERE channel = ? AND user != 'UBOT'${systemFilter}`;
   const params: (string | number)[] = [channel];
 
   if (lastTs) {
