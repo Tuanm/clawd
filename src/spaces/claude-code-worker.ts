@@ -174,16 +174,25 @@ export class ClaudeCodeSpaceWorker {
     spaceProjectRoots.delete(this.config.space.id);
   }
 
+  /** PreToolUse: fires before the tool actually runs so the UI can render a
+   *  "running" indicator before the terminal status arrives from PostToolUse. */
+  handleToolStart(toolName: string, toolInput: unknown, toolUseId?: string): void {
+    const { space, agentId } = this.config;
+    const input = (toolInput || {}) as Record<string, any>;
+    broadcastAgentToolCall(space.space_channel, agentId, toolName, input, "started", undefined, toolUseId);
+  }
+
   handleToolResult(toolName: string, toolInput: unknown, toolResponse: unknown, toolUseId?: string): void {
     const { space, agentId } = this.config;
     const input = (toolInput || {}) as Record<string, any>;
     const response = toolResponse as any;
-    const status = response?.error ? "error" : "completed";
     const result = truncateToolResult(response);
+    // Match main-worker's error detection — SDK-level errors surface as `isError: true`
+    // on the response, and some MCP tools return `"Error: ..."` text payloads.
+    const status = response?.error || response?.isError || result.startsWith("Error: ") ? "error" : "completed";
     const description = formatToolDescription(toolName, input);
 
     console.log(`[claude-code] hook → ${status}: ${toolName} ${description.slice(0, 60)}`);
-    broadcastAgentToolCall(space.space_channel, agentId, toolName, input, "started", undefined, toolUseId);
     broadcastAgentToolCall(
       space.space_channel,
       agentId,
@@ -286,6 +295,7 @@ export class ClaudeCodeSpaceWorker {
       onTextDelta: (text: string) => broadcastAgentToken(space.space_channel, agentId, text),
       onThinkingDelta: (text: string) => broadcastAgentToken(space.space_channel, agentId, text, "thinking"),
       onAssistantMessage: (content: any[]) => this.handleAssistantMessage(content),
+      onToolStart: (name: string, input: unknown, id: string) => this.handleToolStart(name, input, id),
       onToolResult: (name: string, input: unknown, response: unknown, id: string) =>
         this.handleToolResult(name, input, response, id),
       onActivity: () => {

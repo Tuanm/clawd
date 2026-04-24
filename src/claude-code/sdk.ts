@@ -58,6 +58,10 @@ export interface SDKStreamCallbacks {
   onTextDelta: (text: string) => void;
   onThinkingDelta: (text: string) => void;
   onAssistantMessage: (content: any[]) => void;
+  /** Called from the PreToolUse hook, AFTER blocking checks pass and BEFORE the tool
+   *  actually executes. Use this to broadcast a "running" state to the UI — the
+   *  matching onToolResult fires later when the tool completes (PostToolUse). */
+  onToolStart?: (toolName: string, toolInput: unknown, toolUseId: string) => void;
   onToolResult: (toolName: string, toolInput: unknown, toolResponse: unknown, toolUseId: string) => void;
   onSessionId: (sessionId: string) => void;
   /** Called on each tool completion to refresh activity timestamp */
@@ -68,8 +72,10 @@ export interface SDKStreamCallbacks {
 // Hooks
 // ============================================================================
 
-/** PreToolUse: block run_in_background + protect ~/.clawd/config.json from all agents */
-function createPreToolUseHook(): HookCallbackMatcher {
+/** PreToolUse: block run_in_background + protect ~/.clawd/config.json from all agents.
+ *  On allow paths, also invokes onToolStart so the UI can render a "running" state
+ *  before PostToolUse fires with the terminal result. */
+function createPreToolUseHook(onToolStart?: SDKStreamCallbacks["onToolStart"]): HookCallbackMatcher {
   const configPath = resolve(homedir(), ".clawd", "config.json");
   // Pre-resolve real path of config.json (guard against symlinks pointing to it)
   let configRealPath: string;
@@ -103,6 +109,18 @@ function createPreToolUseHook(): HookCallbackMatcher {
     if (input.hook_event_name !== "PreToolUse") return {};
     const toolInput = input.tool_input as Record<string, any> | undefined;
 
+    // Helper: broadcast "tool starting" and allow the call through.
+    // Called only from verified allow paths so blocked tools never emit a start event.
+    // Wrapped in try/catch: a broadcast failure must never fail the hook itself.
+    const allow = (): HookJSONOutput => {
+      try {
+        onToolStart?.(input.tool_name, input.tool_input, (input as any).tool_use_id);
+      } catch {
+        // best-effort only
+      }
+      return {};
+    };
+
     if (input.tool_name === "Bash") {
       // Block run_in_background
       if (toolInput?.run_in_background) {
@@ -122,7 +140,7 @@ function createPreToolUseHook(): HookCallbackMatcher {
       if (cmd.includes(".clawd/config.json")) {
         return CONFIG_BLOCK;
       }
-      return {};
+      return allow();
     }
 
     // Block direct file tool access to ~/.clawd/config.json (all modes)
@@ -148,7 +166,7 @@ function createPreToolUseHook(): HookCallbackMatcher {
       if (isConfigPath(p)) return CONFIG_BLOCK;
     }
 
-    return {};
+    return allow();
   };
   return { matcher: "*", hooks: [hook] };
 }
@@ -402,7 +420,7 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     // Pass through settings (attribution, permissions, etc.)
     ...(Object.keys(sdkSettings).length > 0 ? { settings: sdkSettings } : {}),
     hooks: {
-      PreToolUse: [createPreToolUseHook()],
+      PreToolUse: [createPreToolUseHook(callbacks.onToolStart)],
       PostToolUse: [createPostToolUseHook(callbacks.onToolResult, callbacks.onActivity)],
     },
   };
