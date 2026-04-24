@@ -126,7 +126,7 @@ clawd/
 │   ├── ui/                           # React SPA (Vite)
 │   │   ├── src/
 │   │   │   ├── App.tsx               # Main app, routing, WS setup
-│   │   │   ├── MessageList.tsx       # Message display, mermaid rendering
+│   │   │   ├── MessageList.tsx       # Message display, mermaid rendering; `agent_report` subtypes collapsed to 1-line teaser (AGENT_REPORT_COLLAPSE_THRESHOLD=120)
 │   │   │   ├── artifact-*.tsx        # Artifact rendering system
 │   │   │   ├── interactive-renderer.tsx # Declarative interactive artifact renderer
 │   │   │   ├── interactive-components.tsx # Interactive primitives (buttons, forms, etc.)
@@ -450,6 +450,8 @@ Agents delegate work via `spawn_agent(task, agent="code-reviewer")`:
 - `get_agent_report(id)` fetches specific sub-agent's full result or error
 - `agent` parameter optional — without it, sub-agent inherits parent's configuration (backward compatible)
 - **Sub-agent tools** — Limited to `complete_task`, `today` (no `reply`). Environment info (OS/shell/cwd) injected into system prompt.
+- **Skill-creation notifications** — `postSystemMessage` in `skill-review-plugin.ts` POSTs directly to `/api/chat.postMessage` with `subtype: "bot_message"` and `user: "USYS"`; rendered as centered/muted system messages in the UI (not attributed to the agent).
+- **Pending message filtering** — `getPendingMessages` excludes messages with `subtype IN ('bot_message', 'channel_join')` at the source; applies to worker-loop, main-worker, claude-code-worker, `chat_poll_and_ack`, and `/api/messages.pending`. Prevents agents from acting on system notifications.
 
 **Constraints:**
 - Max 9 concurrent spaces per channel
