@@ -1606,7 +1606,20 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
                   ? Buffer.from(listProc.stdout).toString("utf-8").split("\n").filter(Boolean)
                   : [];
               const sessionExists = sessions.includes(session);
-              const cwd = (args.cwd as string) || process.cwd();
+              // Resolve cwd: explicit arg → agent's registered project root → server CWD.
+              // Without the registered-root lookup, tmux sessions launched by CC
+              // agents would cd into wherever clawd was started from, not the
+              // agent's project tree.
+              let cwd = args.cwd as string | undefined;
+              if (!cwd) {
+                try {
+                  const { getAgentProjectRoot: getPr } = await import("../routes/agents");
+                  cwd = getPr(db, channel, agentId) || undefined;
+                } catch {
+                  // Best-effort — fall through to CWD
+                }
+              }
+              if (!cwd) cwd = process.cwd();
               const cdCmd = `cd "${cwd}" && ${args.command as string}`;
               if (!sessionExists) {
                 const r = await execTmuxMcp(["new-session", "-d", "-s", session, cdCmd]);
@@ -2323,7 +2336,22 @@ export async function handleAgentMcpRequest(req: Request, channel: string, agent
               const description = (args.description as string) || "";
               const runInBackground = (args.run_in_background as boolean) || false;
               const cwdArg = args.cwd as string | undefined;
-              const workDir = cwdArg || process.cwd();
+              // Resolve workDir: explicit arg → agent's registered project root → server CWD.
+              // Non-CC (in-process) agents' `bash` defaults to the sandbox project
+              // root via enforceSandboxPolicy; CC agents coming through MCP don't
+              // hit that path, so we replicate the intent here. Without this,
+              // `bash npm install` / `git status` etc. run in the server's launch
+              // dir instead of the agent's project tree.
+              let workDir = cwdArg;
+              if (!workDir) {
+                try {
+                  const { getAgentProjectRoot: getPr } = await import("../routes/agents");
+                  workDir = getPr(db, channel, agentId) || undefined;
+                } catch {
+                  // Best-effort — fall through to CWD
+                }
+              }
+              if (!workDir) workDir = process.cwd();
 
               // Background mode: delegate to tmux job manager
               if (runInBackground) {
