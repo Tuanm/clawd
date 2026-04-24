@@ -2107,7 +2107,19 @@ export default function MessageList({
     if (scrollBottom < 100) {
       endRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [isAtLatest, isArticleMode]);
+  }, [messages.length, pendingMessages.length, isAtLatest, isArticleMode]);
+
+  // When the user sends a message (pending count increases), always scroll to
+  // their own message — even if they had scrolled up — so they can see it land.
+  const prevPendingCountRef = useRef(pendingMessages.length);
+  useEffect(() => {
+    const prev = prevPendingCountRef.current;
+    prevPendingCountRef.current = pendingMessages.length;
+    if (isArticleMode) return;
+    if (pendingMessages.length > prev) {
+      endRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [pendingMessages.length, isArticleMode]);
 
   // Helper to check if scroll button should show (not at bottom)
   const checkScrollButtonVisibility = useCallback(() => {

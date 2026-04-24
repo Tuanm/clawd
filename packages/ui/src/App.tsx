@@ -1605,17 +1605,10 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               showDesktopNotification(agentName, plainText, msgChannel);
             }
 
-            // If this is a user message, remove any 'sent' pending messages (they've been delivered)
-            const isUserMessage = data.message.user === "UHUMAN";
-            const updatedPending = isUserMessage
-              ? current.pendingMessages.filter((m) => m.status !== "sent")
-              : current.pendingMessages;
-
             const newMap = new Map(prev);
             newMap.set(msgChannel, {
               ...current,
               messages: [...current.messages, data.message],
-              pendingMessages: updatedPending,
             });
             return newMap;
           });
@@ -2179,18 +2172,21 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       const data = await res.json();
 
       if (data.ok) {
-        // Remove pending message after 500ms delay (gives time for WebSocket to deliver real message)
-        setTimeout(() => {
-          setChannelStates((prev) => {
-            const current = prev.get(activeChannel) || defaultChannelState;
-            const newMap = new Map(prev);
-            newMap.set(activeChannel, {
-              ...current,
-              pendingMessages: current.pendingMessages.filter((m) => m.id !== pendingId),
-            });
-            return newMap;
+        // Atomically insert the real message and remove the pending entry.
+        // The POST response carries the full persisted message; we materialize it
+        // immediately so there is no gap between pending removal and WS delivery.
+        // The WS handler dedupes by ts (line ~1597), so the later broadcast is a no-op.
+        setChannelStates((prev) => {
+          const current = prev.get(activeChannel) || defaultChannelState;
+          const newMap = new Map(prev);
+          const alreadyPresent = data.message && current.messages.some((m) => m.ts === data.message.ts);
+          newMap.set(activeChannel, {
+            ...current,
+            messages: data.message && !alreadyPresent ? [...current.messages, data.message] : current.messages,
+            pendingMessages: current.pendingMessages.filter((m) => m.id !== pendingId),
           });
-        }, 500);
+          return newMap;
+        });
       }
 
       if (!data.ok) {
