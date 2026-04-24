@@ -572,6 +572,7 @@ flowchart TD
 - **Continuation**: If the LLM returns tool calls, results are injected and the loop continues
 - **Interrupts**: New user messages can interrupt an in-progress agent turn
 - **Retry**: Transient LLM failures trigger automatic retry with exponential backoff
+- **System message filtering**: `getPendingMessages` (`src/server/routes/messages.ts`) filters out messages with `subtype IN ('bot_message', 'channel_join')` before delivering to agents — covers worker-loop, main-worker, claude-code-worker, `chat_poll_and_ack`, and `/api/messages.pending`. Prevents agents from acting on system notifications (e.g., skill-creation banners).
 
 ### 6.2 Agent Class & Reasoning Loop
 
@@ -699,6 +700,7 @@ interface Plugin {
 | `state-persistence-plugin` | `plugins/state-persistence-plugin.ts` | Save/restore agent state across restarts |
 | `tunnel-plugin` | `plugins/tunnel-plugin.ts` | Expose local services via tunnels |
 | `spawn-agent-spaces` | `spaces/spawn-plugin.ts` | Sub-agent spawning via spaces system |
+| `skill-review-plugin` | `plugins/skill-review-plugin.ts` | Posts skill-creation notifications via `postSystemMessage` — POSTs directly to `/api/chat.postMessage` with `subtype: "bot_message"` and `user: "USYS"`, rendering as centered/muted system messages (not attributed to the agent) |
 
 ### 6.5 Memory System
 
@@ -2122,6 +2124,10 @@ When an article is opened at `/articles/{id}`, the UI switches to **article mode
 - WebSocket subscriptions and background polling are disabled (articles are static)
 
 ### Recent UI Improvements (April 2026)
+
+#### Sub-Agent Report Collapse
+
+Messages with `subtype === "agent_report"` are collapsed to a single-line teaser (≤120 chars, whitespace flattened) by default. Click "More" to expand to full markdown (headers, code fences, Mermaid, etc.). Normal messages retain the prior 1500-char threshold. Threshold constant: `AGENT_REPORT_COLLAPSE_THRESHOLD = 120` in `MessageList.tsx`.
 
 #### article_create — Multiple Content Sources
 The `article_create` tool (available to all agent types) now accepts three mutually exclusive content sources:
