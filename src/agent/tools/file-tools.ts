@@ -807,9 +807,11 @@ registerTool(
     // Save to {originalProjectRoot}/.clawd/files/ (not worktree)
     const { writeFile, mkdir } = await import("node:fs/promises");
     const { basename, extname, join } = await import("node:path");
-    const { getContextConfigRoot } = await import("../utils/agent-context");
+    const { requireContextConfigRoot } = await import("../utils/agent-context");
 
-    const configRoot = getContextConfigRoot();
+    // requireContextConfigRoot throws if no agent context is active, surfacing
+    // any missed setup rather than silently writing to a bogus CWD-derived path.
+    const configRoot = requireContextConfigRoot();
     const filesDir = join(configRoot, ".clawd", "files");
     await mkdir(filesDir, { recursive: true });
 

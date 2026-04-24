@@ -35,8 +35,19 @@ import type { AgentBusConfig, AgentRegistry, AgentRegistryEntry, BusMessage, Top
 // ============================================================================
 
 function getProjectHash(): string {
-  const cwd = process.cwd();
-  return createHash("sha256").update(cwd).digest("hex").slice(0, 12);
+  // Prefer the agent context's project root so in-server multi-agent usage
+  // isolates bus data per agent. CLI-plugin usage has no context set and
+  // falls through to process.cwd() — which in that case equals the user's
+  // project root (they invoked `clawd` there), so it's correct.
+  let root: string | undefined;
+  try {
+    const { getAgentContext } = require("../../utils/agent-context");
+    root = getAgentContext()?.originalProjectRoot || getAgentContext()?.projectRoot;
+  } catch {
+    // agent-context module unavailable (shouldn't happen, but keep the plugin standalone-safe)
+  }
+  const base = root || process.cwd();
+  return createHash("sha256").update(base).digest("hex").slice(0, 12);
 }
 
 function getDefaultBusDir(): string {

@@ -201,10 +201,13 @@ export class ReadOnceCache {
       }
     }
 
-    // Relative path — resolve from projectRoot or cwd
-    const base = projectRoot || process.cwd();
+    // Relative path — require explicit projectRoot.
+    // No CWD fallback: the server's launch dir is never the agent's project,
+    // so silently resolving against it would surface file-not-found (best
+    // case) or read the wrong file (worst case).
+    if (!projectRoot) return null;
     try {
-      return realpathSync(join(base, filePath));
+      return realpathSync(join(projectRoot, filePath));
     } catch {
       return null;
     }
