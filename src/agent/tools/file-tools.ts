@@ -168,7 +168,10 @@ registerTool(
       let rawContent: string;
 
       if (cache) {
-        const cached = cache.read(resolvedPath, process.cwd());
+        // resolvedPath is always absolute (via resolveSafePath), so the
+        // projectRoot arg to cache.read is unused — pass nothing rather
+        // than process.cwd() to make that explicit.
+        const cached = cache.read(resolvedPath);
         if (cached) {
           rawContent = cached.content;
         } else {
