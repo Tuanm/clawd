@@ -395,6 +395,28 @@ class OpenAIProvider implements LLMProvider {
           }
         }
       }
+
+      // Premature EOF without [DONE] sentinel (e.g., TCP drop after content).
+      // OpenAI's spec mandates [DONE], but real-world server crashes / network
+      // resets bypass it. Flush any buffered tool calls (validate args JSON, use
+      // "{}" if truncated) then emit done so the agent records token usage and
+      // exits the for-await cleanly instead of skipping turn-end accounting.
+      if (!doneEmitted) {
+        for (const tc of toolCallBuffer.values()) {
+          if (tc.function?.name) {
+            try {
+              JSON.parse(tc.function.arguments || "{}");
+            } catch {
+              console.warn(`[Provider] Incomplete tool args for ${tc.function.name}, using empty object`);
+              tc.function.arguments = "{}";
+            }
+            yield { type: "tool_call", toolCall: tc };
+          }
+        }
+        toolCallBuffer.clear();
+        doneEmitted = true;
+        yield { type: "done" };
+      }
     } finally {
       await reader.cancel().catch(() => {});
     }
@@ -1228,16 +1250,26 @@ NEVER skip reply! If you skip it, the message will be processed infinitely!`;
 
       // Premature EOF without [DONE] or event.done (e.g., server-side TCP drop).
       // Flush any pending tool calls then emit done so the agent loop terminates
-      // cleanly instead of hanging on a missing terminator.
+      // cleanly instead of hanging on a missing terminator. Mirror Anthropic's
+      // pattern: validate accumulated args JSON and substitute "{}" if truncated,
+      // so downstream tool dispatch sees executable input instead of a parse
+      // error round-tripped back to the LLM.
       if (!doneEmitted) {
         for (const [id, tc] of toolCallBuffer.entries()) {
           if (tc.name) {
+            let args = tc.arguments;
+            try {
+              JSON.parse(args);
+            } catch {
+              console.warn(`[Provider] Incomplete tool args for ${tc.name}, using empty object`);
+              args = "{}";
+            }
             yield {
               type: "tool_call",
               toolCall: {
                 id: String(id),
                 type: "function",
-                function: { name: tc.name, arguments: tc.arguments },
+                function: { name: tc.name, arguments: args },
               },
             };
           }
