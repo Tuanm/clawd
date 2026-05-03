@@ -145,6 +145,27 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     docsUrl: "https://github.com/anthropics/anthropic-cookbook/tree/main/mcp",
   },
   {
+    id: "playwright",
+    name: "Playwright",
+    description:
+      "Browser automation: navigate, click, type, screenshot, accessibility tree. Persistent profile per channel.",
+    transport: "stdio",
+    command: "npx",
+    args: [
+      "-y",
+      "@playwright/mcp@latest",
+      "--browser",
+      "chromium",
+      "--headless",
+      "--user-data-dir",
+      "{HOME}/.clawd/browser-data/{CHANNEL}/",
+    ],
+    category: "web",
+    official: true,
+    popularity: 4,
+    docsUrl: "https://github.com/microsoft/playwright-mcp",
+  },
+  {
     id: "atlassian",
     name: "Atlassian",
     description: "Access Jira issues, Confluence pages, and Atlassian workspace data via OAuth.",

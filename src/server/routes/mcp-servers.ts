@@ -5,6 +5,7 @@
  * Follows the same pattern as agents.ts.
  */
 
+import { homedir } from "node:os";
 import { convertCCFormatToInternal, validateServerConfig } from "../../agent/api/mcp-validation";
 import {
   getChannelMCPServers,
@@ -14,7 +15,6 @@ import {
 } from "../../agent/api/provider-config";
 import type { CCMcpServerConfig, MCPServerConfig } from "../../agent/api/providers";
 import { getCatalogEntry, listCategories, resolveArgs, searchCatalog } from "../../agent/mcp/catalog";
-import { COPILOT_LOGO, isCopilotEnabled, setCopilotEnabled } from "../../agent/plugins/copilot-analytics-plugin";
 import type { WorkerManager } from "../../worker-manager";
 import { json } from "../http-helpers";
 import { discoverOAuthMetadata, loadOAuthToken, removeOAuthToken, startOAuthFlow } from "../mcp/oauth";
@@ -75,22 +75,6 @@ export function registerMcpServerRoutes(
         };
       });
 
-      // Inject built-in copilot analytics server (always present, non-removable)
-      const copilotOn = isCopilotEnabled(channel);
-      servers.unshift({
-        name: "copilot",
-        transport: "builtin" as any,
-        command: undefined as any,
-        args: undefined as any,
-        env: undefined,
-        url: undefined as any,
-        enabled: copilotOn,
-        logo: COPILOT_LOGO,
-        oauth: undefined,
-        connected: copilotOn,
-        tools: copilotOn ? 5 : 0,
-      });
-
       return json({ ok: true, servers });
     }
 
@@ -136,7 +120,6 @@ export function registerMcpServerRoutes(
         let { oauth } = body;
 
         if (!channel || !name) return json({ ok: false, error: "channel and name required" }, 400);
-        if (name === "copilot") return json({ ok: false, error: '"copilot" is a reserved server name' }, 400);
 
         console.log(`[mcp-servers] Add: channel=${channel}, name=${name}, body_transport=${body.transport || "none"}`);
 
@@ -417,7 +400,6 @@ export function registerMcpServerRoutes(
         const { channel, name } = body;
 
         if (!channel || !name) return json({ ok: false, error: "channel and name required" }, 400);
-        if (name === "copilot") return json({ ok: false, error: "Cannot remove built-in copilot server" }, 400);
 
         try {
           await workerManager.removeChannelMcpServer(channel, name);
@@ -441,12 +423,6 @@ export function registerMcpServerRoutes(
 
         if (!channel || !name || enabled === undefined) {
           return json({ ok: false, error: "channel, name, and enabled required" }, 400);
-        }
-
-        // Built-in copilot server: toggle in-memory state (no config/MCP needed)
-        if (name === "copilot") {
-          setCopilotEnabled(channel, !!enabled);
-          return json({ ok: true, connected: !!enabled, tools: enabled ? 5 : 0 });
         }
 
         const configs = getChannelMCPServers(channel);
@@ -559,9 +535,6 @@ export function registerMcpServerRoutes(
       const mcpServers: Record<string, CCMcpServerConfig> = {};
 
       for (const [name, cfg] of Object.entries(configServers)) {
-        // Skip built-in/non-exportable entries
-        if (name === "copilot") continue;
-
         const entry: CCMcpServerConfig = {};
 
         if (cfg.transport === "http" || (!cfg.command && cfg.url)) {
@@ -678,11 +651,13 @@ export function registerMcpServerRoutes(
           return json({ ok: false, error: "projectRoot required for this server" }, 400);
         }
 
-        // Resolve template vars in args — projectRoot and env vars.
+        // Resolve template vars in args — PROJECT_ROOT, HOME, CHANNEL, and env.
         let resolvedArgs: string[];
         try {
           resolvedArgs = resolveArgs(entry.args || [], {
             ...(projectRoot ? { PROJECT_ROOT: projectRoot } : {}),
+            HOME: homedir(),
+            CHANNEL: channel,
             ...(env || {}),
           });
         } catch (err: unknown) {

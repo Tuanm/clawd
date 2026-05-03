@@ -594,7 +594,6 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const isSpaceLocked = spaceInfo != null && spaceInfo.status !== "active";
   const [showAgentDialog, setShowAgentDialog] = useState(false);
   const [showMcpDialog, setShowMcpDialog] = useState(false);
-  const [hasMcpServers, setHasMcpServers] = useState(false);
   const [showWorktreeDialog, setShowWorktreeDialog] = useState(false);
   const [worktreeEnabled, setWorktreeEnabled] = useState(false);
   const [showSkillsDialog, setShowSkillsDialog] = useState(false);
@@ -830,18 +829,6 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       .then((res) => res.json())
       .then((data) => setWorktreeEnabled(data.ok && data.enabled === true))
       .catch(() => setWorktreeEnabled(false));
-  }, [isArticleMode, activeChannel, isSpaceChannel]);
-
-  // Fetch MCP server count per channel (to show/hide MCP button)
-  useEffect(() => {
-    if (isArticleMode || isSpaceChannel) {
-      setHasMcpServers(false);
-      return;
-    }
-    authFetch(`/api/app.mcp.list?channel=${encodeURIComponent(activeChannel)}`, undefined, activeChannel)
-      .then((res) => res.json())
-      .then((data) => setHasMcpServers(data.ok && Array.isArray(data.servers) && data.servers.length > 0))
-      .catch(() => setHasMcpServers(false));
   }, [isArticleMode, activeChannel, isSpaceChannel]);
 
   // Startup auth gate — authenticate the deep-link initial channel before loading anything
@@ -2719,7 +2706,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             ) : undefined
           }
           mcpButton={
-            !isSpaceChannel && hasMcpServers ? (
+            !isSpaceChannel ? (
               <button className="mcp-btn" onClick={() => setShowMcpDialog(true)} title="MCP Servers">
                 <McpIcon size={16} />
               </button>

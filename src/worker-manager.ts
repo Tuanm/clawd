@@ -1080,10 +1080,15 @@ export class WorkerManager {
         continue;
       }
 
-      // Resolve template vars ({PROJECT_ROOT} etc.)
+      // Resolve template vars ({PROJECT_ROOT}, {HOME}, {CHANNEL}, env)
       let resolvedArgs: string[];
       try {
-        resolvedArgs = resolveArgs(entry.args || [], { PROJECT_ROOT: projectRoot, ...(env || {}) });
+        resolvedArgs = resolveArgs(entry.args || [], {
+          PROJECT_ROOT: projectRoot,
+          HOME: homedir(),
+          CHANNEL: channel,
+          ...(env || {}),
+        });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         logger.warn(`Auto-provision: cannot resolve args for "${id}": ${message}`);
