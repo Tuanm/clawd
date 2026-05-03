@@ -2220,15 +2220,40 @@ export class Agent {
         const toolCalls: ToolCall[] = [];
         let streamError: Error | null = null;
 
+        // Threshold-based interrupt check. The previous `content.length % 100 === 0`
+        // misfired: after the first text delta pushed `content` past 0, subsequent
+        // deltas (3-7 chars) only landed on a multiple of 100 ~5% of the time, and
+        // tool-heavy turns (where content stays unchanged) skipped the check entirely
+        // after the first iteration. Track delta-since-last-check so growth-based
+        // checks fire deterministically. Initialised to -100 so the first event
+        // always passes (preserves "fire on first iteration" behavior).
+        //
+        // The `eventsSinceCheck` counter covers tool-heavy / tool-only turns where
+        // `content` never grows: without it the threshold above stays unmet for the
+        // whole stream and interrupts go unchecked beyond the first iteration. Fire
+        // every 50 events as a backstop — cheap (just a getInterrupt() check) and
+        // keeps interrupt latency bounded for argument-streaming-heavy turns.
+        let lastInterruptCheck = -100;
+        let eventsSinceCheck = 0;
+        const EVENT_INTERRUPT_BACKSTOP = 50;
+
         // Stream response with abort signal
         try {
           for await (const event of this.client.stream(request, signal, "agent")) {
-            // Check for interrupt every few tokens
-            if (content.length % 100 === 0) {
-              await checkInterrupt();
-            }
-
+            // Drain-fast: if a previous iteration's checkInterrupt() already
+            // aborted, exit before incrementing counters or re-running interrupt
+            // logic. Without this, post-abort events still triggered redundant
+            // checkInterrupt() calls (which scan the inbox via plugin hooks).
             if (signal.aborted) break;
+
+            eventsSinceCheck++;
+            if (content.length - lastInterruptCheck >= 100 || eventsSinceCheck >= EVENT_INTERRUPT_BACKSTOP) {
+              lastInterruptCheck = content.length;
+              eventsSinceCheck = 0;
+              await checkInterrupt();
+              // checkInterrupt may have aborted; bail out before processing this event.
+              if (signal.aborted) break;
+            }
 
             switch (event.type) {
               case "content":

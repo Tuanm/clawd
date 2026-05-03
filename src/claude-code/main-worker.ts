@@ -85,6 +85,12 @@ export interface ClaudeCodeMainConfig {
 export class ClaudeCodeMainWorker implements AgentWorker {
   private config: ClaudeCodeMainConfig;
   private sessionId: string | null = null;
+  // Avatar color cache. broadcastAgentToken fires per streamed token; resolving
+  // the color on every call meant a SQLite SELECT per token (~500 reads per
+  // medium response). Lazy-load once, reuse across the worker's lifetime.
+  // Stale only if the agent's color is changed mid-session — rare; the next
+  // worker restart picks up the new value.
+  private _cachedAvatarColor?: string;
   private running = false;
   private sleeping = false;
   private userSleeping = false; // Explicitly put to sleep by user — don't auto-wake
@@ -680,10 +686,27 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   /** PreToolUse: fires before the tool actually runs, so the UI can show a
    *  "running" indicator. Separate from handleToolResult — firing both from
    *  PostToolUse would collapse the running state to a single tick. */
+  /**
+   * Resolve the agent's avatar color once per worker lifetime (cached).
+   * Only persist a real DB-resolved value — if `getAgent` returns null at first
+   * call (transient row absence during startup) we return the fallback uncached
+   * so the next call retries the DB instead of pinning the fallback for the
+   * entire worker lifetime.
+   */
+  private getAvatarColor(): string {
+    if (this._cachedAvatarColor) return this._cachedAvatarColor;
+    const color = getAgent(this.config.agentId, this.config.channel)?.avatar_color;
+    if (color) {
+      this._cachedAvatarColor = color;
+      return color;
+    }
+    return "#D97853";
+  }
+
   handleToolStart(toolName: string, toolInput: unknown, toolUseId?: string): void {
     const { channel, agentId } = this.config;
     const input = (toolInput || {}) as Record<string, any>;
-    broadcastAgentToolCall(channel, agentId, toolName, input, "started", undefined, toolUseId);
+    broadcastAgentToolCall(channel, agentId, toolName, input, "started", undefined, toolUseId, this.getAvatarColor());
   }
 
   handleToolResult(toolName: string, toolInput: unknown, toolResponse: unknown, toolUseId?: string): void {
@@ -698,7 +721,16 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // Terminal event only — the matching "started" was broadcast by handleToolStart
     // at PreToolUse time. Threaded toolUseId lets the UI pair them (correct for
     // concurrent same-named tool calls within a turn).
-    broadcastAgentToolCall(channel, agentId, toolName, input, status, `${description}\n${result}`, toolUseId);
+    broadcastAgentToolCall(
+      channel,
+      agentId,
+      toolName,
+      input,
+      status,
+      `${description}\n${result}`,
+      toolUseId,
+      this.getAvatarColor(),
+    );
     saveToMemory(
       this.memorySessionId,
       "tool",
@@ -1495,9 +1527,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       const newSessionId = await runSDKQuery(sdkOpts, {
         onTextDelta: (text) => {
           this.turnStreamText += text;
-          broadcastAgentToken(channel, agentId, text);
+          broadcastAgentToken(channel, agentId, text, "content", this.getAvatarColor());
         },
-        onThinkingDelta: (text) => broadcastAgentToken(channel, agentId, text, "thinking"),
+        onThinkingDelta: (text) => broadcastAgentToken(channel, agentId, text, "thinking", this.getAvatarColor()),
         onAssistantMessage: (content) => this.handleAssistantMessage(content),
         onToolStart: (name, input, id) => this.handleToolStart(name, input, id),
         onToolResult: (name, input, response, id) => this.handleToolResult(name, input, response, id),

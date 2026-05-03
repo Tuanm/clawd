@@ -314,6 +314,7 @@ class OpenAIProvider implements LLMProvider {
     const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
     const decoder = new TextDecoder();
     let buffer = "";
+    let doneEmitted = false;
     const toolCallBuffer: Map<number, any> = new Map();
     const readNext = readWithIdleTimeout(reader, signal, getStreamIdleTimeout(request.model));
 
@@ -334,7 +335,10 @@ class OpenAIProvider implements LLMProvider {
           if (!line.startsWith("data: ")) continue;
           const data = line.slice(6).trim();
           if (data === "[DONE]") {
-            yield { type: "done" };
+            if (!doneEmitted) {
+              doneEmitted = true;
+              yield { type: "done" };
+            }
             continue;
           }
 
@@ -375,7 +379,13 @@ class OpenAIProvider implements LLMProvider {
               toolCallBuffer.clear();
             }
 
-            if (choice.finish_reason === "stop") {
+            // Emit done on `finish_reason: "stop"` (carries usage in `json`) and dedup
+            // against the trailing `[DONE]` SSE sentinel. Without dedup, agent.ts saw
+            // two done events per OpenAI stream — currently harmless since the done
+            // handler only records tokens when usage is present, but a future
+            // side-effect on done would silently double-fire.
+            if (choice.finish_reason === "stop" && !doneEmitted) {
+              doneEmitted = true;
               yield { type: "done", response: json };
             }
           } catch (parseErr: unknown) {
@@ -386,7 +396,7 @@ class OpenAIProvider implements LLMProvider {
         }
       }
     } finally {
-      reader.releaseLock();
+      await reader.cancel().catch(() => {});
     }
   }
 
@@ -425,7 +435,13 @@ class AnthropicProvider implements LLMProvider {
       "Content-Type": "application/json",
       "x-api-key": activeKey || this.getActiveApiKey(),
       "anthropic-version": "2023-06-01",
-      "anthropic-beta": "prompt-caching-2024-07-31",
+      // extended-cache-ttl-2025-04-11 enables `ttl: "1h"` on cache_control
+      // breakpoints. Without it, all cache entries default to 5 minutes (the
+      // March-2026 regression — Anthropic Issue #46829), so any pause >5m
+      // pays the full cache-write cost again. With it + ttl="1h" set on each
+      // breakpoint, we hold the cache an hour at the documented 1.25x write
+      // premium instead of re-writing.
+      "anthropic-beta": "prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11",
     };
   }
 
@@ -536,6 +552,7 @@ class AnthropicProvider implements LLMProvider {
     const decoder = new TextDecoder();
     let buffer = "";
     let currentContent = "";
+    let doneEmitted = false;
     const toolCallBuffer: Map<number, { id: string; name: string; arguments: string }> = new Map();
     const readNext = readWithIdleTimeout(reader, signal, getStreamIdleTimeout(request.model));
 
@@ -556,7 +573,10 @@ class AnthropicProvider implements LLMProvider {
           if (!line.startsWith("data: ")) continue;
           const data = line.slice(6).trim();
           if (data === "[DONE]") {
-            yield { type: "done" };
+            if (!doneEmitted) {
+              doneEmitted = true;
+              yield { type: "done" };
+            }
             continue;
           }
 
@@ -569,6 +589,18 @@ class AnthropicProvider implements LLMProvider {
             } else if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
               currentContent += event.delta.text;
               yield { type: "content", content: event.delta.text };
+            }
+            // Handle extended thinking blocks (Claude Opus / Sonnet 4 with thinking enabled).
+            // Yield as separate "thinking" events so the UI can render them in the
+            // collapsed thinking panel rather than mixing with assistant text.
+            else if (event.type === "content_block_start" && event.content_block?.type === "thinking") {
+              // No-op start marker; deltas carry the actual content
+            } else if (
+              event.type === "content_block_delta" &&
+              event.delta?.type === "thinking_delta" &&
+              event.delta.thinking
+            ) {
+              yield { type: "thinking", content: event.delta.thinking };
             }
             // Handle native Anthropic tool_use blocks
             else if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
@@ -617,7 +649,10 @@ class AnthropicProvider implements LLMProvider {
                 console.log(`[Provider] Cache: created=${cacheCreate ?? 0} read=${cacheRead ?? 0} tokens`);
               }
             } else if (event.type === "message_stop") {
-              yield { type: "done" };
+              if (!doneEmitted) {
+                doneEmitted = true;
+                yield { type: "done" };
+              }
             }
           } catch (parseErr: unknown) {
             console.warn(
@@ -657,11 +692,15 @@ class AnthropicProvider implements LLMProvider {
       }
 
       // Yield done if we haven't already (premature EOF without [DONE] or message_stop)
-      if (currentContent || toolCallBuffer.size === 0) {
+      if (!doneEmitted) {
+        doneEmitted = true;
         yield { type: "done" };
       }
     } finally {
-      reader.releaseLock();
+      // cancel() closes the response body and TCP connection — releaseLock alone
+      // leaves the underlying stream open if the consumer broke out early
+      // (e.g., agent abort). Always cancel; no-op on already-closed streams.
+      await reader.cancel().catch(() => {});
     }
   }
 
@@ -720,20 +759,35 @@ class AnthropicProvider implements LLMProvider {
 
     const messages = filteredMessages;
 
-    // Convert tools to Anthropic format
+    // Convert tools to Anthropic format. Drop a 1-hour cache breakpoint on the
+    // LAST tool entry so the entire tools-array prefix (typically dozens of
+    // schemas, often >2k tokens) caches alongside the system prompt. Anthropic
+    // allows up to 4 cache_control breakpoints per request — we use 2 (tools
+    // tail + system).
+    //
+    // Cache-key stability: the tool set varies via `filterToolsByUsage` in
+    // agent.ts (warm-up vs steady-state iterations drop unused tools), so the
+    // boundary iteration that switches tool composition WILL miss the cache and
+    // re-write. Steady-state iterations within the same composition reuse the
+    // cache fine. The 1h TTL absorbs occasional cold paths cheaply (1.25x write
+    // premium) and keeps the common-case hit rate high.
     let tools: any[] | undefined;
     if (request.tools && request.tools.length > 0) {
-      tools = request.tools.map((tool) => ({
-        name: tool.function.name,
-        description: tool.function.description,
-        input_schema: tool.function.parameters,
-      }));
+      tools = request.tools.map((tool, idx) => {
+        const isLast = idx === request.tools!.length - 1;
+        const base = {
+          name: tool.function.name,
+          description: tool.function.description,
+          input_schema: tool.function.parameters,
+        };
+        return isLast ? { ...base, cache_control: { type: "ephemeral", ttl: "1h" } } : base;
+      });
     }
 
     // Format system as array with cache_control on the last (only) block so
     // Anthropic caches the full system prompt prefix across calls.
     const systemField = systemContent
-      ? [{ type: "text", text: systemContent, cache_control: { type: "ephemeral" } }]
+      ? [{ type: "text", text: systemContent, cache_control: { type: "ephemeral", ttl: "1h" } }]
       : undefined;
 
     return {
@@ -1070,6 +1124,7 @@ NEVER skip reply! If you skip it, the message will be processed infinitely!`;
     const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
     const decoder = new TextDecoder();
     let buffer = "";
+    let doneEmitted = false;
     const toolCallBuffer: Map<number, { name: string; arguments: string }> = new Map();
     const readNext = readWithIdleTimeout(reader, signal, getStreamIdleTimeout(request.model));
 
@@ -1095,7 +1150,10 @@ NEVER skip reply! If you skip it, the message will be processed infinitely!`;
             data = data.slice(6).trim();
           }
           if (data === "[DONE]") {
-            yield { type: "done" };
+            if (!doneEmitted) {
+              doneEmitted = true;
+              yield { type: "done" };
+            }
             continue;
           }
 
@@ -1155,7 +1213,10 @@ NEVER skip reply! If you skip it, the message will be processed infinitely!`;
                 }
               }
               toolCallBuffer.clear();
-              yield { type: "done" };
+              if (!doneEmitted) {
+                doneEmitted = true;
+                yield { type: "done" };
+              }
             }
           } catch (parseErr: unknown) {
             console.warn(
@@ -1164,8 +1225,29 @@ NEVER skip reply! If you skip it, the message will be processed infinitely!`;
           }
         }
       }
+
+      // Premature EOF without [DONE] or event.done (e.g., server-side TCP drop).
+      // Flush any pending tool calls then emit done so the agent loop terminates
+      // cleanly instead of hanging on a missing terminator.
+      if (!doneEmitted) {
+        for (const [id, tc] of toolCallBuffer.entries()) {
+          if (tc.name) {
+            yield {
+              type: "tool_call",
+              toolCall: {
+                id: String(id),
+                type: "function",
+                function: { name: tc.name, arguments: tc.arguments },
+              },
+            };
+          }
+        }
+        toolCallBuffer.clear();
+        doneEmitted = true;
+        yield { type: "done" };
+      }
     } finally {
-      reader.releaseLock();
+      await reader.cancel().catch(() => {});
     }
   }
 

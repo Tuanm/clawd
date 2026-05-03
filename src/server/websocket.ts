@@ -257,20 +257,26 @@ export function broadcastSpaceLocked(spaceChannel: string, status: string) {
 }
 
 // Broadcast agent thinking tokens (real-time LLM output)
+//
+// `avatarColor` lets the caller pass a pre-resolved color so we skip the
+// per-token getAgent() SQLite SELECT. CC's stream-text path emits hundreds
+// of tokens per response; resolving once at turn start is ~3 orders of
+// magnitude fewer DB hits with no behavior change.
 export function broadcastAgentToken(
   channel: string,
   agentId: string,
   token: string,
   tokenType: string = "content", // 'content' or 'thinking'
+  avatarColor?: string,
 ) {
-  const agent = getAgent(agentId, channel);
+  const color = avatarColor ?? getAgent(agentId, channel)?.avatar_color ?? "#D97853";
   const payload = JSON.stringify({
     type: "agent_token",
     channel,
     agent_id: agentId,
     token,
     token_type: tokenType,
-    avatar_color: agent?.avatar_color || "#D97853",
+    avatar_color: color,
     timestamp: Date.now(),
   });
 
@@ -293,8 +299,9 @@ export function broadcastAgentToolCall(
   status: string,
   result?: any,
   toolUseId?: string,
+  avatarColor?: string,
 ) {
-  const agent = getAgent(agentId, channel);
+  const color = avatarColor ?? getAgent(agentId, channel)?.avatar_color ?? "#D97853";
   const payload = JSON.stringify({
     type: "agent_tool_call",
     channel,
@@ -303,7 +310,7 @@ export function broadcastAgentToolCall(
     tool_args: toolArgs,
     tool_use_id: toolUseId,
     status,
-    avatar_color: agent?.avatar_color || "#D97853",
+    avatar_color: color,
     result: result
       ? typeof result === "string"
         ? result.slice(0, 2000)
