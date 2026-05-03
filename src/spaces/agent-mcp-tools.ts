@@ -587,20 +587,22 @@ export async function executeAgentToolCall(
 
       const { terminateSpace } = await import("./terminate");
       const { timedFetch } = await import("../utils/timed-fetch");
-      const { finalSpace } = await terminateSpace(id, reason, {
+      const { locked, finalSpace } = await terminateSpace(id, reason, {
         chatApiUrl: _chatApiUrl,
         fetchImpl: timedFetch as unknown as typeof fetch,
         spaceManager: _spaceManager,
       });
 
+      // Honest noop signal: pre-flight saw "active" but the CAS can still
+      // lose to a natural completion that settled in the gap. `noop:true`
+      // tells the LLM its stop call was redundant; status reflects reality.
+      const finalStatus = finalSpace?.status ?? pre.status;
       return textResult(
         JSON.stringify({
           ok: true,
-          // Surface ACTUAL final status from the re-read — when failSpace
-          // lost the CAS to a concurrent natural completion, the previous
-          // hardcoded "stopped" lied to the caller.
-          status: finalSpace?.status ?? pre.status,
+          status: finalStatus,
           reason,
+          noop: !locked,
         }),
       );
     }
