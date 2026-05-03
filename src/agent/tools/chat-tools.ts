@@ -531,79 +531,23 @@ registerTool(
   async ({ agent_id, reason }) => {
     const stopReason = (reason as string) || "Killed by parent agent";
     const { getSpace } = await import("../../spaces/db");
-    const space = getSpace(agent_id);
-    if (!space) {
+    const pre = getSpace(agent_id);
+    if (!pre) {
       return { success: false, output: "", error: `Agent ${agent_id} not found` };
     }
-    if (space.status !== "active") {
+    if (pre.status !== "active") {
       return {
         success: false,
         output: "",
-        error: `Agent ${agent_id} is not running (status: ${space.status})`,
+        error: `Agent ${agent_id} is not running (status: ${pre.status})`,
       };
     }
 
-    try {
-      const { getClaudeCodeWorker, unregisterClaudeCodeWorker } = await import("../../spaces/claude-code-worker");
-      const worker = getClaudeCodeWorker(agent_id);
-      if (worker) {
-        worker.stop();
-        unregisterClaudeCodeWorker(agent_id);
-      }
-      const { spaceCompleteCallbacks, spaceAuthTokens, spaceProjectRoots, spaceTimeoutTimers } = await import(
-        "../../server/mcp"
-      );
-      // Clear the wall-clock timeout BEFORE failSpace — without this, the
-      // dangling timer fires up to 30 minutes later and posts a spurious
-      // "timed out" message into the parent channel for the killed agent.
-      const timer = spaceTimeoutTimers.get(agent_id);
-      if (timer) {
-        clearTimeout(timer);
-        spaceTimeoutTimers.delete(agent_id);
-      }
-      spaceCompleteCallbacks.delete(agent_id);
-      spaceAuthTokens.delete(agent_id);
-      spaceProjectRoots.delete(agent_id);
-    } catch (err) {
-      console.warn("[kill_agent] worker cleanup failed (continuing to mark space failed):", err);
-    }
-
-    // failSpace also broadcasts the lock + refreshes the parent-channel card —
-    // skipping it leaves the UI showing the dead sub-agent as still-active.
-    const { SpaceManager } = await import("../../spaces/manager");
-    const locked = new SpaceManager().failSpace(agent_id, stopReason);
-    if (!locked) {
-      // Race: agent settled (completed/failed/timed_out) between our status
-      // read and the CAS lock. Surface a warn so operators can correlate the
-      // kill request with whatever final state the agent actually reached.
-      console.warn(`[kill_agent] failSpace returned false for ${agent_id} — likely already settled by another path`);
-    }
-
-    // Re-read so the response carries the actual final status, not an
-    // assumed "failed". When `locked` is false a concurrent path won the
-    // status transition (e.g. natural completion, timeout), and the caller
-    // would otherwise see a misleading status:"failed".
-    const finalSpace = getSpace(agent_id) ?? space;
-
-    // Post into the SUB-AGENT'S parent channel (where its card lives), not
-    // the calling agent's context channel — the latter can be a sibling
-    // channel or "general" depending on how kill_agent was reached.
-    try {
-      const stopAgentId = space.agent_id;
-      await toolFetch(`${chatApiUrl}/api/chat.postMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: space.channel,
-          text: `Sub-agent stopped: ${stopReason}`,
-          user: stopAgentId,
-          agent_id: stopAgentId,
-          subtype: "agent_report",
-        }),
-      });
-    } catch (err) {
-      console.warn("[kill_agent] chat.postMessage failed:", err);
-    }
+    const { terminateSpace } = await import("../../spaces/terminate");
+    const { locked, finalSpace } = await terminateSpace(agent_id, stopReason, {
+      chatApiUrl,
+      fetchImpl: toolFetch,
+    });
 
     return {
       success: true,
@@ -611,8 +555,8 @@ registerTool(
         {
           message: `Agent ${agent_id} terminated`,
           id: agent_id,
-          name: space.title,
-          status: finalSpace.status,
+          name: pre.title,
+          status: (finalSpace ?? pre).status,
           reason: stopReason,
           locked,
         },
@@ -677,18 +621,28 @@ registerTool(
     let selected: string[];
     let rangeLabel: string;
     if (start_line !== undefined || end_line !== undefined) {
-      const start = Math.max(1, Number(start_line) || 1);
-      const end = end_line !== undefined ? Math.max(start, Number(end_line)) : total;
-      const limit = Math.max(0, end - start + 1);
-      rows = db
-        .query<MsgRow, [string, number, number]>(
-          `SELECT ts, user, text, subtype FROM messages
-           WHERE channel = ? AND thread_ts IS NULL
-           ORDER BY ts ASC LIMIT ? OFFSET ?`,
-        )
-        .all(space.space_channel, limit, start - 1);
+      const rawStart = Math.max(1, Number(start_line) || 1);
+      const rawEnd = end_line !== undefined ? Number(end_line) : total;
+      // Inverted range (end < start) yields zero rows. Pre-SQL-pagination
+      // behavior was an empty slice; the LIMIT-based replacement must match.
+      const limit = rawEnd >= rawStart ? rawEnd - rawStart + 1 : 0;
+      // Clamp the displayed start to total so labels like "10–3 of 3" can't
+      // appear when the requested range is past the end of the channel.
+      const labelStart = Math.min(rawStart, Math.max(total, 1));
+      const labelEnd = Math.min(Math.max(rawEnd, labelStart), total);
+      rows =
+        limit > 0
+          ? db
+              .query<MsgRow, [string, number, number]>(
+                `SELECT ts, user, text, subtype FROM messages
+                 WHERE channel = ? AND thread_ts IS NULL
+                 ORDER BY ts ASC LIMIT ? OFFSET ?`,
+              )
+              .all(space.space_channel, limit, rawStart - 1)
+          : [];
       selected = rows.map((m) => formatLogLine(m));
-      rangeLabel = `messages ${start}–${Math.min(end, total)} of ${total}`;
+      rangeLabel =
+        limit > 0 ? `messages ${labelStart}–${labelEnd} of ${total}` : `empty range (start=${rawStart}, end=${rawEnd})`;
     } else {
       const n = Math.max(1, Number(tail) || 100);
       rows = db
