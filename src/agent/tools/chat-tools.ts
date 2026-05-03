@@ -544,19 +544,28 @@ registerTool(
     }
 
     const { terminateSpace } = await import("../../spaces/terminate");
-    const { finalSpace } = await terminateSpace(agent_id, stopReason, {
+    const { locked, finalSpace } = await terminateSpace(agent_id, stopReason, {
       chatApiUrl,
       fetchImpl: toolFetch,
     });
+
+    // Honest message: pre-flight passed (status was "active") but the CAS
+    // can still lose if natural completion settled the space between the
+    // pre-read and failSpace. Tell the LLM what actually happened so it
+    // doesn't reason as if it caused the termination.
+    const finalStatus = (finalSpace ?? pre).status;
+    const message = locked
+      ? `Agent ${agent_id} terminated`
+      : `Agent ${agent_id} had already settled (status: ${finalStatus}) before kill request — no-op`;
 
     return {
       success: true,
       output: JSON.stringify(
         {
-          message: `Agent ${agent_id} terminated`,
+          message,
           id: agent_id,
           name: pre.title,
-          status: (finalSpace ?? pre).status,
+          status: finalStatus,
           reason: stopReason,
         },
         null,
