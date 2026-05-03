@@ -570,9 +570,24 @@ export async function executeAgentToolCall(
       const reason = (args.reason as string) || "Stopped by parent agent";
       if (!id) return textResult(JSON.stringify({ ok: false, error: "Missing agent_id" }));
 
+      // Pre-flight guard mirroring kill_agent — reject already-settled spaces
+      // BEFORE terminateSpace runs so we don't issue a stale "Sub-agent
+      // stopped" claim for an agent that finished naturally.
+      const pre = _spaceManager.getSpace(id);
+      if (!pre) return textResult(JSON.stringify({ ok: false, error: "Agent not found" }));
+      if (pre.status !== "active") {
+        return textResult(
+          JSON.stringify({
+            ok: false,
+            error: `Agent is not running (status: ${pre.status})`,
+            status: pre.status,
+          }),
+        );
+      }
+
       const { terminateSpace } = await import("./terminate");
       const { timedFetch } = await import("../utils/timed-fetch");
-      const { locked, finalSpace } = await terminateSpace(id, reason, {
+      const { finalSpace } = await terminateSpace(id, reason, {
         chatApiUrl: _chatApiUrl,
         fetchImpl: timedFetch as unknown as typeof fetch,
         spaceManager: _spaceManager,
@@ -581,12 +596,11 @@ export async function executeAgentToolCall(
       return textResult(
         JSON.stringify({
           ok: true,
-          // Surface ACTUAL final status, not a hardcoded "stopped" — when
-          // failSpace lost the CAS to a concurrent natural completion or
-          // timeout, the previous hardcoded value lied to the caller.
-          status: finalSpace?.status ?? "unknown",
+          // Surface ACTUAL final status from the re-read — when failSpace
+          // lost the CAS to a concurrent natural completion, the previous
+          // hardcoded "stopped" lied to the caller.
+          status: finalSpace?.status ?? pre.status,
           reason,
-          locked,
         }),
       );
     }

@@ -544,7 +544,7 @@ registerTool(
     }
 
     const { terminateSpace } = await import("../../spaces/terminate");
-    const { locked, finalSpace } = await terminateSpace(agent_id, stopReason, {
+    const { finalSpace } = await terminateSpace(agent_id, stopReason, {
       chatApiUrl,
       fetchImpl: toolFetch,
     });
@@ -558,7 +558,6 @@ registerTool(
           name: pre.title,
           status: (finalSpace ?? pre).status,
           reason: stopReason,
-          locked,
         },
         null,
         2,
