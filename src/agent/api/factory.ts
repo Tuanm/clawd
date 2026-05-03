@@ -695,8 +695,10 @@ class AnthropicProvider implements LLMProvider {
       }
 
       // Stream ended — flush any incomplete tool calls from buffer
-      // This handles MiniMax/provider EOF mid-tool-call
-      if (toolCallBuffer.size > 0) {
+      // This handles MiniMax/provider EOF mid-tool-call.
+      // Skip if doneEmitted is already true (e.g., user abort) — we don't want
+      // to emit phantom tool_calls after an explicit abort error.
+      if (!doneEmitted && toolCallBuffer.size > 0) {
         console.warn(
           `[Provider] Stream ended with ${toolCallBuffer.size} incomplete tool call(s) in buffer — flushing`,
         );
