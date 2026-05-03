@@ -35,6 +35,7 @@ import {
   broadcastUpdate,
 } from "../server/websocket";
 import { createLogger } from "../utils/logger";
+import { timedFetch } from "../utils/timed-fetch";
 import type { AgentHealthSnapshot, AgentWorker } from "../worker-loop";
 import { buildSdkPromptWithHeartbeat } from "./build-sdk-messages";
 import { initMemorySession, saveToMemory } from "./memory";
@@ -1098,10 +1099,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private async processMessagesWithPrompt(prompt: string, messages: any[]): Promise<void> {
     // isNewTurn=false: interrupt-resume turn. Persists the new interrupt messages
     // that triggered the abort (so they appear in this turn's rebuilt stream AND
-    // in future turns' history). The SDK is NOT resumed via sessionId anymore —
-    // the iterable rebuilt by buildSdkMessages carries complete history including
-    // the aborted main turn's partial work (assistant/tool rows persisted as
-    // they arrive via handleAssistantMessage / handleToolResult).
+    // in future turns' history). The SDK IS still resumed via `resume: this.sessionId`
+    // (see _runSDKTurnImpl line ~1472); the iterable from buildSdkPromptWithHeartbeat
+    // emits ONLY this turn's new rows (filtered by currentTurnRowIds), and the SDK
+    // appends them to its on-disk session file which already contains the aborted
+    // main turn's partial work (assistant/tool rows persisted as they arrived via
+    // handleAssistantMessage / handleToolResult).
     return this._runSDKTurn(prompt, messages, false);
   }
 
@@ -1389,18 +1392,27 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       systemPrompt += `\n\n<prior_conversation_summary>\n${summaries.join("\n\n")}\n</prior_conversation_summary>`;
     }
 
-    // Dynamic: inject active sub-agent count as a system reminder (best-effort)
+    // Dynamic: inject active sub-agent count as a system reminder (best-effort).
+    // H3: bound the request to 2s. Without a timeout, a hung MCP server (or
+    // local HTTP socket starvation) blocks the entire turn-prep path — the
+    // turn never starts and the user sees a frozen agent. 2s is well above
+    // the 100ms typical local-MCP latency floor and fits the "best-effort"
+    // contract: better to omit the sub-agent reminder than stall a turn.
     try {
-      const agentRes = await fetch(`${this.config.chatApiUrl}/mcp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: Date.now(),
-          method: "tools/call",
-          params: { name: "list_agents", arguments: { channel: this.config.channel } },
-        }),
-      });
+      const agentRes = await timedFetch(
+        `${this.config.chatApiUrl}/mcp`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: Date.now(),
+            method: "tools/call",
+            params: { name: "list_agents", arguments: { channel: this.config.channel } },
+          }),
+        },
+        2000,
+      );
       const agentJson = (await agentRes.json()) as any;
       const agentData = JSON.parse(agentJson?.result?.content?.[0]?.text ?? "{}") as any;
       const activeCount = ((agentData?.agents ?? []) as any[]).filter((a: any) => a.status === "active").length;
@@ -1473,6 +1485,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       abortController: this.abortController,
     };
 
+    // Capture the expected sessionId BEFORE the SDK call so the onSessionId
+    // callback can detect a silent fork. The SDK creates a new session UUID
+    // (instead of resuming ours) when our `resume:` file is missing, malformed,
+    // or has a path-encoded mismatch — this surfaces as expected !== returned.
+    const expectedSessionId = this.sessionId;
+
     try {
       const newSessionId = await runSDKQuery(sdkOpts, {
         onTextDelta: (text) => {
@@ -1491,10 +1509,27 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         },
         onSessionId: (sid) => {
           if (sid) {
+            if (expectedSessionId && sid !== expectedSessionId) {
+              logger.warn(
+                `[CC fork] resume ${expectedSessionId.slice(0, 8)} → got ${sid.slice(0, 8)}; JSONL likely missing/malformed/path-mismatch. Agent will lose prior context this turn.`,
+              );
+            }
             this.sessionId = sid;
             this.persistSessionId(sid);
           } else {
-            // SDK cleared stale session — reset
+            // SDK cleared stale session — reset. H2 postmortem: when the SDK's
+            // stale-session retry fires it calls onSessionId("") and silently
+            // restarts the query without our resume file. If we just rebuilt a
+            // JSONL (non-CC→CC switch), this is the path that wiped its effect.
+            // Log enough to diagnose without requiring fs ops on the hot path.
+            if (expectedSessionId) {
+              const cwd = resolve(this.config.projectRoot);
+              const encodedCwd = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+              const jsonlPath = join(homedir(), ".claude", "projects", encodedCwd, `${expectedSessionId}.jsonl`);
+              logger.warn(
+                `[CC stale-session retry] cleared resume ${expectedSessionId.slice(0, 8)}; SDK rejected our JSONL (likely "No conversation found" or "Invalid signature in thinking block"). Path was: ${jsonlPath}`,
+              );
+            }
             this.sessionId = null;
             this.persistSessionId(null);
           }
@@ -1707,7 +1742,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     return `[${msg.ts}] ${user}: ${text}${fileInfo}`;
   }
 
-  /** Format prompt with seen/new differentiation. Replaces formatPrompt(). */
+  /** Format prompt with seen/new differentiation. */
   private formatPromptWithSeen(unseen: any[], seenNotProcessed: any[]): string {
     const parts: string[] = [];
 
@@ -1762,35 +1797,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     if (unseen.length > 0) {
       parts.push(...buildChronological(unseen));
     }
-
-    parts.push(
-      `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
-    );
-    return parts.join("\n");
-  }
-
-  private formatPrompt(messages: any[]): string {
-    const parts: string[] = [];
-    parts.push(`# Messages on Channel "${this.config.channel}" (poll start)\n`);
-
-    const NEWEST_RESERVE = Math.min(messages.length, 5);
-    const newest = messages.slice(-NEWEST_RESERVE);
-    const older = messages.slice(0, messages.length - NEWEST_RESERVE);
-    let totalLen = 0;
-    const newestLines: string[] = [];
-    for (const msg of newest) {
-      const line = this.formatMessageLine(msg);
-      newestLines.push(line);
-      totalLen += line.length;
-    }
-    const olderLines: string[] = [];
-    for (let i = older.length - 1; i >= 0; i--) {
-      const line = this.formatMessageLine(older[i]);
-      if (totalLen + line.length > MAX_COMBINED_PROMPT_LENGTH) break;
-      olderLines.unshift(line);
-      totalLen += line.length;
-    }
-    parts.push(...olderLines, ...newestLines);
 
     parts.push(
       `\n[REMINDER: Your streaming text output goes to the agentic framework only — the human CANNOT see it. End the turn with mcp__clawd__reply(text="<reply or [SILENT]>", timestamp=<latest msg ts>) — this delivers your reply AND marks the message processed in one call.]`,
@@ -2046,6 +2052,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   // --------------------------------------------------------------------------
 
   private persistSessionId(sessionId: string | null): void {
+    // FM-02 / B1 guard: a stopped worker must not write back into channel_agents.
+    // After stopAgent() flips `stopped = true`, an in-flight onSessionId callback
+    // (from the SDK's stale-session retry path or a slow in-flight query) could
+    // otherwise overwrite a freshly-seeded sessionId set by the PATCH handler
+    // (e.g. the JSONL rebuilder's UUID), or restore a NULL after a deliberate clear.
+    if (this.stopped) return;
     try {
       db.run(`UPDATE channel_agents SET claude_code_session_id = ? WHERE channel = ? AND agent_id = ?`, [
         sessionId,

@@ -461,8 +461,15 @@ export default function SchedulerDialog({ channel, isOpen, onClose, refreshTick 
 
   if (!isOpen) return null;
 
+  // Block dialog close (overlay click, X button) while a mutation is in flight.
+  // Escape is already guarded on `anyInFlight` in the keydown handler above.
+  const guardedClose = () => {
+    if (anyInFlight) return;
+    onClose();
+  };
+
   return createPortal(
-    <div className="stream-dialog-overlay" onClick={onClose}>
+    <div className="stream-dialog-overlay" onClick={guardedClose}>
       <div className="stream-dialog scheduler-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="stream-dialog-header">
@@ -481,7 +488,7 @@ export default function SchedulerDialog({ channel, isOpen, onClose, refreshTick 
               </svg>
             </button>
           </div>
-          <button className="stream-dialog-close" onClick={onClose}>
+          <button className="stream-dialog-close" onClick={guardedClose} disabled={anyInFlight}>
             ×
           </button>
         </div>

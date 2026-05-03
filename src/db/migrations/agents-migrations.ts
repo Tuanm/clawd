@@ -12,6 +12,10 @@
  *
  * v50 — full channel_agents schema: creates the table with all current columns
  *       and applies backward-compat ADD COLUMN calls for pre-existing DBs.
+ * v51 — partial unique index on claude_code_session_id (defensive): two agents
+ *       must never share the same CC SDK session UUID. Resume by sessionId
+ *       would otherwise let one agent clobber another's session file at
+ *       ~/.claude/projects/<cwd>/<sessionId>.jsonl.
  */
 
 import type { Migration } from "../migrations";
@@ -63,6 +67,49 @@ export const agentsMigrations: Migration[] = [
       addCol(`ALTER TABLE channel_agents ADD COLUMN worktree_branch TEXT DEFAULT NULL`);
       addCol(`ALTER TABLE channel_agents ADD COLUMN claude_code_session_id TEXT DEFAULT NULL`);
       addCol(`ALTER TABLE channel_agents ADD COLUMN agent_type TEXT DEFAULT NULL`);
+    },
+  },
+  {
+    version: 51,
+    description: "partial unique index on claude_code_session_id",
+    up: (db) => {
+      // Pre-flight: NULL out duplicates before the unique index is created.
+      // Without this, a legacy DB where two agents historically shared a
+      // session_id (possible before persistSessionId got its `stopped` guard)
+      // would fail CREATE UNIQUE INDEX, the migration tx rolls back, and the
+      // server refuses to start. Keep the row with the largest id (most recent
+      // PATCH); NULL the rest. Losing the session_id only forces a fresh CC
+      // session on next turn — no data loss, only history-bridging cost.
+      const dupCount = (
+        db
+          .query<{ c: number }, []>(
+            `SELECT COUNT(*) AS c FROM (
+               SELECT claude_code_session_id FROM channel_agents
+               WHERE claude_code_session_id IS NOT NULL
+               GROUP BY claude_code_session_id HAVING COUNT(*) > 1
+             )`,
+          )
+          .get() ?? { c: 0 }
+      ).c;
+      if (dupCount > 0) {
+        console.warn(
+          `[migration v51] found ${dupCount} duplicate claude_code_session_id group(s); NULLing older rows before creating unique index`,
+        );
+        db.exec(`
+          UPDATE channel_agents SET claude_code_session_id = NULL
+          WHERE id NOT IN (
+            SELECT MAX(id) FROM channel_agents
+            WHERE claude_code_session_id IS NOT NULL
+            GROUP BY claude_code_session_id
+          ) AND claude_code_session_id IS NOT NULL
+        `);
+      }
+
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_agents_cc_session
+        ON channel_agents(claude_code_session_id)
+        WHERE claude_code_session_id IS NOT NULL
+      `);
     },
   },
 ];

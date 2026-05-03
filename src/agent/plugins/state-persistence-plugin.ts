@@ -26,9 +26,6 @@ interface StatePersistenceConfig {
   contextMode: boolean;
 }
 
-// Cache tool args keyed by tool_call_id for use in onToolResult
-const toolArgsCache = new Map<string, { name: string; args: any }>();
-
 export interface StatePersistencePluginResult {
   plugin: Plugin;
   toolPlugin: ToolPlugin;
@@ -40,6 +37,10 @@ export function createStatePersistencePlugin(config: StatePersistenceConfig): St
   let sessionDir = "";
   let inceptionCaptured = false;
   let saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Per-instance tool args cache (keyed by tool name + timestamp). Module-scope
+  // sharing leaked entries across agents — see audit C1.
+  const toolArgsCache = new Map<string, { name: string; args: any }>();
 
   function debouncedSave(): void {
     if (!sessionDir) return;

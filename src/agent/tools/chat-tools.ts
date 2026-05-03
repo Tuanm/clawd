@@ -495,24 +495,31 @@ registerTool(
     const maxLimit = Math.min(Math.max(Number(limit) || 10, 1), 50);
     const pageOffset = Number(offset) || 0;
     const q = (query as string | undefined)?.toLowerCase();
+    const channel = getContextChannel() || currentChannel;
 
-    let agents = Array.from(subAgents.values())
-      .filter((a) => {
-        if (q) return a.name.toLowerCase().includes(q);
+    // Read from spaces DB to mirror spaces/agent-mcp-tools.ts:506 — the local
+    // subAgents Map is never populated by the spawn-helper path, so a DB read
+    // is the only source of truth that stays consistent across both surfaces.
+    const { listSpaces } = await import("../../spaces/db");
+    const spaces = listSpaces(channel);
+
+    let agents = spaces
+      .filter((s) => {
+        if (q) return s.title.toLowerCase().includes(q);
         return true;
       })
-      .filter((a) => {
-        if (status) return a.status === status;
+      .filter((s) => {
+        if (status) return s.status === status;
         return true;
       })
-      .map((a) => ({
-        id: a.id,
-        name: a.name,
-        status: a.status,
-        task: a.task.slice(0, 100) + (a.task.length > 100 ? "..." : ""),
-        started_at: new Date(a.startedAt).toISOString(),
-        completed_at: a.completedAt ? new Date(a.completedAt).toISOString() : null,
-        duration_ms: a.completedAt ? a.completedAt - a.startedAt : Date.now() - a.startedAt,
+      .map((s) => ({
+        id: s.id,
+        name: s.title,
+        status: s.status,
+        task: (s.description || "").slice(0, 100) + ((s.description || "").length > 100 ? "..." : ""),
+        started_at: s.created_at ? new Date(s.created_at).toISOString() : null,
+        completed_at: s.completed_at ? new Date(s.completed_at).toISOString() : null,
+        result: s.result_summary?.slice(0, 300),
       }));
 
     const total = agents.length;

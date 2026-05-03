@@ -86,15 +86,15 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
   const selectedAgent = agents.find((a) => a.agent_id === selectedAgentId) ?? null;
   const hasMergeConflict = selectedAgent?.has_conflicts ?? false;
 
-  // Escape key
+  // Escape key (skip while a worktree action is applying)
   useEffect(() => {
     if (!isOpen) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !actionLoading) onClose();
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [isOpen, onClose]);
+  }, [isOpen, actionLoading, onClose]);
 
   const loadStatus = useCallback(async () => {
     if (!channel) return;
@@ -251,12 +251,18 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
   const handleResolve = (path: string, resolution: "ours" | "theirs" | "both") =>
     postAction("app.worktree.resolve", { path, resolution });
 
+  // Block dialog close (overlay click, X button, Escape) while a worktree action is applying
+  const guardedClose = () => {
+    if (actionLoading) return;
+    onClose();
+  };
+
   if (!isOpen) return null;
 
   const diffSource: "unstaged" | "staged" = selectedFile?.staged ? "staged" : "unstaged";
 
   return createPortal(
-    <div className="stream-dialog-overlay" onClick={onClose}>
+    <div className="stream-dialog-overlay" onClick={guardedClose}>
       <div className="stream-dialog projects-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Header — same as ProjectsDialog */}
         <div className="stream-dialog-header">
@@ -266,7 +272,7 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
               <RefreshIcon />
             </button>
           </div>
-          <button className="stream-dialog-close" onClick={onClose}>
+          <button className="stream-dialog-close" onClick={guardedClose} disabled={actionLoading}>
             ×
           </button>
         </div>

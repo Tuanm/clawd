@@ -6,7 +6,7 @@
  * Uses the embedded Agent class directly instead of spawning a subprocess.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent, type AgentConfig } from "./agent/agent";
@@ -1981,18 +1981,33 @@ export class WorkerLoop implements AgentWorker {
     return buildAgentSystemPrompt(agent, allAgents);
   }
 
-  // Cache CLAWD.md instructions per worker instance (avoids disk reads per agent init)
-  private clawdInstructionsCache: string | null = null;
+  // Cache CLAWD.md instructions per worker, keyed by latest mtime sum so edits
+  // to global/project CLAWD.md propagate without a worker restart.
+  private clawdInstructionsCache: { mtimeKey: number; result: string } | null = null;
 
-  /** Load CLAWD.md instructions from project root (cached after first load) */
+  private clawdMtimeKey(globalPath: string, projectPath: string): number {
+    let key = 0;
+    try {
+      key += statSync(globalPath).mtimeMs;
+    } catch {}
+    try {
+      key += statSync(projectPath).mtimeMs;
+    } catch {}
+    return key;
+  }
+
+  /** Load CLAWD.md instructions from project root, re-reading on mtime change */
   private loadClawdInstructions(): string {
-    if (this.clawdInstructionsCache !== null) return this.clawdInstructionsCache;
-
     const { projectRoot } = this.config;
+    const globalPath = join(homedir(), ".clawd", "CLAWD.md");
+    const projectPath = join(projectRoot, "CLAWD.md");
+    const mtimeKey = this.clawdMtimeKey(globalPath, projectPath);
+    if (this.clawdInstructionsCache && this.clawdInstructionsCache.mtimeKey === mtimeKey) {
+      return this.clawdInstructionsCache.result;
+    }
     const contexts: string[] = [];
 
     // 1. Global CLAWD.md from ~/.clawd/CLAWD.md
-    const globalPath = join(homedir(), ".clawd", "CLAWD.md");
     if (existsSync(globalPath)) {
       try {
         contexts.push(readFileSync(globalPath, "utf-8"));
@@ -2002,7 +2017,6 @@ export class WorkerLoop implements AgentWorker {
     }
 
     // 2. Project CLAWD.md from {projectRoot}/CLAWD.md
-    const projectPath = join(projectRoot, "CLAWD.md");
     if (existsSync(projectPath) && projectPath !== globalPath) {
       try {
         contexts.push(`## Project-Specific Instructions\n\n${readFileSync(projectPath, "utf-8")}`);
@@ -2042,7 +2056,7 @@ export class WorkerLoop implements AgentWorker {
       }
       result = result.slice(0, cutPoint) + suffix;
     }
-    this.clawdInstructionsCache = result;
+    this.clawdInstructionsCache = { mtimeKey, result };
     return result;
   }
 
