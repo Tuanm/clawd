@@ -61,11 +61,19 @@ const spaceCompleteCallbacks = new Map<string, () => void>();
 const spaceAuthTokens = new Map<string, string>();
 const spaceProjectRoots = new Map<string, string>();
 
-mock.module("../../server/mcp", () => ({
+// Mock the LEAF module — terminate.ts now imports directly from shared.ts
+// (round-5 dropped the dynamic-import-via-barrel pattern).
+mock.module("../../server/mcp/shared", () => ({
   spaceTimeoutTimers,
   spaceCompleteCallbacks,
   spaceAuthTokens,
   spaceProjectRoots,
+  // Stubs for other shared.ts exports — present so modules transitively
+  // pulling shared.ts don't blow up on missing symbols.
+  _scheduler: null,
+  _workerManager: null,
+  setMcpScheduler: () => {},
+  setMcpWorkerManager: () => {},
 }));
 
 // Dynamic import — mock.module must run first
@@ -192,10 +200,12 @@ describe("terminateSpace", () => {
     expect(bodies[0].text).toContain("Killed by parent agent");
   });
 
-  test("when failSpace loses CAS, locked=false AND finalSpace reflects ACTUAL settled status", async () => {
-    // Regression for the old stop_agent bug: it returned status:"stopped"
-    // unconditionally even when the space had already settled as "completed"
-    // through a concurrent path. The shared helper must re-read instead.
+  test("when failSpace loses CAS, skips chat post AND surfaces ACTUAL settled status", async () => {
+    // Two regressions guarded here:
+    //   1. round-3: status was hardcoded "stopped" → must reflect actual status
+    //   2. round-5: chat post fired unconditionally → on CAS-loss the
+    //      concurrent winner already posted its outcome, so a "Sub-agent
+    //      stopped" post for an actually-completed space is a lie.
     const initialRow = makeSpaceRow({ id: "space-2", status: "active" });
     const settledRow = makeSpaceRow({ id: "space-2", status: "completed" });
     let getCalls = 0;
@@ -207,7 +217,7 @@ describe("terminateSpace", () => {
     const failSpy = mock(() => false); // CAS lost
     const fakeManager = { failSpace: failSpy } as any;
 
-    const { fn } = captureFetch();
+    const { calls, fn } = captureFetch();
 
     const result = await terminateSpace("space-2", "Stopped by parent agent", {
       fetchImpl: fn,
@@ -216,6 +226,9 @@ describe("terminateSpace", () => {
 
     expect(result.locked).toBe(false);
     expect(result.finalSpace?.status).toBe("completed"); // NOT "failed", NOT "stopped"
+    // Round-5 invariant: NO chat post fires when CAS is lost.
+    expect(result.postedToChat).toBe(false);
+    expect(calls.length).toBe(0);
   });
 
   test("returns no-op result when space not found (idempotent)", async () => {
