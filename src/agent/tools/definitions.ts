@@ -19,8 +19,6 @@ import "./chat-tools";
 export { runWithAgentContext } from "../utils/agent-context";
 // Re-export sandbox utilities not in registry
 export { enableSandbox, setSandboxProjectRoot } from "../utils/sandbox";
-// Re-export sub-agent lifecycle helpers from chat-tools
-export { terminateAllSubAgents, waitForSubAgents } from "./chat-tools";
 // ============================================================================
 // Re-exports from registry (shared state + utilities)
 // ============================================================================

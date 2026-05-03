@@ -10,16 +10,7 @@ jobs:
           bun-version: latest
       - run: bun install
       - name: Run tests (isolated)
-        run: |
-          # Run each test file individually to avoid bun mock.module() contamination
-          failed=0
-          for f in $(find src -name "*.test.ts" | sort); do
-            if ! bun test "$f"; then
-              failed=1
-              echo "FAILED: $f"
-            fi
-          done
-          exit $failed
+        run: bun test --isolate
       - name: Build UI
         run: bun run build:ui
       - name: Build server

@@ -336,5 +336,54 @@ describe("AgenticLoop", () => {
       expect(result.error).toContain("API error");
       expect(loop.getStatus()).toBe("failed");
     });
+
+    // Regression: parallel read-only tool calls used Promise.all, so a single
+    // rejected sibling aborted the whole turn. Verify the allSettled path
+    // recovers — the rejection becomes a tool message with an error body and
+    // sibling results land alongside it.
+    test("parallel read-only tools: one rejection produces an error message, siblings succeed", async () => {
+      const multiToolMsg: Message = {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "ok-1", type: "function", function: { name: "echo", arguments: '{"text":"a"}' } },
+          { id: "boom", type: "function", function: { name: "echo", arguments: '{"text":"b"}' } },
+          { id: "ok-2", type: "function", function: { name: "echo", arguments: '{"text":"c"}' } },
+        ],
+      };
+      const finalMsg = textMessage("done");
+      const provider = makeProvider([multiToolMsg, finalMsg]);
+
+      // Mark echo as readOnly so the loop takes the parallel branch.
+      const executor: ToolExecutor = {
+        getTools: mock((): ToolDefinition[] => [
+          {
+            type: "function",
+            readOnly: true,
+            function: {
+              name: "echo",
+              description: "Echoes back the input",
+              parameters: { type: "object", properties: { text: { type: "string" } } },
+            },
+          },
+        ]),
+        execute: mock(async (toolCall: ToolCall): Promise<ToolExecutionResult> => {
+          if (toolCall.id === "boom") throw new Error("kaboom");
+          return { tool_call_id: toolCall.id, content: `ok:${toolCall.id}`, success: true };
+        }),
+      };
+
+      const loop = new AgenticLoop(DEFAULT_CONFIG, provider, executor);
+      const result = await loop.run("task");
+
+      // Loop should not crash — siblings + an error placeholder all land in messages.
+      expect(result.success).toBe(true);
+      const toolMessages = loop.getMessages().filter((m) => m.role === "tool");
+      expect(toolMessages).toHaveLength(3);
+      const byId = new Map(toolMessages.map((m) => [m.tool_call_id, m.content]));
+      expect(byId.get("ok-1")).toBe("ok:ok-1");
+      expect(byId.get("ok-2")).toBe("ok:ok-2");
+      expect(byId.get("boom")).toContain("kaboom");
+    });
   });
 });
