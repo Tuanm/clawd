@@ -41,6 +41,7 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
+import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { AgentFileConfig } from "../../../agent/agents/loader";
@@ -51,8 +52,13 @@ import {
   listGlobalAgentFiles,
   loadAgentFile,
 } from "../../../agent/agents/loader";
-import { BUILTIN_PROVIDERS, listConfiguredProviders } from "../../../agent/api/provider-config";
+import {
+  BUILTIN_PROVIDERS,
+  listConfiguredProviders,
+  resolveProviderBaseType,
+} from "../../../agent/api/provider-config";
 import { bridgeConversationSummary } from "../../../agent/session/bridge-summary";
+import { rebuildClaudeCodeJsonlFromMemory } from "../../../agent/session/jsonl-rebuilder";
 import { SessionManager } from "../../../agent/session/manager";
 import { getSkillManager } from "../../../agent/skills/manager";
 import { isWorktreeEnabled, loadConfigFile } from "../../../config/config-file";
@@ -61,6 +67,16 @@ import { agentsMigrations } from "../../../db/migrations/agents-migrations";
 import type { WorkerManager } from "../../../worker-manager";
 import { extractToken, isInternalToken } from "../../middleware";
 import { broadcastUpdate } from "../../websocket";
+
+// ============================================================================
+// Concurrency: PATCH-in-flight lock per (channel, agent_id)
+// ============================================================================
+// H1 fix: serialize concurrent PATCH /api/app.agents.update requests for the
+// same agent. Without this, two simultaneous patches each run stop→rebuild→
+// bridge→start, racing each other's session_id writes and worker spawns. The
+// `_startingAgents` Set inside WorkerManager only guards startAgent — it does
+// not cover the rebuild/bridge phase nor the gap between stop and start.
+const _patchInFlight = new Set<string>();
 
 // ============================================================================
 // Security: Sensitive file patterns (blocked from reading)
@@ -604,209 +620,369 @@ export function registerAgentRoutes(
           return json({ ok: false, error: "channel and agent_id required" }, 400);
         }
 
-        // Capture old values BEFORE update — needed for session reset comparison.
-        // Include project/agent_type (cwd-binding) and claude_code_session_id
-        // (CC-specific, may need bridging on risky changes).
-        const oldAgent = db
-          .query(
-            "SELECT provider, model, project, agent_type, claude_code_session_id FROM channel_agents WHERE channel = ? AND agent_id = ?",
-          )
-          .get(channel, agent_id) as {
-          provider: string;
-          model: string;
-          project: string | null;
-          agent_type: string | null;
-          claude_code_session_id: string | null;
-        } | null;
+        // H1: Serialize concurrent PATCH for the same agent. Two parallel calls
+        // would race each other's stopAgent / rebuild / startAgent and corrupt
+        // session_id state. The lock is released in `finally` so an exception
+        // inside the body cannot strand the agent in a permanently-locked state.
+        const _lockKey = `${channel}:${agent_id}`;
+        if (_patchInFlight.has(_lockKey)) {
+          return json({ ok: false, error: "patch_in_flight" }, 409);
+        }
+        _patchInFlight.add(_lockKey);
 
-        // Update database
-        const updates: string[] = [];
-        const params: any[] = [];
+        try {
+          // Capture old values BEFORE update — needed for session reset comparison.
+          // Include project/agent_type (cwd-binding) and claude_code_session_id
+          // (CC-specific, may need bridging on risky changes).
+          const oldAgent = db
+            .query(
+              "SELECT provider, model, project, agent_type, claude_code_session_id FROM channel_agents WHERE channel = ? AND agent_id = ?",
+            )
+            .get(channel, agent_id) as {
+            provider: string;
+            model: string;
+            project: string | null;
+            agent_type: string | null;
+            claude_code_session_id: string | null;
+          } | null;
 
-        if (provider !== undefined) {
-          const configuredNames = listConfiguredProviders().map((p) => p.name);
-          const allowedProviders = [...(BUILTIN_PROVIDERS as readonly string[]), ...configuredNames];
-          const agentProvider = String(provider).toLowerCase();
-          if (!allowedProviders.includes(agentProvider)) {
-            return json(
-              {
-                ok: false,
-                error: `Invalid provider: ${provider}. Must be one of: ${allowedProviders.join(", ")}`,
-              },
-              400,
+          // Update database
+          const updates: string[] = [];
+          const params: any[] = [];
+
+          if (provider !== undefined) {
+            const configuredNames = listConfiguredProviders().map((p) => p.name);
+            const allowedProviders = [...(BUILTIN_PROVIDERS as readonly string[]), ...configuredNames];
+            const agentProvider = String(provider).toLowerCase();
+            if (!allowedProviders.includes(agentProvider)) {
+              return json(
+                {
+                  ok: false,
+                  error: `Invalid provider: ${provider}. Must be one of: ${allowedProviders.join(", ")}`,
+                },
+                400,
+              );
+            }
+            updates.push("provider = ?");
+            params.push(agentProvider);
+          }
+          if (model !== undefined) {
+            updates.push("model = ?");
+            params.push(model);
+          }
+          if (project !== undefined) {
+            if (project) {
+              const rootErr = validateProjectRoot(project, channel);
+              if (rootErr) return json({ ok: false, error: rootErr }, 400);
+            }
+            updates.push("project = ?");
+            params.push(project);
+          }
+          if (active !== undefined) {
+            updates.push("active = ?");
+            params.push(active ? 1 : 0);
+          }
+          if (sleeping !== undefined) {
+            updates.push("sleeping = ?");
+            params.push(sleeping ? 1 : 0);
+          }
+          if (worker_token !== undefined) {
+            updates.push("worker_token = ?");
+            params.push(worker_token || null);
+          }
+          if (heartbeat_interval !== undefined) {
+            updates.push("heartbeat_interval = ?");
+            params.push(typeof heartbeat_interval === "number" ? Math.max(0, Math.round(heartbeat_interval)) : 0);
+          }
+          if (worktree_path !== undefined) {
+            updates.push("worktree_path = ?");
+            params.push(worktree_path || null);
+          }
+          if (worktree_branch !== undefined) {
+            updates.push("worktree_branch = ?");
+            params.push(worktree_branch || null);
+          }
+          if (agent_type !== undefined) {
+            if (agent_type && !isValidAgentName(agent_type)) {
+              return json({ ok: false, error: "invalid agent_type name" }, 400);
+            }
+            updates.push("agent_type = ?");
+            params.push(agent_type || null);
+          }
+
+          if (updates.length === 0) {
+            return json({ ok: false, error: "nothing to update" }, 400);
+          }
+
+          updates.push("updated_at = strftime('%s', 'now')");
+          params.push(channel, agent_id);
+
+          db.run(`UPDATE channel_agents SET ${updates.join(", ")} WHERE channel = ? AND agent_id = ?`, params);
+
+          // Get updated record
+          const agent = db
+            .query("SELECT * FROM channel_agents WHERE channel = ? AND agent_id = ?")
+            .get(channel, agent_id) as any;
+
+          if (!agent) {
+            return json({ ok: false, error: "agent_not_found" }, 404);
+          }
+
+          // Handle risky config changes — anything that could invalidate the CC
+          // session file (provider/model/cwd binding) or the agent's next-turn
+          // context. Compare against old values captured BEFORE the DB update
+          // (agent.* already reflects new values).
+          //
+          // For CC-family agents: clearing `claude_code_session_id` forces a
+          // fresh CC session, avoiding thinking-signature mismatch across
+          // model/provider changes and cwd mismatch across project/agent_type
+          // changes.
+          //
+          // Before clearing, we run `bridgeConversationSummary` — a one-shot
+          // LLM summarization of the existing session content. The summary is
+          // stored as a `[CONTEXT SUMMARY]` row and injected into the next
+          // turn's system prompt by main-worker.ts (via
+          // `getCompactionSummariesByName`). Without this, clearing the CC
+          // session produces amnesia: the agent loses all prior-turn context
+          // because the CC iterable only emits current-turn messages and the
+          // native CC session file is gone.
+          const providerChanged =
+            provider !== undefined && oldAgent != null && String(provider).toLowerCase() !== oldAgent.provider;
+          const modelChanged = model !== undefined && oldAgent != null && model !== oldAgent.model;
+          const projectChanged = project !== undefined && oldAgent != null && project !== (oldAgent.project ?? "");
+          const agentTypeChanged =
+            agent_type !== undefined && oldAgent != null && (agent_type || null) !== (oldAgent.agent_type || null);
+
+          // CC→CC provider switch shortcut: if provider is the ONLY changed axis
+          // and both old + new providers resolve to the "claude-code" base type,
+          // skip the session reset. The SDK JSONL is keyed by (cwd, sessionId)
+          // and the model/project/agent_type are unchanged — so resuming the
+          // existing session under the new provider name produces no signature
+          // mismatch or cwd drift. This preserves CC's native conversation
+          // history across switches between e.g. built-in `claude-code` and a
+          // custom CC-typed provider.
+          const oldBaseType = oldAgent ? resolveProviderBaseType(oldAgent.provider) : null;
+          const newBaseType =
+            provider !== undefined ? resolveProviderBaseType(String(provider).toLowerCase()) : oldBaseType;
+
+          const ccToCcProviderSwitch =
+            providerChanged &&
+            !modelChanged &&
+            !projectChanged &&
+            !agentTypeChanged &&
+            oldBaseType === "claude-code" &&
+            newBaseType === "claude-code";
+
+          // non-CC → CC switch: rebuild a synthetic SDK JSONL from memory.db so
+          // the new CC session inherits historical context instead of starting
+          // amnesic. The rebuilder skips tool-use blocks (orphaned without
+          // matching tool results) and replaces them with `[Used: <names>]`
+          // placeholders. On success we set the new sessionId on the agent and
+          // skip the bridge-summary path (rebuilder replaces it). On failure we
+          // fall through to the bridge+clear path as a safety net.
+          const nonCcToCcSwitch =
+            (providerChanged || modelChanged || projectChanged || agentTypeChanged) &&
+            oldBaseType !== null &&
+            oldBaseType !== "claude-code" &&
+            newBaseType === "claude-code";
+
+          const riskyChange =
+            (providerChanged || modelChanged || projectChanged || agentTypeChanged) && !ccToCcProviderSwitch;
+
+          if (ccToCcProviderSwitch) {
+            console.log(
+              `[agents] CC→CC provider switch ${oldAgent!.provider}→${provider}: preserving claude_code_session_id`,
             );
           }
-          updates.push("provider = ?");
-          params.push(agentProvider);
-        }
-        if (model !== undefined) {
-          updates.push("model = ?");
-          params.push(model);
-        }
-        if (project !== undefined) {
-          if (project) {
-            const rootErr = validateProjectRoot(project, channel);
-            if (rootErr) return json({ ok: false, error: rootErr }, 400);
-          }
-          updates.push("project = ?");
-          params.push(project);
-        }
-        if (active !== undefined) {
-          updates.push("active = ?");
-          params.push(active ? 1 : 0);
-        }
-        if (sleeping !== undefined) {
-          updates.push("sleeping = ?");
-          params.push(sleeping ? 1 : 0);
-        }
-        if (worker_token !== undefined) {
-          updates.push("worker_token = ?");
-          params.push(worker_token || null);
-        }
-        if (heartbeat_interval !== undefined) {
-          updates.push("heartbeat_interval = ?");
-          params.push(typeof heartbeat_interval === "number" ? Math.max(0, Math.round(heartbeat_interval)) : 0);
-        }
-        if (worktree_path !== undefined) {
-          updates.push("worktree_path = ?");
-          params.push(worktree_path || null);
-        }
-        if (worktree_branch !== undefined) {
-          updates.push("worktree_branch = ?");
-          params.push(worktree_branch || null);
-        }
-        if (agent_type !== undefined) {
-          if (agent_type && !isValidAgentName(agent_type)) {
-            return json({ ok: false, error: "invalid agent_type name" }, 400);
-          }
-          updates.push("agent_type = ?");
-          params.push(agent_type || null);
-        }
 
-        if (updates.length === 0) {
-          return json({ ok: false, error: "nothing to update" }, 400);
-        }
-
-        updates.push("updated_at = strftime('%s', 'now')");
-        params.push(channel, agent_id);
-
-        db.run(`UPDATE channel_agents SET ${updates.join(", ")} WHERE channel = ? AND agent_id = ?`, params);
-
-        // Get updated record
-        const agent = db
-          .query("SELECT * FROM channel_agents WHERE channel = ? AND agent_id = ?")
-          .get(channel, agent_id) as any;
-
-        if (!agent) {
-          return json({ ok: false, error: "agent_not_found" }, 404);
-        }
-
-        // Handle risky config changes — anything that could invalidate the CC
-        // session file (provider/model/cwd binding) or the agent's next-turn
-        // context. Compare against old values captured BEFORE the DB update
-        // (agent.* already reflects new values).
-        //
-        // For CC-family agents: clearing `claude_code_session_id` forces a
-        // fresh CC session, avoiding thinking-signature mismatch across
-        // model/provider changes and cwd mismatch across project/agent_type
-        // changes.
-        //
-        // Before clearing, we run `bridgeConversationSummary` — a one-shot
-        // LLM summarization of the existing session content. The summary is
-        // stored as a `[CONTEXT SUMMARY]` row and injected into the next
-        // turn's system prompt by main-worker.ts (via
-        // `getCompactionSummariesByName`). Without this, clearing the CC
-        // session produces amnesia: the agent loses all prior-turn context
-        // because the CC iterable only emits current-turn messages and the
-        // native CC session file is gone.
-        const providerChanged =
-          provider !== undefined && oldAgent != null && String(provider).toLowerCase() !== oldAgent.provider;
-        const modelChanged = model !== undefined && oldAgent != null && model !== oldAgent.model;
-        const projectChanged = project !== undefined && oldAgent != null && project !== (oldAgent.project ?? "");
-        const agentTypeChanged =
-          agent_type !== undefined && oldAgent != null && (agent_type || null) !== (oldAgent.agent_type || null);
-        const riskyChange = providerChanged || modelChanged || projectChanged || agentTypeChanged;
-
-        if (riskyChange) {
-          const reasons: string[] = [];
-          if (providerChanged) reasons.push(`provider ${oldAgent!.provider}→${provider}`);
-          if (modelChanged) reasons.push(`model ${oldAgent!.model}→${model}`);
-          if (projectChanged) reasons.push(`project ${oldAgent!.project || ""}→${project}`);
-          if (agentTypeChanged) reasons.push(`agent_type ${oldAgent!.agent_type || "null"}→${agent_type || "null"}`);
-          const reasonLabel = reasons.join(", ");
-
-          // Bridge the existing session content into a summary so the agent
-          // remembers prior context after the CC session is cleared. Works for
-          // any family transition: if target is CC, the summary feeds the new
-          // session via system prompt; if target is non-CC, the summary is a
-          // harmless extra context block in the preamble.
-          try {
-            const bridged = await bridgeConversationSummary(channel, agent_id, agent.model);
-            if (bridged) console.log(`[agents] ${reasonLabel}: bridge summary generated`);
-          } catch (err) {
-            console.warn(`[agents] ${reasonLabel}: bridge summary failed (continuing):`, err);
-          }
-
-          // Clear Claude Code session ID (backend-specific, cannot transfer
-          // between providers / models / cwds).
-          try {
-            db.run(`UPDATE channel_agents SET claude_code_session_id = NULL WHERE channel = ? AND agent_id = ?`, [
-              channel,
-              agent_id,
-            ]);
-          } catch (err) {
-            console.warn(`[agents] ${reasonLabel}: session ID clear failed (continuing):`, err);
-          }
-        }
-
-        // Restart worker if model, provider, project, worker_token, heartbeat_interval, or agent_type changed, or active state changed
-        if (
-          model !== undefined ||
-          provider !== undefined ||
-          active !== undefined ||
-          project !== undefined ||
-          worker_token !== undefined ||
-          heartbeat_interval !== undefined ||
-          agent_type !== undefined
-        ) {
-          if (agent.active === 1) {
-            await workerManager.restartAgent({
-              channel,
-              agentId: agent_id,
-              provider: agent.provider || "copilot",
-              model: agent.model,
-              active: true,
-              project: agent.project || "",
-              workerToken: agent.worker_token || undefined,
-              heartbeatInterval: agent.heartbeat_interval || 0,
-              agentType: agent.agent_type || undefined,
-            });
-          } else {
+          // B1 reorder: when we are about to mutate session state (rebuild a new
+          // JSONL or clear claude_code_session_id), the existing worker must be
+          // stopped FIRST. Without this, an in-flight onSessionId callback from
+          // the running SDK query can overwrite our freshly-seeded sessionId or
+          // restore a row we just NULLed — silently breaking history bridging.
+          // The persistSessionId guard is the second line of defence; this is
+          // the first.
+          const needsStopBeforeMutation = riskyChange || nonCcToCcSwitch;
+          const liveSleeping = needsStopBeforeMutation ? workerManager.isAgentSleeping(channel, agent_id) : null;
+          if (needsStopBeforeMutation) {
             await workerManager.stopAgent(channel, agent_id);
           }
-        }
 
-        // Update sleeping state if changed
-        if (sleeping !== undefined) {
-          const isSleeping = sleeping === true || sleeping === 1;
-          workerManager.setAgentSleeping(channel, agent_id, isSleeping);
-          // Broadcast so the UI updates immediately (same as agent.setSleeping)
-          broadcastUpdate(channel, {
-            type: "agent_sleep",
-            agent_id: agent_id,
-            is_sleeping: isSleeping,
+          let rebuildSucceeded = false;
+          if (nonCcToCcSwitch) {
+            try {
+              const projectRoot = getAgentProjectRoot(db, channel, agent_id);
+              if (!projectRoot) {
+                console.warn(`[agents] non-CC→CC switch: no project root resolved, falling back to bridge`);
+              } else {
+                const result = await rebuildClaudeCodeJsonlFromMemory({
+                  channel,
+                  agentId: agent_id,
+                  projectRoot,
+                  model: agent.model,
+                });
+                if (result) {
+                  try {
+                    db.run(`UPDATE channel_agents SET claude_code_session_id = ? WHERE channel = ? AND agent_id = ?`, [
+                      result.sessionId,
+                      channel,
+                      agent_id,
+                    ]);
+                    console.log(
+                      `[agents] non-CC→CC switch: rebuilt JSONL ${result.userTurns} user / ${result.assistantTurns} asst turns → sessionId ${result.sessionId.slice(0, 8)}`,
+                    );
+                    rebuildSucceeded = true;
+                  } catch (dbErr) {
+                    // DB update failed — the JSONL on disk is now an orphan
+                    // (no row points to it). Remove it so we don't leak files
+                    // every time a switch hits a SQLite contention error.
+                    let unlinkErr: unknown = null;
+                    try {
+                      await unlink(result.jsonlPath);
+                    } catch (e) {
+                      unlinkErr = e;
+                    }
+                    if (unlinkErr) {
+                      console.warn(
+                        `[agents] non-CC→CC switch: DB update failed AND orphan JSONL unlink failed (manual cleanup needed: ${result.jsonlPath}); db error:`,
+                        dbErr,
+                        "; unlink error:",
+                        unlinkErr,
+                      );
+                    } else {
+                      console.warn(`[agents] non-CC→CC switch: DB update failed, removed orphan JSONL:`, dbErr);
+                    }
+                  }
+                } else {
+                  console.log(`[agents] non-CC→CC switch: no replayable history, falling back to bridge`);
+                }
+              }
+            } catch (err) {
+              console.warn(`[agents] non-CC→CC switch: rebuild failed, falling back to bridge:`, err);
+            }
+          }
+
+          if (riskyChange && !rebuildSucceeded) {
+            const reasons: string[] = [];
+            if (providerChanged) reasons.push(`provider ${oldAgent!.provider}→${provider}`);
+            if (modelChanged) reasons.push(`model ${oldAgent!.model}→${model}`);
+            if (projectChanged) reasons.push(`project ${oldAgent!.project || ""}→${project}`);
+            if (agentTypeChanged) reasons.push(`agent_type ${oldAgent!.agent_type || "null"}→${agent_type || "null"}`);
+            const reasonLabel = reasons.join(", ");
+
+            // Bridge the existing session content into a summary so the agent
+            // remembers prior context after the CC session is cleared. Works for
+            // any family transition: if target is CC, the summary feeds the new
+            // session via system prompt; if target is non-CC, the summary is a
+            // harmless extra context block in the preamble.
+            //
+            // B2 fix: race against a 15s timeout. Without this, a slow upstream
+            // summarizer LLM can keep the PATCH HTTP request alive for up to 45s
+            // (3 attempts × 15s internal timeout), holding the per-agent lock
+            // and stalling the UI. On timeout we let the bridge finish in the
+            // background — its output is best-effort and the agent works fine
+            // without it; just no prior-turn summary in the next system prompt.
+            const BRIDGE_TIMEOUT_MS = 15_000;
+            const TIMEOUT = Symbol("bridge-timeout");
+            const bridgePromise = bridgeConversationSummary(channel, agent_id, agent.model);
+            const timerPromise = new Promise<typeof TIMEOUT>((resolve) =>
+              setTimeout(() => resolve(TIMEOUT), BRIDGE_TIMEOUT_MS),
+            );
+            try {
+              const result = await Promise.race([bridgePromise, timerPromise]);
+              if (result === TIMEOUT) {
+                console.warn(
+                  `[agents] ${reasonLabel}: bridge summary >${BRIDGE_TIMEOUT_MS}ms — detaching, continuing without`,
+                );
+                // Detached; suppress potential unhandled rejection. The bridge
+                // itself catches internally so this is belt-and-suspenders.
+                bridgePromise.catch(() => {});
+              } else if (result) {
+                console.log(`[agents] ${reasonLabel}: bridge summary generated`);
+              }
+            } catch (err) {
+              console.warn(`[agents] ${reasonLabel}: bridge summary failed (continuing):`, err);
+            }
+
+            // Clear Claude Code session ID (backend-specific, cannot transfer
+            // between providers / models / cwds).
+            try {
+              db.run(`UPDATE channel_agents SET claude_code_session_id = NULL WHERE channel = ? AND agent_id = ?`, [
+                channel,
+                agent_id,
+              ]);
+            } catch (err) {
+              console.warn(`[agents] ${reasonLabel}: session ID clear failed (continuing):`, err);
+            }
+          }
+
+          // Restart worker if model, provider, project, worker_token,
+          // heartbeat_interval, or agent_type changed, or active state changed.
+          // When we already stopped above (needsStopBeforeMutation), call
+          // startAgent directly — restartAgent would just stop a non-existent
+          // worker and the redundant call adds latency.
+          if (
+            model !== undefined ||
+            provider !== undefined ||
+            active !== undefined ||
+            project !== undefined ||
+            worker_token !== undefined ||
+            heartbeat_interval !== undefined ||
+            agent_type !== undefined
+          ) {
+            if (agent.active === 1) {
+              // Sleeping resolution order: explicit body field > captured live
+              // worker state > post-update DB column. liveSleeping captures the
+              // runtime truth before the pre-mutation stop wiped it.
+              const sleepingArg =
+                sleeping !== undefined ? sleeping === true || sleeping === 1 : (liveSleeping ?? agent.sleeping === 1);
+              const startArgs = {
+                channel,
+                agentId: agent_id,
+                provider: agent.provider || "copilot",
+                model: agent.model,
+                active: true,
+                project: agent.project || "",
+                workerToken: agent.worker_token || undefined,
+                heartbeatInterval: agent.heartbeat_interval || 0,
+                agentType: agent.agent_type || undefined,
+                sleeping: sleepingArg,
+              };
+              if (needsStopBeforeMutation) {
+                await workerManager.startAgent(startArgs);
+              } else {
+                await workerManager.restartAgent(startArgs);
+              }
+            } else if (!needsStopBeforeMutation) {
+              await workerManager.stopAgent(channel, agent_id);
+            }
+            // else: already stopped above and active=false → nothing to do
+          }
+
+          // Update sleeping state if changed
+          if (sleeping !== undefined) {
+            const isSleeping = sleeping === true || sleeping === 1;
+            workerManager.setAgentSleeping(channel, agent_id, isSleeping);
+            // Broadcast so the UI updates immediately (same as agent.setSleeping)
+            broadcastUpdate(channel, {
+              type: "agent_sleep",
+              agent_id: agent_id,
+              is_sleeping: isSleeping,
+            });
+          }
+
+          return json({
+            ok: true,
+            agent: {
+              ...agent,
+              active: agent.active === 1,
+              sleeping: agent.sleeping === 1,
+              running: workerManager.isAgentRunning(channel, agent_id),
+            },
           });
+        } finally {
+          _patchInFlight.delete(_lockKey);
         }
-
-        return json({
-          ok: true,
-          agent: {
-            ...agent,
-            active: agent.active === 1,
-            sleeping: agent.sleeping === 1,
-            running: workerManager.isAgentRunning(channel, agent_id),
-          },
-        });
       });
     }
 

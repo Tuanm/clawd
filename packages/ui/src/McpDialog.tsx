@@ -299,10 +299,27 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
 
   const selectedServer = servers.find((s) => s.name === selectedName);
 
+  // Block dialog close (overlay click, X button, Escape) while a mutation is in flight
+  const busy = installing || toggling || connecting;
+  const guardedClose = useCallback(() => {
+    if (busy) return;
+    onClose();
+  }, [busy, onClose]);
+
+  // Escape key closes dialog (with busy guard)
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [isOpen, busy, onClose]);
+
   if (!isOpen) return null;
 
   return createPortal(
-    <div className="stream-dialog-overlay" onClick={onClose}>
+    <div className="stream-dialog-overlay" onClick={guardedClose}>
       <div className="stream-dialog agent-dialog mcp-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="stream-dialog-header">
@@ -321,7 +338,7 @@ export default function McpDialog({ channel, isOpen, onClose }: Props) {
               </svg>
             </button>
           </div>
-          <button className="stream-dialog-close" onClick={onClose}>
+          <button className="stream-dialog-close" onClick={guardedClose} disabled={busy}>
             ×
           </button>
         </div>

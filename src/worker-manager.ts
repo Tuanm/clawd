@@ -695,6 +695,15 @@ export class WorkerManager {
     return true;
   }
 
+  /** Read current sleeping state of a running agent. Returns null when no
+   *  worker is registered (so callers can fall back to the DB row). */
+  isAgentSleeping(channel: string, agentId: string): boolean | null {
+    const key = `${channel}:${agentId}`;
+    const loop = this.loops.get(key);
+    if (!loop) return null;
+    return !!loop.isSleeping;
+  }
+
   /** Restart an agent (e.g., after model change) */
   async restartAgent(agent: AgentConfig): Promise<boolean> {
     // Preserve sleeping state across restart

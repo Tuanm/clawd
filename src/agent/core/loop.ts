@@ -250,8 +250,9 @@ export class AgenticLoop extends EventEmitter {
               }
             }
 
-            // Execute read-only tools in parallel
-            const readOnlyResults = await Promise.all(
+            // Execute read-only tools in parallel — allSettled so one rejection
+            // does not drop sibling results (matches agent.ts:2717)
+            const readOnlySettled = await Promise.allSettled(
               readOnlyCalls.map(async (toolCall) => {
                 const result = await this.toolExecutor.execute(toolCall);
                 this.toolCallCount++;
@@ -259,6 +260,19 @@ export class AgenticLoop extends EventEmitter {
                 return { toolCall, result };
               }),
             );
+            const readOnlyResults = readOnlySettled.map((s, i) => {
+              if (s.status === "fulfilled") return s.value;
+              const toolCall = readOnlyCalls[i];
+              const errMsg = s.reason instanceof Error ? s.reason.message : String(s.reason);
+              return {
+                toolCall,
+                result: {
+                  tool_call_id: toolCall.id,
+                  content: `Error: ${errMsg}`,
+                  success: false,
+                } as ToolExecutionResult,
+              };
+            });
 
             // Execute write tools sequentially
             const writeResults: Array<{

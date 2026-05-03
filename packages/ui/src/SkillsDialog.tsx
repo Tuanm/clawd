@@ -255,10 +255,17 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
     }
   }, [channel, selectedAgentId, editName, loadSkills]);
 
+  // Block outer dialog close while save/delete is in flight (matches Escape guard above)
+  const busy = saving || deleting;
+  const guardedClose = () => {
+    if (busy) return;
+    onClose();
+  };
+
   if (!isOpen) return null;
 
   return createPortal(
-    <div className="stream-dialog-overlay" onClick={onClose}>
+    <div className="stream-dialog-overlay" onClick={guardedClose}>
       <div className="stream-dialog skills-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="stream-dialog-header">
@@ -277,7 +284,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
               </svg>
             </button>
           </div>
-          <button className="stream-dialog-close" onClick={onClose}>
+          <button className="stream-dialog-close" onClick={guardedClose} disabled={busy}>
             ×
           </button>
         </div>
