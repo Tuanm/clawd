@@ -683,9 +683,6 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   // Tool lifecycle handlers (called by Pre/PostToolUse hooks in-process)
   // --------------------------------------------------------------------------
 
-  /** PreToolUse: fires before the tool actually runs, so the UI can show a
-   *  "running" indicator. Separate from handleToolResult — firing both from
-   *  PostToolUse would collapse the running state to a single tick. */
   /**
    * Resolve the agent's avatar color once per worker lifetime (cached).
    * Only persist a real DB-resolved value — if `getAgent` returns null at first
@@ -703,6 +700,9 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     return "#D97853";
   }
 
+  /** PreToolUse: fires before the tool actually runs, so the UI can show a
+   *  "running" indicator. Separate from handleToolResult — firing both from
+   *  PostToolUse would collapse the running state to a single tick. */
   handleToolStart(toolName: string, toolInput: unknown, toolUseId?: string): void {
     const { channel, agentId } = this.config;
     const input = (toolInput || {}) as Record<string, any>;
