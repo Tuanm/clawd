@@ -444,25 +444,28 @@ export async function executeAgentToolCall(
               const errorMsg = lastMsg
                 ? `Sub-agent exited without completing. Last message: ${lastMsg}`
                 : "Sub-agent exited without completing";
-              if (_spaceManager) {
-                _spaceManager.failSpace(space.id, errorMsg);
+              // Gate the chat post on CAS-win — if terminateSpace (kill_agent /
+              // stop_agent) already settled the space, its post already fired
+              // and ours would be a spurious second "Sub-agent failed" report.
+              const won = _spaceManager ? _spaceManager.failSpace(space.id, errorMsg) : false;
+              if (won) {
+                const chatText = lastMsg
+                  ? `Sub-agent failed: ${taskName}\n\nLast message:\n${lastMsg}`
+                  : `Sub-agent failed: ${taskName} — exited without completing`;
+                timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    channel,
+                    text: chatText,
+                    user: subAgentId,
+                    agent_id: subAgentId,
+                    subtype: "agent_report",
+                  }),
+                }).catch((err) => {
+                  console.error("[agent-mcp] chat.postMessage (failed) failed:", err);
+                });
               }
-              const chatText = lastMsg
-                ? `Sub-agent failed: ${taskName}\n\nLast message:\n${lastMsg}`
-                : `Sub-agent failed: ${taskName} — exited without completing`;
-              timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  channel,
-                  text: chatText,
-                  user: subAgentId,
-                  agent_id: subAgentId,
-                  subtype: "agent_report",
-                }),
-              }).catch((err) => {
-                console.error("[agent-mcp] chat.postMessage (failed) failed:", err);
-              });
               reject(new Error(errorMsg));
             }
           })
@@ -470,20 +473,24 @@ export async function executeAgentToolCall(
             if (!ccSettled) {
               ccSettled = true;
               const errMsg = err instanceof Error ? err.message : String(err);
-              _spaceManager?.failSpace(space.id, errMsg);
-              timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  channel,
-                  text: `Sub-agent error: ${taskName} — ${errMsg}`,
-                  user: subAgentId,
-                  agent_id: subAgentId,
-                  subtype: "agent_report",
-                }),
-              }).catch((postErr) => {
-                console.error("[agent-mcp] chat.postMessage (error) failed:", postErr);
-              });
+              // Same CAS gate as the .then path — don't double-post if the
+              // space was already settled by terminateSpace.
+              const won = _spaceManager ? _spaceManager.failSpace(space.id, errMsg) : false;
+              if (won) {
+                timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    channel,
+                    text: `Sub-agent error: ${taskName} — ${errMsg}`,
+                    user: subAgentId,
+                    agent_id: subAgentId,
+                    subtype: "agent_report",
+                  }),
+                }).catch((postErr) => {
+                  console.error("[agent-mcp] chat.postMessage (error) failed:", postErr);
+                });
+              }
               reject(err);
             }
           })
