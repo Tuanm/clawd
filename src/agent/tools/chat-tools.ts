@@ -19,6 +19,13 @@ import {
   toolFetch,
 } from "./registry";
 
+function formatLogLine(m: { user: string | null; text: string | null; subtype: string | null }): string {
+  const who = m.user || "system";
+  const tag = m.subtype ? `[${m.subtype}] ` : "";
+  const body = (m.text || "").replace(/\n/g, " ");
+  return `${who}: ${tag}${body}`;
+}
+
 // ============================================================================
 // Tool: Skill List
 // ============================================================================
@@ -543,7 +550,17 @@ registerTool(
         worker.stop();
         unregisterClaudeCodeWorker(agent_id);
       }
-      const { spaceCompleteCallbacks, spaceAuthTokens, spaceProjectRoots } = await import("../../server/mcp");
+      const { spaceCompleteCallbacks, spaceAuthTokens, spaceProjectRoots, spaceTimeoutTimers } = await import(
+        "../../server/mcp"
+      );
+      // Clear the wall-clock timeout BEFORE failSpace — without this, the
+      // dangling timer fires up to 30 minutes later and posts a spurious
+      // "timed out" message into the parent channel for the killed agent.
+      const timer = spaceTimeoutTimers.get(agent_id);
+      if (timer) {
+        clearTimeout(timer);
+        spaceTimeoutTimers.delete(agent_id);
+      }
       spaceCompleteCallbacks.delete(agent_id);
       spaceAuthTokens.delete(agent_id);
       spaceProjectRoots.delete(agent_id);
@@ -555,16 +572,29 @@ registerTool(
     // skipping it leaves the UI showing the dead sub-agent as still-active.
     const { SpaceManager } = await import("../../spaces/manager");
     const locked = new SpaceManager().failSpace(agent_id, stopReason);
+    if (!locked) {
+      // Race: agent settled (completed/failed/timed_out) between our status
+      // read and the CAS lock. Surface a warn so operators can correlate the
+      // kill request with whatever final state the agent actually reached.
+      console.warn(`[kill_agent] failSpace returned false for ${agent_id} — likely already settled by another path`);
+    }
 
-    // Mirror agent-mcp-tools' chat post so the kill shows up in the channel.
+    // Re-read so the response carries the actual final status, not an
+    // assumed "failed". When `locked` is false a concurrent path won the
+    // status transition (e.g. natural completion, timeout), and the caller
+    // would otherwise see a misleading status:"failed".
+    const finalSpace = getSpace(agent_id) ?? space;
+
+    // Post into the SUB-AGENT'S parent channel (where its card lives), not
+    // the calling agent's context channel — the latter can be a sibling
+    // channel or "general" depending on how kill_agent was reached.
     try {
-      const channel = getContextChannel() || currentChannel;
       const stopAgentId = space.agent_id;
       await toolFetch(`${chatApiUrl}/api/chat.postMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          channel,
+          channel: space.channel,
           text: `Sub-agent stopped: ${stopReason}`,
           user: stopAgentId,
           agent_id: stopAgentId,
@@ -582,7 +612,7 @@ registerTool(
           message: `Agent ${agent_id} terminated`,
           id: agent_id,
           name: space.title,
-          status: "failed",
+          status: finalSpace.status,
           reason: stopReason,
           locked,
         },
@@ -632,30 +662,46 @@ registerTool(
 
     const { db } = await import("../../server/database");
     type MsgRow = { ts: string; user: string | null; text: string | null; subtype: string | null };
-    const all = db
-      .query<MsgRow, [string]>(
-        `SELECT ts, user, text, subtype FROM messages WHERE channel = ? AND thread_ts IS NULL ORDER BY ts ASC`,
-      )
-      .all(space.space_channel);
 
-    const lines = all.map((m) => {
-      const who = m.user || "system";
-      const tag = m.subtype ? `[${m.subtype}] ` : "";
-      const body = (m.text || "").replace(/\n/g, " ");
-      return `${who}: ${tag}${body}`;
-    });
+    // Push tail/range to SQL — without LIMIT, a chatty long-running agent's
+    // entire message history is materialized into JS memory before being
+    // sliced. The string-length cap below only truncates the joined output,
+    // not the row allocation. SELECT COUNT(*) gives us the totals shown in
+    // rangeLabel without paying the row-fetch cost.
+    const totalRow = db
+      .query<{ c: number }, [string]>(`SELECT COUNT(*) AS c FROM messages WHERE channel = ? AND thread_ts IS NULL`)
+      .get(space.space_channel);
+    const total = totalRow?.c ?? 0;
 
+    let rows: MsgRow[];
     let selected: string[];
     let rangeLabel: string;
     if (start_line !== undefined || end_line !== undefined) {
-      const start = Math.max(1, Number(start_line) || 1) - 1;
-      const end = end_line !== undefined ? Number(end_line) : lines.length;
-      selected = lines.slice(start, end);
-      rangeLabel = `messages ${start + 1}–${end} of ${lines.length}`;
+      const start = Math.max(1, Number(start_line) || 1);
+      const end = end_line !== undefined ? Math.max(start, Number(end_line)) : total;
+      const limit = Math.max(0, end - start + 1);
+      rows = db
+        .query<MsgRow, [string, number, number]>(
+          `SELECT ts, user, text, subtype FROM messages
+           WHERE channel = ? AND thread_ts IS NULL
+           ORDER BY ts ASC LIMIT ? OFFSET ?`,
+        )
+        .all(space.space_channel, limit, start - 1);
+      selected = rows.map((m) => formatLogLine(m));
+      rangeLabel = `messages ${start}–${Math.min(end, total)} of ${total}`;
     } else {
       const n = Math.max(1, Number(tail) || 100);
-      selected = lines.slice(-n);
-      rangeLabel = `last ${Math.min(n, lines.length)} of ${lines.length} messages`;
+      rows = db
+        .query<MsgRow, [string, number]>(
+          `SELECT ts, user, text, subtype FROM messages
+           WHERE channel = ? AND thread_ts IS NULL
+           ORDER BY ts DESC LIMIT ?`,
+        )
+        .all(space.space_channel, n);
+      // DESC + reverse to preserve chronological order for display.
+      rows.reverse();
+      selected = rows.map((m) => formatLogLine(m));
+      rangeLabel = `last ${Math.min(n, total)} of ${total} messages`;
     }
 
     let output = selected.join("\n");
@@ -704,7 +750,10 @@ registerTool(
           status: space.status,
           task: (space.description || "").slice(0, 500),
           result: space.status === "completed" ? (space.result_summary ?? null) : null,
-          error: space.status === "failed" ? (space.result_summary ?? null) : null,
+          // result_summary holds the timeout/failure reason for both states;
+          // surfacing it under `error` lets the caller distinguish from a
+          // null/null shrug for the `timed_out` case.
+          error: space.status === "failed" || space.status === "timed_out" ? (space.result_summary ?? null) : null,
           startedAt: space.created_at ? new Date(space.created_at).toISOString() : null,
           completedAt: space.completed_at ? new Date(space.completed_at).toISOString() : null,
         },

@@ -210,7 +210,9 @@ export async function executeAgentToolCall(
       const { ClaudeCodeSpaceWorker, registerClaudeCodeWorker, unregisterClaudeCodeWorker } = await import(
         "./claude-code-worker"
       );
-      const { spaceCompleteCallbacks, spaceAuthTokens, spaceProjectRoots } = await import("../server/mcp");
+      const { spaceCompleteCallbacks, spaceAuthTokens, spaceProjectRoots, spaceTimeoutTimers } = await import(
+        "../server/mcp"
+      );
       const { getOrRegisterAgent } = await import("../server/database");
       const { timedFetch } = await import("../utils/timed-fetch");
       const { loadAgentFile } = await import("../agent/agents/loader");
@@ -352,6 +354,7 @@ export async function executeAgentToolCall(
 
       const timeoutMs = DEFAULT_AGENT_TIMEOUT_SECONDS * 1000;
       const timeoutTimer = setTimeout(() => {
+        spaceTimeoutTimers.delete(space.id);
         ccWorker.stop();
         if (!ccSettled) {
           ccSettled = true;
@@ -373,6 +376,10 @@ export async function executeAgentToolCall(
           });
         }
       }, timeoutMs);
+      // Register cross-module so kill_agent / stop_agent can clear it.
+      // Without this, dangling timer fires after termination and posts a
+      // spurious "timed out" message into the parent channel.
+      spaceTimeoutTimers.set(space.id, timeoutTimer);
 
       spaceCompleteCallbacks.set(space.id, (result: string) => {
         const won = _spaceManager ? _spaceManager.completeSpace(space.id, result) : false;
@@ -481,6 +488,7 @@ export async function executeAgentToolCall(
           })
           .finally(() => {
             clearTimeout(timeoutTimer);
+            spaceTimeoutTimers.delete(space.id);
             spaceCompleteCallbacks.delete(space.id);
             spaceAuthTokens.delete(space.id);
             spaceProjectRoots.delete(space.id);
@@ -566,8 +574,16 @@ export async function executeAgentToolCall(
         spaceCompleteCallbacks,
         spaceAuthTokens,
         spaceProjectRoots: stopSpaceRoots,
+        spaceTimeoutTimers: stopSpaceTimers,
       } = await import("../server/mcp");
 
+      // Clear the wall-clock timeout BEFORE failSpace so a delayed timer
+      // can't fire afterwards and post a spurious "timed out" message.
+      const stopTimer = stopSpaceTimers.get(id);
+      if (stopTimer) {
+        clearTimeout(stopTimer);
+        stopSpaceTimers.delete(id);
+      }
       const ccw = getClaudeCodeWorker(id);
       if (ccw) {
         ccw.stop();

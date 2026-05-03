@@ -38,9 +38,12 @@ export function createStatePersistencePlugin(config: StatePersistenceConfig): St
   let inceptionCaptured = false;
   let saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // Per-instance tool args cache (keyed by tool name + timestamp). Module-scope
-  // sharing leaked entries across agents — see audit C1.
+  // Per-instance tool args cache (keyed by tool name + monotonic counter).
+  // Module-scope sharing leaked entries across agents — see audit C1. The
+  // counter (vs Date.now()) avoids same-millisecond collisions when parallel
+  // read-only tools fire simultaneously through Promise.allSettled.
   const toolArgsCache = new Map<string, { name: string; args: any }>();
+  let toolArgsCacheSeq = 0;
 
   function debouncedSave(): void {
     if (!sessionDir) return;
@@ -124,8 +127,11 @@ export function createStatePersistencePlugin(config: StatePersistenceConfig): St
     },
 
     async onToolCall(name: string, args: any, ctx: PluginContext) {
-      // Cache args for lookup in onToolResult (which has no args parameter)
-      const callId = `${name}-${Date.now()}`;
+      // Cache args for lookup in onToolResult (which has no args parameter).
+      // Monotonic counter prevents collisions when parallel read-only tools
+      // resolve in the same millisecond.
+      toolArgsCacheSeq += 1;
+      const callId = `${name}-${toolArgsCacheSeq}`;
       toolArgsCache.set(callId, { name, args });
 
       // Trim old cache entries (keep last 50)

@@ -14,6 +14,7 @@ export {
   spaceAuthTokens,
   spaceCompleteCallbacks,
   spaceProjectRoots,
+  spaceTimeoutTimers,
 } from "./mcp/shared";
 export { handleSpaceMcpRequest } from "./mcp/space-handler";
 
