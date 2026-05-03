@@ -321,6 +321,11 @@ class OpenAIProvider implements LLMProvider {
     try {
       while (true) {
         if (signal?.aborted) {
+          // Mark done so the post-loop EOF fallback doesn't flush a partial
+          // tool_call buffer after the abort error — the agent should see
+          // exactly one terminal event on user abort, not error → phantom
+          // tool_calls → done.
+          doneEmitted = true;
           yield { type: "error", error: "Request aborted" };
           break;
         }
@@ -581,6 +586,11 @@ class AnthropicProvider implements LLMProvider {
     try {
       while (true) {
         if (signal?.aborted) {
+          // Mark done so the post-loop EOF fallback doesn't flush a partial
+          // tool_call buffer after the abort error — the agent should see
+          // exactly one terminal event on user abort, not error → phantom
+          // tool_calls → done.
+          doneEmitted = true;
           yield { type: "error", error: "Request aborted" };
           break;
         }
@@ -1153,6 +1163,11 @@ NEVER skip reply! If you skip it, the message will be processed infinitely!`;
     try {
       while (true) {
         if (signal?.aborted) {
+          // Mark done so the post-loop EOF fallback doesn't flush a partial
+          // tool_call buffer after the abort error — the agent should see
+          // exactly one terminal event on user abort, not error → phantom
+          // tool_calls → done.
+          doneEmitted = true;
           yield { type: "error", error: "Request aborted" };
           break;
         }
