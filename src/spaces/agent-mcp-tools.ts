@@ -385,6 +385,7 @@ export async function executeAgentToolCall(
         const won = _spaceManager ? _spaceManager.completeSpace(space.id, result) : false;
         if (won) {
           clearTimeout(timeoutTimer);
+          spaceTimeoutTimers.delete(space.id);
           timedFetch(`${_chatApiUrl}/api/chat.postMessage`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -569,49 +570,25 @@ export async function executeAgentToolCall(
       const reason = (args.reason as string) || "Stopped by parent agent";
       if (!id) return textResult(JSON.stringify({ ok: false, error: "Missing agent_id" }));
 
-      const { getClaudeCodeWorker, unregisterClaudeCodeWorker } = await import("./claude-code-worker");
-      const {
-        spaceCompleteCallbacks,
-        spaceAuthTokens,
-        spaceProjectRoots: stopSpaceRoots,
-        spaceTimeoutTimers: stopSpaceTimers,
-      } = await import("../server/mcp");
+      const { terminateSpace } = await import("./terminate");
+      const { timedFetch } = await import("../utils/timed-fetch");
+      const { locked, finalSpace } = await terminateSpace(id, reason, {
+        chatApiUrl: _chatApiUrl,
+        fetchImpl: timedFetch as unknown as typeof fetch,
+        spaceManager: _spaceManager,
+      });
 
-      // Clear the wall-clock timeout BEFORE failSpace so a delayed timer
-      // can't fire afterwards and post a spurious "timed out" message.
-      const stopTimer = stopSpaceTimers.get(id);
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        stopSpaceTimers.delete(id);
-      }
-      const ccw = getClaudeCodeWorker(id);
-      if (ccw) {
-        ccw.stop();
-        unregisterClaudeCodeWorker(id);
-        spaceCompleteCallbacks.delete(id);
-        spaceAuthTokens.delete(id);
-        stopSpaceRoots.delete(id);
-      }
-      _spaceManager.failSpace(id, reason);
-
-      // Use space.agent_id (the human-readable subAgentId) not the raw space UUID
-      // so avatar/name lookup resolves correctly in the UI.
-      const stoppedSpace = _spaceManager.getSpace(id);
-      const stopAgentId = stoppedSpace?.agent_id ?? id;
-      const { timedFetch: stopFetch } = await import("../utils/timed-fetch");
-      stopFetch(`${_chatApiUrl}/api/chat.postMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel,
-          text: `Sub-agent stopped: ${reason}`,
-          user: stopAgentId,
-          agent_id: stopAgentId,
-          subtype: "agent_report",
+      return textResult(
+        JSON.stringify({
+          ok: true,
+          // Surface ACTUAL final status, not a hardcoded "stopped" — when
+          // failSpace lost the CAS to a concurrent natural completion or
+          // timeout, the previous hardcoded value lied to the caller.
+          status: finalSpace?.status ?? "unknown",
+          reason,
+          locked,
         }),
-      }).catch((err: unknown) => console.error("[AgentMcpTools] chat.postMessage (stop_agent) failed:", err));
-
-      return textResult(JSON.stringify({ ok: true, status: "stopped", reason }));
+      );
     }
 
     case "todo_write": {
