@@ -14,7 +14,6 @@ import { buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "./agent/a
 import { callContext } from "./agent/api/call-context";
 import { createProvider } from "./agent/api/factory";
 import { type ClawdChatConfig, createClawdChatPlugin, createClawdChatToolPlugin } from "./agent/plugins/clawd-chat";
-import { createCopilotAnalyticsPlugin } from "./agent/plugins/copilot-analytics-plugin";
 import { createMemoryPlugin, isMemoryEnabled } from "./agent/plugins/memory-plugin";
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 import type { PromptContext } from "./agent/prompt/builder";
@@ -1783,11 +1782,6 @@ export class WorkerLoop implements AgentWorker {
               });
               await agent.usePlugin(memoryPlugin);
             }
-
-            // Register built-in copilot analytics tools (always available)
-            await agent.usePlugin({
-              toolPlugin: createCopilotAnalyticsPlugin(channel),
-            });
 
             // Register additional plugins (space tools, etc.)
             if (this.config.additionalPlugins) {

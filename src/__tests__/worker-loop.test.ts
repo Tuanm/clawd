@@ -80,10 +80,6 @@ mock.module("../agent/plugins/memory-plugin", () => ({
   isMemoryEnabled: mock(() => false),
 }));
 
-mock.module("../agent/plugins/copilot-analytics-plugin", () => ({
-  createCopilotAnalyticsPlugin: mock(() => null),
-}));
-
 mock.module("../agent/plugins/scheduler-plugin", () => ({
   createSchedulerToolPlugin: mock(() => null),
 }));

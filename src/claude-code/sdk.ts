@@ -261,6 +261,7 @@ function buildEnv(
       CLAUDE_AGENT_SDK_CLIENT_APP: "Claw'd/1.0",
       CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
       CLAUDE_TMPDIR: "/tmp",
+      ENABLE_TOOL_SEARCH: "auto:5",
       ...ccEnv,
       ...extra,
     };
@@ -283,6 +284,7 @@ function buildEnv(
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "75",
     CLAUDE_AGENT_SDK_CLIENT_APP: "Claw'd/1.0",
     CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
+    ENABLE_TOOL_SEARCH: "auto:5",
     ...getClaudeCodeProviderEnv(providerName),
     ...extra,
   };
