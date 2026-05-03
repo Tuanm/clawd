@@ -18,7 +18,7 @@ import { runSDKQuery } from "../claude-code/sdk";
 import { startTmuxMonitor, stopTmuxMonitor, type TmuxMonitor } from "../claude-code/tmux";
 import { formatToolDescription, hasTmux, truncateToolResult } from "../claude-code/utils";
 
-import { setAgentStreaming } from "../server/database";
+import { getAgent, setAgentStreaming } from "../server/database";
 import { spaceProjectRoots } from "../server/mcp";
 import { getPendingMessages } from "../server/routes/messages";
 import { broadcastAgentStreaming, broadcastAgentToken, broadcastAgentToolCall } from "../server/websocket";
@@ -123,6 +123,12 @@ export class ClaudeCodeSpaceWorker {
   private memorySessionId: string | null = null;
   private abortController: AbortController | null = null;
   private lastHumanTs: string = "0";
+  // Avatar color cache: resolve once per worker, skip per-token getAgent() SQLite
+  // SELECT in broadcast paths. Same pattern as ClaudeCodeMainWorker.getAvatarColor().
+  // Only set once a non-fallback color is resolved — guards against the agent-row
+  // not yet existing at first-token time (would otherwise pin the fallback color
+  // for the whole worker lifetime).
+  private _cachedAvatarColor?: string;
 
   constructor(config: ClaudeCodeWorkerConfig) {
     this.config = config;
@@ -166,6 +172,21 @@ export class ClaudeCodeSpaceWorker {
     return this.spaceToken;
   }
 
+  /**
+   * Resolve avatar color once and cache; only persist a real DB-resolved value
+   * so a transient null at first-token time doesn't pin the fallback for the
+   * worker's lifetime. Returns the fallback uncached if the row is still missing.
+   */
+  private getAvatarColor(): string {
+    if (this._cachedAvatarColor) return this._cachedAvatarColor;
+    const color = getAgent(this.config.agentId, this.config.space.space_channel)?.avatar_color;
+    if (color) {
+      this._cachedAvatarColor = color;
+      return color;
+    }
+    return "#D97853";
+  }
+
   cleanup(): void {
     if (this.tmuxMonitor) stopTmuxMonitor(this.tmuxMonitor);
     // Unregister project root from space MCP file tools (synchronous — uses static import).
@@ -179,7 +200,16 @@ export class ClaudeCodeSpaceWorker {
   handleToolStart(toolName: string, toolInput: unknown, toolUseId?: string): void {
     const { space, agentId } = this.config;
     const input = (toolInput || {}) as Record<string, any>;
-    broadcastAgentToolCall(space.space_channel, agentId, toolName, input, "started", undefined, toolUseId);
+    broadcastAgentToolCall(
+      space.space_channel,
+      agentId,
+      toolName,
+      input,
+      "started",
+      undefined,
+      toolUseId,
+      this.getAvatarColor(),
+    );
   }
 
   handleToolResult(toolName: string, toolInput: unknown, toolResponse: unknown, toolUseId?: string): void {
@@ -201,6 +231,7 @@ export class ClaudeCodeSpaceWorker {
       status,
       `${description}\n${result}`,
       toolUseId,
+      this.getAvatarColor(),
     );
     saveToMemory(
       this.memorySessionId,
@@ -292,8 +323,10 @@ export class ClaudeCodeSpaceWorker {
 
     // Shared SDK callbacks (reused across initial run and interrupt resumes)
     const sdkCallbacks = {
-      onTextDelta: (text: string) => broadcastAgentToken(space.space_channel, agentId, text),
-      onThinkingDelta: (text: string) => broadcastAgentToken(space.space_channel, agentId, text, "thinking"),
+      onTextDelta: (text: string) =>
+        broadcastAgentToken(space.space_channel, agentId, text, "content", this.getAvatarColor()),
+      onThinkingDelta: (text: string) =>
+        broadcastAgentToken(space.space_channel, agentId, text, "thinking", this.getAvatarColor()),
       onAssistantMessage: (content: any[]) => this.handleAssistantMessage(content),
       onToolStart: (name: string, input: unknown, id: string) => this.handleToolStart(name, input, id),
       onToolResult: (name: string, input: unknown, response: unknown, id: string) =>
