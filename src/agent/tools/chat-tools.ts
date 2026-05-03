@@ -20,32 +20,6 @@ import {
 } from "./registry";
 
 // ============================================================================
-// Sub-Agent Store (module-level state for tracking spawned agents)
-// ============================================================================
-
-const subAgents = new Map<
-  string,
-  {
-    id: string;
-    name: string;
-    task: string;
-    status: "running" | "completed" | "failed" | "aborted";
-    result?: any;
-    error?: string;
-    startedAt: number;
-    completedAt?: number;
-    tmuxSession?: string;
-    resultFile?: string;
-  }
->();
-
-// Helper: Get subagent tmux socket path (project-scoped)
-function getSubAgentSocketPath(): string {
-  const { join } = require("node:path");
-  return join(getProjectAgentsDir(), "tmux.sock");
-}
-
-// ============================================================================
 // Tool: Skill List
 // ============================================================================
 
@@ -497,9 +471,6 @@ registerTool(
     const q = (query as string | undefined)?.toLowerCase();
     const channel = getContextChannel() || currentChannel;
 
-    // Read from spaces DB to mirror spaces/agent-mcp-tools.ts:506 — the local
-    // subAgents Map is never populated by the spawn-helper path, so a DB read
-    // is the only source of truth that stays consistent across both surfaces.
     const { listSpaces } = await import("../../spaces/db");
     const spaces = listSpaces(channel);
 
@@ -544,49 +515,76 @@ registerTool(
       type: "string",
       description: "The ID of the sub-agent to kill",
     },
+    reason: {
+      type: "string",
+      description: "Optional reason recorded with the failure",
+    },
   },
   ["agent_id"],
-  async ({ agent_id }) => {
-    const agentInfo = subAgents.get(agent_id);
-    if (!agentInfo) {
+  async ({ agent_id, reason }) => {
+    const stopReason = (reason as string) || "Killed by parent agent";
+    const { getSpace } = await import("../../spaces/db");
+    const space = getSpace(agent_id);
+    if (!space) {
+      return { success: false, output: "", error: `Agent ${agent_id} not found` };
+    }
+    if (space.status !== "active") {
       return {
         success: false,
         output: "",
-        error: `Agent ${agent_id} not found`,
+        error: `Agent ${agent_id} is not running (status: ${space.status})`,
       };
     }
 
-    if (agentInfo.status !== "running") {
-      return {
-        success: false,
-        output: "",
-        error: `Agent ${agent_id} is not running (status: ${agentInfo.status})`,
-      };
-    }
-
-    if (agentInfo.tmuxSession) {
-      // Kill tmux session for detached agents
-      const { execSync } = require("node:child_process");
-      const socketPath = getSubAgentSocketPath();
-      try {
-        execSync(`tmux -S "${socketPath}" kill-session -t "${agentInfo.tmuxSession}" 2>/dev/null`, { stdio: "ignore" });
-      } catch {
-        // Session might already be gone
+    try {
+      const { getClaudeCodeWorker, unregisterClaudeCodeWorker } = await import("../../spaces/claude-code-worker");
+      const worker = getClaudeCodeWorker(agent_id);
+      if (worker) {
+        worker.stop();
+        unregisterClaudeCodeWorker(agent_id);
       }
+      const { spaceCompleteCallbacks, spaceAuthTokens, spaceProjectRoots } = await import("../../server/mcp");
+      spaceCompleteCallbacks.delete(agent_id);
+      spaceAuthTokens.delete(agent_id);
+      spaceProjectRoots.delete(agent_id);
+    } catch (err) {
+      console.warn("[kill_agent] worker cleanup failed (continuing to mark space failed):", err);
     }
 
-    agentInfo.status = "aborted";
-    agentInfo.completedAt = Date.now();
+    // failSpace also broadcasts the lock + refreshes the parent-channel card —
+    // skipping it leaves the UI showing the dead sub-agent as still-active.
+    const { SpaceManager } = await import("../../spaces/manager");
+    const locked = new SpaceManager().failSpace(agent_id, stopReason);
+
+    // Mirror agent-mcp-tools' chat post so the kill shows up in the channel.
+    try {
+      const channel = getContextChannel() || currentChannel;
+      const stopAgentId = space.agent_id;
+      await toolFetch(`${chatApiUrl}/api/chat.postMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel,
+          text: `Sub-agent stopped: ${stopReason}`,
+          user: stopAgentId,
+          agent_id: stopAgentId,
+          subtype: "agent_report",
+        }),
+      });
+    } catch (err) {
+      console.warn("[kill_agent] chat.postMessage failed:", err);
+    }
 
     return {
       success: true,
       output: JSON.stringify(
         {
-          message: `Agent ${agent_id} and its children have been terminated`,
+          message: `Agent ${agent_id} terminated`,
           id: agent_id,
-          name: agentInfo.name,
-          status: "aborted",
-          duration_ms: agentInfo.completedAt - agentInfo.startedAt,
+          name: space.title,
+          status: "failed",
+          reason: stopReason,
+          locked,
         },
         null,
         2,
@@ -622,8 +620,9 @@ registerTool(
   },
   ["agent_id", "start_line", "end_line", "tail", "max_length"],
   async ({ agent_id, start_line, end_line, tail = 100, max_length = 5000 }) => {
-    const agentInfo = subAgents.get(agent_id);
-    if (!agentInfo) {
+    const { getSpace } = await import("../../spaces/db");
+    const space = getSpace(agent_id);
+    if (!space) {
       return {
         success: false,
         output: "",
@@ -631,44 +630,44 @@ registerTool(
       };
     }
 
-    const { join } = require("node:path");
-    const agentsDir = getProjectAgentsDir();
-    const sessionName = agentInfo.tmuxSession || agent_id.replace(/^tmux-/, "");
-    const logFile = join(agentsDir, sessionName, "output.log");
+    const { db } = await import("../../server/database");
+    type MsgRow = { ts: string; user: string | null; text: string | null; subtype: string | null };
+    const all = db
+      .query<MsgRow, [string]>(
+        `SELECT ts, user, text, subtype FROM messages WHERE channel = ? AND thread_ts IS NULL ORDER BY ts ASC`,
+      )
+      .all(space.space_channel);
 
-    try {
-      const { readFileSync } = require("node:fs");
-      const content = readFileSync(logFile, "utf-8");
-      const lines = content.split("\n");
+    const lines = all.map((m) => {
+      const who = m.user || "system";
+      const tag = m.subtype ? `[${m.subtype}] ` : "";
+      const body = (m.text || "").replace(/\n/g, " ");
+      return `${who}: ${tag}${body}`;
+    });
 
-      let selectedLines: string[];
-      let rangeLabel: string;
-      if (start_line !== undefined || end_line !== undefined) {
-        const start = Math.max(1, Number(start_line) || 1) - 1;
-        const end = end_line !== undefined ? Number(end_line) : lines.length;
-        selectedLines = lines.slice(start, end);
-        rangeLabel = `lines ${start + 1}–${end} of ${lines.length}`;
-      } else {
-        selectedLines = lines.slice(-Math.max(1, Number(tail) || 100));
-        rangeLabel = `last ${Math.min(Number(tail) || 100, lines.length)} lines of ${lines.length}`;
-      }
-
-      let output = selectedLines.join("\n");
-      const safeMaxLen = Math.min(Math.max(Number(max_length) || 5000, 100), 30000);
-      if (output.length > safeMaxLen) {
-        output = output.slice(0, safeMaxLen) + "\n... (truncated)";
-      }
-
-      return {
-        success: true,
-        output: `Agent: ${agentInfo.name} [${agentInfo.status.toUpperCase()}]\nTask: ${agentInfo.task.slice(0, 200)}${agentInfo.task.length > 200 ? "..." : ""}\n\n--- Output (${rangeLabel}, max ${safeMaxLen} chars) ---\n${output || "(no output)"}`,
-      };
-    } catch {
-      return {
-        success: true,
-        output: `Agent: ${agentInfo.name} [${agentInfo.status.toUpperCase()}]\n(no output yet — agent may still be starting)`,
-      };
+    let selected: string[];
+    let rangeLabel: string;
+    if (start_line !== undefined || end_line !== undefined) {
+      const start = Math.max(1, Number(start_line) || 1) - 1;
+      const end = end_line !== undefined ? Number(end_line) : lines.length;
+      selected = lines.slice(start, end);
+      rangeLabel = `messages ${start + 1}–${end} of ${lines.length}`;
+    } else {
+      const n = Math.max(1, Number(tail) || 100);
+      selected = lines.slice(-n);
+      rangeLabel = `last ${Math.min(n, lines.length)} of ${lines.length} messages`;
     }
+
+    let output = selected.join("\n");
+    const safeMaxLen = Math.min(Math.max(Number(max_length) || 5000, 100), 30000);
+    if (output.length > safeMaxLen) {
+      output = `${output.slice(0, safeMaxLen)}\n... (truncated)`;
+    }
+
+    return {
+      success: true,
+      output: `Agent: ${space.title} [${space.status.toUpperCase()}]\nTask: ${(space.description || "").slice(0, 200)}${(space.description || "").length > 200 ? "..." : ""}\n\n--- Messages (${rangeLabel}, max ${safeMaxLen} chars) ---\n${output || "(no messages yet — agent may still be starting)"}`,
+    };
   },
 );
 
@@ -687,8 +686,9 @@ registerTool(
   },
   ["agent_id"],
   async ({ agent_id }) => {
-    const agentInfo = subAgents.get(agent_id);
-    if (!agentInfo) {
+    const { getSpace } = await import("../../spaces/db");
+    const space = getSpace(agent_id);
+    if (!space) {
       return {
         success: false,
         output: "",
@@ -699,14 +699,14 @@ registerTool(
       success: true,
       output: JSON.stringify(
         {
-          id: agentInfo.id,
-          name: agentInfo.name,
-          status: agentInfo.status,
-          task: agentInfo.task.slice(0, 500),
-          result: agentInfo.result ?? null,
-          error: agentInfo.error ?? null,
-          startedAt: new Date(agentInfo.startedAt).toISOString(),
-          completedAt: agentInfo.completedAt ? new Date(agentInfo.completedAt).toISOString() : null,
+          id: space.id,
+          name: space.title,
+          status: space.status,
+          task: (space.description || "").slice(0, 500),
+          result: space.status === "completed" ? (space.result_summary ?? null) : null,
+          error: space.status === "failed" ? (space.result_summary ?? null) : null,
+          startedAt: space.created_at ? new Date(space.created_at).toISOString() : null,
+          completedAt: space.completed_at ? new Date(space.completed_at).toISOString() : null,
         },
         null,
         2,
@@ -998,41 +998,6 @@ registerTool(
     }
   },
 );
-
-// ============================================================================
-// Sub-Agent Cleanup helpers (exported for tools.ts)
-// ============================================================================
-
-/**
- * Wait for all running sub-agents to complete.
- * All agents are tmux-based (detached) — they survive process exit.
- */
-export async function waitForSubAgents(_timeout: number = 60000): Promise<void> {
-  const tmuxRunning = Array.from(subAgents.values()).filter((a) => a.status === "running" && a.tmuxSession);
-  if (tmuxRunning.length > 0) {
-    console.log(`[SubAgents] ${tmuxRunning.length} tmux sub-agent(s) still running (they will continue independently)`);
-  }
-}
-
-/**
- * Terminate all running sub-agents immediately.
- */
-export async function terminateAllSubAgents(): Promise<void> {
-  const running = Array.from(subAgents.values()).filter((a) => a.status === "running");
-  for (const agent of running) {
-    try {
-      if (agent.tmuxSession) {
-        const { execSync } = require("node:child_process");
-        const socketPath = getSubAgentSocketPath();
-        try {
-          execSync(`tmux -S "${socketPath}" kill-session -t "${agent.tmuxSession}" 2>/dev/null`, { stdio: "ignore" });
-        } catch {}
-      }
-      agent.status = "aborted";
-      agent.completedAt = Date.now();
-    } catch {}
-  }
-}
 
 // ============================================================================
 // Skill Review Trigger (registered by skill-review-plugin on init)

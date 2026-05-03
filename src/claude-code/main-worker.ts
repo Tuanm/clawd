@@ -6,7 +6,7 @@
  * communicate via Claw'd's MCP tools (reply, pollack, etc.).
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
@@ -23,7 +23,7 @@ import { getSessionManager } from "../agent/session/manager";
 import { generateConversationSummary } from "../agent/session/summarizer";
 import { getSkillSet, improveSkillFromCorrections } from "../agent/skills/improvement";
 import { getSkillManager } from "../agent/skills/manager";
-import { MAX_REINJECT_ATTEMPTS, buildReinjectionPrompt, sendChatFallback } from "../agent/utils/chat-fallback";
+import { buildReinjectionPrompt, MAX_REINJECT_ATTEMPTS, sendChatFallback } from "../agent/utils/chat-fallback";
 import { loadConfigFile } from "../config/config-file";
 import { db, getAgent, markMessagesSeen, setAgentStreaming } from "../server/database";
 import { getPendingMessages } from "../server/routes/messages";
@@ -1523,7 +1523,16 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             // JSONL (non-CC→CC switch), this is the path that wiped its effect.
             // Log enough to diagnose without requiring fs ops on the hot path.
             if (expectedSessionId) {
-              const cwd = resolve(this.config.projectRoot);
+              // Use realpath: the SDK encodes the resolved path, so on symlinked
+              // working trees `resolve()` produces a different encodedCwd than
+              // the file actually written by the SDK. Fall back to resolve() if
+              // the path is missing (e.g., worktree was just removed).
+              let cwd: string;
+              try {
+                cwd = realpathSync(this.config.projectRoot);
+              } catch {
+                cwd = resolve(this.config.projectRoot);
+              }
               const encodedCwd = cwd.replace(/[^a-zA-Z0-9]/g, "-");
               const jsonlPath = join(homedir(), ".claude", "projects", encodedCwd, `${expectedSessionId}.jsonl`);
               logger.warn(

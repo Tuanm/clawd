@@ -899,6 +899,13 @@ export function registerAgentRoutes(
                 bridgePromise.catch(() => {});
               } else if (result) {
                 console.log(`[agents] ${reasonLabel}: bridge summary generated`);
+              } else {
+                // Bridge resolved falsy (no session, empty content, or
+                // summarizer returned empty) — without this log, operators
+                // have no signal distinguishing "summary wrote" from
+                // "summary silently skipped". Skipped bridges produce
+                // amnesia after the CC session clear below.
+                console.log(`[agents] ${reasonLabel}: bridge summary skipped (no replayable content)`);
               }
             } catch (err) {
               console.warn(`[agents] ${reasonLabel}: bridge summary failed (continuing):`, err);
