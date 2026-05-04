@@ -437,7 +437,7 @@ This is the primary database for all chat, agent, and scheduling state.
 | `id` | TEXT PK | Job identifier |
 | `channel` | TEXT | Channel the job belongs to |
 | `title` | TEXT | Job description |
-| `type` | TEXT | Schedule type: `once`, `interval`, `cron`, `reminder`, or `tool_call` |
+| `type` | TEXT | Schedule type: `once`, `interval`, `cron`, `reminder`, `tool_call`, or `wakeup` |
 | `cron_expr` | TEXT | Cron expression (for cron type) |
 
 ### 5.2 memory.db — Agent Session Memory
@@ -1270,6 +1270,7 @@ The scheduler creates and manages recurring or one-time jobs:
 | `once` | Runs once at a specific time |
 | Reminder | Posts a message without creating a sub-space |
 | Tool call | Executes a tool directly without agent involvement |
+| Wakeup | Injects a heartbeat (with reason) into the creator agent's own loop — no sub-space; if the agent is sleeping, it wakes; if mid-turn, the heartbeat is dropped (no queueing) |
 
 **Execution flow:**
 

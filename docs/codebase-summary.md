@@ -405,7 +405,7 @@ Job scheduling and execution history:
 
 | Table | Purpose |
 |-------|---------|
-| `scheduled_jobs` | Cron/interval/once/reminder/tool_call jobs |
+| `scheduled_jobs` | Cron/interval/once/reminder/tool_call/wakeup jobs |
 | `job_runs` | Execution history with timestamps and results |
 
 ---
@@ -466,6 +466,7 @@ Jobs create sub-spaces for execution:
 - **Once jobs** — One-time execution
 - **Reminders** — Post messages without sub-spaces
 - **Tool calls** — Execute tools directly
+- **Wakeups** — Inject a heartbeat into the creator agent's own loop with a reason string (no sub-space); wakes if sleeping, dropped if mid-turn. Tool: `schedule_wakeup`. Reason is sanitized (`<agent_signal>`/`<system-reminder>` stripped iteratively) and capped at 200 chars.
 
 Tick loop: 10s intervals, max 3 concurrent jobs globally.
 

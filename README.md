@@ -262,7 +262,7 @@ Scheduler database (SQLite, WAL mode, `~/.clawd/data/scheduler.db`). Contains:
 
 | Table | Purpose |
 |---|---|
-| `scheduled_jobs` | Cron/interval/once/reminder/tool_call scheduled tasks |
+| `scheduled_jobs` | Cron/interval/once/reminder/tool_call/wakeup scheduled tasks |
 | `job_runs` | Execution history for scheduled jobs |
 
 ### memory.db
@@ -577,6 +577,7 @@ Supports cron, interval, and one-shot jobs:
 - Jobs execute by creating sub-spaces (same as spawn_agent)
 - Reminders post messages without sub-spaces
 - Tool calls execute directly without agent involvement
+- Wakeups inject a heartbeat into the creator agent's own loop with a reason (no sub-space); wakes if sleeping, dropped if mid-turn — `schedule_wakeup` tool
 - Tick loop runs every 10s, max 3 concurrent jobs globally
 
 ---
