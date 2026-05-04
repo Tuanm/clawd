@@ -1,10 +1,10 @@
 /**
- * Scheduler Tool Plugin — 8 tools for agent-controlled scheduling
+ * Scheduler Tool Plugin — 9 tools for agent-controlled scheduling
  *
  * These tools manage RECURRING scheduled tasks (cron-like). They are different from
  * the job_* tools which run one-off background commands in tmux sessions.
  *
- * Tools: schedule_job, schedule_reminder, schedule_tool, schedule_list,
+ * Tools: schedule_job, schedule_reminder, schedule_tool, schedule_wakeup, schedule_list,
  *        schedule_cancel, schedule_pause, schedule_resume, schedule_history
  */
 
@@ -181,6 +181,67 @@ export function createSchedulerToolPlugin(config: SchedulerPluginConfig): ToolPl
             return {
               success: true,
               output: `🔧 Scheduled tool call "${job.title}" (ID: ${job.id})\nTool: ${tool_name}\nNext run: ${new Date(job.next_run).toISOString()}${job.max_runs ? `\nMax runs: ${job.max_runs}` : ""}`,
+            };
+          },
+        },
+        {
+          name: "schedule_wakeup",
+          description:
+            "Schedule a wakeup heartbeat to be injected into THIS agent's loop at a future time. " +
+            "When the wakeup fires, the agent receives a synthetic [HEARTBEAT] turn (with the given reason in context) — " +
+            "useful for self-pacing long-running tasks, periodic check-ins, or resuming after a planned pause. " +
+            "If the agent is sleeping when the wakeup fires, it is woken up. If the agent is mid-turn, the heartbeat is dropped (no queueing). " +
+            'Schedule formats: "in 5 minutes", "every 1 hour", cron "0 9 * * *" (UTC), ISO 8601.',
+          parameters: {
+            reason: {
+              type: "string",
+              description:
+                "Why you want to wake up — appears in the heartbeat payload as context. Capped at 200 chars (truncated if longer); same text used as both title and heartbeat reason.",
+            },
+            schedule: {
+              type: "string",
+              description: 'When to wake: "in 5 minutes", "every 1 hour", cron "0 9 * * *", or ISO 8601',
+            },
+            max_runs: {
+              type: "number",
+              description: "Maximum number of wake-ups before auto-completing (optional, for recurring wakeups)",
+            },
+          },
+          required: ["reason", "schedule"],
+          handler: async (args) => {
+            const { reason, schedule, max_runs } = args;
+            const parsedMaxRuns = max_runs !== undefined ? Number(max_runs) : undefined;
+            if (
+              parsedMaxRuns !== undefined &&
+              (!Number.isFinite(parsedMaxRuns) || parsedMaxRuns <= 0 || !Number.isInteger(parsedMaxRuns))
+            ) {
+              return { success: false, output: "", error: "max_runs must be a positive integer" };
+            }
+            // Strip wrapper-breaking substrings — reason flows into the LLM heartbeat
+            // turn inside <agent_signal>...</agent_signal>, alongside <system-reminder>
+            // blocks parsed in agent.ts. Iterate until stable so nested splits like
+            // "<<agent_signal>/agent_signal>" don't leave a trailing tag after one pass.
+            let curr = String(reason);
+            let prev: string;
+            do {
+              prev = curr;
+              curr = curr.replace(/<\/?agent_signal>/gi, "").replace(/<\/?system-reminder>/gi, "");
+            } while (curr !== prev);
+            const reasonText = curr.slice(0, 200);
+            const result = scheduler.createJobFromTool({
+              channel,
+              agentId,
+              title: reasonText,
+              prompt: reasonText,
+              schedule: String(schedule),
+              maxRuns: parsedMaxRuns,
+              isWakeup: true,
+            });
+            if (!result.success) return { success: false, output: "", error: result.error! };
+            const job = result.job!;
+            return {
+              success: true,
+              output: `⏰ Wakeup scheduled "${job.title}" (ID: ${job.id})\nNext wake: ${new Date(job.next_run).toISOString()}${job.max_runs ? `\nMax wakeups: ${job.max_runs}` : ""}`,
             };
           },
         },

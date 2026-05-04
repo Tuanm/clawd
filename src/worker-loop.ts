@@ -18,7 +18,7 @@ import { createMemoryPlugin, isMemoryEnabled } from "./agent/plugins/memory-plug
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 import type { PromptContext } from "./agent/prompt/builder";
 import { runWithAgentContext, setProjectHash, toolDefinitions } from "./agent/tools/definitions";
-import { MAX_REINJECT_ATTEMPTS, buildReinjectionPrompt, sendChatFallback } from "./agent/utils/chat-fallback";
+import { buildReinjectionPrompt, MAX_REINJECT_ATTEMPTS, sendChatFallback } from "./agent/utils/chat-fallback";
 import { setDebug } from "./agent/utils/debug";
 import { initializeSandbox } from "./agent/utils/sandbox";
 import { smartTruncate } from "./agent/utils/smart-truncation";
@@ -169,8 +169,10 @@ export interface AgentWorker {
   resetSession?(): Promise<void>;
   /** Heartbeat interval in seconds (0 = disabled) */
   readonly heartbeatInterval: number;
-  /** Inject a heartbeat signal to wake idle agents */
-  injectHeartbeat?(): void;
+  /** Inject a heartbeat signal to wake idle agents.
+   *  - reason: optional free-form text appended to the [HEARTBEAT] payload
+   *  - allowWake: if true, also clears user-controlled sleep state */
+  injectHeartbeat?(opts?: { reason?: string; allowWake?: boolean }): void;
 }
 
 export class WorkerLoop implements AgentWorker {
@@ -192,6 +194,7 @@ export class WorkerLoop implements AgentWorker {
   private remoteWorkerBridge: import("./agent/plugins/remote-worker-bridge").RemoteWorkerBridge | null = null;
   private remoteWorkerBridgeReady: Promise<void> | null = null;
   private heartbeatPending = false;
+  private pendingHeartbeatReason: string | null = null;
 
   // Continuation retry cap (Layer 5 — stream resilience)
   private continuationRetryCount = 0;
@@ -260,6 +263,7 @@ export class WorkerLoop implements AgentWorker {
       this.sleeping = true;
       // Clear any pending heartbeat so it doesn't fire on wake
       this.heartbeatPending = false;
+      this.pendingHeartbeatReason = null;
       // Cancel in-flight processing so the agent stops immediately
       if (this.isProcessing && this.activeAgent) {
         try {
@@ -322,11 +326,17 @@ export class WorkerLoop implements AgentWorker {
   /**
    * Inject a heartbeat signal into the agent's poll loop.
    * The heartbeat is sent as a synthetic user-role message to the LLM (not posted to chat).
-   * Only fires when agent is idle (not processing, not sleeping).
+   * Only fires when agent is idle (not processing). When sleeping, callers must opt in
+   * via `allowWake: true` (used by schedule_wakeup); otherwise the call is a no-op.
    */
-  injectHeartbeat(): void {
-    if (!this.running || this.sleeping || this.isProcessing) return;
+  injectHeartbeat(opts: { reason?: string; allowWake?: boolean } = {}): void {
+    if (!this.running || this.isProcessing) return;
+    if (this.sleeping) {
+      if (!opts.allowWake) return;
+      this.setSleeping(false);
+    }
     this.heartbeatPending = true;
+    this.pendingHeartbeatReason = opts.reason ?? null;
     this.lastHeartbeatAt = Date.now();
   }
 
@@ -367,6 +377,7 @@ export class WorkerLoop implements AgentWorker {
     this.lastExecutionHadError = false;
     this.wasCancelledByHeartbeat = false;
     this.heartbeatPending = false;
+    this.pendingHeartbeatReason = null;
     this.lastHeartbeatAt = Date.now();
     this.abortController = new AbortController();
     // Reset sleeping state on fresh start — prevents stale sleeping state from
@@ -558,8 +569,11 @@ export class WorkerLoop implements AgentWorker {
         if (this.heartbeatPending) {
           const hasRealMessages = this.hasNewMessages || (result.ok && result.pending.length > 0);
           this.heartbeatPending = false;
+          const reason = this.pendingHeartbeatReason;
+          this.pendingHeartbeatReason = null;
           if (!hasRealMessages) {
-            const heartbeatPrompt = `[HEARTBEAT]${this.getActiveSubAgentReminder()}`;
+            const reasonSuffix = reason ? ` ${reason}` : "";
+            const heartbeatPrompt = `[HEARTBEAT]${reasonSuffix}${this.getActiveSubAgentReminder()}`;
             broadcastAgentToken(this.config.channel, this.config.agentId, "[HEARTBEAT]", "event");
             this.isProcessing = true;
             this.processingStartedAt = Date.now();

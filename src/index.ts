@@ -274,6 +274,9 @@ initRunner({
       error: `Tool "${toolName}" not found`,
     };
   },
+  // schedule_wakeup: resolve the live AgentWorker for the target (channel, agent).
+  // Closure resolves workerManager at call-time — declaration follows below at line 280.
+  getInjectableLoop: (channel: string, agentId: string) => workerManager.getLoop(channel, agentId),
 });
 
 // Initialize worker manager

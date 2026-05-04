@@ -23,6 +23,10 @@ interface ToolResult {
   error?: string;
 }
 
+interface InjectableLoop {
+  injectHeartbeat?(opts?: { reason?: string; allowWake?: boolean }): void;
+}
+
 interface RunnerConfig {
   appConfig: AppConfig;
   scheduler: SchedulerManager;
@@ -32,13 +36,30 @@ interface RunnerConfig {
     channel: string,
   ) => Promise<{ provider: string; model: string; agentId: string; project?: string; avatar_color?: string } | null>;
   executeToolFn?: (toolName: string, args: Record<string, any>, channel: string) => Promise<ToolResult>;
+  /** Resolve the live AgentWorker for (channel, agentId) so wakeup can inject a heartbeat. */
+  getInjectableLoop?: (channel: string, agentId: string) => InjectableLoop | null;
 }
 
 /**
  * Initialize the runner — sets job+reminder executors on the SchedulerManager
  */
 export function initRunner(config: RunnerConfig): void {
-  const { appConfig, scheduler, spaceManager, spaceWorkerManager, getAgentConfig, executeToolFn } = config;
+  const { appConfig, scheduler, spaceManager, spaceWorkerManager, getAgentConfig, executeToolFn, getInjectableLoop } =
+    config;
+
+  // Wakeup executor: inject a heartbeat into the target loop's main worker
+  if (getInjectableLoop) {
+    scheduler.setWakeupExecutor(async (job: ScheduledJob) => {
+      const loop = getInjectableLoop(job.channel, job.created_by_agent);
+      if (!loop || typeof loop.injectHeartbeat !== "function") {
+        // Loop not currently active — throw so executeWakeup records the run as
+        // error and consecutive_errors increments. Without this, recurring wakeups
+        // against an offline agent would silently exhaust max_runs.
+        throw new Error(`agent ${job.channel}:${job.created_by_agent} not running`);
+      }
+      loop.injectHeartbeat({ reason: job.prompt, allowWake: true });
+    });
+  }
 
   // Reminder executor: just post a message (unchanged — no space needed)
   scheduler.setReminderExecutor(async (job: ScheduledJob) => {
