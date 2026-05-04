@@ -261,9 +261,16 @@ interface JobBackend {
   waitFor(id: string, timeoutMs?: number): Promise<import("../jobs/tmux-manager").Job>;
 }
 
-/** Whether any background-job backend is usable on this host. */
+/**
+ * Whether any background-job backend is usable on this host.
+ *
+ * The detached-subprocess fallback supports every platform (POSIX via bash,
+ * Windows via cmd.exe), so this is always true. Kept as a function for
+ * symmetry with `getJobBackend()` and so future hosts (e.g. Bun-only embedded
+ * targets without spawn) can opt out cleanly.
+ */
 function isJobBackendAvailable(): boolean {
-  return isTmuxAvailable() || process.platform !== "win32";
+  return true;
 }
 
 let _jobBackend: JobBackend | null = null;
@@ -272,11 +279,9 @@ async function getJobBackend(): Promise<JobBackend> {
   if (isTmuxAvailable()) {
     const { tmuxJobManager } = await import("../jobs/tmux-manager");
     _jobBackend = tmuxJobManager;
-  } else if (process.platform !== "win32") {
+  } else {
     const { detachedJobManager } = await import("../jobs/detached-manager");
     _jobBackend = detachedJobManager;
-  } else {
-    throw new Error("No background-job backend available on this platform. Install tmux (Mac/Linux) or run under WSL.");
   }
   return _jobBackend;
 }
