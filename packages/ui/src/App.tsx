@@ -2419,9 +2419,6 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   // But never show it while an agent is actively streaming (streaming = not sleeping)
   const showOfflineBanner = (allAgentsSleeping || isOffline) && streamingAgents.length === 0;
 
-  // Check if any OTHER channel has unread messages (header logo red dot)
-  const hasAnyUnread = Object.entries(unreadCounts).some(([ch, count]) => ch !== activeChannel && count > 0);
-
   // Check if the active channel has unread messages (scroll-down button red dot)
   const hasActiveChannelUnread = !isActiveChannelAtBottom && (unreadCounts[activeChannel] || 0) > 0;
 
