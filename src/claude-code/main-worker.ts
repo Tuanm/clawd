@@ -397,7 +397,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
             pending.unshift({
               ts: "0",
-              user: "UHUMAN",
+              // USYSTEM sentinel keeps this synthetic context message from
+              // impersonating a real human turn (was UHUMAN — formatAuthor
+              // now labels it `system:`).
+              user: "USYSTEM",
               text: [
                 contextLabel,
                 ``,
