@@ -64,7 +64,7 @@ const logSilentError = (context: string, err: any) => {
   console.warn(`${YELLOW}[Silent Error] ${context}: ${errMsg}${RESET}`);
 };
 
-export { stripReasoningBlocks } from "./utils/strip-reasoning";
+import { stripReasoningBlocks } from "./utils/strip-reasoning";
 
 // ============================================================================
 // Types
