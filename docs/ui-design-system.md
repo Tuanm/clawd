@@ -140,7 +140,7 @@ font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace
 | Tool call descriptions | 13px | 400 | |
 | Diff viewer | 12px | 400 | Monospace |
 | Interactive text | 15px | 400 | Matches message body |
-| Composer disclaimer | 9px | 400 | `hsl(var(--accent) / 20%)` — very faint |
+| Composer disclaimer | 11px | 400 | `hsl(var(--text) / 55%)` — readable but de-emphasized |
 
 ### Line Height
 
@@ -383,7 +383,7 @@ The composer uses a **plain `<textarea>`** (`<textarea className="composer-raw-t
 │                                          │
 │ [Tools row] ···  [/skill] [context] [⬆] │  ← Action toolbar row
 └──────────────────────────────────────────┘
-│ Claw'd can make mistakes. You too.       │  ← Disclaimer, 9px, 20% accent
+│ Claw'd can make mistakes. You too.       │  ← Disclaimer, 11px, 55% text
 ```
 
 - **Border:** `1px solid hsl(var(--text) / 20%)` → `hsl(var(--accent))` on focus
@@ -418,8 +418,8 @@ When > 30,000 characters:
 ### Disclaimer
 
 `div.composer-disclaimer` renders `"Claw'd can make mistakes. You too."` below the composer box:
-- `font-size: 9px`
-- `color: hsl(var(--accent) / 20%)` — very faint
+- `font-size: 11px`
+- `color: hsl(var(--text) / 55%)` — readable but de-emphasized (meets WCAG contrast)
 
 ### Keyboard Behavior
 

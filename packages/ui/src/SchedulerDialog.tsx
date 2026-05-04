@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
+import { useFocusTrap } from "./hooks/useFocusTrap";
 import { InputContextMenu, useInputContextMenu } from "./InputContextMenu";
 import { ClawdAvatar } from "./MessageList";
 
@@ -128,6 +129,8 @@ export default function SchedulerDialog({ channel, isOpen, onClose, refreshTick 
   const [resuming, setResuming] = useState(false);
 
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(isOpen, dialogRef);
 
   const anyInFlight = saving || cancelling || pausing || resuming;
 
@@ -470,11 +473,18 @@ export default function SchedulerDialog({ channel, isOpen, onClose, refreshTick 
 
   return createPortal(
     <div className="stream-dialog-overlay" onClick={guardedClose}>
-      <div className="stream-dialog scheduler-dialog" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="stream-dialog scheduler-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="scheduler-dialog-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="stream-dialog-header">
           <div className="stream-dialog-title-row">
-            <h3>Schedulers</h3>
+            <h3 id="scheduler-dialog-title">Schedulers</h3>
             <button
               className="worktree-refresh-btn"
               onClick={() => selectedAgentId && loadJobs()}
@@ -488,7 +498,12 @@ export default function SchedulerDialog({ channel, isOpen, onClose, refreshTick 
               </svg>
             </button>
           </div>
-          <button className="stream-dialog-close" onClick={guardedClose} disabled={anyInFlight}>
+          <button
+            className="stream-dialog-close"
+            onClick={guardedClose}
+            disabled={anyInFlight}
+            aria-label="Close dialog"
+          >
             ×
           </button>
         </div>

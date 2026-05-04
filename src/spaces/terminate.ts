@@ -29,10 +29,10 @@
  *      stopped" for a space that actually completed is a lie.
  */
 
-import { getClaudeCodeWorker, unregisterClaudeCodeWorker } from "./claude-code-worker";
-import { type Space, getSpace } from "./db";
-import { SpaceManager } from "./manager";
 import { spaceAuthTokens, spaceCompleteCallbacks, spaceProjectRoots, spaceTimeoutTimers } from "../server/mcp/shared";
+import { getClaudeCodeWorker, unregisterClaudeCodeWorker } from "./claude-code-worker";
+import { getSpace, type Space } from "./db";
+import { SpaceManager } from "./manager";
 
 export interface TerminateOptions {
   /** Optional Chat API base URL (defaults to localhost:9081). */

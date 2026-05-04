@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
+import ConfirmDialog from "./ConfirmDialog";
+import { useFocusTrap } from "./hooks/useFocusTrap";
 import { InputContextMenu, useInputContextMenu } from "./InputContextMenu";
 import { ClawdAvatar } from "./MessageList";
 
@@ -160,6 +162,10 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingRemoveAgentId, setPendingRemoveAgentId] = useState<string | null>(null);
+
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(isOpen, dialogRef);
 
   // Add form state
   const [newName, setNewName] = useState("");
@@ -641,13 +647,20 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
 
   return createPortal(
     <div className="stream-dialog-overlay" onClick={guardedClose}>
-      <div className="stream-dialog agent-dialog" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="stream-dialog agent-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="agent-dialog-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="stream-dialog-header">
           <div className="stream-dialog-title-row">
-            <h3>Agents</h3>
+            <h3 id="agent-dialog-title">Agents</h3>
           </div>
-          <button className="stream-dialog-close" onClick={guardedClose} disabled={busy}>
+          <button className="stream-dialog-close" onClick={guardedClose} disabled={busy} aria-label="Close dialog">
             ×
           </button>
         </div>
@@ -957,7 +970,7 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
                 </button>
                 <button
                   className="agent-action-btn agent-action-btn--danger"
-                  onClick={() => handleRemoveAgent(selectedAgent.agent_id)}
+                  onClick={() => setPendingRemoveAgentId(selectedAgent.agent_id)}
                 >
                   Kill
                 </button>
@@ -1131,6 +1144,21 @@ export default function AgentDialog({ channel, isOpen, onClose }: Props) {
           onSelectAll={handleInputSelectAll}
         />
       )}
+      <ConfirmDialog
+        isOpen={pendingRemoveAgentId !== null}
+        title="Kill agent?"
+        message={`Stop and remove agent "${pendingRemoveAgentId ?? ""}". Running work will be terminated and this cannot be undone.`}
+        confirmLabel="Kill agent"
+        cancelLabel="Keep"
+        destructive
+        onConfirm={() => {
+          if (pendingRemoveAgentId) {
+            handleRemoveAgent(pendingRemoveAgentId);
+          }
+          setPendingRemoveAgentId(null);
+        }}
+        onCancel={() => setPendingRemoveAgentId(null)}
+      />
     </div>,
     document.body,
   );

@@ -112,12 +112,17 @@ export default function HomePage() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  const trimmedId = spaceId.trim();
+  const validationError =
+    trimmedId.length > 0 && !/^[\w.-]+$/.test(trimmedId)
+      ? "Use only letters, numbers, dot, dash, or underscore."
+      : null;
+
   const navigateToSpace = useCallback(() => {
     const id = spaceId.trim();
-    if (id) {
-      if (!/^[\w.-]+$/.test(id)) return;
-      window.location.pathname = `/${id}`;
-    }
+    if (!id) return;
+    if (!/^[\w.-]+$/.test(id)) return;
+    window.location.pathname = `/${id}`;
   }, [spaceId]);
 
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -156,12 +161,13 @@ export default function HomePage() {
           </div>
         </div>
         <div className="home-input-wrapper" ref={wrapperRef}>
-          <div className="home-space-input branding-input">
+          <div className={`home-space-input branding-input ${validationError ? "has-error" : ""}`}>
             <input
               ref={inputRef}
               type="text"
               className="home-space-field"
-              placeholder="Explore..."
+              placeholder="Type a channel name to enter or create…"
+              aria-label="Channel name"
               value={spaceId}
               onChange={(e) => {
                 setSpaceId(e.target.value);
@@ -169,15 +175,22 @@ export default function HomePage() {
               }}
               onFocus={() => setShowDropdown(true)}
               onKeyDown={handleInputKeyDown}
+              aria-invalid={validationError ? true : undefined}
+              aria-describedby={validationError ? "home-space-error" : undefined}
             />
             <button
               className={`home-space-send ${spaceId.trim() ? "has-content" : ""}`}
               onClick={navigateToSpace}
-              disabled={!spaceId.trim()}
+              disabled={!spaceId.trim() || validationError !== null}
             >
               <SendIcon />
             </button>
           </div>
+          {validationError && (
+            <div id="home-space-error" className="home-space-error" role="alert">
+              {validationError}
+            </div>
+          )}
           {shouldShowDropdown && (
             <div className="home-dropdown">
               {filteredChannels.map((ch) => (

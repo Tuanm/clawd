@@ -2970,9 +2970,14 @@ export default function MessageList({
                         </div>
                       )}
                       {isLong && !isArticleMessage && !isSubspaceMessage && (
-                        <span className="message-expand-toggle" onClick={() => toggleExpanded(msg.ts)}>
+                        <button
+                          type="button"
+                          className="message-expand-toggle"
+                          onClick={() => toggleExpanded(msg.ts)}
+                          aria-expanded={isExpanded}
+                        >
                           {isExpanded ? "Less" : "More"}
-                        </span>
+                        </button>
                       )}
                     </>
                   );

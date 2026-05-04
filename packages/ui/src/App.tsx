@@ -9,6 +9,9 @@ import {
   getStoredAuthToken,
   setChannelToken,
 } from "./auth-fetch";
+import ConfirmDialog from "./ConfirmDialog";
+import EmptyChannelState from "./EmptyChannelState";
+import InputDialog from "./InputDialog";
 import McpDialog, { McpIcon } from "./McpDialog";
 import MessageComposer from "./MessageComposer";
 import MessageList, { reinitializeMermaid, StreamOutputDialog } from "./MessageList";
@@ -20,6 +23,7 @@ import SidebarPanel from "./SidebarPanel";
 import SkillFilesChannel from "./SkillFilesChannel";
 import SkillsDialog from "./SkillsDialog";
 import SubAgentsDialog, { type ActiveSubAgent } from "./SubAgentsDialog";
+import { useToast } from "./Toast";
 import { UnreadBadge } from "./UnreadBadge";
 import WorktreeDialog from "./WorktreeDialog";
 
@@ -387,7 +391,8 @@ function ChannelDialogSwipeRow({
   agents: SeenByAgent[];
   unreadCount: number;
   onSwitch: () => void;
-  onRemove: () => void;
+  /** Returns true if the channel was actually removed; false if the user canceled. */
+  onRemove: () => Promise<boolean>;
 }) {
   const rowRef = useRef<HTMLDivElement>(null);
   const startXRef = useRef(0);
@@ -437,7 +442,18 @@ function ChannelDialogSwipeRow({
       removingRef.current = true;
       setRemoving(true);
       setOffset(-300);
-      setTimeout(() => onRemove(), 200);
+      // Ask parent to confirm. If the user cancels we revert the row.
+      Promise.resolve(onRemove()).then((confirmed) => {
+        if (!confirmed) {
+          removingRef.current = false;
+          setRemoving(false);
+          setOffset(0);
+          setTimeout(() => {
+            draggingRef.current = false;
+            swipingRef.current = false;
+          }, 250);
+        }
+      });
     } else {
       setOffset(0);
       // Clear drag flags after snap-back animation completes
@@ -519,6 +535,7 @@ function ChannelDialogSwipeRow({
 export default function App({ channel: initialChannel, articleId }: Props) {
   const isArticleMode = !!articleId;
   const { theme, toggle: toggleTheme } = useTheme();
+  const toast = useToast();
   // Active channel (can be switched without page reload)
   const [activeChannel, setActiveChannel] = useState(initialChannel);
 
@@ -576,6 +593,15 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   });
   const [showChannelDialog, setShowChannelDialog] = useState(false);
   const [channelAgents, setChannelAgents] = useState<Record<string, SeenByAgent[]>>({});
+  const [pendingRemoveChannel, setPendingRemoveChannel] = useState<{
+    channel: string;
+    resolve: (confirmed: boolean) => void;
+  } | null>(null);
+  const [pendingTokenPrompt, setPendingTokenPrompt] = useState<{
+    channel: string;
+    resolve: (token: string | null) => void;
+    errorMessage: string | null;
+  } | null>(null);
   const [showPlanModal, setShowPlanModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showProjectsDialog, setShowProjectsDialog] = useState(false);
@@ -724,41 +750,6 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Right-click prevention is handled globally in main.tsx Router
-
-  // Prevent DevTools keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // F12
-      if (e.key === "F12") {
-        e.preventDefault();
-        return;
-      }
-      // Ctrl+Shift+I / Cmd+Option+I (DevTools)
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "i") {
-        e.preventDefault();
-        return;
-      }
-      // Ctrl+Shift+J / Cmd+Option+J (Console)
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "j") {
-        e.preventDefault();
-        return;
-      }
-      // Ctrl+Shift+C / Cmd+Option+C (Inspector)
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "c") {
-        e.preventDefault();
-        return;
-      }
-      // Ctrl+U / Cmd+U (View Source)
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "u") {
-        e.preventDefault();
-        return;
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, []);
-
   // Focus new channel input when modal opens
   // Fetch agents for all channels when channel dialog opens
   useEffect(() => {
@@ -789,6 +780,34 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     };
     fetchAllChannelAgents();
   }, [showChannelDialog, openChannels]);
+
+  // Fetch agents for the active channel so EmptyChannelState can decide whether
+  // to show the "Add an agent" CTA. Cheap and runs once per channel switch.
+  useEffect(() => {
+    if (isArticleMode) return;
+    if (!activeChannel) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch(`${API_URL}/api/agents.list?channel=${activeChannel}`, undefined, activeChannel);
+        const data = await res.json();
+        if (cancelled || !data.ok || !data.agents) return;
+        const list: SeenByAgent[] = data.agents
+          .filter((a: any) => !a.is_sleeping)
+          .map((a: any) => ({
+            agent_id: a.id || a.agent_id,
+            avatar_color: a.avatar_color || "#D97853",
+            is_sleeping: a.is_sleeping,
+          }));
+        setChannelAgents((prev) => ({ ...prev, [activeChannel]: list }));
+      } catch {
+        // ignore — empty state will fall back to "no agents"
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeChannel, isArticleMode]);
 
   // Add current channel to stored list on mount (skip space channels and article mode)
   useEffect(() => {
@@ -987,10 +1006,14 @@ export default function App({ channel: initialChannel, articleId }: Props) {
         }
       }
 
-      // Prompt user — retry loop until valid token or explicit cancel
+      // Prompt user via accessible InputDialog — retry loop with inline error
+      let lastError: string | null = null;
       while (true) {
-        const token = window.prompt(`Enter token for channel "${channelName}":`);
-        if (!token || !token.trim()) return false; // cancelled → caller navigates to home
+        const token = await new Promise<string | null>((resolve) => {
+          setPendingTokenPrompt({ channel: channelName, resolve, errorMessage: lastError });
+        });
+        setPendingTokenPrompt(null);
+        if (!token || !token.trim()) return false; // user canceled → caller navigates to home
 
         try {
           const validate = await fetch("/api/auth.channel", {
@@ -1004,14 +1027,14 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             switchToChannel(channelName, options);
             return true;
           }
-          // Invalid token — loop back and prompt again (no alert, prompt itself conveys the retry)
+          lastError = "Invalid token. Try again or cancel to go back.";
         } catch {
-          alert(`Could not verify token — server unreachable.`);
+          toast.error("Could not verify token — server unreachable.");
           return false;
         }
       }
     },
-    [switchToChannel],
+    [switchToChannel, toast],
   );
 
   // Stable ref so effects can call the latest tryEnterChannel without listing it as a dep.
@@ -1041,8 +1064,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const handleNotificationToggle = useCallback(async () => {
     if (!("Notification" in window)) return;
     if (Notification.permission === "denied") {
-      // Can't re-request after deny - user must change in browser settings
-      alert("Notifications are blocked. Please enable them in your browser settings.");
+      // Can't re-request after deny — user must change in browser settings
+      toast.warn("Notifications are blocked. Enable them in your browser site settings.");
       return;
     }
     const granted = await requestNotificationPermission();
@@ -2566,10 +2589,11 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                         if (!ok) window.location.replace("/");
                       })
                     }
-                    onRemove={() => {
-                      const updated = removeStoredChannel(ch);
-                      setOpenChannels(updated);
-                    }}
+                    onRemove={() =>
+                      new Promise<boolean>((resolve) => {
+                        setPendingRemoveChannel({ channel: ch, resolve });
+                      })
+                    }
                   />
                 ))}
             </div>
@@ -2592,37 +2616,51 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       ) : (
         <>
           <div className="messages-wrapper">
-            <MessageList
-              messages={messages}
-              pendingMessages={pendingMessages}
-              agentLastSeenTs={agentLastSeenTs}
-              userLastSeenTs={userLastSeenTs}
-              channel={activeChannel}
-              agentSleeping={isOffline && streamingAgents.length === 0}
-              streamingAgentIds={streamingAgents.map((a) => a.agentId)}
-              hasMoreOlder={hasMoreOlder}
-              hasMoreNewer={hasMoreNewer}
-              loadingOlder={loadingOlder}
-              loadingNewer={loadingNewer}
-              isAtLatest={isAtLatest}
-              onLoadOlder={loadOlderMessages}
-              onLoadNewer={loadNewerMessages}
-              onJumpToMessage={jumpToMessage}
-              onJumpToLatest={jumpToLatest}
-              onMarkSeen={handleMarkSeen}
-              channelKey={activeChannel}
-              jumpToMessageTs={jumpToMessageTs}
-              onJumpComplete={() => setJumpToMessageTs(null)}
-              onRetryMessage={(msg) => {
-                const { text, files } = retryMessage(msg);
-                // Dispatch event to populate composer with failed message content
-                window.dispatchEvent(new CustomEvent("restore-draft", { detail: { text, files } }));
-              }}
-              onScrollAtBottomChange={setIsActiveChannelAtBottom}
-              hasActiveChannelUnread={hasActiveChannelUnread}
-              onOpenSidebar={openSidebar}
-              isArticleMode={isArticleMode}
-            />
+            {messages.length === 0 && pendingMessages.length === 0 && channelStates.get(activeChannel)?.loaded ? (
+              <div className="messages">
+                <EmptyChannelState
+                  channel={activeChannel}
+                  hasAgents={(channelAgents[activeChannel] ?? []).length > 0}
+                  onAddAgent={() => setShowAgentDialog(true)}
+                  onFocusComposer={() => {
+                    const el = document.querySelector<HTMLElement>(".composer-textarea, textarea.composer-input");
+                    el?.focus();
+                  }}
+                />
+              </div>
+            ) : (
+              <MessageList
+                messages={messages}
+                pendingMessages={pendingMessages}
+                agentLastSeenTs={agentLastSeenTs}
+                userLastSeenTs={userLastSeenTs}
+                channel={activeChannel}
+                agentSleeping={isOffline && streamingAgents.length === 0}
+                streamingAgentIds={streamingAgents.map((a) => a.agentId)}
+                hasMoreOlder={hasMoreOlder}
+                hasMoreNewer={hasMoreNewer}
+                loadingOlder={loadingOlder}
+                loadingNewer={loadingNewer}
+                isAtLatest={isAtLatest}
+                onLoadOlder={loadOlderMessages}
+                onLoadNewer={loadNewerMessages}
+                onJumpToMessage={jumpToMessage}
+                onJumpToLatest={jumpToLatest}
+                onMarkSeen={handleMarkSeen}
+                channelKey={activeChannel}
+                jumpToMessageTs={jumpToMessageTs}
+                onJumpComplete={() => setJumpToMessageTs(null)}
+                onRetryMessage={(msg) => {
+                  const { text, files } = retryMessage(msg);
+                  // Dispatch event to populate composer with failed message content
+                  window.dispatchEvent(new CustomEvent("restore-draft", { detail: { text, files } }));
+                }}
+                onScrollAtBottomChange={setIsActiveChannelAtBottom}
+                hasActiveChannelUnread={hasActiveChannelUnread}
+                onOpenSidebar={openSidebar}
+                isArticleMode={isArticleMode}
+              />
+            )}
           </div>
           {sidebarContent && (
             <SidebarPanel
@@ -2661,6 +2699,37 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                   <ClawdLogo />
                 </div>
                 <span>Thinking...</span>
+                <button
+                  type="button"
+                  className="banner-action banner-action--stop"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const ids = streamingAgents.map((a) => a.agentId);
+                    if (ids.length === 0) return;
+                    try {
+                      await Promise.all(
+                        ids.map((id) =>
+                          authFetch(
+                            `${API_URL}/api/agent.cancel?channel=${encodeURIComponent(activeChannel)}`,
+                            {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ agent_id: id, channel: activeChannel }),
+                            },
+                            activeChannel,
+                          ),
+                        ),
+                      );
+                      toast.info("Stopping…");
+                    } catch {
+                      toast.error("Couldn't stop. Try again.");
+                    }
+                  }}
+                  title="Stop the running agent"
+                  aria-label="Stop the running agent"
+                >
+                  Stop
+                </button>
               </div>
             ) : null
           }
@@ -2671,6 +2740,42 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                   <ClawdLogo sleeping={true} />
                 </div>
                 <span>Sleeping...</span>
+                {recentAgents.length > 0 && (
+                  <button
+                    type="button"
+                    className="banner-action banner-action--wake"
+                    onClick={async () => {
+                      const sleeping = recentAgents.filter((a) => a.is_sleeping);
+                      if (sleeping.length === 0) return;
+                      try {
+                        await Promise.all(
+                          sleeping.map((a) =>
+                            authFetch(
+                              `${API_URL}/api/app.agents.update`,
+                              {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  agent_id: a.agent_id,
+                                  channel: activeChannel,
+                                  sleeping: false,
+                                }),
+                              },
+                              activeChannel,
+                            ),
+                          ),
+                        );
+                        toast.info("Waking agents…");
+                      } catch {
+                        toast.error("Couldn't wake agents. Try again.");
+                      }
+                    }}
+                    title="Wake sleeping agents"
+                    aria-label="Wake sleeping agents"
+                  >
+                    Wake
+                  </button>
+                )}
               </div>
             ) : null
           }
@@ -2783,6 +2888,50 @@ export default function App({ channel: initialChannel, articleId }: Props) {
             // Give DOM time to update, then trigger scroll
             setTimeout(() => setJumpToMessageTs(ts), 100);
           }
+        }}
+      />
+      <InputDialog
+        isOpen={pendingTokenPrompt !== null}
+        title={`Token required for #${pendingTokenPrompt?.channel ?? ""}`}
+        description="This channel is access-controlled. Paste the token you were given to unlock it."
+        fields={[
+          {
+            name: "token",
+            label: "Channel token",
+            type: "password",
+            placeholder: "paste token here",
+            required: true,
+            autoFocus: true,
+          },
+        ]}
+        submitLabel="Unlock"
+        cancelLabel="Cancel"
+        errorMessage={pendingTokenPrompt?.errorMessage ?? null}
+        onSubmit={(values) => {
+          if (pendingTokenPrompt) pendingTokenPrompt.resolve(values.token);
+        }}
+        onCancel={() => {
+          if (pendingTokenPrompt) pendingTokenPrompt.resolve(null);
+        }}
+      />
+      <ConfirmDialog
+        isOpen={pendingRemoveChannel !== null}
+        title="Leave channel?"
+        message={`Remove "${pendingRemoveChannel?.channel ?? ""}" from your sidebar. The channel and its history are not deleted — you can re-open it from the home page.`}
+        confirmLabel="Remove"
+        cancelLabel="Keep"
+        destructive
+        onConfirm={() => {
+          if (pendingRemoveChannel) {
+            const updated = removeStoredChannel(pendingRemoveChannel.channel);
+            setOpenChannels(updated);
+            pendingRemoveChannel.resolve(true);
+          }
+          setPendingRemoveChannel(null);
+        }}
+        onCancel={() => {
+          if (pendingRemoveChannel) pendingRemoveChannel.resolve(false);
+          setPendingRemoveChannel(null);
         }}
       />
       <AgentDialog channel={activeChannel} isOpen={showAgentDialog} onClose={() => setShowAgentDialog(false)} />

@@ -34,7 +34,7 @@ import { INTERNAL_SERVICE_TOKEN } from "./internal-token";
 import type { SchedulerManager } from "./scheduler/manager";
 import { db, setAgentStreaming } from "./server/database";
 import { loadOAuthToken, loadOrRefreshOAuthToken } from "./server/mcp/oauth";
-import { broadcastUpdate } from "./server/websocket";
+import { broadcastAgentStreaming, broadcastUpdate } from "./server/websocket";
 import { setAgentMcpInfra } from "./spaces/agent-mcp-tools";
 import { getSpaceByChannel } from "./spaces/db";
 import type { SpaceManager } from "./spaces/manager";
@@ -708,6 +708,21 @@ export class WorkerManager {
    *  Used by schedule_wakeup runner to inject heartbeats into the target loop. */
   getLoop(channel: string, agentId: string): AgentWorker | null {
     return this.loops.get(`${channel}:${agentId}`) ?? null;
+  }
+
+  /** Cancel in-flight processing for a running agent without persisting a
+   *  chat message. Returns false if no live worker is registered. */
+  cancelAgentProcessing(channel: string, agentId: string): boolean {
+    const loop = this.loops.get(`${channel}:${agentId}`);
+    if (!loop) return false;
+    loop.cancelProcessing();
+    this.clearAgentStreamingState(channel, agentId);
+    try {
+      broadcastAgentStreaming(channel, agentId, false);
+    } catch {
+      // Non-critical: UI will sync on next 10s poll
+    }
+    return true;
   }
 
   /** Restart an agent (e.g., after model change) */

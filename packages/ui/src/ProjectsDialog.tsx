@@ -2,6 +2,7 @@ import Prism from "prismjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
+import { useFocusTrap } from "./hooks/useFocusTrap";
 import { InputContextMenu } from "./InputContextMenu";
 import { ClawdAvatar } from "./MessageList";
 import "prismjs/components/prism-typescript";
@@ -265,6 +266,8 @@ export default function ProjectsDialog({ channel, isOpen, onClose, initialAgentI
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarSize, setSidebarSize] = useState(280);
   const contentRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(isOpen, dialogRef);
 
   // Context menu for file viewer (read-only — Copy + Select All only)
   const [fileMenu, setFileMenu] = useState<{ x: number; y: number } | null>(null);
@@ -528,11 +531,18 @@ export default function ProjectsDialog({ channel, isOpen, onClose, initialAgentI
 
   const portal = createPortal(
     <div className="stream-dialog-overlay" onClick={onClose}>
-      <div className="stream-dialog projects-dialog" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="stream-dialog projects-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="projects-dialog-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="stream-dialog-header">
           <div className="stream-dialog-title-row">
-            <h3>Projects</h3>
+            <h3 id="projects-dialog-title">Projects</h3>
             <button
               className="worktree-refresh-btn"
               onClick={() => {
@@ -548,7 +558,7 @@ export default function ProjectsDialog({ channel, isOpen, onClose, initialAgentI
               </svg>
             </button>
           </div>
-          <button className="stream-dialog-close" onClick={onClose}>
+          <button className="stream-dialog-close" onClick={onClose} aria-label="Close dialog">
             ×
           </button>
         </div>

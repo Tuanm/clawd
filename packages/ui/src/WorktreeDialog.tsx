@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
+import { useFocusTrap } from "./hooks/useFocusTrap";
 import { ClawdAvatar } from "./MessageList";
 import WorktreeDiffViewer from "./worktree-diff-viewer";
 import { type FileStatus, WorktreeFileSidebar } from "./worktree-file-list";
@@ -85,6 +86,9 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
   const [diffKey, setDiffKey] = useState(0);
   const selectedAgent = agents.find((a) => a.agent_id === selectedAgentId) ?? null;
   const hasMergeConflict = selectedAgent?.has_conflicts ?? false;
+
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(isOpen, dialogRef);
 
   // Escape key (skip while a worktree action is applying)
   useEffect(() => {
@@ -263,16 +267,28 @@ export default function WorktreeDialog({ channel, isOpen, onClose, onOpenInProje
 
   return createPortal(
     <div className="stream-dialog-overlay" onClick={guardedClose}>
-      <div className="stream-dialog projects-dialog" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="stream-dialog projects-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="worktree-dialog-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header — same as ProjectsDialog */}
         <div className="stream-dialog-header">
           <div className="stream-dialog-title-row">
-            <h3>Git</h3>
+            <h3 id="worktree-dialog-title">Git</h3>
             <button className="worktree-refresh-btn" onClick={refresh} title="Refresh" disabled={loading}>
               <RefreshIcon />
             </button>
           </div>
-          <button className="stream-dialog-close" onClick={guardedClose} disabled={actionLoading}>
+          <button
+            className="stream-dialog-close"
+            onClick={guardedClose}
+            disabled={actionLoading}
+            aria-label="Close dialog"
+          >
             ×
           </button>
         </div>

@@ -8,6 +8,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import useSpeechToText from "./hooks/useSpeechToText";
 import { InputContextMenu } from "./InputContextMenu";
+import InputDialog from "./InputDialog";
 import MicButton from "./MicButton";
 import { markdownSanitizeSchema } from "./sanitize-schema";
 
@@ -437,6 +438,13 @@ export default function MessageComposer({
     [text, isListening],
   );
 
+  // Markdown link prompt state — captures the textarea selection at click time
+  const [pendingLinkPrompt, setPendingLinkPrompt] = useState<{
+    start: number;
+    end: number;
+    selectedText: string;
+  } | null>(null);
+
   // Insert markdown link
   const insertLink = useCallback(() => {
     if (isListening) return;
@@ -446,22 +454,31 @@ export default function MessageComposer({
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
     const selectedText = text.substring(start, end);
-
-    const url = window.prompt("Enter URL:");
-    if (!url) return;
-
-    const linkText = selectedText || window.prompt("Enter link text:") || url;
-    const markdownLink = `[${linkText}](${url})`;
-
-    const newText = text.substring(0, start) + markdownLink + text.substring(end);
-    setText(newText);
-
-    setTimeout(() => {
-      textarea.focus();
-      const newPos = start + markdownLink.length;
-      textarea.setSelectionRange(newPos, newPos);
-    }, 0);
+    setPendingLinkPrompt({ start, end, selectedText });
   }, [text, isListening]);
+
+  const handleLinkSubmit = useCallback(
+    (values: Record<string, string>) => {
+      if (!pendingLinkPrompt) return;
+      const url = values.url?.trim();
+      if (!url) return;
+      const linkText = values.label?.trim() || pendingLinkPrompt.selectedText || url;
+      const markdownLink = `[${linkText}](${url})`;
+      const { start, end } = pendingLinkPrompt;
+      const newText = text.substring(0, start) + markdownLink + text.substring(end);
+      setText(newText);
+      setPendingLinkPrompt(null);
+
+      setTimeout(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        const newPos = start + markdownLink.length;
+        textarea.setSelectionRange(newPos, newPos);
+      }, 0);
+    },
+    [pendingLinkPrompt, text],
+  );
 
   const handleSend = useCallback(() => {
     // Build final text: committed text + any voice session text
@@ -820,7 +837,9 @@ export default function MessageComposer({
             <button
               className={`action-btn format-toggle ${showToolbar ? "active" : ""}`}
               onClick={toggleToolbar}
-              title={showToolbar ? "Hide formatting toolbar" : "Show formatting toolbar"}
+              title={showToolbar ? "Hide formatting toolbar" : "Show formatting toolbar (bold, italic, links…)"}
+              aria-label={showToolbar ? "Hide formatting toolbar" : "Show formatting toolbar"}
+              aria-pressed={showToolbar}
             >
               <svg viewBox="0 0 24 24" fill="currentColor">
                 <path d="M5 17v2h14v-2H5zm4.5-4.2h5l.9 2.2h2.1L12.75 4h-1.5L6.5 15h2.1l.9-2.2zM12 5.98L13.87 11h-3.74L12 5.98z" />
@@ -913,6 +932,37 @@ export default function MessageComposer({
           isEditable={!isListening}
         />
       )}
+
+      <InputDialog
+        isOpen={pendingLinkPrompt !== null}
+        title="Insert link"
+        description={
+          pendingLinkPrompt?.selectedText
+            ? `Wrap “${pendingLinkPrompt.selectedText}” with a markdown link.`
+            : "Add a markdown link to your message."
+        }
+        fields={[
+          {
+            name: "url",
+            label: "URL",
+            type: "url",
+            placeholder: "https://example.com",
+            required: true,
+            autoFocus: true,
+          },
+          {
+            name: "label",
+            label: "Link text (optional)",
+            type: "text",
+            placeholder: pendingLinkPrompt?.selectedText || "Display text",
+            initialValue: pendingLinkPrompt?.selectedText ?? "",
+          },
+        ]}
+        submitLabel="Insert"
+        cancelLabel="Cancel"
+        onSubmit={handleLinkSubmit}
+        onCancel={() => setPendingLinkPrompt(null)}
+      />
     </div>
   );
 }

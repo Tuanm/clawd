@@ -1054,6 +1054,18 @@ export function registerAgentRoutes(
       });
     }
 
+    // Cancel agent in-flight processing — aborts the current SDK call
+    // without posting a "Stop." message into the conversation history.
+    if (path === "/api/agent.cancel" && req.method === "POST") {
+      return handleAsync(async () => {
+        const body = await parseBody(req);
+        const { channel, agent_id } = body;
+        if (!channel || !agent_id) return json({ ok: false, error: "channel and agent_id required" }, 400);
+        const cancelled = workerManager.cancelAgentProcessing(channel, agent_id);
+        return json({ ok: cancelled, channel, agent_id });
+      });
+    }
+
     // Get agent identity (from agent file)
     if (path === "/api/app.agents.identity" && req.method === "GET") {
       const channel = url.searchParams.get("channel");

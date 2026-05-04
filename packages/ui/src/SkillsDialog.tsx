@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authFetch } from "./auth-fetch";
+import { useFocusTrap } from "./hooks/useFocusTrap";
 import { InputContextMenu, useInputContextMenu } from "./InputContextMenu";
 import { ClawdAvatar } from "./MessageList";
 
@@ -67,6 +68,8 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
   const [deleting, setDeleting] = useState(false);
 
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(isOpen, dialogRef);
 
   // Context menu for text inputs
   const {
@@ -266,11 +269,18 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
 
   return createPortal(
     <div className="stream-dialog-overlay" onClick={guardedClose}>
-      <div className="stream-dialog skills-dialog" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="stream-dialog skills-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="skills-dialog-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="stream-dialog-header">
           <div className="stream-dialog-title-row">
-            <h3>Skills</h3>
+            <h3 id="skills-dialog-title">Skills</h3>
             <button
               className="worktree-refresh-btn"
               onClick={() => selectedAgentId && loadSkills(selectedAgentId)}
@@ -284,7 +294,7 @@ export default function SkillsDialog({ channel, isOpen, onClose }: Props) {
               </svg>
             </button>
           </div>
-          <button className="stream-dialog-close" onClick={guardedClose} disabled={busy}>
+          <button className="stream-dialog-close" onClick={guardedClose} disabled={busy} aria-label="Close dialog">
             ×
           </button>
         </div>

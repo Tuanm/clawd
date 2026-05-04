@@ -349,6 +349,29 @@ body {
   opacity: 0.5;
 }
 
+.home-space-input.has-error {
+  border-color: hsl(0 70% 50% / 70%);
+  box-shadow:
+    0 2px 12px hsl(var(--text) / 10%),
+    0 0 0 3px hsl(0 70% 50% / 12%);
+}
+
+.home-space-error {
+  position: fixed;
+  top: calc(50% + 36px);
+  left: 50%;
+  transform: translateX(-50%);
+  color: hsl(0 70% 50%);
+  font-size: 13px;
+  background: hsl(var(--bg-center));
+  border: 1px solid hsl(0 70% 50% / 30%);
+  padding: 6px 12px;
+  border-radius: 6px;
+  z-index: 11;
+  white-space: nowrap;
+  animation: fadeIn 0.15s ease;
+}
+
 /* Caught state - freeze and prepare for transition */
 .clawd-caught {
   animation: clawdPulse 0.3s ease-out;
@@ -2872,6 +2895,55 @@ body {
   background: hsl(var(--accent) / 10%);
 }
 
+/* Stop / Wake action buttons inside the thinking + hibernate banners */
+.banner-action {
+  margin-left: auto;
+  appearance: none;
+  border: 1px solid hsl(var(--text) / 25%);
+  background: hsl(var(--bg));
+  color: hsl(var(--text));
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.1s ease;
+}
+
+.banner-action:hover {
+  background: hsl(var(--accent) / 12%);
+  border-color: hsl(var(--accent) / 60%);
+}
+
+.banner-action:active {
+  transform: translateY(1px);
+}
+
+.banner-action:focus-visible {
+  outline: 2px solid hsl(var(--accent));
+  outline-offset: 2px;
+}
+
+.banner-action--stop {
+  color: hsl(0 70% 50%);
+  border-color: hsl(0 70% 50% / 40%);
+}
+
+.banner-action--stop:hover {
+  background: hsl(0 70% 50% / 12%);
+  border-color: hsl(0 70% 50% / 70%);
+}
+
+.banner-action--wake {
+  color: hsl(var(--accent));
+  border-color: hsl(var(--accent) / 50%);
+}
+
 /* When thinking banner is present, remove top border radius from hibernate banner or composer box */
 .thinking-banner + .hibernate-banner {
   border-radius: 0;
@@ -3879,9 +3951,9 @@ body {
 
 .composer-disclaimer {
   text-align: center;
-  font-size: 9px;
-  color: hsl(var(--accent) / 20%);
-  padding: 2px 0 0;
+  font-size: 11px;
+  color: hsl(var(--text) / 55%);
+  padding: 4px 0 0;
 }
 
 /* Attachment Preview */
@@ -4629,11 +4701,21 @@ body {
   cursor: pointer;
   font-size: 13px;
   user-select: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
 }
 
 .message-expand-toggle:hover {
   color: #333;
   text-decoration: underline;
+}
+
+.message-expand-toggle:focus-visible {
+  outline: 2px solid hsl(var(--accent));
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* @clawd mention highlighting - matches message reference style */
@@ -10069,4 +10151,366 @@ body,
 /* mic-error: hidden — errors shown via console only */
 .mic-error {
   display: none;
+}
+
+/* ==========================================================================
+   UX PRIMITIVES — ConfirmDialog, Toast, ErrorBoundary, EmptyChannelState
+   ========================================================================== */
+
+/* ===== ConfirmDialog ===== */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: hsl(var(--text) / 35%);
+  z-index: 11000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: stream-dialog-fade-in 0.12s ease-out;
+}
+
+.confirm-dialog {
+  background: #fff;
+  border-radius: 12px;
+  width: min(92vw, 440px);
+  padding: 22px 24px 18px;
+  box-shadow: 0 20px 60px hsl(var(--text) / 22%);
+  animation: stream-dialog-slide-up 0.18s ease-out;
+}
+
+[data-theme="dark"] .confirm-dialog {
+  background: hsl(var(--bg-center));
+  color: hsl(var(--text));
+}
+
+.confirm-dialog-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: hsl(var(--text));
+}
+
+.confirm-dialog-message {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: hsl(var(--text) / 80%);
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-btn {
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.confirm-btn--cancel {
+  background: transparent;
+  color: hsl(var(--text) / 75%);
+  border-color: hsl(var(--text) / 15%);
+}
+
+.confirm-btn--cancel:hover {
+  background: hsl(var(--text) / 6%);
+  color: hsl(var(--text));
+}
+
+.confirm-btn--primary {
+  background: hsl(var(--accent));
+  color: #fff;
+}
+
+.confirm-btn--primary:hover {
+  background: hsl(15 63.1% 53%);
+}
+
+.confirm-btn--danger {
+  background: hsl(0 70% 52%);
+  color: #fff;
+}
+
+.confirm-btn--danger:hover {
+  background: hsl(0 70% 45%);
+}
+
+.confirm-btn:focus-visible {
+  outline: 2px solid hsl(var(--accent));
+  outline-offset: 2px;
+}
+
+/* ===== InputDialog (extends ConfirmDialog) ===== */
+.input-dialog {
+  width: min(92vw, 480px);
+}
+
+.input-dialog-field {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.input-dialog-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: hsl(var(--text) / 80%);
+  margin-bottom: 4px;
+}
+
+.input-dialog-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid hsl(var(--text) / 18%);
+  background: hsl(var(--bg));
+  color: hsl(var(--text));
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.input-dialog-input:focus {
+  outline: none;
+  border-color: hsl(var(--accent));
+  box-shadow: 0 0 0 3px hsl(var(--accent) / 18%);
+}
+
+.input-dialog-error {
+  margin: 4px 0 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: hsl(0 70% 50% / 10%);
+  color: hsl(0 70% 40%);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* ===== Toast ===== */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 12000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  max-width: min(90vw, 380px);
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: 8px;
+  background: hsl(var(--text));
+  color: hsl(var(--bg));
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px hsl(var(--text) / 25%);
+  animation: toast-slide-in 0.18s ease-out;
+  cursor: pointer;
+}
+
+.toast--success {
+  background: hsl(150 55% 38%);
+  color: #fff;
+}
+
+.toast--warning {
+  background: hsl(35 85% 50%);
+  color: #fff;
+}
+
+.toast--error {
+  background: hsl(0 70% 50%);
+  color: #fff;
+}
+
+.toast-message {
+  flex: 1;
+  word-break: break-word;
+}
+
+.toast-dismiss {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.12s ease;
+}
+
+.toast-dismiss:hover {
+  opacity: 1;
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ===== ErrorBoundary ===== */
+.error-boundary-overlay {
+  position: fixed;
+  inset: 0;
+  background: hsl(var(--bg));
+  z-index: 13000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow: auto;
+}
+
+.error-boundary-card {
+  background: #fff;
+  border-radius: 14px;
+  width: min(92vw, 640px);
+  padding: 28px 32px;
+  box-shadow: 0 24px 60px hsl(var(--text) / 18%);
+}
+
+[data-theme="dark"] .error-boundary-card {
+  background: hsl(var(--bg-center));
+}
+
+.error-boundary-title {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 700;
+  color: hsl(0 70% 45%);
+}
+
+.error-boundary-message {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: hsl(var(--text) / 85%);
+  line-height: 1.5;
+}
+
+.error-boundary-details {
+  background: hsl(var(--text) / 6%);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: hsl(var(--text) / 90%);
+  max-height: 280px;
+  overflow: auto;
+  margin-bottom: 16px;
+  white-space: pre-wrap;
+}
+
+.error-boundary-stack {
+  display: block;
+  margin-top: 8px;
+  color: hsl(var(--text) / 65%);
+  font-size: 11px;
+}
+
+.error-boundary-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ===== EmptyChannelState ===== */
+.empty-channel-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+  color: hsl(var(--text) / 75%);
+}
+
+.empty-channel-state-title {
+  margin: 16px 0 6px;
+  font-size: 18px;
+  font-weight: 700;
+  color: hsl(var(--text));
+}
+
+.empty-channel-state-message {
+  margin: 0 0 18px;
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 420px;
+  color: hsl(var(--text) / 70%);
+}
+
+.empty-channel-state-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.empty-channel-state-btn {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid hsl(var(--accent));
+  background: transparent;
+  color: hsl(var(--accent));
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.empty-channel-state-btn:hover {
+  background: hsl(var(--accent));
+  color: #fff;
+}
+
+.empty-channel-state-btn--primary {
+  background: hsl(var(--accent));
+  color: #fff;
+}
+
+.empty-channel-state-btn--primary:hover {
+  background: hsl(15 63.1% 53%);
+}
+
+/* ==========================================================================
+   GLOBAL prefers-reduced-motion — disables ALL keyframe animations
+   (the earlier targeted block at ~9425 only covers `transition`).
+   Uses ~0ms duration not `none` so animation-fill-mode end states are kept.
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -1,21 +1,10 @@
-import React, { useEffect } from "react";
+import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import ErrorBoundary from "./ErrorBoundary";
 import HomePage from "./HomePage";
 import "./styles.css";
-
-/** Block browser right-click globally — only .message elements get custom context menu */
-function useBlockContextMenu() {
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.closest(".message")) return; // custom context menu handles this
-      e.preventDefault();
-    };
-    document.addEventListener("contextmenu", handler);
-    return () => document.removeEventListener("contextmenu", handler);
-  }, []);
-}
+import { ToastProvider } from "./Toast";
 
 // Register Service Worker for PWA + desktop notifications
 function registerServiceWorker() {
@@ -45,7 +34,6 @@ registerServiceWorker();
 
 // Simple path-based routing
 function Router() {
-  useBlockContextMenu();
   const path = window.location.pathname;
 
   // Match article paths: /articles/{id} — render App in article mode
@@ -80,6 +68,10 @@ function Router() {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <Router />
+    <ErrorBoundary>
+      <ToastProvider>
+        <Router />
+      </ToastProvider>
+    </ErrorBoundary>
   </React.StrictMode>,
 );
