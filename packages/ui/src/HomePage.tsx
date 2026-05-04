@@ -166,7 +166,7 @@ export default function HomePage() {
               ref={inputRef}
               type="text"
               className="home-space-field"
-              placeholder="Enter a channel name..."
+              placeholder="Enter a channel..."
               aria-label="Channel name"
               value={spaceId}
               onChange={(e) => {
