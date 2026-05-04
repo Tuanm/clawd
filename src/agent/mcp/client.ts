@@ -4,6 +4,9 @@
  */
 
 import { EventEmitter } from "node:events";
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { type Subprocess, spawn } from "bun";
 import { isDebugEnabled } from "../utils/debug";
 import { MCPHealthMonitor } from "./health-monitor";
@@ -94,6 +97,7 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
   private requestId = 0;
   private pendingRequests = new Map<number, { resolve: Function; reject: Function }>();
   private buffer = "";
+  private stderrSink: ReturnType<ReturnType<typeof Bun.file>["writer"]> | null = null;
 
   readonly name: string;
   private command: string;
@@ -132,6 +136,10 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
       stderr: "pipe",
     });
 
+    // Stream stderr to a per-server log file. Without this, subprocess crash
+    // diagnostics vanish — silent hangs become unsolvable post-mortem.
+    this.startStderrLogger();
+
     // Read stdout
     this.readOutput();
 
@@ -157,6 +165,57 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
 
     this.connected = true;
     this.emit("connected");
+  }
+
+  // ============================================================================
+  // Stderr Logger
+  // ============================================================================
+
+  private startStderrLogger() {
+    if (!this.process?.stderr) return;
+    const stderr = this.process.stderr as ReadableStream<Uint8Array>;
+
+    let logPath: string;
+    try {
+      const dir = join(homedir(), ".clawd", "logs", "mcp");
+      mkdirSync(dir, { recursive: true });
+      // Sanitize server name for filesystem (it's user-supplied)
+      const safeName = this.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      logPath = join(dir, `${safeName}.stderr.log`);
+    } catch (err) {
+      if (isDebugEnabled()) {
+        console.error(`[MCP] ${this.name}: stderr log dir setup failed:`, err);
+      }
+      return;
+    }
+
+    const sink = Bun.file(logPath).writer();
+    this.stderrSink = sink;
+
+    (async () => {
+      const reader = stderr.getReader();
+      const decoder = new TextDecoder();
+      const header = `\n--- ${new Date().toISOString()} pid=${this.process?.pid ?? "?"} ---\n`;
+      sink.write(header);
+      sink.flush();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          sink.write(decoder.decode(value, { stream: true }));
+          sink.flush();
+        }
+      } catch (err) {
+        if (isDebugEnabled()) {
+          console.error(`[MCP] ${this.name}: stderr stream error:`, err);
+        }
+      } finally {
+        try {
+          sink.end();
+        } catch {}
+        if (this.stderrSink === sink) this.stderrSink = null;
+      }
+    })();
   }
 
   // ============================================================================
@@ -213,7 +272,14 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
       if (!line.trim()) continue;
 
       try {
-        const message: MCPResponse = JSON.parse(line);
+        const message: MCPResponse & { method?: string; params?: any } = JSON.parse(line);
+
+        // Server-initiated request: has BOTH id and method. Must reply or the
+        // server will block waiting. Common case: roots/list during init.
+        if (message.id !== undefined && message.method !== undefined) {
+          this.handleServerRequest(message.id, message.method);
+          continue;
+        }
 
         if (message.id !== undefined) {
           const pending = this.pendingRequests.get(message.id);
@@ -231,6 +297,31 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
         }
       } catch (_error) {
         console.error("Failed to parse MCP message:", line);
+      }
+    }
+  }
+
+  // ============================================================================
+  // Server-Initiated Request
+  // ============================================================================
+
+  /**
+   * Reply to a server-initiated request. We don't expose roots, so `roots/list`
+   * returns an empty list; everything else gets a generic empty result. The
+   * key is that we MUST reply — without it the server blocks waiting and the
+   * whole connection silently hangs.
+   */
+  private handleServerRequest(id: number, method: string): void {
+    const stdin = this.process?.stdin;
+    if (!stdin) return;
+
+    const result = method === "roots/list" ? { roots: [] } : {};
+    const reply = `${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`;
+    try {
+      (stdin as any).write(reply);
+    } catch (err) {
+      if (isDebugEnabled()) {
+        console.error(`[MCP] ${this.name}: failed to reply to server request ${method}:`, err);
       }
     }
   }
@@ -366,6 +457,12 @@ class MCPStdioConnection extends EventEmitter implements IMCPConnection {
     if (this.process) {
       this.process.kill();
       this.process = null;
+    }
+    if (this.stderrSink) {
+      try {
+        this.stderrSink.end();
+      } catch {}
+      this.stderrSink = null;
     }
     if (this.connected) {
       this.connected = false;
