@@ -102,16 +102,10 @@ registerTool(
   ["command"],
   async ({ command, timeout = 30000, cwd, description, run_in_background }) => {
     // Background mode: tmux when available (persists across agent restart),
-    // otherwise a detached subprocess that survives via setsid + unref.
-    // Same policy as foreground — must still block .env and validate cwd.
+    // otherwise a detached subprocess (setsid+unref on POSIX, detached
+    // process group on Windows). Same policy as foreground — must still
+    // block .env and validate cwd.
     if (run_in_background) {
-      if (!isJobBackendAvailable()) {
-        return {
-          success: false,
-          output: "",
-          error: "Background execution requires tmux on Windows. Install via WSL or run on Mac/Linux.",
-        };
-      }
       const bgOutcome = await enforceSandboxPolicy({
         command,
         cwd: cwd ? resolveSafePath(cwd) : undefined,
@@ -293,7 +287,7 @@ if (isJobBackendAvailable()) {
 
   registerTool(
     "job_submit",
-    "Submit a one-off background command. Runs in tmux when available (survives agent restart), otherwise as a detached subprocess (also survives agent exit on POSIX). Returns a job ID. For recurring/scheduled tasks, use schedule_job instead.",
+    "Submit a one-off background command. Runs in tmux when available (survives agent restart), otherwise as a detached subprocess (also survives agent exit). Returns a job ID. For recurring/scheduled tasks, use schedule_job instead.",
     {
       name: {
         type: "string",
