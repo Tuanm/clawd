@@ -15,7 +15,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import { embeddedUIFileCount, embeddedUITotalSize, getEmbeddedAsset, hasEmbeddedUI } from "../embedded/ui";
 
@@ -132,6 +132,25 @@ describe("embedded UI byte equivalence", () => {
 
   test("getEmbeddedAsset returns null for unknown path", () => {
     expect(getEmbeddedAsset("/does-not-exist.html")).toBeNull();
+  });
+
+  test("generated module header has no timestamp (byte-reproducibility guard)", () => {
+    // The embed script intentionally omits a `Generated at: <ISO>` line so
+    // identical inputs produce byte-identical output (matters for SLSA /
+    // attestation / cache hits). Pin that property — if someone re-adds a
+    // timestamp, UUID, or other nondeterministic header, this test fails.
+    const modulePath = join(import.meta.dir, "..", "embedded", "ui.ts");
+    if (!existsSync(modulePath)) return; // generated artifact, gitignored
+    // Read just the first 4KB — the header is in the first ~200 bytes, no
+    // need to slurp the whole 25KB module.
+    const fd = openSync(modulePath, "r");
+    const buf = Buffer.alloc(4096);
+    const n = readSync(fd, buf, 0, 4096, 0);
+    closeSync(fd);
+    const head = buf.subarray(0, n).toString("utf-8");
+    // ISO 8601: YYYY-MM-DDTHH:MM:SS — catches `new Date().toISOString()` output.
+    expect(head).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(head).not.toMatch(/Generated at:/);
   });
 
   test.skipIf(!distAvailable)(
