@@ -1031,7 +1031,10 @@ class OllamaProvider implements LLMProvider {
       }
     }
 
-    // Convert tools to Ollama format (use "parameters" not "input_schema")
+    // Convert tools to Ollama format (use "parameters" not "input_schema").
+    // Whitelist-copy of fields rather than spread — internal-only ToolDefinition fields
+    // (`readOnly`, `cacheBreakpoint`) are dropped by construction here, so no separate
+    // strip step is required for the Ollama path.
     let tools: any[] | undefined;
     if (request.tools && request.tools.length > 0) {
       tools = request.tools.map((tool) => ({
