@@ -2465,7 +2465,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                   }}
                   title="Home"
                 >
-                  <ClawdLogo sleeping={isOffline && streamingAgents.length === 0} hasUnread={hasAnyUnread} />
+                  <ClawdLogo sleeping={isOffline && streamingAgents.length === 0} hasUnread={false} />
                 </button>
                 <span className="header-channel-name">{displayName}</span>
               </>
