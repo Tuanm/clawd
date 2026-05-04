@@ -24,6 +24,7 @@ import { generateConversationSummary } from "../agent/session/summarizer";
 import { getSkillSet, improveSkillFromCorrections } from "../agent/skills/improvement";
 import { getSkillManager } from "../agent/skills/manager";
 import { buildReinjectionPrompt, MAX_REINJECT_ATTEMPTS, sendChatFallback } from "../agent/utils/chat-fallback";
+import { formatAuthor } from "../agent/utils/format-author";
 import { loadConfigFile } from "../config/config-file";
 import { db, getAgent, markMessagesSeen, setAgentStreaming } from "../server/database";
 import { getPendingMessages } from "../server/routes/messages";
@@ -381,7 +382,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             // Build a conversation summary of skipped messages
             const convoLines: string[] = [];
             for (const m of skippedMessages) {
-              const user = m.user === "UHUMAN" ? "Human" : m.agent_id || m.user || "unknown";
+              const user = formatAuthor(m);
               const text = (m.text || "").slice(0, 200).replace(/\n/g, " ");
               convoLines.push(`${user}: ${text}`);
             }
@@ -1213,7 +1214,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // message (common pattern: human pastes a file with no caption) still
       // needs to be delivered to the agent or the file info is lost.
       if (!text && !hasFiles) continue;
-      const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
+      const author = formatAuthor(msg);
       // Surface attachment filenames inline so the agent knows files exist.
       // To READ the content it still needs to call the attachment tools
       // (mcp__clawd__query_files / mcp__clawd__download_file / read_image)
@@ -1263,7 +1264,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     for (const msg of messages) {
       const text = (msg.text || "").trim();
       if (!text) continue;
-      const sender = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
+      const sender = formatAuthor(msg);
 
       // Skill-review buffer on new turns only — it's an agent-work buffer, not a
       // correction-detection buffer.
@@ -1289,7 +1290,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
         const userText = messages
           .filter((m: any) => (m.text || "").trim())
           .map((m: any) => {
-            const sender = m.user === "UHUMAN" ? "human" : m.agent_id || m.user || "unknown";
+            const sender = formatAuthor(m);
             return `[${sender}]: ${(m.text || "").trim()}`;
           })
           .join("\n");
@@ -1782,7 +1783,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   /** Format a single message line for prompt building */
   private formatMessageLine(msg: any): string {
-    const user = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
+    const user = formatAuthor(msg);
     let text = msg.text || "";
     if (text.length > MAX_MESSAGE_LENGTH) {
       text = text.slice(0, MAX_MESSAGE_LENGTH) + "\n[truncated]";

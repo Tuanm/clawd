@@ -20,6 +20,7 @@ import type { PromptContext } from "./agent/prompt/builder";
 import { runWithAgentContext, setProjectHash, toolDefinitions } from "./agent/tools/definitions";
 import { buildReinjectionPrompt, MAX_REINJECT_ATTEMPTS, sendChatFallback } from "./agent/utils/chat-fallback";
 import { setDebug } from "./agent/utils/debug";
+import { formatAuthor } from "./agent/utils/format-author";
 import { initializeSandbox } from "./agent/utils/sandbox";
 import { smartTruncate } from "./agent/utils/smart-truncation";
 import { loadConfigFile } from "./config/config-file";
@@ -688,7 +689,7 @@ export class WorkerLoop implements AgentWorker {
 
             // Build conversation summary
             const convoLines = skippedMessages.map((m: any) => {
-              const user = m.user === "UHUMAN" ? "Human" : m.agent_id || m.user || "unknown";
+              const user = formatAuthor(m);
               return `${user}: ${(m.text || "").slice(0, 200).replace(/\n/g, " ")}`;
             });
 
@@ -1385,12 +1386,7 @@ export class WorkerLoop implements AgentWorker {
         .map((m: Message & { _repeatCount?: number }) => {
           const hasFiles = m.files && m.files.length > 0;
           const fileInfo = hasFiles ? `\n[Attached files: ${m.files!.map((f) => f.name).join(", ")}]` : "";
-          const author =
-            m.user === "UHUMAN"
-              ? "human"
-              : m.user?.startsWith("UWORKER-")
-                ? `[Sub-agent: ${m.agent_id || "unknown"}]`
-                : m.agent_id || m.user || "unknown";
+          const author = formatAuthor(m);
           const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
           const repeatSuffix = (m._repeatCount || 1) > 1 ? ` [×${m._repeatCount} similar messages]` : "";
           return `[ts:${m.ts}] ${author}: ${text}${fileInfo}${repeatSuffix}`;
@@ -1430,12 +1426,7 @@ export class WorkerLoop implements AgentWorker {
       .map((m: Message & { _repeatCount?: number }) => {
         const hasFiles = m.files && m.files.length > 0;
         const fileInfo = hasFiles ? `\n[Attached files: ${m.files!.map((f) => f.name).join(", ")}]` : "";
-        const author =
-          m.user === "UHUMAN"
-            ? "human"
-            : m.user?.startsWith("UWORKER-")
-              ? `[Sub-agent: ${m.agent_id || "unknown"}]`
-              : m.agent_id || m.user || "unknown";
+        const author = formatAuthor(m);
         const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
         const repeatSuffix = (m._repeatCount || 1) > 1 ? ` [×${m._repeatCount} similar messages]` : "";
         return `[ts:${m.ts}] ${author}: ${text}${fileInfo}${repeatSuffix}`;
@@ -1469,12 +1460,7 @@ export class WorkerLoop implements AgentWorker {
     const deduplicated = this.deduplicateMessages(unprocessedMessages);
     const messageContext = deduplicated
       .map((m: Message & { _repeatCount?: number }) => {
-        const author =
-          m.user === "UHUMAN"
-            ? "human"
-            : m.user?.startsWith("UWORKER-")
-              ? `[Sub-agent: ${m.agent_id || "unknown"}]`
-              : m.agent_id || "bot";
+        const author = formatAuthor(m);
         const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
         const repeatSuffix = (m._repeatCount || 1) > 1 ? ` [×${m._repeatCount} similar messages]` : "";
         return `[ts:${m.ts}] ${author}: ${text}${repeatSuffix}`;
@@ -1494,12 +1480,7 @@ export class WorkerLoop implements AgentWorker {
     const { channel } = this.config;
 
     const formatMsg = (m: any) => {
-      const author =
-        m.user === "UHUMAN"
-          ? "human"
-          : m.user?.startsWith("UWORKER-")
-            ? `[Sub-agent: ${m.agent_id || "unknown"}]`
-            : m.agent_id || m.user || "unknown";
+      const author = formatAuthor(m);
       const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
       return `[ts:${m.ts}] ${author}: ${text}`;
     };
