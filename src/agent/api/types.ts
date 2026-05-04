@@ -26,6 +26,14 @@ export interface ToolDefinition {
   type: "function";
   /** If true, this tool only reads state and can be executed in parallel with other read-only tools */
   readOnly?: boolean;
+  /**
+   * Internal hint: place an Anthropic `cache_control` breakpoint on this tool. Only the
+   * last alwaysInclude tool is marked, giving a small stable prefix that survives
+   * warmup → steady-state → re-expansion transitions. The factory also unconditionally
+   * places a breakpoint on the last tool overall, so this gives a 2-breakpoint design
+   * (last-alwaysInclude + last-overall). Stripped before sending to providers.
+   */
+  cacheBreakpoint?: boolean;
   function: {
     name: string;
     description: string;

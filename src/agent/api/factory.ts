@@ -243,11 +243,18 @@ class OpenAIProvider implements LLMProvider {
     }
     messages.push(...nonSystemMessages);
 
+    // Strip internal-only metadata (readOnly, cacheBreakpoint) before forwarding to the
+    // OpenAI-compatible endpoint. cacheBreakpoint is consumed only by the Anthropic
+    // factory path.
+    const cleanedTools = request.tools?.length
+      ? request.tools.map(({ readOnly: _r, cacheBreakpoint: _cb, ...t }) => t)
+      : undefined;
+
     return {
       model: request.model,
       messages,
       stream,
-      ...(request.tools?.length ? { tools: request.tools } : {}),
+      ...(cleanedTools ? { tools: cleanedTools } : {}),
       ...(request.tool_choice ? { tool_choice: request.tool_choice } : {}),
       ...(request.temperature != null ? { temperature: request.temperature } : {}),
       ...(request.max_tokens != null ? { max_tokens: request.max_tokens } : {}),
@@ -742,6 +749,11 @@ class AnthropicProvider implements LLMProvider {
     // No connection to close
   }
 
+  // Exposed for tests via __testHooks; production callers use this through complete()/stream().
+  public _toAnthropicRequestForTests(request: CompletionRequest, stream = false): any {
+    return this.toAnthropicRequest(request, stream);
+  }
+
   private toAnthropicRequest(request: CompletionRequest, stream = false): any {
     // Extract system message content
     let systemContent: string | undefined;
@@ -793,28 +805,35 @@ class AnthropicProvider implements LLMProvider {
 
     const messages = filteredMessages;
 
-    // Convert tools to Anthropic format. Drop a 1-hour cache breakpoint on the
-    // LAST tool entry so the entire tools-array prefix (typically dozens of
-    // schemas, often >2k tokens) caches alongside the system prompt. Anthropic
-    // allows up to 4 cache_control breakpoints per request — we use 2 (tools
-    // tail + system).
+    // Convert tools to Anthropic format. We place TWO cache breakpoints on the tools
+    // array (Anthropic allows up to 4 per request, we use 2 here + 1 on system = 3):
     //
-    // Cache-key stability: the tool set varies via `filterToolsByUsage` in
-    // agent.ts (warm-up vs steady-state iterations drop unused tools), so the
-    // boundary iteration that switches tool composition WILL miss the cache and
-    // re-write. Steady-state iterations within the same composition reuse the
-    // cache fine. The 1h TTL absorbs occasional cold paths cheaply (1.25x write
-    // premium) and keeps the common-case hit rate high.
+    //   BP1 — last `alwaysInclude` tool (marked via `tool.cacheBreakpoint`):
+    //         Small, deterministic prefix that survives warmup → steady-state →
+    //         re-expansion transitions. `partitionAndOrderTools` puts the alwaysInclude
+    //         subset first in alphabetical order, so the bytes up through this BP are
+    //         byte-identical across all three filter states.
+    //
+    //   BP2 — last tool overall:
+    //         Large, steady-state-stable prefix. Re-iterations within the same filter
+    //         state hit this BP for the entire tool set. When the filter state changes
+    //         (boundary iteration), BP2 invalidates but BP1 still hits.
+    //
+    // If the alwaysInclude tail is also the last tool overall (e.g., very small tool
+    // set), one cache_control entry covers both BPs and we only emit one. The 1h TTL
+    // absorbs cold paths cheaply (1.25x write premium).
     let tools: any[] | undefined;
     if (request.tools && request.tools.length > 0) {
+      const lastIdx = request.tools.length - 1;
       tools = request.tools.map((tool, idx) => {
-        const isLast = idx === request.tools!.length - 1;
         const base = {
           name: tool.function.name,
           description: tool.function.description,
           input_schema: tool.function.parameters,
         };
-        return isLast ? { ...base, cache_control: { type: "ephemeral", ttl: "1h" } } : base;
+        const isBp1 = !!tool.cacheBreakpoint && idx !== lastIdx;
+        const isBp2 = idx === lastIdx;
+        return isBp1 || isBp2 ? { ...base, cache_control: { type: "ephemeral", ttl: "1h" } } : base;
       });
     }
 
@@ -1325,3 +1344,10 @@ NEVER skip reply! If you skip it, the message will be processed infinitely!`;
     // No connection to close for HTTP/1.1 fetch
   }
 }
+
+// Test-only hooks: expose provider classes so tests can verify request-shaping
+// (cache_control breakpoint placement, metadata stripping) without HTTP.
+export const __testHooks = {
+  AnthropicProvider,
+  OpenAIProvider,
+};

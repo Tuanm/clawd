@@ -268,6 +268,47 @@ const DEFAULT_TOKEN_LIMIT_CRITICAL = 70000;
 const DEFAULT_TOKEN_LIMIT_CHECKPOINT = 32000;
 const DEFAULT_COMPACT_KEEP_COUNT = 30;
 
+/**
+ * Partition tools into [alwaysInclude, others], sort each subset alphabetically by
+ * function name, and mark the last alwaysInclude tool with `cacheBreakpoint: true`.
+ *
+ * Why partition + sort:
+ *   `filterToolsByUsage` returns different subsets across iterations (warmup → steady
+ *   → re-expansion). If the prefix bytes shift between iterations, Anthropic's prompt
+ *   cache misses on the tools array. Partitioning the alwaysInclude tools to the front
+ *   and sorting each subset gives a deterministic prefix so the leading bytes stay
+ *   identical across all three states for the same tool set, which combined with the
+ *   `cacheBreakpoint` marker yields a small stable cached prefix that survives every
+ *   state transition.
+ *
+ * Why a flag instead of an index:
+ *   Travels with the tool, no separate plumbing through the request shape, mirrors the
+ *   existing `readOnly` metadata pattern (stripped before reaching the wire by
+ *   `client.ts` cleanedRequest and by `factory.ts` Anthropic mapping).
+ */
+export function partitionAndOrderTools(tools: ToolDefinition[], alwaysInclude: ReadonlySet<string>): ToolDefinition[] {
+  if (tools.length === 0) return tools;
+
+  const stable: ToolDefinition[] = [];
+  const variable: ToolDefinition[] = [];
+  for (const t of tools) {
+    if (alwaysInclude.has(t.function.name)) stable.push(t);
+    else variable.push(t);
+  }
+  const byName = (a: ToolDefinition, b: ToolDefinition) => a.function.name.localeCompare(b.function.name);
+  stable.sort(byName);
+  variable.sort(byName);
+
+  const result: ToolDefinition[] = [...stable, ...variable];
+  if (stable.length > 0) {
+    // Shallow-copy so we don't mutate the source ToolDefinition (it may be cached
+    // in `_toolsCache` and reused across runs).
+    const lastStable = result[stable.length - 1];
+    result[stable.length - 1] = { ...lastStable, cacheBreakpoint: true };
+  }
+  return result;
+}
+
 export class Agent {
   private client: LLMProvider;
   private sessions: SessionManager;
@@ -1022,6 +1063,20 @@ export class Agent {
    * Always includes: tools the agent has used, chat/system tools, and plugin tools.
    * After warmup, unused built-in tools are removed (saving 4-10K tokens/call).
    */
+  /**
+   * Tools that are unconditionally kept after warmup. Single source of truth — also
+   * used to compute the `cacheBreakpoint` boundary in `partitionAndOrderTools`.
+   */
+  static readonly ALWAYS_INCLUDE_TOOLS: ReadonlySet<string> = new Set([
+    "reply",
+    "complete_task",
+    "spawn_agent",
+    "list_agents",
+    "knowledge_search",
+    "skill_activate",
+    "skill_search",
+  ]);
+
   /** Tool categories — if any tool in a category is used, keep the entire category */
   private static readonly TOOL_CATEGORIES: Record<string, string[]> = {
     file: ["view", "edit", "create", "grep", "glob"],
@@ -1082,50 +1137,40 @@ export class Agent {
   ]);
 
   private filterToolsByUsage(tools: ToolDefinition[], iteration: number): ToolDefinition[] {
+    let kept: ToolDefinition[];
     if (iteration <= this._toolFilterWarmupIterations || this._usedTools.size === 0) {
-      return tools; // Send all tools during warmup
-    }
-
-    // Re-expand to full tool set if agent appears stuck (2+ text-only responses may
-    // indicate it lost access to a needed tool after filtering)
-    if (this._consecutiveTextOnlyResponses >= 2) {
+      kept = tools; // Send all tools during warmup
+    } else if (this._consecutiveTextOnlyResponses >= 2) {
+      // Re-expand to full tool set if agent appears stuck (2+ text-only responses may
+      // indicate it lost access to a needed tool after filtering)
       this._consecutiveTextOnlyResponses = 0;
-      return tools;
-    }
-
-    // Always-include set: chat tools, system tools
-    const alwaysInclude = new Set([
-      "reply",
-      "complete_task",
-      "spawn_agent",
-      "list_agents",
-      "knowledge_search",
-      "skill_activate",
-      "skill_search",
-    ]);
-
-    // Build category-expanded used-tools set: if any tool in a category was used, keep all
-    const expandedUsed = new Set(this._usedTools);
-    for (const [, categoryTools] of Object.entries(Agent.TOOL_CATEGORIES)) {
-      if (categoryTools.some((t) => this._usedTools.has(t))) {
-        for (const t of categoryTools) expandedUsed.add(t);
+      kept = tools;
+    } else {
+      // Build category-expanded used-tools set: if any tool in a category was used, keep all
+      const expandedUsed = new Set(this._usedTools);
+      for (const [, categoryTools] of Object.entries(Agent.TOOL_CATEGORIES)) {
+        if (categoryTools.some((t) => this._usedTools.has(t))) {
+          for (const t of categoryTools) expandedUsed.add(t);
+        }
       }
+
+      // Cache builtin names at class level for O(1) lookup (avoids recreating Set per iteration)
+      if (!this._builtinToolNames) {
+        this._builtinToolNames = new Set(toolDefinitions.map((td) => td.function.name));
+      }
+      const builtinNames = this._builtinToolNames;
+
+      kept = tools.filter((t) => {
+        const name = t.function.name;
+        if (expandedUsed.has(name)) return true;
+        if (Agent.ALWAYS_INCLUDE_TOOLS.has(name)) return true;
+        // Keep all non-builtin tools (MCP, plugin, custom)
+        if (!builtinNames.has(name)) return true;
+        return false;
+      });
     }
 
-    // Cache builtin names at class level for O(1) lookup (avoids recreating Set per iteration)
-    if (!this._builtinToolNames) {
-      this._builtinToolNames = new Set(toolDefinitions.map((td) => td.function.name));
-    }
-    const builtinNames = this._builtinToolNames;
-
-    return tools.filter((t) => {
-      const name = t.function.name;
-      if (expandedUsed.has(name)) return true;
-      if (alwaysInclude.has(name)) return true;
-      // Keep all non-builtin tools (MCP, plugin, custom)
-      if (!builtinNames.has(name)) return true;
-      return false;
-    });
+    return partitionAndOrderTools(kept, Agent.ALWAYS_INCLUDE_TOOLS);
   }
 
   /** Record that a tool was used (for filtering after warmup) */

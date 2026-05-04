@@ -366,9 +366,15 @@ export class CopilotClient extends EventEmitter {
         ...BASE_HEADERS,
       };
 
-      // Strip readOnly metadata field before sending to API (it's internal-only)
-      const cleanedRequest = request.tools?.some((t) => t.readOnly !== undefined)
-        ? { ...request, tools: request.tools.map(({ readOnly: _r, ...t }) => t) }
+      // Strip internal-only metadata (readOnly, cacheBreakpoint) from tool defs before
+      // sending to the OpenAI-compatible Copilot endpoint. cacheBreakpoint is consumed
+      // only by the Anthropic factory; sending it to Copilot would be ignored at best
+      // and could trip strict schema validation at worst.
+      const cleanedRequest = request.tools?.some((t) => t.readOnly !== undefined || t.cacheBreakpoint !== undefined)
+        ? {
+            ...request,
+            tools: request.tools.map(({ readOnly: _r, cacheBreakpoint: _cb, ...t }) => t),
+          }
         : request;
       const body = JSON.stringify({ ...cleanedRequest, stream: false });
       const req = client.request(headers);
@@ -541,9 +547,14 @@ export class CopilotClient extends EventEmitter {
       ...BASE_HEADERS,
     };
 
-    // Strip readOnly metadata field before sending to API (it's internal-only)
-    const cleanedRequest = request.tools?.some((t) => t.readOnly !== undefined)
-      ? { ...request, tools: request.tools.map(({ readOnly: _r, ...t }) => t) }
+    // Strip internal-only metadata (readOnly, cacheBreakpoint) from tool defs before
+    // sending to the OpenAI-compatible Copilot endpoint. See same-file comment above
+    // the non-streaming path for rationale.
+    const cleanedRequest = request.tools?.some((t) => t.readOnly !== undefined || t.cacheBreakpoint !== undefined)
+      ? {
+          ...request,
+          tools: request.tools.map(({ readOnly: _r, cacheBreakpoint: _cb, ...t }) => t),
+        }
       : request;
     const body = JSON.stringify({ ...cleanedRequest, stream: true });
     const req = client.request(headers);
