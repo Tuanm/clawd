@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { __testHooks } from "../crud";
@@ -121,6 +121,30 @@ describe("gitignoreCache mtime invalidation", () => {
     const second = getGitTrackedFilesForRoot(tmp);
     expect(second).not.toBeNull();
     expect(second).not.toBe(first!); // not cached, fresh Set
+  });
+
+  test("symlinked alias collapses to same cache entry as canonical path", () => {
+    initRepo(tmp);
+    writeFileSync(join(tmp, "a.ts"), "x");
+    execSync("git add a.ts", { cwd: tmp });
+
+    // Create a symlink alias to the same repo. The cache normalizes to realpath,
+    // so the symlinked path must hit the same cache entry as the canonical one.
+    const aliasParent = mkdtempSync(join(tmpdir(), "clawd-gitignore-alias-"));
+    const alias = join(aliasParent, "link");
+    try {
+      symlinkSync(tmp, alias, "dir");
+
+      const canonical = getGitTrackedFilesForRoot(tmp);
+      const viaAlias = getGitTrackedFilesForRoot(alias);
+
+      expect(canonical).not.toBeNull();
+      expect(viaAlias).not.toBeNull();
+      expect(viaAlias).toBe(canonical!); // same Set instance → cache collapsed via realpath
+      expect(gitignoreCache.size).toBe(1);
+    } finally {
+      rmSync(aliasParent, { recursive: true, force: true });
+    }
   });
 
   test("submodule layout (.git as file pointing to gitdir) resolves index", () => {

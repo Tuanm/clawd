@@ -198,6 +198,11 @@ function validateProjectPath(
  * `git add` / `git rm` / commit, so its mtime is a reliable signal that the tracked-file
  * set changed. Falls back to one-shot cache if `.git/index` is missing (bare repo, fresh clone
  * before first add) — that's safe because re-running `git ls-files` is the only correctness fix.
+ *
+ * Note: `.gitignore` edits do NOT need to invalidate this cache. `git ls-files` reads the
+ * index, not the gitignore rules — only `git add`/`rm`/commit/checkout mutate `.git/index`,
+ * and any of those will bump the mtime here. Editing `.gitignore` alone leaves the tracked
+ * set unchanged and our cached output remains correct.
  */
 const gitignoreCache = new Map<string, { files: Set<string>; indexMtimeMs: number }>();
 
