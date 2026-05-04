@@ -9,8 +9,8 @@
  */
 
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 import type {
   HookCallback,
@@ -66,6 +66,10 @@ export interface SDKStreamCallbacks {
   onSessionId: (sessionId: string) => void;
   /** Called on each tool completion to refresh activity timestamp */
   onActivity?: () => void;
+  /** Raw stderr from the CC subprocess. Wire this to surface silent spawn
+   *  failures (ENOENT on bun/node, missing cli.js, bwrap errors) to the user.
+   *  Without it the SDK silently swallows stderr and the agent appears hung. */
+  onStderr?: (data: string) => void;
 }
 
 // ============================================================================
@@ -247,11 +251,13 @@ function buildEnv(
   sandbox?: boolean,
 ): Record<string, string | undefined> {
   const home = homedir();
+  const isWin = process.platform === "win32";
+  const tmp = tmpdir();
 
   if (sandbox) {
     // Sandbox mode: start from a clean safe environment (same as other providers).
     // Only safe vars + CC-specific vars — no process.env leakage.
-    // CLAUDE_TMPDIR=/tmp tells the CLI's internal sandbox to treat /tmp as writable tmpdir.
+    // CLAUDE_TMPDIR tells the CLI's internal sandbox which dir to treat as writable tmpdir.
     const safeBase = getSafeEnvVars();
     const ccEnv = getClaudeCodeProviderEnv(providerName);
     return {
@@ -260,27 +266,49 @@ function buildEnv(
       CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "75",
       CLAUDE_AGENT_SDK_CLIENT_APP: "Claw'd/1.0",
       CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
-      CLAUDE_TMPDIR: "/tmp",
+      CLAUDE_TMPDIR: tmp,
       ENABLE_TOOL_SEARCH: "auto:5",
       ...ccEnv,
       ...extra,
     };
   }
 
-  // YOLO mode: inherit full process.env so CLI gets all credentials, XDG paths, etc.
-  const extraPaths = (process.env.PATH || "")
-    .split(":")
-    .filter((p) => /nvm|fnm|volta|nodejs/i.test(p))
-    .join(":");
-  const basePath = `${home}/.local/bin:${home}/.bun/bin:/usr/local/bin:/usr/bin:/bin`;
+  // YOLO mode: inherit full process.env (per the function contract — all
+  // credentials, XDG paths, version managers like nvm/fnm/volta). We then
+  // APPEND known tool dirs so brew-installed bun (Apple Silicon: /opt/homebrew,
+  // Intel: /usr/local) and ~/.bun/bin are findable even if the parent shell
+  // didn't include them. Cross-platform: uses path.delimiter so Windows
+  // ("C:\\;D:\\") works the same as POSIX (":").
+  const fallbackPathEntries = isWin
+    ? [
+        join(home, ".clawd", "bin"),
+        join(home, ".bun", "bin"),
+        join(home, ".cargo", "bin"),
+        join(home, "AppData", "Local", "Programs", "bun"),
+        `${process.env.SystemRoot || "C:\\Windows"}\\System32`,
+      ]
+    : [
+        `${home}/.local/bin`,
+        `${home}/.bun/bin`,
+        `${home}/.cargo/bin`,
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+      ];
+  const inheritedPath = process.env.PATH || "";
+  const fallbackPath = fallbackPathEntries.join(delimiter);
+  const finalPath = inheritedPath ? `${inheritedPath}${delimiter}${fallbackPath}` : fallbackPath;
+
   return {
     ...process.env,
     HOME: home,
-    PATH: extraPaths ? `${extraPaths}:${basePath}` : basePath,
+    PATH: finalPath,
     LANG: process.env.LANG || "C.UTF-8",
     TERM: "dumb",
-    TMPDIR: "/tmp",
-    USER: process.env.USER || "clawd",
+    TMPDIR: process.env.TMPDIR || tmp,
+    USER: process.env.USER || process.env.USERNAME || "clawd",
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "75",
     CLAUDE_AGENT_SDK_CLIENT_APP: "Claw'd/1.0",
     CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
@@ -352,6 +380,11 @@ function resolveSDKCliPath(): { pathToClaudeCodeExecutable: string } | {} {
  */
 export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCallbacks): Promise<string | null> {
   let sessionId: string | null = null;
+
+  // Tail buffer for CC subprocess stderr — appended to errors so silent spawn
+  // failures (e.g. "bun: command not found") surface in the catch path.
+  const STDERR_TAIL_BYTES = 4096;
+  const stderrBuf: string[] = [];
 
   // Build settings from provider config
   // Default: always skip Co-Authored-By attribution in CC agent commits
@@ -440,6 +473,24 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
     abortController: opts.abortController,
     env: buildEnv(opts.providerName, opts.env, !yolo),
     includePartialMessages: true,
+    // Capture stderr from CC subprocess. The SDK ignores stderr by default
+    // (stdio:[..., "ignore"]) — without this callback, ENOENT on bun/node and
+    // missing cli.js fail silently and the agent appears hung. We forward to
+    // the caller and also keep a tail buffer to enrich error messages below.
+    stderr: (data: string) => {
+      stderrBuf.push(data);
+      // Bound buffer at ~2x the tail size so a chatty subprocess can't grow
+      // memory unboundedly. We slice the actual tail on read in the catch.
+      let total = stderrBuf.reduce((n, s) => n + s.length, 0);
+      while (total > STDERR_TAIL_BYTES * 2 && stderrBuf.length > 1) {
+        total -= stderrBuf.shift()!.length;
+      }
+      try {
+        callbacks.onStderr?.(data);
+      } catch {
+        // best-effort
+      }
+    },
     // Resolve cli.js explicitly — compiled binaries can't use import.meta.url
     ...resolveSDKCliPath(),
     // Pass through settings (attribution, permissions, etc.)
@@ -476,8 +527,12 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
       return sessionId; // Success — exit early
     } catch (err: unknown) {
       lastErr = err;
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[claude-code-sdk] Query failed (attempt ${attempt + 1}): ${msg.slice(0, 200)}`);
+      const baseMsg = err instanceof Error ? err.message : String(err);
+      // Augment with stderr tail so users see WHY the subprocess died
+      // (e.g. "bun: command not found" instead of just "executable not found at <cli.js>").
+      const stderrTail = stderrBuf.join("").slice(-STDERR_TAIL_BYTES).trim();
+      const msg = stderrTail ? `${baseMsg} | stderr: ${stderrTail.slice(0, 500)}` : baseMsg;
+      console.error(`[claude-code-sdk] Query failed (attempt ${attempt + 1}): ${msg.slice(0, 700)}`);
 
       // Stale/corrupted session — retry without resume
       const isSessionError =
@@ -499,6 +554,13 @@ export async function runSDKQuery(opts: SDKQueryOptions, callbacks: SDKStreamCal
         continue;
       }
 
+      // Rethrow with augmented message so workers can broadcast the real cause
+      // (e.g. "bun: command not found") to the channel UI instead of a vague
+      // "executable not found" that hides the missing-runtime root cause.
+      // Preserve original stack via `cause` for postmortem diagnosis.
+      if (stderrTail && err instanceof Error) {
+        throw new Error(msg, { cause: err });
+      }
       throw err;
     }
   }

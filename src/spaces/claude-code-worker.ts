@@ -150,7 +150,7 @@ export class ClaudeCodeSpaceWorker {
           throw err;
         }
         await this.postSystemMessage(
-          `Error: ${errMsg.slice(0, 100)}. Retrying (${this.retryCount}/${this.maxRetries})...`,
+          `Error: ${errMsg.slice(0, 600)}. Retrying (${this.retryCount}/${this.maxRetries})...`,
         );
         await Bun.sleep(RETRY_BACKOFF_MS * this.retryCount);
       }

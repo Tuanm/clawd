@@ -15,8 +15,8 @@
 
 import { execSync, spawn } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
-import { homedir, platform, userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { homedir, platform, tmpdir, userInfo } from "node:os";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { getAgentContext } from "./agent-context";
 
 // ============================================================================
@@ -74,9 +74,45 @@ function loadAgentEnv(): Record<string, string> {
 /**
  * Build the safe environment variables for sandboxed execution.
  * These are the only env vars available inside the sandbox.
+ *
+ * Cross-platform: Linux + macOS (Intel + Apple Silicon) + Windows.
+ * Apple Silicon brew lives at /opt/homebrew/bin (Intel uses /usr/local/bin).
+ * Without it, `bun` installed via brew on M-series Macs is unfindable and
+ * SDK subprocesses ENOENT silently.
  */
 export function getSafeEnvVars(): Record<string, string> {
   const home = homedir();
+  const isWin = platform() === "win32";
+  const tmp = tmpdir();
+
+  const pathEntries = isWin
+    ? [
+        join(home, ".clawd", "bin"),
+        join(home, ".bun", "bin"),
+        join(home, ".cargo", "bin"),
+        join(home, ".deno", "bin"),
+        join(home, "AppData", "Local", "Programs", "bun"),
+        join(home, "AppData", "Local", "Microsoft", "WindowsApps"),
+        `${process.env.SystemRoot || "C:\\Windows"}\\System32`,
+        `${process.env.SystemRoot || "C:\\Windows"}`,
+      ]
+    : [
+        `${home}/.clawd/bin`,
+        `${home}/.bun/bin`,
+        `${home}/.cargo/bin`,
+        `${home}/.deno/bin`,
+        `${home}/.local/bin`,
+        // Apple Silicon Homebrew (M-series Macs install bun here)
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        // Intel Mac brew + Linux defaults
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/bin",
+        "/usr/sbin",
+        "/bin",
+        "/sbin",
+      ];
 
   const env: Record<string, string> = {
     HOME: home,
@@ -87,17 +123,17 @@ export function getSafeEnvVars(): Record<string, string> {
         return "clawd";
       }
     })(),
-    PATH: `${home}/.clawd/bin:${home}/.bun/bin:${home}/.cargo/bin:${home}/.deno/bin:${home}/.local/bin:/usr/local/bin:/usr/bin:/bin`,
-    TERM: "xterm-256color",
+    PATH: pathEntries.join(delimiter),
+    TERM: isWin ? "xterm" : "xterm-256color",
     LANG: "C.UTF-8",
-    SHELL: "/bin/bash",
-    GIT_CONFIG_GLOBAL: `${home}/.clawd/.gitconfig`,
+    SHELL: isWin ? process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe" : "/bin/bash",
+    GIT_CONFIG_GLOBAL: join(home, ".clawd", ".gitconfig"),
     GIT_SSH_COMMAND: `ssh -F /dev/null -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i ${home}/.clawd/.ssh/id_ed25519`,
     GIT_TERMINAL_PROMPT: "0",
-    // Ensure temp dir is writable /tmp (Bun and other tools need this)
-    TMPDIR: "/tmp",
-    TEMP: "/tmp",
-    TMP: "/tmp",
+    // Use OS-native temp dir (Linux/macOS: /tmp, Windows: %TEMP%)
+    TMPDIR: tmp,
+    TEMP: tmp,
+    TMP: tmp,
     // Suppress interactive prompts from common tools
     DEBIAN_FRONTEND: "noninteractive",
     HOMEBREW_NO_AUTO_UPDATE: "1",
@@ -105,6 +141,16 @@ export function getSafeEnvVars(): Record<string, string> {
     CONDA_YES: "1",
     ...loadAgentEnv(),
   };
+
+  // Windows essentials — without these, native tools (cmd.exe, ssh.exe, git.exe)
+  // misbehave: PATHEXT is required for resolving .exe/.bat without explicit ext;
+  // SystemRoot/APPDATA are read by libc, OpenSSL, and many CLIs.
+  if (isWin) {
+    for (const k of ["SystemRoot", "SystemDrive", "ComSpec", "PATHEXT", "APPDATA", "LOCALAPPDATA", "USERPROFILE"]) {
+      const v = process.env[k];
+      if (v) env[k] = v;
+    }
+  }
 
   return env;
 }
