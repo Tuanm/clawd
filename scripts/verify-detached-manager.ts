@@ -33,9 +33,7 @@ const ECHO_HELLO = `echo ${HELLO}`;
 const EXIT_7 = "exit 7";
 const SLEEP_30 = IS_WIN ? "ping -n 31 127.0.0.1 >nul" : "sleep 30";
 const NOOP = IS_WIN ? "exit /b 0" : "true";
-const PRINT_5_LINES = IS_WIN
-  ? "echo a&echo b&echo c&echo d&echo e"
-  : "printf 'a\\nb\\nc\\nd\\ne\\n'";
+const PRINT_5_LINES = IS_WIN ? "echo a&echo b&echo c&echo d&echo e" : "printf 'a\\nb\\nc\\nd\\ne\\n'";
 const SPAWN_SETTLE_MS = IS_WIN ? 600 : 200;
 
 let failed = 0;

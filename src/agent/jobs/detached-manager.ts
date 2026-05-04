@@ -169,11 +169,7 @@ export class DetachedJobManager {
       //     interactively but the redirect silently drops output when spawned
       //     with `stdio:"ignore"` (NUL stdio handles). Redirecting from inside
       //     the inner cmd's own batch dodges that path entirely.
-      writeFileSync(
-        userFile,
-        `@echo off\r\n(\r\n${command}\r\n) >output.log 2>&1\r\n`,
-        { mode: 0o700 },
-      );
+      writeFileSync(userFile, `@echo off\r\n(\r\n${command}\r\n) >output.log 2>&1\r\n`, { mode: 0o700 });
       // Use `.\` prefix on every script we hand to cmd.exe — without it,
       // hardened hosts that set `NoDefaultCurrentDirectoryInExePath=1` would
       // make cmd skip the cwd in its resolver and we'd 9009 silently.
