@@ -9,6 +9,7 @@ const rateLimits = new Map<string, { count: number; resetAt: number }>();
 const RATE_WINDOW_MS = 60_000;
 const PER_ARTIFACT_LIMIT = 10;
 const GLOBAL_USER_LIMIT = 30;
+const RATE_SWEEP_MS = 5 * 60_000; // sweep every 5 minutes — keeps Map bounded without per-call overhead
 
 function checkRateLimit(key: string, limit: number): boolean {
   const now = Date.now();
@@ -21,6 +22,26 @@ function checkRateLimit(key: string, limit: number): boolean {
   entry.count++;
   return true;
 }
+
+// Throttled sweep: per-call O(1) checkRateLimit only refreshes the entry it touches,
+// so abandoned keys (artifacts that received one click then never again) stay forever.
+// Periodic eviction keeps memory bounded under heavy churn.
+// .unref() so the timer never blocks process exit during tests/shutdown.
+function sweepRateLimits(): void {
+  const now = Date.now();
+  for (const [key, entry] of rateLimits) {
+    if (now > entry.resetAt) rateLimits.delete(key);
+  }
+}
+
+const _rateSweepTimer = setInterval(sweepRateLimits, RATE_SWEEP_MS);
+if (typeof _rateSweepTimer.unref === "function") _rateSweepTimer.unref();
+
+// Test hook: lets tests trigger sweep deterministically without waiting 5 min.
+export const __testHooks = {
+  sweepRateLimits,
+  rateLimits,
+};
 
 // ---------------------------------------------------------------------------
 // Validate interactive_json before storage

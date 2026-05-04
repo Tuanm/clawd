@@ -192,9 +192,14 @@ function validateProjectPath(
 // ============================================================================
 
 /**
- * Cache for gitignore checking per git root (can be project root, submodule, or nested repo)
+ * Cache for gitignore checking per git root (can be project root, submodule, or nested repo).
+ *
+ * Invalidation: keyed by mtime of `.git/index`. The index file is rewritten on every
+ * `git add` / `git rm` / commit, so its mtime is a reliable signal that the tracked-file
+ * set changed. Falls back to one-shot cache if `.git/index` is missing (bare repo, fresh clone
+ * before first add) — that's safe because re-running `git ls-files` is the only correctness fix.
  */
-const gitignoreCache = new Map<string, Set<string>>();
+const gitignoreCache = new Map<string, { files: Set<string>; indexMtimeMs: number }>();
 
 /**
  * Check if a directory is a git repository (has .git file or directory).
@@ -206,14 +211,47 @@ function isGitRepository(dirPath: string): boolean {
 }
 
 /**
+ * Read mtime of `.git/index` for a working tree. Returns 0 if not present or on error
+ * (callers treat 0 as "no signal" — caches refresh on next call until file appears).
+ *
+ * Handles two layouts:
+ *   - .git is a directory  → index at <gitRoot>/.git/index
+ *   - .git is a file (submodule/worktree)  → reads `gitdir:` pointer to locate index
+ */
+function getGitIndexMtime(gitRoot: string): number {
+  try {
+    const dotGit = join(gitRoot, ".git");
+    const st = statSync(dotGit);
+    let indexPath: string;
+    if (st.isDirectory()) {
+      indexPath = join(dotGit, "index");
+    } else {
+      // .git file: "gitdir: <path>" pointing at the real git dir
+      const contents = readFileSync(dotGit, "utf-8").trim();
+      const m = contents.match(/^gitdir:\s*(.+)$/);
+      if (!m) return 0;
+      const gitDirRaw = m[1].trim();
+      const gitDir = isAbsolute(gitDirRaw) ? gitDirRaw : resolve(gitRoot, gitDirRaw);
+      indexPath = join(gitDir, "index");
+    }
+    return statSync(indexPath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Get the set of git-tracked files for a specific git root.
  * Uses `git ls-files` to get all tracked files, which respects .gitignore.
- * Results are cached per git root.
+ * Results are cached per git root, invalidated on `.git/index` mtime change.
  */
 function getGitTrackedFilesForRoot(gitRoot: string): Set<string> | null {
-  // Check cache first
-  if (gitignoreCache.has(gitRoot)) {
-    return gitignoreCache.get(gitRoot)!;
+  const currentMtime = getGitIndexMtime(gitRoot);
+  const cached = gitignoreCache.get(gitRoot);
+  // Cache valid only when we have a real mtime (>0) AND it matches what was cached.
+  // mtime=0 forces re-run (safe: just slower, never wrong).
+  if (cached && currentMtime > 0 && cached.indexMtimeMs === currentMtime) {
+    return cached.files;
   }
 
   try {
@@ -231,7 +269,7 @@ function getGitTrackedFilesForRoot(gitRoot: string): Set<string> | null {
         .split("\n")
         .filter((f) => f),
     );
-    gitignoreCache.set(gitRoot, files);
+    gitignoreCache.set(gitRoot, { files, indexMtimeMs: currentMtime });
     return files;
   } catch {
     // Git command failed, return null to fall back to default behavior
@@ -251,6 +289,14 @@ function getGitTrackedFiles(projectRoot: string): Set<string> | null {
   }
   return getGitTrackedFilesForRoot(projectRoot);
 }
+
+// Test-only hooks: expose internals so tests can verify caching behavior
+// without scraping behavior through the larger handler surface.
+export const __testHooks = {
+  getGitTrackedFilesForRoot,
+  getGitIndexMtime,
+  gitignoreCache,
+};
 
 /**
  * Determine the git context for a folder being listed.

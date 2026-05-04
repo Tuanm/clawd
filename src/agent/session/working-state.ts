@@ -157,14 +157,14 @@ export function addDecision(
   // Deduplicate by 'what' field
   if (state.decisions.some((d) => d.what === decision.what)) return;
 
+  // C23: decisions are append-only — never evict. Reject new additions once at cap.
+  if (state.decisions.length >= DECISIONS_CAP) return;
+
   state.decisions.push({
     what: decision.what,
     why: decision.why,
     alternatives: decision.alternatives || [],
   });
-
-  // C23: decisions are append-only — never remove. Cap only prevents further additions.
-  // Once at cap, new decisions still added (push above) but we don't evict old ones.
 }
 
 export function trackError(
