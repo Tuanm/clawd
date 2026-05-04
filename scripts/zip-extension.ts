@@ -34,7 +34,11 @@ function addDir(zip: JSZip, dirPath: string, baseDir: string): void {
       addDir(zip, fullPath, baseDir);
     } else {
       if (EXCLUDE.has(entry.name)) continue;
-      const relPath = relative(baseDir, fullPath);
+      // PKZIP spec (APPNOTE.TXT 4.4.17.1) mandates forward slashes for entry
+      // names. On Windows-native runs `relative()` yields backslashes, which
+      // unpack as a single flat segment on Linux/macOS and break the
+      // browser-extension loader. Normalize to POSIX.
+      const relPath = relative(baseDir, fullPath).split("\\").join("/");
       zip.file(relPath, readFileSync(fullPath));
     }
   }
