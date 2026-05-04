@@ -295,7 +295,14 @@ export function partitionAndOrderTools(tools: ToolDefinition[], alwaysInclude: R
     if (alwaysInclude.has(t.function.name)) stable.push(t);
     else variable.push(t);
   }
-  const byName = (a: ToolDefinition, b: ToolDefinition) => a.function.name.localeCompare(b.function.name);
+  // ASCII comparator (not localeCompare): tool names are ASCII-only and the byte-stability
+  // guarantee for the cached prefix must NOT depend on the runtime's default locale (e.g.
+  // Turkish locale reorders `i`/`I`, breaking cache-prefix identity across machines).
+  const byName = (a: ToolDefinition, b: ToolDefinition) => {
+    const an = a.function.name;
+    const bn = b.function.name;
+    return an < bn ? -1 : an > bn ? 1 : 0;
+  };
   stable.sort(byName);
   variable.sort(byName);
 

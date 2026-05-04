@@ -65,6 +65,26 @@ import type { CompletionRequest, CompletionResponse, Message, StreamEvent, ToolC
 
 export type { CompletionRequest, CompletionResponse, Message, StreamEvent, ToolCall, ToolDefinition };
 
+/**
+ * Strip internal-only ToolDefinition metadata (`readOnly`, `cacheBreakpoint`) before
+ * sending a `CompletionRequest` to the Copilot OpenAI-compatible endpoint. Both fields
+ * are consumed only by Claw'd internals (`readOnly` for tool gating, `cacheBreakpoint`
+ * by the Anthropic factory) and would be ignored at best / trip strict schema validation
+ * at worst if forwarded.
+ *
+ * Returns the same request object reference when no stripping is needed (zero-allocation
+ * fast-path) so the streaming hot loop avoids unnecessary copies.
+ */
+export function stripInternalToolMetadata(request: CompletionRequest): CompletionRequest {
+  if (!request.tools?.some((t) => t.readOnly !== undefined || t.cacheBreakpoint !== undefined)) {
+    return request;
+  }
+  return {
+    ...request,
+    tools: request.tools.map(({ readOnly: _r, cacheBreakpoint: _cb, ...t }) => t),
+  };
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -366,17 +386,7 @@ export class CopilotClient extends EventEmitter {
         ...BASE_HEADERS,
       };
 
-      // Strip internal-only metadata (readOnly, cacheBreakpoint) from tool defs before
-      // sending to the OpenAI-compatible Copilot endpoint. cacheBreakpoint is consumed
-      // only by the Anthropic factory; sending it to Copilot would be ignored at best
-      // and could trip strict schema validation at worst.
-      const cleanedRequest = request.tools?.some((t) => t.readOnly !== undefined || t.cacheBreakpoint !== undefined)
-        ? {
-            ...request,
-            tools: request.tools.map(({ readOnly: _r, cacheBreakpoint: _cb, ...t }) => t),
-          }
-        : request;
-      const body = JSON.stringify({ ...cleanedRequest, stream: false });
+      const body = JSON.stringify({ ...stripInternalToolMetadata(request), stream: false });
       const req = client.request(headers);
 
       // Request timeout for non-streaming requests
@@ -547,16 +557,7 @@ export class CopilotClient extends EventEmitter {
       ...BASE_HEADERS,
     };
 
-    // Strip internal-only metadata (readOnly, cacheBreakpoint) from tool defs before
-    // sending to the OpenAI-compatible Copilot endpoint. See same-file comment above
-    // the non-streaming path for rationale.
-    const cleanedRequest = request.tools?.some((t) => t.readOnly !== undefined || t.cacheBreakpoint !== undefined)
-      ? {
-          ...request,
-          tools: request.tools.map(({ readOnly: _r, cacheBreakpoint: _cb, ...t }) => t),
-        }
-      : request;
-    const body = JSON.stringify({ ...cleanedRequest, stream: true });
+    const body = JSON.stringify({ ...stripInternalToolMetadata(request), stream: true });
     const req = client.request(headers);
 
     // Create a queue for streaming events
