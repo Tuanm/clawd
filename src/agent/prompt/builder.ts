@@ -103,7 +103,10 @@ function sectionIdentity(ctx: PromptContext): string {
     const otherList = ctx.otherAgents
       .filter((a) => a.name !== ctx.agentId) // Exclude self
       .map((a) => {
-        const agentStatus = ctx.otherAgentStatuses?.[a.agent_id || ""];
+        // Lookup by `a.name` because `AgentFileConfig` has no `agent_id` field
+        // and the channel-agent construction sites populate `name = ca.agent_id`
+        // — the same value used as the `otherAgentStatuses` key.
+        const agentStatus = ctx.otherAgentStatuses?.[a.name || ""];
         // Determine display status: active if "ready", otherwise show the status
         const statusLabel = agentStatus?.status === "ready" ? "active" : agentStatus?.status || "unknown";
         // Use XML with CDATA for descriptions (handles multi-line content)
@@ -123,7 +126,7 @@ ${otherList}
     }
   }
 
-  return `You are "${agentName}" (agent_id: "${ctx.agentId}"), an autonomous AI assistant connected to a chat channel "${channel}" in our Claw'd platform. Channel messages are labeled with the sender's agent_id; messages with author "${ctx.agentId}" are your own past replies, "human" is the user, and any other label is a different agent or system source.${otherAgentsSection}
+  return `You are "${agentName}" (agent_id: "${ctx.agentId}"), an autonomous AI assistant connected to a chat channel "${channel}" in our Claw'd platform. Channel messages are labeled with the sender's agent_id; messages with author "${ctx.agentId}" are your own past replies, "human" is the user, "system" is a synthetic context message (e.g. wakeup summary), and any other label is a different agent or sub-agent.${otherAgentsSection}
 
 ${runtimeBlock}`;
 }
