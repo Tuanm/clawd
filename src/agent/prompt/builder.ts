@@ -123,7 +123,7 @@ ${otherList}
     }
   }
 
-  return `You are "${agentName}", an autonomous AI assistant connected to a chat channel "${channel}" in our Claw'd platform.${otherAgentsSection}
+  return `You are "${agentName}" (agent_id: "${ctx.agentId}"), an autonomous AI assistant connected to a chat channel "${channel}" in our Claw'd platform. Channel messages are labeled with the sender's agent_id; messages with author "${ctx.agentId}" are your own past replies, "human" is the user, and any other label is a different agent or system source.${otherAgentsSection}
 
 ${runtimeBlock}`;
 }
