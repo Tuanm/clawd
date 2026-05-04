@@ -164,15 +164,20 @@ export class DetachedJobManager {
       // bare `exit N` to that inner cmd — mirrors how the POSIX wrapper uses
       // `( … )` to keep `exit` inside a subshell.
       writeFileSync(userFile, `@echo off\r\n${command}\r\n`, { mode: 0o700 });
+      // Use `.\` prefix on every script we hand to cmd.exe — without it,
+      // hardened hosts that set `NoDefaultCurrentDirectoryInExePath=1` would
+      // make cmd skip the cwd in its resolver and we'd 9009 silently.
+      // Redirection targets (`>exit_code`) are unaffected — they use cwd
+      // directly, not the executable resolver.
       const wrapperContent =
         `@echo off\r\n` +
-        `cmd /c user.cmd\r\n` +
+        `cmd /c .\\user.cmd\r\n` +
         `set "EXIT_CODE=%ERRORLEVEL%"\r\n` +
         `>exit_code echo %EXIT_CODE%\r\n` +
         `exit /b %EXIT_CODE%\r\n`;
       writeFileSync(wrapperFile, wrapperContent, { mode: 0o700 });
       spawnCmd = "cmd.exe";
-      spawnArgs = ["/c", "run.cmd"];
+      spawnArgs = ["/c", ".\\run.cmd"];
       scriptFiles = [wrapperFile, userFile];
     } else {
       const scriptFile = join(jobDir, "run.sh");
