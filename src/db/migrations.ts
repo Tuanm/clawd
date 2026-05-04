@@ -12,6 +12,12 @@ export interface Migration {
   version: number;
   description: string;
   up: (db: Database) => void;
+  /** If true, disable PRAGMA foreign_keys around this migration's transaction.
+   *  Required for table-recreate migrations (DROP/RENAME on a parent table) when
+   *  child rows exist, since SQLite enforces FK on DROP. PRAGMA foreign_keys
+   *  cannot be toggled inside a transaction (silent no-op), so the toggle must
+   *  wrap the runner's transaction — hence this flag. */
+  requiresFkOff?: boolean;
 }
 
 export type MigrationStrategy = "versioned" | "recreate-on-mismatch";
@@ -46,9 +52,23 @@ export function runMigrations(db: Database, migrations: Migration[], strategy: M
   const pending = migrations.filter((m) => m.version > currentVersion).sort((a, b) => a.version - b.version);
 
   for (const migration of pending) {
-    db.transaction(() => {
-      migration.up(db);
-      db.exec(`PRAGMA user_version = ${migration.version}`);
-    })();
+    if (migration.requiresFkOff) {
+      // PRAGMA foreign_keys must toggle outside any transaction (SQLite silently
+      // no-ops inside one). Disable, run inside transaction, then re-enable.
+      db.exec("PRAGMA foreign_keys = OFF");
+      try {
+        db.transaction(() => {
+          migration.up(db);
+          db.exec(`PRAGMA user_version = ${migration.version}`);
+        })();
+      } finally {
+        db.exec("PRAGMA foreign_keys = ON");
+      }
+    } else {
+      db.transaction(() => {
+        migration.up(db);
+        db.exec(`PRAGMA user_version = ${migration.version}`);
+      })();
+    }
   }
 }

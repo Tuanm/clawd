@@ -1947,10 +1947,18 @@ export class Agent {
 
     // Build messages array
     const isHeartbeat = userMessage.startsWith("[HEARTBEAT]");
-    // Wrap heartbeat signal; preserve any appended context (e.g., sub-agent reminders)
-    const effectiveMessage = isHeartbeat
-      ? `<agent_signal>[HEARTBEAT]</agent_signal>${userMessage.slice("[HEARTBEAT]".length)}`
-      : userMessage;
+    // Wrap heartbeat signal. Format: `[HEARTBEAT][ reason][<...sub-agent reminder...>]`
+    // The reason (space-separated, when present) is kept inside <agent_signal> so the
+    // session purge LIKE pattern still matches; sub-agent reminders stay outside.
+    let effectiveMessage = userMessage;
+    if (isHeartbeat) {
+      const tail = userMessage.slice("[HEARTBEAT]".length);
+      // Sub-agent reminder is a system-reminder block — split it off so reason stays inside the wrapper.
+      const reminderIdx = tail.indexOf("<system-reminder>");
+      const reasonPart = reminderIdx === -1 ? tail : tail.slice(0, reminderIdx);
+      const reminderPart = reminderIdx === -1 ? "" : tail.slice(reminderIdx);
+      effectiveMessage = `<agent_signal>[HEARTBEAT]${reasonPart}</agent_signal>${reminderPart}`;
+    }
     let messages: Message[] = [
       { role: "system", content: finalSystemPrompt },
       ...history,

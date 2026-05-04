@@ -704,6 +704,12 @@ export class WorkerManager {
     return !!loop.isSleeping;
   }
 
+  /** Resolve the live AgentWorker for a (channel, agentId) pair, or null if none registered.
+   *  Used by schedule_wakeup runner to inject heartbeats into the target loop. */
+  getLoop(channel: string, agentId: string): AgentWorker | null {
+    return this.loops.get(`${channel}:${agentId}`) ?? null;
+  }
+
   /** Restart an agent (e.g., after model change) */
   async restartAgent(agent: AgentConfig): Promise<boolean> {
     // Preserve sleeping state across restart

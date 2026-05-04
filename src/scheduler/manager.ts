@@ -50,6 +50,7 @@ export type ToolCallExecutor = (
   runId: string,
   controller: AbortController,
 ) => Promise<string | undefined>;
+export type WakeupExecutor = (job: ScheduledJob) => Promise<void>;
 export type BroadcastFn = (channel: string, event: object) => void;
 
 export class SchedulerManager {
@@ -61,6 +62,7 @@ export class SchedulerManager {
   private jobExecutor: JobExecutor | null = null;
   private reminderExecutor: ReminderExecutor | null = null;
   private toolCallExecutor: ToolCallExecutor | null = null;
+  private wakeupExecutor: WakeupExecutor | null = null;
 
   constructor(
     private config: AppConfig,
@@ -80,6 +82,11 @@ export class SchedulerManager {
   /** Set the tool call execution handler */
   setToolCallExecutor(executor: ToolCallExecutor): void {
     this.toolCallExecutor = executor;
+  }
+
+  /** Set the wakeup execution handler (injects heartbeat into target loop) */
+  setWakeupExecutor(executor: WakeupExecutor): void {
+    this.wakeupExecutor = executor;
   }
 
   /** Start the scheduler: recover from startup, begin tick loop */
@@ -150,6 +157,7 @@ export class SchedulerManager {
     timeoutSeconds?: number;
     isReminder?: boolean;
     isToolCall?: boolean;
+    isWakeup?: boolean;
     toolName?: string;
     toolArgs?: Record<string, any>;
   }): { success: boolean; job?: ScheduledJob; error?: string } {
@@ -182,14 +190,20 @@ export class SchedulerManager {
     // Validate timeout
     const timeout = Math.min(params.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS);
 
-    const type = params.isToolCall ? "tool_call" : params.isReminder ? "reminder" : parsed.schedule.type;
+    const type = params.isWakeup
+      ? "wakeup"
+      : params.isToolCall
+        ? "tool_call"
+        : params.isReminder
+          ? "reminder"
+          : parsed.schedule.type;
     const id = crypto.randomUUID();
 
     const jobParams: CreateJobParams = {
       id,
       channel: params.channel,
       created_by_agent: params.agentId,
-      type: type as "once" | "interval" | "cron" | "reminder" | "tool_call",
+      type: type as "once" | "interval" | "cron" | "reminder" | "tool_call" | "wakeup",
       title: sanitizedTitle,
       prompt: params.prompt,
       next_run: parsed.schedule.next_run,
@@ -339,6 +353,8 @@ export class SchedulerManager {
           this.executeToolCall(job, controller, runId)
             .catch((e) => this.handleJobError(job, e))
             .finally(() => this.runningJobs.delete(job.id));
+        } else if (job.type === "wakeup") {
+          this.executeWakeup(job, runId).finally(() => this.runningJobs.delete(job.id));
         } else {
           this.executeJob(job, controller, runId)
             .catch((e) => this.handleJobError(job, e))
@@ -349,6 +365,28 @@ export class SchedulerManager {
       console.error("[Scheduler] Tick error:", err);
     } finally {
       this.isTickRunning = false;
+    }
+  }
+
+  private async executeWakeup(job: ScheduledJob, runId: string): Promise<void> {
+    // Run record already inserted by tick(). Wakeup is a thin in-process operation:
+    // no AbortController/timeout — it just sets a flag on the target loop.
+    if (!this.wakeupExecutor) {
+      const errMsg = "no wakeup executor registered";
+      completeRun(runId, "error", errMsg);
+      this.handleJobError(job, new Error(errMsg));
+      return;
+    }
+    try {
+      await this.wakeupExecutor(job);
+      completeRun(runId, "success", undefined, job.prompt.slice(0, 500));
+      incrementRunCount(job.id);
+      resetErrors(job.id);
+      this.checkCompletion(job);
+      purgeOldRuns(job.id);
+    } catch (err: unknown) {
+      completeRun(runId, "error", err instanceof Error ? err.message : String(err));
+      this.handleJobError(job, err);
     }
   }
 
@@ -470,11 +508,12 @@ export class SchedulerManager {
     const updated = getJob(job.id);
     if (!updated) return;
 
-    // Once jobs, single-fire reminders, and one-shot tool calls complete after one run
+    // Once jobs, single-fire reminders, and one-shot tool calls/wakeups complete after one run
     const isOneShot =
       job.type === "once" ||
       (job.type === "reminder" && !job.interval_ms && !job.cron_expr) ||
-      (job.type === "tool_call" && !job.interval_ms && !job.cron_expr);
+      (job.type === "tool_call" && !job.interval_ms && !job.cron_expr) ||
+      (job.type === "wakeup" && !job.interval_ms && !job.cron_expr);
     if (isOneShot) {
       updateJobStatus(job.id, "completed");
       return;
@@ -522,6 +561,12 @@ export class SchedulerManager {
         if (job.cron_expr) return calculateNextCronRun(job.cron_expr.split(/\s+/));
         return now + 365 * 24 * 60 * 60 * 1000;
 
+      case "wakeup":
+        // Wakeups follow interval/cron if set, otherwise one-shot
+        if (job.interval_ms) return now + job.interval_ms;
+        if (job.cron_expr) return calculateNextCronRun(job.cron_expr.split(/\s+/));
+        return now + 365 * 24 * 60 * 60 * 1000;
+
       default:
         return null;
     }
@@ -546,11 +591,12 @@ export class SchedulerManager {
     let missedOnceCount = 0;
 
     for (const job of dueJobs) {
-      // Recurring reminders/tool_calls (with interval or cron) should be rescheduled, not treated as one-shot
+      // Recurring reminders/tool_calls/wakeups (with interval or cron) should be rescheduled, not treated as one-shot
       const isOneShot =
         job.type === "once" ||
         (job.type === "reminder" && !job.interval_ms && !job.cron_expr) ||
-        (job.type === "tool_call" && !job.interval_ms && !job.cron_expr);
+        (job.type === "tool_call" && !job.interval_ms && !job.cron_expr) ||
+        (job.type === "wakeup" && !job.interval_ms && !job.cron_expr);
       if (isOneShot) {
         const overdue = now - job.next_run;
         if (overdue < STARTUP_MISSED_WINDOW_MS && missedOnceCount < STARTUP_MAX_MISSED_ONCE) {

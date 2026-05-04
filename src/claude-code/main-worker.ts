@@ -103,6 +103,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
   private stoppedResolve: (() => void) | null = null;
   private stoppedPromise: Promise<void> | null = null;
   private heartbeatPending = false;
+  private pendingHeartbeatReason: string | null = null;
   private memorySessionId: string | null = null;
   private pendingTimestamps: string[] = [];
   /** Set of timestamps marked as seen but not yet processed. Tracks messages that
@@ -245,10 +246,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     this.persistSessionId(null);
   }
 
-  injectHeartbeat(): void {
-    if (this.processing || this.userSleeping) return;
+  injectHeartbeat(opts: { reason?: string; allowWake?: boolean } = {}): void {
+    if (this.processing) return;
+    if (this.userSleeping) {
+      if (!opts.allowWake) return;
+      this.userSleeping = false;
+    }
     this.lastHeartbeatAt = Date.now();
     this.heartbeatPending = true;
+    this.pendingHeartbeatReason = opts.reason ?? null;
   }
 
   // --------------------------------------------------------------------------
@@ -305,13 +311,16 @@ export class ClaudeCodeMainWorker implements AgentWorker {
           if (pending.length === 0 && this.heartbeatPending) {
             this.heartbeatPending = false;
             this.sleeping = false;
+            const reason = this.pendingHeartbeatReason;
+            this.pendingHeartbeatReason = null;
+            const reasonSuffix = reason ? ` ${reason}` : "";
             // Structural kind flag is the source of truth for heartbeat detection —
             // substring match on text is fragile (a real user message could contain [HEARTBEAT]).
             pending = [
               {
                 ts: String(Date.now()),
                 user: "UHUMAN",
-                text: "<agent_signal>[HEARTBEAT]</agent_signal>",
+                text: `<agent_signal>[HEARTBEAT]${reasonSuffix}</agent_signal>`,
                 kind: "heartbeat",
               },
             ];

@@ -41,7 +41,7 @@ function initSchema(db: Database): void {
       id TEXT PRIMARY KEY,
       channel TEXT NOT NULL,
       created_by_agent TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('once','interval','cron','reminder','tool_call')),
+      type TEXT NOT NULL CHECK(type IN ('once','interval','cron','reminder','tool_call','wakeup')),
       status TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active','paused','completed','failed','cancelled')),
       cron_expr TEXT,
@@ -113,7 +113,7 @@ function migrateSchedulerSchema(db: Database): void {
           id TEXT PRIMARY KEY,
           channel TEXT NOT NULL,
           created_by_agent TEXT NOT NULL,
-          type TEXT NOT NULL CHECK(type IN ('once','interval','cron','reminder','tool_call')),
+          type TEXT NOT NULL CHECK(type IN ('once','interval','cron','reminder','tool_call','wakeup')),
           status TEXT NOT NULL DEFAULT 'active'
             CHECK(status IN ('active','paused','completed','failed','cancelled')),
           cron_expr TEXT,
@@ -149,7 +149,7 @@ export interface ScheduledJob {
   id: string;
   channel: string;
   created_by_agent: string;
-  type: "once" | "interval" | "cron" | "reminder" | "tool_call";
+  type: "once" | "interval" | "cron" | "reminder" | "tool_call" | "wakeup";
   status: "active" | "paused" | "completed" | "failed" | "cancelled";
   cron_expr: string | null;
   interval_ms: number | null;
@@ -240,7 +240,7 @@ export interface CreateJobParams {
   id: string;
   channel: string;
   created_by_agent: string;
-  type: "once" | "interval" | "cron" | "reminder" | "tool_call";
+  type: "once" | "interval" | "cron" | "reminder" | "tool_call" | "wakeup";
   cron_expr?: string;
   interval_ms?: number;
   run_at?: number;

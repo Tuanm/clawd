@@ -308,10 +308,36 @@ describe("WorkerLoop.injectHeartbeat()", () => {
     expect(() => loop.injectHeartbeat()).not.toThrow();
   });
 
-  test("is a no-op when loop is sleeping", () => {
+  test("is a no-op when loop is sleeping (no allowWake)", () => {
     const loop = new WorkerLoop(makeConfig({ heartbeatInterval: 30 }));
     loop.setSleeping(true);
     expect(() => loop.injectHeartbeat()).not.toThrow();
+    expect(loop.isSleeping).toBe(true); // sleep state preserved
+  });
+
+  test("allowWake clears sleep state when sleeping (running loop)", async () => {
+    const loop = new WorkerLoop(makeConfig({ heartbeatInterval: 30 }));
+    loop.start();
+    try {
+      loop.setSleeping(true);
+      expect(loop.isSleeping).toBe(true);
+      // schedule_wakeup path uses allowWake:true
+      loop.injectHeartbeat({ allowWake: true });
+      expect(loop.isSleeping).toBe(false);
+    } finally {
+      await loop.stop();
+    }
+  });
+
+  test("allowWake without sleep is harmless (running loop)", async () => {
+    const loop = new WorkerLoop(makeConfig({ heartbeatInterval: 30 }));
+    loop.start();
+    try {
+      expect(loop.isSleeping).toBe(false);
+      expect(() => loop.injectHeartbeat({ reason: "test", allowWake: true })).not.toThrow();
+    } finally {
+      await loop.stop();
+    }
   });
 });
 

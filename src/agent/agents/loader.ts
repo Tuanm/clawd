@@ -547,6 +547,7 @@ const TOOL_ALIASES: Record<string, string> = {
   CronCreate: "schedule_job",
   CronDelete: "schedule_cancel",
   CronList: "schedule_list",
+  ScheduleWakeup: "schedule_wakeup",
   // Message/communication tools
   SendMessage: "reply",
   AskUserQuestion: "reply",
