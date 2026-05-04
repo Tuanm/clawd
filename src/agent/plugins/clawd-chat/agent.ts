@@ -14,6 +14,7 @@ import { setChatApiUrl, setCurrentAgentId, setCurrentChannel } from "../../tools
 import type { ToolPlugin, ToolRegistration } from "../../tools/plugin";
 import { getContextProjectRoot } from "../../utils/agent-context";
 import type { Plugin, PluginContext } from "../manager";
+import { HttpStreamBus, type StreamBus } from "./stream-bus";
 
 // 15 s default — chat plugin calls include streaming setup and file uploads.
 const timedFetch = (url: string, options: RequestInit = {}, ms = 15000): Promise<Response> =>
@@ -32,6 +33,13 @@ export interface ClawdChatConfig {
   isWorker?: boolean;
   /** If true, this agent is a space sub-agent */
   isSpaceAgent?: boolean;
+  /**
+   * Transport for streaming side effects (setStreaming/streamToken/streamToolCall).
+   * Defaults to HttpStreamBus(apiUrl) for backwards-compat. WorkerLoop injects an
+   * InProcessStreamBus when agent + server share a process (directDb path) to
+   * skip the loopback HTTP round-trip.
+   */
+  bus?: StreamBus;
 }
 
 interface ChatMessage {
@@ -76,6 +84,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
   const _summaryGeneratedAt: number | null = null; // When summary was generated
 
   const apiUrl = config.apiUrl.replace(/\/$/, "");
+  const bus: StreamBus = config.bus ?? new HttpStreamBus(apiUrl, timedFetch);
   const _pollIntervalBase = config.pollInterval || 500;
   let _pollIntervalCurrent = _pollIntervalBase;
   const _POLL_INTERVAL_MAX = 3000; // Backoff to 3s when idle
@@ -90,19 +99,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
   // ============================================================================
 
   async function setAgentStreaming(isStreaming: boolean): Promise<void> {
-    try {
-      await timedFetch(`${apiUrl}/api/agent.setStreaming`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agent_id: config.agentId,
-          channel: config.channel,
-          is_streaming: isStreaming,
-        }),
-      });
-    } catch {
-      // Ignore errors
-    }
+    await bus.setStreaming(config.agentId, config.channel, isStreaming);
   }
 
   // Batch token streaming — coalesces tokens and flushes every 50ms instead of per-token HTTP POST
@@ -116,20 +113,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
     const batch = tokenBuffer;
     const batchType = tokenBufferType;
     tokenBuffer = "";
-    try {
-      await timedFetch(`${apiUrl}/api/agent.streamToken`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agent_id: config.agentId,
-          channel: config.channel,
-          token: batch,
-          token_type: batchType,
-        }),
-      });
-    } catch {
-      // Ignore errors - streaming tokens are best-effort
-    }
+    await bus.streamToken(config.agentId, config.channel, batch, batchType);
   }
 
   async function streamToken(token: string, tokenType: "content" | "thinking" | "event" = "content"): Promise<void> {
@@ -180,23 +164,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
     result?: any,
     toolUseId?: string,
   ): Promise<void> {
-    try {
-      await timedFetch(`${apiUrl}/api/agent.streamToolCall`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agent_id: config.agentId,
-          channel: config.channel,
-          tool_name: toolName,
-          tool_args: toolArgs,
-          tool_use_id: toolUseId,
-          status,
-          result,
-        }),
-      });
-    } catch {
-      // Ignore errors - tool call streaming is best-effort
-    }
+    await bus.streamToolCall(config.agentId, config.channel, toolName, toolArgs, status, result, toolUseId);
   }
 
   async function _sendMessage(text: string): Promise<string> {
@@ -528,6 +496,12 @@ ${recentTopics.join("\n")}`;
         if (pollTimer) {
           clearInterval(pollTimer);
           pollTimer = null;
+        }
+        // Cancel any pending 50ms token-batch flush so it can't fire post-shutdown
+        // and emit a ghost partial token onto a torn-down bus.
+        if (tokenFlushTimer) {
+          clearTimeout(tokenFlushTimer);
+          tokenFlushTimer = null;
         }
         // Clear streaming state on shutdown to prevent stale indicators
         // This handles graceful shutdowns (SIGTERM, SIGINT, agent exit)

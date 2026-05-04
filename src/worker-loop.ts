@@ -14,6 +14,7 @@ import { buildAgentSystemPrompt, listAgentFiles, loadAgentFile } from "./agent/a
 import { callContext } from "./agent/api/call-context";
 import { createProvider } from "./agent/api/factory";
 import { type ClawdChatConfig, createClawdChatPlugin, createClawdChatToolPlugin } from "./agent/plugins/clawd-chat";
+import { buildStreamBus } from "./agent/plugins/clawd-chat/stream-bus";
 import { createMemoryPlugin, isMemoryEnabled } from "./agent/plugins/memory-plugin";
 import { createSchedulerToolPlugin } from "./agent/plugins/scheduler-plugin";
 import type { PromptContext } from "./agent/prompt/builder";
@@ -26,7 +27,12 @@ import { smartTruncate } from "./agent/utils/smart-truncation";
 import { loadConfigFile } from "./config/config-file";
 import { db, getAgent, getOrRegisterAgent, markMessagesSeen, setAgentStreaming } from "./server/database";
 import { getPendingMessages, postMessage } from "./server/routes/messages";
-import { broadcastAgentStreaming, broadcastAgentToken, broadcastUpdate } from "./server/websocket";
+import {
+  broadcastAgentStreaming,
+  broadcastAgentToken,
+  broadcastAgentToolCall,
+  broadcastUpdate,
+} from "./server/websocket";
 import type { TrackedSpace } from "./spaces/spawn-plugin";
 import { createLogger } from "./utils/logger";
 import { timedFetch } from "./utils/timed-fetch";
@@ -1752,12 +1758,22 @@ export class WorkerLoop implements AgentWorker {
             agent = new Agent(llmProvider, agentConfig);
             this.activeAgent = agent;
 
-            // Create and register clawd-chat plugin for chat integration
+            // Create and register clawd-chat plugin for chat integration.
+            // When agent + server share a process (directDb path — the default
+            // local case), bypass the localhost loopback for stream events by
+            // injecting an InProcessStreamBus. Remote workers (workerToken set,
+            // directDb=false) keep the HTTP transport via HttpStreamBus default.
             const pluginConfig: ClawdChatConfig = {
               apiUrl: chatApiUrl,
               channel,
               agentId,
               isSpaceAgent: this.config.isSpaceAgent,
+              bus: buildStreamBus(this.config.directDb, {
+                setAgentStreaming,
+                broadcastAgentStreaming,
+                broadcastAgentToken,
+                broadcastAgentToolCall,
+              }),
             };
 
             const plugin = {

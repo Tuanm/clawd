@@ -49,6 +49,7 @@ mock.module("../server/routes/messages", () => ({
 mock.module("../server/websocket", () => ({
   broadcastAgentStreaming: mock(() => {}),
   broadcastAgentToken: mock(() => {}),
+  broadcastAgentToolCall: mock(() => {}),
   broadcastUpdate: mock(() => {}),
 }));
 
