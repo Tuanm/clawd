@@ -1,17 +1,25 @@
 /**
- * tmux-based Job Manager - Persistent Background Task Execution
+ * Detached Job Manager — Persistent Background Tasks Without tmux
  *
- * Uses a dedicated tmux socket so jobs:
- * 1. Survive agent process exit
- * 2. Are isolated from user's normal tmux sessions
- * 3. Can be recovered after restart
+ * Fallback for `TmuxJobManager` on hosts without tmux. Spawns each job as a
+ * detached subprocess whose stdout/stderr go to a log file via numeric fd.
+ * The child is `unref`-ed so the agent can exit without taking it down; on
+ * POSIX it's also moved to its own process group via `detached: true` so we
+ * can later kill the whole tree with `kill(-pid, …)`.
+ *
+ * Implements the same shape as `TmuxJobManager` so callers can swap them.
+ *
+ * NOTE: POSIX-only. Windows support is a separate concern (no tmux there
+ * either, so anything we add must use cmd.exe wrappers — out of scope here).
  */
 
-import { execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmdirSync,
@@ -21,67 +29,40 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { Job, JobStatus } from "./tmux-manager";
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-// Use project-scoped jobs directory via getProjectJobsDir() from tools
-// Falls back to ~/.clawd/jobs for backward compatibility
 function getJobsDir(): string {
-  // Try to use project-scoped directory
   try {
     const { getProjectJobsDir } = require("../tools/definitions");
     return getProjectJobsDir();
   } catch {
-    // Fallback if tools module not loaded yet
     return join(homedir(), ".clawd", "jobs");
   }
 }
 
 let _jobsDir: string | null = null;
 function JOBS_DIR(): string {
-  if (!_jobsDir) {
-    _jobsDir = getJobsDir();
-  }
+  if (!_jobsDir) _jobsDir = getJobsDir();
   return _jobsDir;
 }
-
-function SOCKET_PATH(): string {
-  return join(JOBS_DIR(), "tmux.sock");
-}
-
-const JOB_PREFIX = "clawd-job-";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
-
-export interface Job {
+interface DetachedJobMeta {
   id: string;
   name: string;
   command: string;
-  status: JobStatus;
-  exitCode?: number;
+  pid?: number;
   createdAt: number;
   startedAt?: number;
-  completedAt?: number;
-}
-
-interface JobMeta {
-  id: string;
-  name: string;
-  command: string;
-  createdAt: number;
-  startedAt?: number;
-  /**
-   * Discriminator so the tmux and detached managers can share the jobs dir
-   * without stepping on each other. Legacy meta files predate this field —
-   * absence means "tmux" (this manager's native).
-   */
-  kind?: "tmux" | "detached";
+  /** Marker so `list()` can ignore tmux-flavored job dirs left by another run. */
+  kind: "detached";
 }
 
 // ============================================================================
@@ -90,44 +71,30 @@ interface JobMeta {
 
 function ensureJobsDir(): void {
   const dir = JOBS_DIR();
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
 function getJobDir(id: string): string {
   return join(JOBS_DIR(), id);
 }
 
-function tmuxCmd(args: string): string {
-  return `tmux -S "${SOCKET_PATH()}" ${args}`;
-}
-
-function execTmux(args: string): string {
+/** `kill(pid, 0)` is the POSIX-standard liveness probe. */
+function pidAlive(pid: number): boolean {
   try {
-    return execSync(tmuxCmd(args), { encoding: "utf8", timeout: 5000 }).trim();
-  } catch (_err: unknown) {
-    // tmux returns error if server not running or session not found
-    return "";
+    process.kill(pid, 0);
+    return true;
+  } catch (err: unknown) {
+    // EPERM means the process exists but we don't own it — still alive.
+    if ((err as NodeJS.ErrnoException)?.code === "EPERM") return true;
+    return false;
   }
 }
 
-function sessionExists(sessionName: string): boolean {
-  const result = execTmux(`has-session -t "${sessionName}" 2>/dev/null && echo yes`);
-  return result === "yes";
-}
-
-function _listTmuxSessions(): string[] {
-  const result = execTmux('list-sessions -F "#{session_name}" 2>/dev/null');
-  if (!result) return [];
-  return result.split("\n").filter((s) => s.startsWith(JOB_PREFIX));
-}
-
 // ============================================================================
-// TmuxJobManager
+// DetachedJobManager
 // ============================================================================
 
-export class TmuxJobManager {
+export class DetachedJobManager {
   constructor() {
     ensureJobsDir();
   }
@@ -137,34 +104,34 @@ export class TmuxJobManager {
   // ==========================================================================
 
   submit(name: string, command: string): string {
+    if (process.platform === "win32") {
+      throw new Error("DetachedJobManager does not yet support Windows. Install tmux (WSL/Cygwin) or use foreground bash.");
+    }
     ensureJobsDir();
 
     const id = randomUUID();
-    const sessionName = `${JOB_PREFIX}${id}`;
     const jobDir = getJobDir(id);
     const logFile = join(jobDir, "output.log");
     const metaFile = join(jobDir, "meta.json");
     const exitFile = join(jobDir, "exit_code");
     const scriptFile = join(jobDir, "run.sh");
 
-    // Create job directory
     mkdirSync(jobDir, { recursive: true, mode: 0o700 });
 
-    // Write job metadata
-    const meta: JobMeta = {
+    // Initial meta (pid filled in after spawn)
+    const meta: DetachedJobMeta = {
       id,
       name,
       command,
       createdAt: Date.now(),
       startedAt: Date.now(),
-      kind: "tmux",
+      kind: "detached",
     };
     writeFileSync(metaFile, JSON.stringify(meta, null, 2));
 
-    // Write wrapper script to file (avoids quoting hell)
-    // Use a subshell to capture exit code even if command contains 'exit'
+    // Wrapper records the exit code so `get()` works even after agent restart.
+    // Stdio is redirected via the parent-side fd, so no `exec >` here.
     const scriptContent = `#!/bin/bash
-exec > "${logFile}" 2>&1
 (
 ${command}
 )
@@ -174,18 +141,37 @@ exit $EXIT_CODE
 `;
     writeFileSync(scriptFile, scriptContent, { mode: 0o700 });
 
-    // Start tmux session running the script
+    // Open log fd, hand it to child for stdout+stderr, then close our copy.
+    // The child inherits its own duplicate, so the file keeps growing after
+    // we exit (kernel keeps the inode alive while any fd refers to it).
+    const fd = openSync(logFile, "a");
+    let proc: ReturnType<typeof spawn>;
     try {
-      execSync(tmuxCmd(`new-session -d -s "${sessionName}" "${scriptFile}"`), { encoding: "utf8", timeout: 5000 });
-    } catch (err: unknown) {
-      // Clean up on failure
+      proc = spawn("bash", [scriptFile], {
+        detached: true,
+        stdio: ["ignore", fd, fd],
+      });
+    } finally {
+      closeSync(fd);
+    }
+
+    const pid = proc.pid;
+    if (!pid) {
+      // spawn errored synchronously — clean up so list() doesn't see a stub
       try {
         unlinkSync(metaFile);
         unlinkSync(scriptFile);
+        rmdirSync(jobDir);
       } catch {}
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to start job: ${message}`);
+      throw new Error("Failed to start detached job: spawn returned no pid");
     }
+
+    // Persist pid for cross-restart status checks
+    const finalMeta: DetachedJobMeta = { ...meta, pid };
+    writeFileSync(metaFile, JSON.stringify(finalMeta, null, 2));
+
+    // Detach from event loop so the agent process can exit cleanly
+    proc.unref();
 
     return id;
   }
@@ -197,24 +183,19 @@ exit $EXIT_CODE
   get(id: string): Job | undefined {
     const jobDir = getJobDir(id);
     const metaFile = join(jobDir, "meta.json");
+    if (!existsSync(metaFile)) return undefined;
 
-    if (!existsSync(metaFile)) {
-      return undefined;
-    }
-
-    let meta: JobMeta;
+    let meta: DetachedJobMeta;
     try {
       meta = JSON.parse(readFileSync(metaFile, "utf8"));
     } catch {
       return undefined;
     }
-    // Skip jobs owned by another manager (e.g. detached fallback)
-    if (meta.kind && meta.kind !== "tmux") return undefined;
-    const sessionName = `${JOB_PREFIX}${id}`;
-    const exitFile = join(jobDir, "exit_code");
+    // Skip job dirs created by a different manager (e.g. tmux)
+    if (meta.kind !== "detached") return undefined;
 
-    // Check if tmux session is still running
-    const isRunning = sessionExists(sessionName);
+    const exitFile = join(jobDir, "exit_code");
+    const isRunning = meta.pid != null && pidAlive(meta.pid);
 
     let status: JobStatus;
     let exitCode: number | undefined;
@@ -223,26 +204,18 @@ exit $EXIT_CODE
     if (isRunning) {
       status = "running";
     } else if (existsSync(exitFile)) {
-      const code = parseInt(readFileSync(exitFile, "utf8").trim(), 10);
+      const code = Number.parseInt(readFileSync(exitFile, "utf8").trim(), 10);
       exitCode = code;
-      // -1 indicates cancelled (we write this when cancel() is called)
-      if (code === 0) {
-        status = "completed";
-      } else if (code === -1) {
-        status = "cancelled";
-      } else {
-        status = "failed";
-      }
-
-      // Use file mtime as completion time
+      if (code === 0) status = "completed";
+      else if (code === -1) status = "cancelled";
+      else status = "failed";
       try {
-        const { mtimeMs } = statSync(exitFile);
-        completedAt = mtimeMs;
+        completedAt = statSync(exitFile).mtimeMs;
       } catch {
         completedAt = Date.now();
       }
     } else {
-      // Session ended but no exit code file - probably killed externally
+      // Process is gone but never wrote exit_code — externally killed.
       status = "cancelled";
       completedAt = Date.now();
     }
@@ -265,35 +238,22 @@ exit $EXIT_CODE
 
   list(filter?: { status?: JobStatus; limit?: number }): Job[] {
     ensureJobsDir();
-
     const jobs: Job[] = [];
+    const dir = JOBS_DIR();
+    const entries = existsSync(dir) ? readdirSync(dir) : [];
 
-    // Check both running tmux sessions and job directories on disk
-    const jobsDir = JOBS_DIR();
-    const dirs = existsSync(jobsDir) ? readdirSync(jobsDir) : [];
-
-    for (const entry of dirs) {
+    for (const entry of entries) {
       if (entry === "tmux.sock") continue;
-
-      const metaFile = join(jobsDir, entry, "meta.json");
+      const metaFile = join(dir, entry, "meta.json");
       if (!existsSync(metaFile)) continue;
-
       const job = this.get(entry);
-      if (job) {
-        if (!filter?.status || job.status === filter.status) {
-          jobs.push(job);
-        }
-      }
+      if (!job) continue;
+      if (filter?.status && job.status !== filter.status) continue;
+      jobs.push(job);
     }
 
-    // Sort by creation time (newest first)
     jobs.sort((a, b) => b.createdAt - a.createdAt);
-
-    if (filter?.limit) {
-      return jobs.slice(0, filter.limit);
-    }
-
-    return jobs;
+    return filter?.limit ? jobs.slice(0, filter.limit) : jobs;
   }
 
   // ==========================================================================
@@ -302,21 +262,14 @@ exit $EXIT_CODE
 
   getLogs(id: string, tail?: number): string {
     const logFile = join(getJobDir(id), "output.log");
+    if (!existsSync(logFile)) return "";
 
-    if (!existsSync(logFile)) {
-      return "";
-    }
-
-    if (tail) {
-      try {
-        return execSync(`tail -n ${tail} "${logFile}"`, { encoding: "utf8" });
-      } catch {
-        return "";
-      }
-    }
-
-    const MAX_LOG_BYTES = 100 * 1024; // 100KB cap
     const raw = readFileSync(logFile, "utf8");
+    if (tail) {
+      const lines = raw.split("\n");
+      return lines.slice(-tail).join("\n");
+    }
+    const MAX_LOG_BYTES = 100 * 1024;
     if (raw.length <= MAX_LOG_BYTES) return raw;
     return "[...truncated, showing last 100KB...]\n" + raw.slice(raw.length - MAX_LOG_BYTES);
   }
@@ -326,23 +279,37 @@ exit $EXIT_CODE
   // ==========================================================================
 
   cancel(id: string): boolean {
-    const sessionName = `${JOB_PREFIX}${id}`;
+    const jobDir = getJobDir(id);
+    const metaFile = join(jobDir, "meta.json");
+    if (!existsSync(metaFile)) return false;
 
-    if (!sessionExists(sessionName)) {
-      return false;
-    }
-
+    let meta: DetachedJobMeta;
     try {
-      execTmux(`kill-session -t "${sessionName}"`);
-
-      // Write cancelled marker
-      const exitFile = join(getJobDir(id), "exit_code");
-      writeFileSync(exitFile, "-1"); // Use -1 to indicate cancelled
-
-      return true;
+      meta = JSON.parse(readFileSync(metaFile, "utf8"));
     } catch {
       return false;
     }
+    if (meta.kind !== "detached" || meta.pid == null) return false;
+    if (!pidAlive(meta.pid)) return false;
+
+    // Negative pid sends to the whole process group (set up by detached: true).
+    // Falls back to single-pid kill if the group call fails (unlikely on POSIX).
+    let killed = false;
+    try {
+      process.kill(-meta.pid, "SIGTERM");
+      killed = true;
+    } catch {
+      try {
+        process.kill(meta.pid, "SIGTERM");
+        killed = true;
+      } catch {}
+    }
+
+    if (killed) {
+      // -1 sentinel mirrors TmuxJobManager so `get()` reports "cancelled"
+      writeFileSync(join(jobDir, "exit_code"), "-1");
+    }
+    return killed;
   }
 
   // ==========================================================================
@@ -351,23 +318,16 @@ exit $EXIT_CODE
 
   async waitFor(id: string, timeoutMs: number = 60000): Promise<Job> {
     const startTime = Date.now();
-    const pollInterval = 500; // 500ms
+    const pollInterval = 500;
 
     while (Date.now() - startTime < timeoutMs) {
       const job = this.get(id);
-
-      if (!job) {
-        throw new Error(`Job ${id} not found`);
-      }
-
+      if (!job) throw new Error(`Job ${id} not found`);
       if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
         return job;
       }
-
-      // Wait before polling again
       await new Promise((resolve) => setTimeout(resolve, pollInterval));
     }
-
     throw new Error(`Job ${id} timed out after ${timeoutMs}ms`);
   }
 
@@ -377,64 +337,38 @@ exit $EXIT_CODE
 
   cleanup(maxAgeMs: number = 24 * 60 * 60 * 1000): number {
     ensureJobsDir();
-
     let cleaned = 0;
     const now = Date.now();
+    const dir = JOBS_DIR();
+    const entries = existsSync(dir) ? readdirSync(dir) : [];
 
-    const jobsDirPath = JOBS_DIR();
-    const dirs = existsSync(jobsDirPath) ? readdirSync(jobsDirPath) : [];
-
-    for (const entry of dirs) {
+    for (const entry of entries) {
       if (entry === "tmux.sock") continue;
-
-      const jobDir = join(jobsDirPath, entry);
+      const jobDir = join(dir, entry);
       const metaFile = join(jobDir, "meta.json");
-
       if (!existsSync(metaFile)) continue;
 
       try {
-        const _meta: JobMeta = JSON.parse(readFileSync(metaFile, "utf8"));
+        const meta: DetachedJobMeta = JSON.parse(readFileSync(metaFile, "utf8"));
+        if (meta.kind !== "detached") continue;
         const job = this.get(entry);
-
-        // Only clean up completed/failed/cancelled jobs older than maxAge
         if (job?.completedAt && now - job.completedAt > maxAgeMs) {
-          // Remove job directory
-          const files = readdirSync(jobDir);
-          for (const file of files) {
-            unlinkSync(join(jobDir, file));
-          }
+          for (const file of readdirSync(jobDir)) unlinkSync(join(jobDir, file));
           rmdirSync(jobDir);
           cleaned++;
         }
-      } catch {
-        // Skip problematic entries
-      }
+      } catch {}
     }
-
     return cleaned;
   }
 
   // ==========================================================================
-  // Get Running Jobs (for exit check)
+  // Get Running Jobs
   // ==========================================================================
 
   getRunningJobs(): Job[] {
     return this.list({ status: "running" });
   }
-
-  // ==========================================================================
-  // Kill tmux Server (cleanup)
-  // ==========================================================================
-
-  killServer(): boolean {
-    try {
-      execTmux("kill-server");
-      return true;
-    } catch {
-      return false;
-    }
-  }
 }
 
-// Singleton instance
-export const tmuxJobManager = new TmuxJobManager();
+export const detachedJobManager = new DetachedJobManager();

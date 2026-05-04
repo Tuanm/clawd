@@ -101,14 +101,15 @@ registerTool(
   },
   ["command"],
   async ({ command, timeout = 30000, cwd, description, run_in_background }) => {
-    // Background mode: delegate to tmux (persistent, survives agent exit).
+    // Background mode: tmux when available (persists across agent restart),
+    // otherwise a detached subprocess that survives via setsid + unref.
     // Same policy as foreground — must still block .env and validate cwd.
     if (run_in_background) {
-      if (!isTmuxAvailable()) {
+      if (!isJobBackendAvailable()) {
         return {
           success: false,
           output: "",
-          error: "Background execution requires tmux. Install with: apt install tmux (or brew install tmux on macOS)",
+          error: "Background execution requires tmux on Windows. Install via WSL or run on Mac/Linux.",
         };
       }
       const bgOutcome = await enforceSandboxPolicy({
@@ -120,9 +121,9 @@ registerTool(
         return { success: false, output: "", error: bgOutcome.error };
       }
       try {
-        const { tmuxJobManager } = await import("../jobs/tmux-manager");
+        const backend = await getJobBackend();
         const name = description || command.slice(0, 40).replace(/[^a-zA-Z0-9-_]/g, "_");
-        const jobId = tmuxJobManager.submit(name, bgOutcome.wrapped);
+        const jobId = backend.submit(name, bgOutcome.wrapped);
         return {
           success: true,
           output: `${bgOutcome.notice}Background job started: ${jobId}\nUse job_status(job_id="${jobId}") to check output.`,
@@ -239,14 +240,55 @@ function isTmuxAvailable(): boolean {
   return _tmuxAvailable;
 }
 
-if (isTmuxAvailable()) {
+// ============================================================================
+// Job backend selector (tmux preferred; detached is the POSIX fallback)
+// ============================================================================
+
+/**
+ * Common shape of TmuxJobManager and DetachedJobManager. Both implement this
+ * surface identically so the job_* tools can target either backend without
+ * branching.
+ */
+interface JobBackend {
+  submit(name: string, command: string): string;
+  get(id: string): import("../jobs/tmux-manager").Job | undefined;
+  list(filter?: {
+    status?: import("../jobs/tmux-manager").JobStatus;
+    limit?: number;
+  }): import("../jobs/tmux-manager").Job[];
+  getLogs(id: string, tail?: number): string;
+  cancel(id: string): boolean;
+  waitFor(id: string, timeoutMs?: number): Promise<import("../jobs/tmux-manager").Job>;
+}
+
+/** Whether any background-job backend is usable on this host. */
+function isJobBackendAvailable(): boolean {
+  return isTmuxAvailable() || process.platform !== "win32";
+}
+
+let _jobBackend: JobBackend | null = null;
+async function getJobBackend(): Promise<JobBackend> {
+  if (_jobBackend) return _jobBackend;
+  if (isTmuxAvailable()) {
+    const { tmuxJobManager } = await import("../jobs/tmux-manager");
+    _jobBackend = tmuxJobManager;
+  } else if (process.platform !== "win32") {
+    const { detachedJobManager } = await import("../jobs/detached-manager");
+    _jobBackend = detachedJobManager;
+  } else {
+    throw new Error("No background-job backend available on this platform. Install tmux (Mac/Linux) or run under WSL.");
+  }
+  return _jobBackend;
+}
+
+if (isJobBackendAvailable()) {
   // ============================================================================
-  // Tool: Job Submit (tmux-based, survives agent exit)
+  // Tool: Job Submit (tmux when available, detached subprocess otherwise)
   // ============================================================================
 
   registerTool(
     "job_submit",
-    "Submit a one-off background command (runs in an isolated tmux session). Returns a job ID. For recurring/scheduled tasks, use schedule_job instead.",
+    "Submit a one-off background command. Runs in tmux when available (survives agent restart), otherwise as a detached subprocess (also survives agent exit on POSIX). Returns a job ID. For recurring/scheduled tasks, use schedule_job instead.",
     {
       name: {
         type: "string",
@@ -266,8 +308,8 @@ if (isTmuxAvailable()) {
         return { success: false, output: "", error: outcome.error };
       }
       try {
-        const { tmuxJobManager } = await import("../jobs/tmux-manager");
-        const jobId = tmuxJobManager.submit(name, outcome.wrapped);
+        const backend = await getJobBackend();
+        const jobId = backend.submit(name, outcome.wrapped);
         return {
           success: true,
           output: `${outcome.notice}Job submitted: ${jobId}\nName: ${name}\nUse job_status or job_logs with this ID to check progress.`,
@@ -280,7 +322,7 @@ if (isTmuxAvailable()) {
   );
 
   // ============================================================================
-  // Tool: Job Status (tmux-based)
+  // Tool: Job Status
   // ============================================================================
 
   registerTool(
@@ -300,10 +342,10 @@ if (isTmuxAvailable()) {
     [],
     async ({ job_id, status_filter }) => {
       try {
-        const { tmuxJobManager } = await import("../jobs/tmux-manager");
+        const backend = await getJobBackend();
 
         if (job_id) {
-          const job = tmuxJobManager.get(job_id);
+          const job = backend.get(job_id);
           if (!job) {
             return {
               success: false,
@@ -313,7 +355,7 @@ if (isTmuxAvailable()) {
           }
 
           // Include logs in detailed view
-          const logs = tmuxJobManager.getLogs(job_id, 50);
+          const logs = backend.getLogs(job_id, 50);
           const output = [
             JSON.stringify(job, null, 2),
             "",
@@ -324,7 +366,7 @@ if (isTmuxAvailable()) {
           return { success: true, output };
         }
 
-        const jobs = tmuxJobManager.list({
+        const jobs = backend.list({
           status: status_filter as any,
           limit: 20,
         });
@@ -353,7 +395,7 @@ if (isTmuxAvailable()) {
   );
 
   // ============================================================================
-  // Tool: Job Cancel (tmux-based)
+  // Tool: Job Cancel
   // ============================================================================
 
   registerTool(
@@ -368,9 +410,8 @@ if (isTmuxAvailable()) {
     ["job_id"],
     async ({ job_id }) => {
       try {
-        const { tmuxJobManager } = await import("../jobs/tmux-manager");
-
-        const cancelled = tmuxJobManager.cancel(job_id);
+        const backend = await getJobBackend();
+        const cancelled = backend.cancel(job_id);
 
         if (cancelled) {
           return { success: true, output: `Job ${job_id} cancelled.` };
@@ -389,7 +430,7 @@ if (isTmuxAvailable()) {
   );
 
   // ============================================================================
-  // Tool: Job Wait (tmux-based)
+  // Tool: Job Wait
   // ============================================================================
 
   registerTool(
@@ -408,10 +449,9 @@ if (isTmuxAvailable()) {
     ["job_id"],
     async ({ job_id, timeout_ms = 60000 }) => {
       try {
-        const { tmuxJobManager } = await import("../jobs/tmux-manager");
-
-        const job = await tmuxJobManager.waitFor(job_id, timeout_ms);
-        const logs = tmuxJobManager.getLogs(job_id);
+        const backend = await getJobBackend();
+        const job = await backend.waitFor(job_id, timeout_ms);
+        const logs = backend.getLogs(job_id);
 
         if (job.status === "completed") {
           return {
@@ -441,7 +481,7 @@ if (isTmuxAvailable()) {
   );
 
   // ============================================================================
-  // Tool: Job Logs (tmux-based)
+  // Tool: Job Logs
   // ============================================================================
 
   registerTool(
@@ -460,14 +500,13 @@ if (isTmuxAvailable()) {
     ["job_id"],
     async ({ job_id, tail }) => {
       try {
-        const { tmuxJobManager } = await import("../jobs/tmux-manager");
-
-        const job = tmuxJobManager.get(job_id);
+        const backend = await getJobBackend();
+        const job = backend.get(job_id);
         if (!job) {
           return { success: false, output: "", error: `Job ${job_id} not found` };
         }
 
-        const logs = tmuxJobManager.getLogs(job_id, tail);
+        const logs = backend.getLogs(job_id, tail);
 
         return {
           success: true,
@@ -479,7 +518,7 @@ if (isTmuxAvailable()) {
       }
     },
   );
-} // end if (isTmuxAvailable()) — job tools
+} // end if (isJobBackendAvailable()) — job tools
 
 // ============================================================================
 // Tmux Tools
