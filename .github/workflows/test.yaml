@@ -11,6 +11,8 @@ jobs:
       - run: bun install
       - name: Build UI
         run: bun run build:ui
+      - name: Embed assets (generates src/embedded/*)
+        run: bun run build:embed
       - name: Run tests (isolated)
         run: bun test --isolate
       - name: Build server
