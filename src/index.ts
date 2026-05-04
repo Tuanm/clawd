@@ -373,6 +373,10 @@ function serveStatic(urlPath: string): Response | null {
       return new Response(asset.content, {
         headers: {
           "Content-Type": asset.mimeType,
+          // Suppress the `filename="..."` content-disposition Bun injects when
+          // wrapping a BunFile in Response — old Buffer impl emitted no such
+          // header; this keeps response shape stable across the embed swap.
+          "Content-Disposition": "inline",
           "Cache-Control": isImmutable ? "public, max-age=31536000, immutable" : "no-cache",
           ...corsHeaders,
         },
