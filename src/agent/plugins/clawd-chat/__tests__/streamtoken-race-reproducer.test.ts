@@ -104,9 +104,7 @@ describe("streamToken race (pre-existing in clawd-chat plugin)", () => {
 
     // We assert the corruption so the test is a positive proof:
     expect(flushedBatches).toHaveLength(1);
-    expect(flushedBatches[0]).toEqual(
-      expect.objectContaining({ batch: "c1", type: "content" }),
-    );
+    expect(flushedBatches[0]).toEqual(expect.objectContaining({ batch: "c1", type: "content" }));
     // Pending state shows the corruption.
     expect(tokenBuffer).toBe("c2t1");
     expect(tokenBufferType).toBe("thinking");

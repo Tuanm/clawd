@@ -554,7 +554,7 @@ const server = Bun.serve({
         headers: {
           "Content-Type": "application/zip",
           "Content-Disposition": 'attachment; filename="clawd-browser-extension.zip"',
-          "Content-Length": String(zip.length),
+          "Content-Length": String(zip.size),
         },
       });
     }

@@ -8,10 +8,9 @@
  * - Session ID extraction from system init / result messages
  */
 
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { gunzipSync } from "node:zlib";
 import type {
   HookCallback,
   HookCallbackMatcher,
@@ -345,12 +344,15 @@ function resolveSDKCliPath(): { pathToClaudeCodeExecutable: string } | {} {
   if (existsSync(extractedPath)) return { pathToClaudeCodeExecutable: extractedPath };
 
   // 3. Extract from embedded binary
+  // cliRef resolves to a real path in dev (node_modules/.../cli.js) and to a
+  // virtual `/$bunfs/...` path inside `bun build --compile` binaries. Bun's
+  // fs polyfill makes readFileSync work in both modes. Heap holds the bytes
+  // only transiently — we write them straight to the on-disk extraction path.
   try {
-    const { CLI_JS_GZIP_BASE64 } = require("../embedded/cli");
-    if (CLI_JS_GZIP_BASE64) {
+    const { cliRef } = require("../embedded/cli");
+    if (cliRef) {
       mkdirSync(clawdBinDir, { recursive: true });
-      const compressed = Buffer.from(CLI_JS_GZIP_BASE64, "base64");
-      const raw = gunzipSync(compressed);
+      const raw = readFileSync(cliRef);
       writeFileSync(extractedPath, raw, { mode: 0o755 });
       console.log(
         `[claude-code-sdk] Extracted cli.js to ${extractedPath} (${(raw.length / 1024 / 1024).toFixed(1)}MB)`,
