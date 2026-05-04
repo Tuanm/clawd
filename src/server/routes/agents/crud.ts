@@ -244,10 +244,20 @@ function getGitIndexMtime(gitRoot: string): number {
  * Get the set of git-tracked files for a specific git root.
  * Uses `git ls-files` to get all tracked files, which respects .gitignore.
  * Results are cached per git root, invalidated on `.git/index` mtime change.
+ *
+ * Cache key is the realpath of `gitRoot` so callers passing equivalent paths
+ * (`./repo`, `/foo/./repo`, symlinked aliases) collapse to one entry.
  */
 function getGitTrackedFilesForRoot(gitRoot: string): Set<string> | null {
-  const currentMtime = getGitIndexMtime(gitRoot);
-  const cached = gitignoreCache.get(gitRoot);
+  let cacheKey: string;
+  try {
+    cacheKey = realpathSync(gitRoot);
+  } catch {
+    cacheKey = resolve(gitRoot);
+  }
+
+  const currentMtime = getGitIndexMtime(cacheKey);
+  const cached = gitignoreCache.get(cacheKey);
   // Cache valid only when we have a real mtime (>0) AND it matches what was cached.
   // mtime=0 forces re-run (safe: just slower, never wrong).
   if (cached && currentMtime > 0 && cached.indexMtimeMs === currentMtime) {
@@ -257,7 +267,7 @@ function getGitTrackedFilesForRoot(gitRoot: string): Set<string> | null {
   try {
     // Get list of tracked files
     const output = execSync("git ls-files", {
-      cwd: gitRoot,
+      cwd: cacheKey,
       encoding: "utf-8",
       timeout: 5000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -269,7 +279,7 @@ function getGitTrackedFilesForRoot(gitRoot: string): Set<string> | null {
         .split("\n")
         .filter((f) => f),
     );
-    gitignoreCache.set(gitRoot, { files, indexMtimeMs: currentMtime });
+    gitignoreCache.set(cacheKey, { files, indexMtimeMs: currentMtime });
     return files;
   } catch {
     // Git command failed, return null to fall back to default behavior

@@ -2269,11 +2269,7 @@ export class Agent {
                 try {
                   this.config.onToken?.(event.content!);
                   if (this.plugins) {
-                    // Fire-and-forget: plugin hooks must not block stream consumption
-                    // (token throughput suffers if every token round-trips through awaits).
-                    void this.plugins
-                      .onStreamToken(event.content!)
-                      .catch((err) => logSilentError("plugin.onStreamToken", err));
+                    await this.plugins.onStreamToken(event.content!);
                   }
                 } catch (err) {
                   logSilentError("onToken callback", err);
@@ -2284,9 +2280,7 @@ export class Agent {
                 try {
                   this.config.onThinkingToken?.(event.content!);
                   if (this.plugins) {
-                    void this.plugins
-                      .onThinkingToken(event.content!)
-                      .catch((err) => logSilentError("plugin.onThinkingToken", err));
+                    await this.plugins.onThinkingToken(event.content!);
                   }
                 } catch (err) {
                   logSilentError("onThinkingToken callback", err);
