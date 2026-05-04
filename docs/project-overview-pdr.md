@@ -248,6 +248,7 @@
 - **Once jobs** — One-time execution
 - **Reminders** — Post messages without sub-spaces
 - **Tool calls** — Execute tools directly
+- **Wakeups** — Inject a heartbeat (with reason) into the creator agent's own loop; no sub-space, wakes if sleeping, dropped if mid-turn
 
 **Execution Model:**
 - Tick loop runs every 10 seconds
@@ -360,7 +361,7 @@
 #### FR-7: Scheduler
 - **Requirement**: Schedule and execute automated jobs
 - **Acceptance Criteria**:
-  - Cron, interval, once, reminder, and tool-call job types
+  - Cron, interval, once, reminder, tool-call, and wakeup job types
   - Natural language schedule parser (e.g., "every Monday at 9am")
   - Jobs create sub-spaces for execution
   - 10s tick loop, max 3 concurrent jobs globally
