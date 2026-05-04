@@ -21,10 +21,8 @@
 import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
-  closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readdirSync,
   readFileSync,
   rmdirSync,
@@ -134,7 +132,6 @@ export class DetachedJobManager {
 
     const id = randomUUID();
     const jobDir = getJobDir(id);
-    const logFile = join(jobDir, "output.log");
     const metaFile = join(jobDir, "meta.json");
 
     mkdirSync(jobDir, { recursive: true, mode: 0o700 });
@@ -157,18 +154,31 @@ export class DetachedJobManager {
     let spawnArgs: string[];
     let scriptFiles: string[]; // tracked for cleanup on spawn failure
 
+    // Redirection happens INSIDE the wrapper rather than via fd inheritance:
+    // Bun-on-Windows doesn't reliably duplicate inherited handles, so closing
+    // the parent fd after spawn empties the child's stdio. Letting the wrapper
+    // open its own log handle dodges that and matches what tmux-manager does.
     if (IS_WIN) {
       const wrapperFile = join(jobDir, "run.cmd");
       const userFile = join(jobDir, "user.cmd");
-      // user.cmd holds the actual command. Running it via `cmd /c` isolates a
-      // bare `exit N` to that inner cmd — mirrors how the POSIX wrapper uses
-      // `( … )` to keep `exit` inside a subshell.
-      writeFileSync(userFile, `@echo off\r\n${command}\r\n`, { mode: 0o700 });
+      // The redirect lives inside user.cmd, on the parenthesized block. Two
+      // properties we need at once:
+      //   • `cmd /c .\user.cmd` (in run.cmd) keeps a bare `exit N` from the
+      //     user's command terminating the wrapper — mirrors bash `( … )`.
+      //   • Putting `>output.log` on that `cmd /c` line in run.cmd works
+      //     interactively but the redirect silently drops output when spawned
+      //     with `stdio:"ignore"` (NUL stdio handles). Redirecting from inside
+      //     the inner cmd's own batch dodges that path entirely.
+      writeFileSync(
+        userFile,
+        `@echo off\r\n(\r\n${command}\r\n) >output.log 2>&1\r\n`,
+        { mode: 0o700 },
+      );
       // Use `.\` prefix on every script we hand to cmd.exe — without it,
       // hardened hosts that set `NoDefaultCurrentDirectoryInExePath=1` would
       // make cmd skip the cwd in its resolver and we'd 9009 silently.
-      // Redirection targets (`>exit_code`) are unaffected — they use cwd
-      // directly, not the executable resolver.
+      // Redirection targets (`>exit_code`) use cwd directly, not the
+      // executable resolver, so they're unaffected.
       const wrapperContent =
         `@echo off\r\n` +
         `cmd /c .\\user.cmd\r\n` +
@@ -183,7 +193,9 @@ export class DetachedJobManager {
       const scriptFile = join(jobDir, "run.sh");
       // The POSIX exitFile path is absolute — bash handles spaces via the quotes.
       const exitFileAbs = join(jobDir, "exit_code");
+      const logFileAbs = join(jobDir, "output.log");
       const scriptContent = `#!/bin/bash
+exec > "${logFileAbs}" 2>&1
 (
 ${command}
 )
@@ -197,21 +209,13 @@ exit $EXIT_CODE
       scriptFiles = [scriptFile];
     }
 
-    // Open log fd, hand it to child for stdout+stderr, then close our copy.
-    // The child inherits its own duplicate, so the file keeps growing after
-    // we exit (kernel keeps the inode alive while any fd refers to it).
-    const fd = openSync(logFile, "a");
     let proc: ReturnType<typeof spawn>;
-    try {
-      proc = spawn(spawnCmd, spawnArgs, {
-        detached: true,
-        windowsHide: true,
-        cwd: jobDir,
-        stdio: ["ignore", fd, fd],
-      });
-    } finally {
-      closeSync(fd);
-    }
+    proc = spawn(spawnCmd, spawnArgs, {
+      detached: true,
+      windowsHide: true,
+      cwd: jobDir,
+      stdio: "ignore",
+    });
 
     const pid = proc.pid;
     if (!pid) {
