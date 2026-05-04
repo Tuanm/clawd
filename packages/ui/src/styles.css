@@ -2895,7 +2895,7 @@ body {
   background: hsl(var(--accent) / 10%);
 }
 
-/* Stop / Wake action buttons inside the thinking + hibernate banners */
+/* Stop action button inside the thinking banner */
 .banner-action {
   margin-left: auto;
   appearance: none;
@@ -2937,11 +2937,6 @@ body {
 .banner-action--stop:hover {
   background: hsl(0 70% 50% / 12%);
   border-color: hsl(0 70% 50% / 70%);
-}
-
-.banner-action--wake {
-  color: hsl(var(--accent));
-  border-color: hsl(var(--accent) / 50%);
 }
 
 /* When thinking banner is present, remove top border radius from hibernate banner or composer box */

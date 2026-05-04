@@ -2740,42 +2740,6 @@ export default function App({ channel: initialChannel, articleId }: Props) {
                   <ClawdLogo sleeping={true} />
                 </div>
                 <span>Sleeping...</span>
-                {recentAgents.length > 0 && (
-                  <button
-                    type="button"
-                    className="banner-action banner-action--wake"
-                    onClick={async () => {
-                      const sleeping = recentAgents.filter((a) => a.is_sleeping);
-                      if (sleeping.length === 0) return;
-                      try {
-                        await Promise.all(
-                          sleeping.map((a) =>
-                            authFetch(
-                              `${API_URL}/api/app.agents.update`,
-                              {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                  agent_id: a.agent_id,
-                                  channel: activeChannel,
-                                  sleeping: false,
-                                }),
-                              },
-                              activeChannel,
-                            ),
-                          ),
-                        );
-                        toast.info("Waking agents…");
-                      } catch {
-                        toast.error("Couldn't wake agents. Try again.");
-                      }
-                    }}
-                    title="Wake sleeping agents"
-                    aria-label="Wake sleeping agents"
-                  >
-                    Wake
-                  </button>
-                )}
               </div>
             ) : null
           }
