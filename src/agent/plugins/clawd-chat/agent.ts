@@ -13,6 +13,7 @@ import { timedFetch as _timedFetch } from "../../../utils/timed-fetch";
 import { setChatApiUrl, setCurrentAgentId, setCurrentChannel } from "../../tools/definitions";
 import type { ToolPlugin, ToolRegistration } from "../../tools/plugin";
 import { getContextProjectRoot } from "../../utils/agent-context";
+import { formatMessageBlock } from "../../utils/format-message";
 import type { Plugin, PluginContext } from "../manager";
 import { HttpStreamBus, type StreamBus } from "./stream-bus";
 
@@ -412,10 +413,10 @@ ${recentTopics.join("\n")}`;
         // so the UI shows the agent has acknowledged them
         await markAsSeen(newest.ts);
 
-        // Format all interrupting messages
+        // Format all interrupting messages — XML-wrap so the agent can't be
+        // tricked into mistaking a peer's body text for a different sender.
         const formatted = interruptingMessages
           .map((msg) => {
-            const author = msg.user === "UHUMAN" ? "human" : msg.agent_id || msg.user || "unknown";
             const chatMarker = "\n\n[TRUNCATED — message too long]";
             const truncatedText =
               msg.text && msg.text.length > 10000
@@ -431,7 +432,7 @@ ${recentTopics.join("\n")}`;
                     return msg.text.slice(0, cp) + chatMarker;
                   })()
                 : msg.text || "";
-            return `[ts:${msg.ts}] ${author}: ${truncatedText}`;
+            return formatMessageBlock({ ...msg, text: truncatedText });
           })
           .join("\n\n---\n\n");
 

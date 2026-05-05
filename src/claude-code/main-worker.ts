@@ -25,6 +25,7 @@ import { getSkillSet, improveSkillFromCorrections } from "../agent/skills/improv
 import { getSkillManager } from "../agent/skills/manager";
 import { buildReinjectionPrompt, MAX_REINJECT_ATTEMPTS, sendChatFallback } from "../agent/utils/chat-fallback";
 import { formatAuthor } from "../agent/utils/format-author";
+import { formatMessageBlock } from "../agent/utils/format-message";
 import { loadConfigFile } from "../config/config-file";
 import { db, getAgent, markMessagesSeen, setAgentStreaming } from "../server/database";
 import { getPendingMessages } from "../server/routes/messages";
@@ -1217,15 +1218,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // message (common pattern: human pastes a file with no caption) still
       // needs to be delivered to the agent or the file info is lost.
       if (!text && !hasFiles) continue;
-      const author = formatAuthor(msg);
-      // Surface attachment filenames inline so the agent knows files exist.
-      // To READ the content it still needs to call the attachment tools
-      // (mcp__clawd__query_files / mcp__clawd__download_file / read_image)
-      // — see sectionChat in prompt/builder.ts for guidance.
-      const fileInfo = hasFiles
-        ? `\n[Attached files: ${msg.files.map((f: any) => f.name || "unnamed").join(", ")}]`
-        : "";
-      const line = `[${msg.ts}] ${author}: ${text}${fileInfo}`;
+      // Wrap the message as a sealed XML block with sender attribution. The
+      // body (untrusted text + file list) lives inside CDATA, so an agent
+      // peer cannot spoof a different sender by embedding fake "[ts] human:"
+      // prefixes in their reply text — the wrapper attributes are the source
+      // of truth. See src/agent/utils/format-message.ts.
+      const line = formatMessageBlock(msg);
       const rowId = saveToMemory(this.memorySessionId, "user", line);
       if (rowId !== null) currentTurnRowIds.add(rowId);
     }
@@ -1786,14 +1784,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
 
   /** Format a single message line for prompt building */
   private formatMessageLine(msg: any): string {
-    const user = formatAuthor(msg);
     let text = msg.text || "";
     if (text.length > MAX_MESSAGE_LENGTH) {
       text = text.slice(0, MAX_MESSAGE_LENGTH) + "\n[truncated]";
     }
-    const hasFiles = msg.files && msg.files.length > 0;
-    const fileInfo = hasFiles ? `\n[Attached files: ${msg.files.map((f: any) => f.name || "unnamed").join(", ")}]` : "";
-    return `[${msg.ts}] ${user}: ${text}${fileInfo}`;
+    return formatMessageBlock({ ...msg, text });
   }
 
   /** Format prompt with seen/new differentiation. */

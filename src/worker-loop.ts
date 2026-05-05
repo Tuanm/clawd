@@ -22,6 +22,7 @@ import { runWithAgentContext, setProjectHash, toolDefinitions } from "./agent/to
 import { buildReinjectionPrompt, MAX_REINJECT_ATTEMPTS, sendChatFallback } from "./agent/utils/chat-fallback";
 import { setDebug } from "./agent/utils/debug";
 import { formatAuthor } from "./agent/utils/format-author";
+import { formatMessageBlock } from "./agent/utils/format-message";
 import { initializeSandbox } from "./agent/utils/sandbox";
 import { smartTruncate } from "./agent/utils/smart-truncation";
 import { loadConfigFile } from "./config/config-file";
@@ -1393,12 +1394,8 @@ export class WorkerLoop implements AgentWorker {
       const deduplicated = this.deduplicateMessages(msgs);
       return deduplicated
         .map((m: Message & { _repeatCount?: number }) => {
-          const hasFiles = m.files && m.files.length > 0;
-          const fileInfo = hasFiles ? `\n[Attached files: ${m.files!.map((f) => f.name).join(", ")}]` : "";
-          const author = formatAuthor(m);
           const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
-          const repeatSuffix = (m._repeatCount || 1) > 1 ? ` [×${m._repeatCount} similar messages]` : "";
-          return `[ts:${m.ts}] ${author}: ${text}${fileInfo}${repeatSuffix}`;
+          return formatMessageBlock({ ...m, text });
         })
         .join("\n\n---\n\n");
     };
@@ -1433,12 +1430,8 @@ export class WorkerLoop implements AgentWorker {
 
     const taskMsgs = deduplicated
       .map((m: Message & { _repeatCount?: number }) => {
-        const hasFiles = m.files && m.files.length > 0;
-        const fileInfo = hasFiles ? `\n[Attached files: ${m.files!.map((f) => f.name).join(", ")}]` : "";
-        const author = formatAuthor(m);
         const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
-        const repeatSuffix = (m._repeatCount || 1) > 1 ? ` [×${m._repeatCount} similar messages]` : "";
-        return `[ts:${m.ts}] ${author}: ${text}${fileInfo}${repeatSuffix}`;
+        return formatMessageBlock({ ...m, text });
       })
       .join("\n\n---\n\n");
 
@@ -1469,10 +1462,10 @@ export class WorkerLoop implements AgentWorker {
     const deduplicated = this.deduplicateMessages(unprocessedMessages);
     const messageContext = deduplicated
       .map((m: Message & { _repeatCount?: number }) => {
-        const author = formatAuthor(m);
         const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
-        const repeatSuffix = (m._repeatCount || 1) > 1 ? ` [×${m._repeatCount} similar messages]` : "";
-        return `[ts:${m.ts}] ${author}: ${text}${repeatSuffix}`;
+        // Drop `files` here — continuation prompts historically omit attachments
+        // since the agent already saw the file list on the original turn.
+        return formatMessageBlock({ ...m, text, files: null });
       })
       .join("\n\n---\n\n");
 
@@ -1489,9 +1482,10 @@ export class WorkerLoop implements AgentWorker {
     const { channel } = this.config;
 
     const formatMsg = (m: any) => {
-      const author = formatAuthor(m);
       const text = this.truncateText(m.tool_result ? formatToolResult(m.tool_result) : m.text);
-      return `[ts:${m.ts}] ${author}: ${text}`;
+      // Interrupt prompt historically omits files and repeat counts — keep that
+      // shape so per-message length stays predictable for the half-budget split.
+      return formatMessageBlock({ ...m, text, files: null, _repeatCount: 1 });
     };
 
     // Budget: reserve space for NEW messages first (they're the reason for interrupt),

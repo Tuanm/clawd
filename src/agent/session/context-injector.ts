@@ -9,11 +9,14 @@
  * turn starts fresh while still having access to recent conversation history.
  */
 
+import { parseMessageBlocks } from "../utils/format-message";
 import { getSessionManager, type SessionManager } from "./manager";
 
-// Matches lines formatted by main-worker's formatMessageLine():
-// "[timestamp] username: text"
-// Supports both integer ms timestamps (1705001234567) and dot-notation (1705001234.567890)
+// LEGACY format — pre-XML-wrapper messages stored by main-worker as:
+//   "[timestamp] username: text"
+// Still recognised so historical rows continue to render after the storage
+// format switched to <message from kind ts><![CDATA[...]]></message>.
+// Supports both integer ms (1705001234567) and dot-notation (1705001234.567890).
 const MSG_LINE_RE = /^\[([\d.]+)\]\s+(\S+):\s+(.+)$/;
 
 // ============================================================================
@@ -162,30 +165,51 @@ function expandMessage(
     }
   }
 
-  for (const raw of trimmed.split("\n")) {
-    const line = raw.trim();
-    const match = MSG_LINE_RE.exec(line);
-    if (!match) continue;
-    const [, ts, sender, text] = match;
-
-    // Deduplicate: skip lines whose timestamp+sender was already emitted from a
-    // prior turn's prompt (happens when a message is seen-but-not-processed
-    // and carried into the next poll's prompt).
-    // Composite key on ts+sender prevents same-ms messages from different
-    // agents in multi-agent channels silently dropping one another.
-    const dedupKey = `${ts}:${sender}`;
+  // First try the new XML-wrapper format. A single row may contain one or
+  // more <message from kind ts><![CDATA[...]]></message> blocks. When any are
+  // found we skip the legacy per-line scan — main-worker writes one format
+  // per row, so a row is either entirely wrapped or entirely legacy.
+  let formatRecognized = false;
+  for (const block of parseMessageBlocks(trimmed)) {
+    formatRecognized = true;
+    const dedupKey = `${block.ts}:${block.from}`;
     if (seenTimestamps.has(dedupKey)) continue;
     seenTimestamps.add(dedupKey);
-
-    const snippet = text.replace(/\[truncated\]$/, "").trim();
+    const snippet = block.body.replace(/\[truncated\]$/, "").trim();
     if (!snippet) continue;
-    const label = sender === "human" ? "human" : sender;
-    extracted.push(`[${ts}] ${label}: ${snippet}`);
+    extracted.push(`[${block.ts}] ${block.from}: ${snippet}`);
+  }
+
+  if (!formatRecognized) {
+    for (const raw of trimmed.split("\n")) {
+      const line = raw.trim();
+      const match = MSG_LINE_RE.exec(line);
+      if (!match) continue;
+      formatRecognized = true;
+      const [, ts, sender, text] = match;
+
+      // Deduplicate: skip lines whose timestamp+sender was already emitted from a
+      // prior turn's prompt (happens when a message is seen-but-not-processed
+      // and carried into the next poll's prompt).
+      // Composite key on ts+sender prevents same-ms messages from different
+      // agents in multi-agent channels silently dropping one another.
+      const dedupKey = `${ts}:${sender}`;
+      if (seenTimestamps.has(dedupKey)) continue;
+      seenTimestamps.add(dedupKey);
+
+      const snippet = text.replace(/\[truncated\]$/, "").trim();
+      if (!snippet) continue;
+      const label = sender === "human" ? "human" : sender;
+      extracted.push(`[${ts}] ${label}: ${snippet}`);
+    }
   }
 
   // Fallback for plain-text content (no formatted lines found) — used by
   // non-CC callers and tests that store raw text rather than formatted prompts.
-  if (extracted.length === 0) {
+  // Gated on !formatRecognized so a row containing recognised wrappers/lines
+  // that all got dedup'd does NOT dump its raw XML as a "[Human]:" line —
+  // that would re-promote the wrapper text as a synthetic human turn.
+  if (extracted.length === 0 && !formatRecognized) {
     return [`[Human]: ${trimmed}`];
   }
 
