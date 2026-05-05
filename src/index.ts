@@ -41,6 +41,7 @@ import { upgradeRemoteWorkerWs } from "./server/remote-worker";
 import { registerAgentRoutes } from "./server/routes/agents";
 import { registerArticleRoutes } from "./server/routes/articles";
 import { getPublicOrigin, registerMcpServerRoutes } from "./server/routes/mcp-servers";
+import { registerMemosRoutes } from "./server/routes/memos";
 import { registerSchedulerRoutes } from "./server/routes/scheduler";
 import { registerWorktreeRoutes } from "./server/routes/worktree";
 import { validateBody } from "./server/validate";
@@ -298,6 +299,9 @@ const handleArticleRoute = registerArticleRoutes(db);
 
 // Register scheduler management API routes
 const handleSchedulerRoute = registerSchedulerRoutes(scheduler);
+
+// Register memos viewer API routes (read-only)
+const handleMemosRoute = registerMemosRoutes();
 
 // Register worktree management API routes
 const handleWorktreeRoute = registerWorktreeRoutes(workerManager);
@@ -631,6 +635,10 @@ async function handleRequest(req: Request, url?: URL, path?: string, bunServer?:
     // Scheduler management routes
     const schedulerResponse = handleSchedulerRoute(req, url, path);
     if (schedulerResponse) return schedulerResponse;
+
+    // Memos viewer routes (read-only)
+    const memosResponse = handleMemosRoute(req, url, path);
+    if (memosResponse) return memosResponse;
 
     // Worktree management routes
     const worktreeResponse = handleWorktreeRoute(req, url, path);

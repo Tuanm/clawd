@@ -13,6 +13,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import EmptyChannelState from "./EmptyChannelState";
 import InputDialog from "./InputDialog";
 import McpDialog, { McpIcon } from "./McpDialog";
+import MemosDialog from "./MemosDialog";
 import MessageComposer from "./MessageComposer";
 import MessageList, { reinitializeMermaid, StreamOutputDialog } from "./MessageList";
 import TodoDialog from "./PlanModal";
@@ -624,6 +625,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const [worktreeEnabled, setWorktreeEnabled] = useState(false);
   const [showSkillsDialog, setShowSkillsDialog] = useState(false);
   const [showSchedulerDialog, setShowSchedulerDialog] = useState(false);
+  const [showMemosDialog, setShowMemosDialog] = useState(false);
   const [schedulerRefreshTick, setSchedulerRefreshTick] = useState(0);
   const [jumpToMessageTs, setJumpToMessageTs] = useState<string | null>(null);
   const [activeSubAgents, setActiveSubAgents] = useState<ActiveSubAgent[]>([]);
@@ -2809,6 +2811,25 @@ export default function App({ channel: initialChannel, articleId }: Props) {
               </button>
             ) : undefined
           }
+          memosButton={
+            !isSpaceChannel && activeAgents.length > 0 ? (
+              <button className="memos-btn" onClick={() => setShowMemosDialog(true)} title="Memos">
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                </svg>
+              </button>
+            ) : undefined
+          }
           worktreeButton={
             !isSpaceChannel && worktreeEnabled && activeAgents.length > 0 ? (
               <button className="worktree-btn" onClick={() => setShowWorktreeDialog(true)} title="Git">
@@ -2907,6 +2928,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
         onClose={() => setShowSchedulerDialog(false)}
         refreshTick={schedulerRefreshTick}
       />
+      <MemosDialog channel={activeChannel} isOpen={showMemosDialog} onClose={() => setShowMemosDialog(false)} />
       <ProjectsDialog
         channel={activeChannel}
         isOpen={showProjectsDialog}

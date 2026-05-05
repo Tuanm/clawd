@@ -6447,6 +6447,118 @@ textarea {
   max-height: 75vh;
 }
 
+/* Memos dialog (read-only viewer) */
+.memos-dialog {
+  width: min(92vw, 720px);
+  max-height: 75vh;
+}
+
+.memos-dialog-search {
+  padding: 8px 20px 0;
+}
+
+.memos-dialog-body {
+  flex: 1;
+  overflow: hidden;
+  padding: 12px 20px 16px;
+  font-family: Lato, sans-serif;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.memos-cards-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.memo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--text) / 8%);
+  border-radius: 8px;
+  background: hsl(var(--text) / 2%);
+}
+
+.memo-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.memo-category {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: hsl(var(--text) / 8%);
+  color: hsl(var(--text) / 70%);
+}
+
+.memo-category--fact {
+  background: hsl(210 70% 55% / 18%);
+  color: hsl(210 70% 50%);
+}
+.memo-category--preference {
+  background: hsl(280 60% 55% / 18%);
+  color: hsl(280 60% 50%);
+}
+.memo-category--decision {
+  background: hsl(150 55% 45% / 18%);
+  color: hsl(150 55% 40%);
+}
+.memo-category--lesson {
+  background: hsl(40 80% 55% / 22%);
+  color: hsl(35 75% 45%);
+}
+.memo-category--correction {
+  background: hsl(0 70% 55% / 18%);
+  color: hsl(0 70% 50%);
+}
+
+.memo-pin {
+  color: hsl(40 90% 55%);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.memo-meta {
+  margin-left: auto;
+  color: hsl(var(--text) / 45%);
+  font-size: 11px;
+}
+
+.memo-card-content {
+  font-size: 13px;
+  line-height: 1.45;
+  color: hsl(var(--text) / 90%);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.memo-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.memo-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: hsl(var(--text) / 6%);
+  color: hsl(var(--text) / 55%);
+}
+
 .skills-dialog-body {
   flex: 1;
   overflow: hidden;

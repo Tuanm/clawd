@@ -62,6 +62,7 @@ interface Props {
   mcpButton?: React.ReactNode;
   skillsButton?: React.ReactNode;
   schedulerButton?: React.ReactNode;
+  memosButton?: React.ReactNode;
   worktreeButton?: React.ReactNode;
   onPlanClick?: () => void;
   theme: "light" | "dark";
@@ -260,6 +261,7 @@ export default function MessageComposer({
   mcpButton,
   skillsButton,
   schedulerButton,
+  memosButton,
   worktreeButton,
   onPlanClick,
   theme,
@@ -676,6 +678,7 @@ export default function MessageComposer({
               mcpButton ||
               skillsButton ||
               schedulerButton ||
+              memosButton ||
               onPlanClick) && (
               <>
                 <div className="toolbar-divider" />
@@ -686,6 +689,7 @@ export default function MessageComposer({
                   {mcpButton}
                   {skillsButton}
                   {schedulerButton}
+                  {memosButton}
                   {onPlanClick && (
                     <button className="plan-btn" onClick={onPlanClick} title="Tasks">
                       <svg
@@ -868,6 +872,7 @@ export default function MessageComposer({
                 mcpButton ||
                 skillsButton ||
                 schedulerButton ||
+                memosButton ||
                 worktreeButton ||
                 onPlanClick) && (
                 <IconButtonRow>
@@ -877,6 +882,7 @@ export default function MessageComposer({
                   {mcpButton}
                   {skillsButton}
                   {schedulerButton}
+                  {memosButton}
                   {onPlanClick && (
                     <button className="plan-btn" onClick={onPlanClick} title="Tasks">
                       <svg
