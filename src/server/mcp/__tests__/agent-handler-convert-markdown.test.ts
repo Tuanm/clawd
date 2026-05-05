@@ -23,6 +23,7 @@ mock.module("../../database", () => ({
   markMessagesSeen: () => {},
   toSlackMessage: (m: unknown) => m,
   preparedStatements: {},
+  writeLastProcessed: () => null,
 }));
 
 mock.module("../../routes/messages", () => ({

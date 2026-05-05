@@ -17,6 +17,7 @@ import {
   setAgentSleeping,
   setAgentStreaming,
   toSlackMessage,
+  writeLastProcessed,
 } from "../../database";
 import { json, numParam, parseBody } from "../../http-helpers";
 import { validateBody } from "../../validate";
@@ -130,26 +131,26 @@ export async function handleAgentStatusRoutes(req: Request, url: URL, path: stri
     const body = await parseBody(req);
     const agentId = body.agent_id || "default";
     const channel = body.channel || "general";
-    const lastProcessedTs = body.last_processed_ts;
-    if (!lastProcessedTs) return json({ ok: false, error: "last_processed_ts required" }, 400);
-
-    db.run(
-      `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
-       VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-       ON CONFLICT(agent_id, channel) DO UPDATE SET
-       last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), excluded.last_processed_ts), updated_at = excluded.updated_at`,
-      [agentId, channel, lastProcessedTs, lastProcessedTs],
-    );
+    const normalized = writeLastProcessed(agentId, channel, body.last_processed_ts);
+    if (!normalized) {
+      return json(
+        {
+          ok: false,
+          error: "last_processed_ts must be a numeric epoch string (e.g. '1777951220.156497')",
+        },
+        400,
+      );
+    }
     broadcastUpdate(channel, {
       type: "agent_processed",
       agent_id: agentId,
-      last_processed_ts: lastProcessedTs,
+      last_processed_ts: normalized,
     });
     return json({
       ok: true,
       agent_id: agentId,
       channel,
-      last_processed_ts: lastProcessedTs,
+      last_processed_ts: normalized,
     });
   }
 
@@ -248,28 +249,27 @@ export async function handleAgentStatusRoutes(req: Request, url: URL, path: stri
     const body = await parseBody(req);
     const agentId = body.agent_id || "default";
     const channel = body.channel || "general";
-    const lastProcessedTs = body.last_processed_ts ?? null;
-    if (!lastProcessedTs) return json({ ok: false, error: "last_processed_ts required" }, 400);
-
     getOrRegisterAgent(agentId, channel);
-    db.run(
-      `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
-       VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-       ON CONFLICT(agent_id, channel) DO UPDATE SET
-         last_processed_ts = excluded.last_processed_ts,
-         updated_at = strftime('%s', 'now')`,
-      [agentId, channel, lastProcessedTs, lastProcessedTs],
-    );
+    const normalized = writeLastProcessed(agentId, channel, body.last_processed_ts);
+    if (!normalized) {
+      return json(
+        {
+          ok: false,
+          error: "last_processed_ts must be a numeric epoch string (e.g. '1777951220.156497')",
+        },
+        400,
+      );
+    }
     broadcastUpdate(channel, {
       type: "agent_processed",
       agent_id: agentId,
-      last_processed_ts: lastProcessedTs,
+      last_processed_ts: normalized,
     });
     return json({
       ok: true,
       agent_id: agentId,
       channel,
-      last_processed_ts: lastProcessedTs,
+      last_processed_ts: normalized,
     });
   }
 

@@ -50,6 +50,7 @@ mock.module("../../database", () => {
     getMessageSeenBy: () => [],
     markMessagesSeen: () => {},
     toSlackMessage: (m: any) => m,
+    writeLastProcessed: () => null,
   };
 });
 

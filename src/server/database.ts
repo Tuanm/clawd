@@ -1256,6 +1256,44 @@ function getMarkSeenStmt() {
   return _markSeenStmt;
 }
 
+/**
+ * Write `last_processed_ts` for an agent/channel with format validation
+ * and a numeric no-regression guard.
+ *
+ * Returns the normalized epoch string on success, or null when `rawTs` is not
+ * a numeric epoch (no DB write happens in that case).
+ *
+ * Why strict format: pollack and the messages.pending filter compare ts
+ * lexicographically against TEXT columns. An ISO date like
+ * "2026-05-05T12:00:00.000Z" lex-sorts ABOVE every current numeric epoch,
+ * so once it lands in the row every new message looks "already processed"
+ * and the agent silently stalls.
+ *
+ * Why CAST-based MAX (not lex MAX): if the existing row is corrupt
+ * (non-numeric), CAST(... AS REAL) yields the leading-digit prefix or 0,
+ * and any current epoch (~1.78e9) exceeds it — the corrupt row self-heals
+ * on the next valid write.
+ */
+export function writeLastProcessed(agentId: string, channel: string, rawTs: unknown): string | null {
+  if (rawTs === null || rawTs === undefined || rawTs === "") return null;
+  const ts = String(rawTs);
+  if (!/^\d+(\.\d+)?$/.test(ts)) return null;
+
+  db.run(
+    `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+     VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+     ON CONFLICT(agent_id, channel) DO UPDATE SET
+       last_processed_ts = CASE
+         WHEN CAST(excluded.last_processed_ts AS REAL) > CAST(COALESCE(last_processed_ts, '0') AS REAL)
+         THEN excluded.last_processed_ts
+         ELSE last_processed_ts
+       END,
+       updated_at = strftime('%s', 'now')`,
+    [agentId, channel, ts, ts],
+  );
+  return ts;
+}
+
 export function markMessagesSeen(channel: string, agentId: string, messageTsList: string[]): string[] {
   if (messageTsList.length === 0) return [];
 

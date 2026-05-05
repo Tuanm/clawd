@@ -14,6 +14,7 @@ import {
   type Message,
   markMessagesSeen,
   toSlackMessage,
+  writeLastProcessed,
 } from "../database";
 import { analyzeImage, analyzeVideo, editImage, generateImage, getImageQuotaStatus } from "../multimodal";
 import { getOptimizedFile } from "../routes/files";
@@ -295,17 +296,15 @@ export async function executeToolCall(
         }
 
         // Mark human message as processed (folded from chat_mark_processed).
+        // `processedTs` is agent-controlled — agents have historically passed
+        // ISO date strings here, which lex-sort above every numeric epoch and
+        // make every subsequent message look "already processed".
+        // writeLastProcessed rejects non-numeric input and uses CAST-based MAX.
         let lastProcessedTs: string | undefined;
         if (processedTs) {
           const seenAgent = agentId || "default";
-          db.run(
-            `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
-             VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-             ON CONFLICT(agent_id, channel) DO UPDATE SET
-             last_processed_ts = MAX(COALESCE(last_processed_ts, '0'), excluded.last_processed_ts), updated_at = excluded.updated_at`,
-            [seenAgent, channel, processedTs, processedTs],
-          );
-          lastProcessedTs = processedTs;
+          const normalized = writeLastProcessed(seenAgent, channel, processedTs);
+          if (normalized) lastProcessedTs = normalized;
         }
 
         if (silent) {

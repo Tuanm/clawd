@@ -57,6 +57,24 @@ mock.module("../../database", () => {
     getMessageSeenBy: () => [],
     markMessagesSeen: () => {},
     toSlackMessage: (m: any) => m,
+    writeLastProcessed: (agentId: string, channel: string, rawTs: unknown): string | null => {
+      if (rawTs === null || rawTs === undefined || rawTs === "") return null;
+      const ts = String(rawTs);
+      if (!/^\d+(\.\d+)?$/.test(ts)) return null;
+      memDb.run(
+        `INSERT INTO agent_seen (agent_id, channel, last_seen_ts, last_processed_ts, updated_at)
+         VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+         ON CONFLICT(agent_id, channel) DO UPDATE SET
+           last_processed_ts = CASE
+             WHEN CAST(excluded.last_processed_ts AS REAL) > CAST(COALESCE(last_processed_ts, '0') AS REAL)
+             THEN excluded.last_processed_ts
+             ELSE last_processed_ts
+           END,
+           updated_at = strftime('%s', 'now')`,
+        [agentId, channel, ts, ts],
+      );
+      return ts;
+    },
   };
 });
 
