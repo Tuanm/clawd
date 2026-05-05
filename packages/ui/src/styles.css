@@ -10552,46 +10552,6 @@ body,
   gap: 8px;
 }
 
-/* ===== EmptyChannelState ===== */
-.empty-channel-state {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 40px 20px;
-  text-align: center;
-  color: hsl(var(--text) / 75%);
-}
-
-.empty-channel-state-btn {
-  padding: 8px 14px;
-  border-radius: 6px;
-  border: 1px solid hsl(var(--accent));
-  background: transparent;
-  color: hsl(var(--accent));
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background 0.12s ease,
-    color 0.12s ease;
-}
-
-.empty-channel-state-btn:hover {
-  background: hsl(var(--accent));
-  color: #fff;
-}
-
-.empty-channel-state-btn--primary {
-  background: hsl(var(--accent));
-  color: #fff;
-}
-
-.empty-channel-state-btn--primary:hover {
-  background: hsl(15 63.1% 53%);
-}
-
 /* ==========================================================================
    GLOBAL prefers-reduced-motion — disables ALL keyframe animations
    (the earlier targeted block at ~9425 only covers `transition`).

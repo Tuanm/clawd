@@ -10,7 +10,6 @@ import {
   setChannelToken,
 } from "./auth-fetch";
 import ConfirmDialog from "./ConfirmDialog";
-import EmptyChannelState from "./EmptyChannelState";
 import InputDialog from "./InputDialog";
 import McpDialog, { McpIcon } from "./McpDialog";
 import MemosDialog from "./MemosDialog";
@@ -620,6 +619,9 @@ export default function App({ channel: initialChannel, articleId }: Props) {
   const [spaceError, setSpaceError] = useState(false);
   const isSpaceLocked = spaceInfo != null && spaceInfo.status !== "active";
   const [showAgentDialog, setShowAgentDialog] = useState(false);
+  // Tracks channels we've already auto-opened the agents dialog for, so we
+  // don't keep re-opening it after the user closes it.
+  const autoOpenedAgentDialogRef = useRef<Set<string>>(new Set());
   const [showMcpDialog, setShowMcpDialog] = useState(false);
   const [showWorktreeDialog, setShowWorktreeDialog] = useState(false);
   const [worktreeEnabled, setWorktreeEnabled] = useState(false);
@@ -783,8 +785,8 @@ export default function App({ channel: initialChannel, articleId }: Props) {
     fetchAllChannelAgents();
   }, [showChannelDialog, openChannels]);
 
-  // Fetch agents for the active channel so EmptyChannelState can decide whether
-  // to show the "Add an agent" CTA. Cheap and runs once per channel switch.
+  // Fetch agents for the active channel so the channel-list dialog can show
+  // who's around. Cheap and runs once per channel switch.
   useEffect(() => {
     if (isArticleMode) return;
     if (!activeChannel) return;
@@ -810,6 +812,26 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       cancelled = true;
     };
   }, [activeChannel, isArticleMode]);
+
+  // Auto-open the Agents dialog the first time a user lands on an empty,
+  // loaded, regular channel. Re-opening is suppressed once they close it.
+  useEffect(() => {
+    if (isArticleMode || isSpaceChannel || isManagementChannel) return;
+    if (!activeChannel) return;
+    if (!currentState.loaded) return;
+    if (messages.length > 0 || pendingMessages.length > 0) return;
+    if (autoOpenedAgentDialogRef.current.has(activeChannel)) return;
+    autoOpenedAgentDialogRef.current.add(activeChannel);
+    setShowAgentDialog(true);
+  }, [
+    activeChannel,
+    currentState.loaded,
+    messages.length,
+    pendingMessages.length,
+    isArticleMode,
+    isSpaceChannel,
+    isManagementChannel,
+  ]);
 
   // Add current channel to stored list on mount (skip space channels and article mode)
   useEffect(() => {
@@ -2615,43 +2637,37 @@ export default function App({ channel: initialChannel, articleId }: Props) {
       ) : (
         <>
           <div className="messages-wrapper">
-            {messages.length === 0 && pendingMessages.length === 0 && channelStates.get(activeChannel)?.loaded ? (
-              <div className="messages">
-                <EmptyChannelState onGetStarted={() => setShowAgentDialog(true)} />
-              </div>
-            ) : (
-              <MessageList
-                messages={messages}
-                pendingMessages={pendingMessages}
-                agentLastSeenTs={agentLastSeenTs}
-                userLastSeenTs={userLastSeenTs}
-                channel={activeChannel}
-                agentSleeping={isOffline && streamingAgents.length === 0}
-                streamingAgentIds={streamingAgents.map((a) => a.agentId)}
-                hasMoreOlder={hasMoreOlder}
-                hasMoreNewer={hasMoreNewer}
-                loadingOlder={loadingOlder}
-                loadingNewer={loadingNewer}
-                isAtLatest={isAtLatest}
-                onLoadOlder={loadOlderMessages}
-                onLoadNewer={loadNewerMessages}
-                onJumpToMessage={jumpToMessage}
-                onJumpToLatest={jumpToLatest}
-                onMarkSeen={handleMarkSeen}
-                channelKey={activeChannel}
-                jumpToMessageTs={jumpToMessageTs}
-                onJumpComplete={() => setJumpToMessageTs(null)}
-                onRetryMessage={(msg) => {
-                  const { text, files } = retryMessage(msg);
-                  // Dispatch event to populate composer with failed message content
-                  window.dispatchEvent(new CustomEvent("restore-draft", { detail: { text, files } }));
-                }}
-                onScrollAtBottomChange={setIsActiveChannelAtBottom}
-                hasActiveChannelUnread={hasActiveChannelUnread}
-                onOpenSidebar={openSidebar}
-                isArticleMode={isArticleMode}
-              />
-            )}
+            <MessageList
+              messages={messages}
+              pendingMessages={pendingMessages}
+              agentLastSeenTs={agentLastSeenTs}
+              userLastSeenTs={userLastSeenTs}
+              channel={activeChannel}
+              agentSleeping={isOffline && streamingAgents.length === 0}
+              streamingAgentIds={streamingAgents.map((a) => a.agentId)}
+              hasMoreOlder={hasMoreOlder}
+              hasMoreNewer={hasMoreNewer}
+              loadingOlder={loadingOlder}
+              loadingNewer={loadingNewer}
+              isAtLatest={isAtLatest}
+              onLoadOlder={loadOlderMessages}
+              onLoadNewer={loadNewerMessages}
+              onJumpToMessage={jumpToMessage}
+              onJumpToLatest={jumpToLatest}
+              onMarkSeen={handleMarkSeen}
+              channelKey={activeChannel}
+              jumpToMessageTs={jumpToMessageTs}
+              onJumpComplete={() => setJumpToMessageTs(null)}
+              onRetryMessage={(msg) => {
+                const { text, files } = retryMessage(msg);
+                // Dispatch event to populate composer with failed message content
+                window.dispatchEvent(new CustomEvent("restore-draft", { detail: { text, files } }));
+              }}
+              onScrollAtBottomChange={setIsActiveChannelAtBottom}
+              hasActiveChannelUnread={hasActiveChannelUnread}
+              onOpenSidebar={openSidebar}
+              isArticleMode={isArticleMode}
+            />
           </div>
           {sidebarContent && (
             <SidebarPanel
