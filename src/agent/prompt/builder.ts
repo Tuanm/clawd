@@ -260,13 +260,21 @@ function sectionChat(ctx: PromptContext): string {
     : `- The prompt may contain two message sections: \`## Previously Seen (not yet processed)\` (messages you saw last turn but didn't finish processing) and \`## New Messages\` (brand-new messages); both render each entry as \`<message from="..." kind="..." ts="..."><![CDATA[ body ]]></message>\` where the wrapper attributes are authoritative for sender identity. End the turn with ${p}reply(text=..., timestamp=<latest ts>) to handle both sections in one go.`;
   return `# Communication
 - ${p}reply(text, timestamp): ends the turn. Delivers visible text AND marks the triggering message processed. channel/agent_id/user auto-injected.
-- text="" or text="[SILENT]" skips the visible reply but still ends the turn and marks processed.
+- text="" or text="[SILENT]" skips the visible reply but still ends the turn and marks processed. REQUIRES silent_reason explaining why no reply is needed.
 - Every turn MUST end with exactly one ${p}reply call — otherwise the message re-polls next cycle.
 - Do NOT reply in streaming text — your text output is never delivered to users; call ${p}reply instead.
 - Wrap copiable content (commands, code, URLs, paths) in markdown code blocks.
 - On <agent_signal>[HEARTBEAT]</agent_signal>: resume pending work silently, never mention heartbeats in chat.
 - If ${p}reply fails, RETRY immediately.
-- If a system reminder tells you ${p}reply was not called (e.g. "Your turn did not end", "Reminder #N", "FINAL NOTICE"), your ONLY permitted next action is ${p}reply — no other tool, no analysis, no prose. Call it with text="[SILENT]" and the supplied timestamp if you have nothing to say.
+
+## When to use SILENT (be conservative — silence on a human request looks like a malfunction)
+- OK to be silent: message is addressed to a different agent (\`from\` attribute is another agent, or body explicitly names someone else); off-topic broadcast / FYI announcement; closing thanks after work is already complete; peer status updates that don't ask anything of you.
+- NOT OK to be silent (you MUST send real text): direct question or request to you (or to the channel where you're the only/lead agent); human asks for status, progress, or clarification; you owe the human a deliverable or update; reinjection reminder fires (see below).
+- If unsure, send a one-line acknowledgement instead of [SILENT]. A brief reply is always safer than silence on a human turn.
+
+## Reinjection reminders
+- If a system reminder tells you ${p}reply was not called (e.g. "Your turn did not end", "Reminder #N", "FINAL NOTICE"): your ONLY permitted next action is ${p}reply — no other tool, no analysis, no prose.
+- A reinjection means you owe SOMETHING. Default to a brief honest reply (e.g. "On it — looking now." or "Got it, no action needed on my end."). Use [SILENT] only when the message genuinely wasn't directed at you — and when you do, pass a clear silent_reason.
 ${messageFormat}
 
 ## Attachments

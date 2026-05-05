@@ -237,6 +237,11 @@ export class WorkerLoop implements AgentWorker {
   // in reminder prompts.
   private lastPendingTs: string = "";
 
+  // True if the currently-processing turn has at least one pending message
+  // from UHUMAN. Threaded into the re-injection loop so reminder prompts can
+  // steer the agent away from [SILENT] on human-triggered turns.
+  private lastPendingHasHuman: boolean = false;
+
   constructor(config: WorkerLoopConfig) {
     this.config = config;
   }
@@ -796,6 +801,7 @@ export class WorkerLoop implements AgentWorker {
 
             // Expose triggering-message ts to executePrompt's internal re-injection loop.
             this.lastPendingTs = result.pending[result.pending.length - 1]?.ts || "";
+            this.lastPendingHasHuman = result.pending.some((m: any) => m.user === "UHUMAN");
             const execResult = await this.executePrompt(prompt, this.sessionName);
             lastExecHadUnsentText = !execResult.chatSent && execResult.hadStreamText;
 
@@ -901,6 +907,9 @@ export class WorkerLoop implements AgentWorker {
                   (wlResumeInterruptMsgs[wlResumeInterruptMsgs.length - 1] as any)?.ts ||
                   (wlResumeProcessingMsgs[wlResumeProcessingMsgs.length - 1] as any)?.ts ||
                   "";
+                this.lastPendingHasHuman =
+                  wlResumeInterruptMsgs.some((m: any) => m.user === "UHUMAN") ||
+                  wlResumeProcessingMsgs.some((m: any) => m.user === "UHUMAN");
                 const resumeResult = await this.executePrompt(interruptPrompt, this.sessionName);
                 wlLastExecHadUnsentText = !resumeResult.chatSent && resumeResult.hadStreamText;
                 const output = resumeResult.output || "";
@@ -1876,12 +1885,14 @@ export class WorkerLoop implements AgentWorker {
               const lastTs = this.lastPendingTs || "latest";
               let lastReinjContent = "";
 
+              const triggeringIsHuman = this.lastPendingHasHuman;
               for (let attempt = 1; attempt <= MAX_REINJECT_ATTEMPTS && !turnReplyHuman; attempt++) {
                 if (!this.running || this.wasCancelledByHeartbeat) break;
                 const reinjectionPrompt = buildReinjectionPrompt(attempt, {
                   toolName: "reply",
                   lastTs,
                   hadText: hadText || lastReinjContent.trim().length > 0,
+                  triggeringIsHuman,
                 });
                 try {
                   const reinjResult = await callContext.run({ agentId, channel }, () =>

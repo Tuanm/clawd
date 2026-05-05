@@ -145,27 +145,57 @@ describe("reply handler", () => {
     attachFilesToMessageMock.mockClear();
   });
 
-  test("empty text returns silent:true and skips postMessage", async () => {
+  test("empty text + silent_reason returns silent:true and skips postMessage", async () => {
     const result = await executeToolCall("reply", {
       channel: "test",
       text: "",
       agent_id: "Claw'd",
+      silent_reason: "addressed to another agent",
     });
     const body = parseResult(result);
     expect(body.ok).toBe(true);
     expect(body.silent).toBe(true);
+    expect(body.silent_reason).toBe("addressed to another agent");
     expect(postMessageMock.mock.calls.length).toBe(0);
   });
 
-  test("[SILENT] text returns silent:true and skips postMessage", async () => {
+  test("[SILENT] text + silent_reason returns silent:true and skips postMessage", async () => {
+    const result = await executeToolCall("reply", {
+      channel: "test",
+      text: "[SILENT]",
+      agent_id: "Claw'd",
+      silent_reason: "off-topic broadcast",
+    });
+    const body = parseResult(result);
+    expect(body.silent).toBe(true);
+    expect(body.silent_reason).toBe("off-topic broadcast");
+    expect(postMessageMock.mock.calls.length).toBe(0);
+  });
+
+  test("silent reply WITHOUT silent_reason returns MISSING_SILENT_REASON error", async () => {
     const result = await executeToolCall("reply", {
       channel: "test",
       text: "[SILENT]",
       agent_id: "Claw'd",
     });
     const body = parseResult(result);
-    expect(body.silent).toBe(true);
+    expect(body.ok).toBe(false);
+    expect(body.error).toBe("MISSING_SILENT_REASON");
     expect(postMessageMock.mock.calls.length).toBe(0);
+    // Did not write last_processed_ts either — error short-circuits.
+    expect(readSeen("Claw'd", "test")).toBeNull();
+  });
+
+  test("empty silent_reason (whitespace-only) is rejected with MISSING_SILENT_REASON", async () => {
+    const result = await executeToolCall("reply", {
+      channel: "test",
+      text: "",
+      agent_id: "Claw'd",
+      silent_reason: "   ",
+    });
+    const body = parseResult(result);
+    expect(body.ok).toBe(false);
+    expect(body.error).toBe("MISSING_SILENT_REASON");
   });
 
   test("timestamp on SILENT call still writes last_processed_ts", async () => {
@@ -174,6 +204,7 @@ describe("reply handler", () => {
       text: "[SILENT]",
       agent_id: "Claw'd",
       timestamp: "1700000000.111",
+      silent_reason: "no action required",
     });
     const body = parseResult(result);
     expect(body.silent).toBe(true);
@@ -223,12 +254,14 @@ describe("reply handler", () => {
       text: "[SILENT]",
       agent_id: "Claw'd",
       timestamp: "1700000005.000",
+      silent_reason: "no action",
     });
     await executeToolCall("reply", {
       channel: "test",
       text: "[SILENT]",
       agent_id: "Claw'd",
       timestamp: "1700000001.000",
+      silent_reason: "no action",
     });
     expect(readSeen("Claw'd", "test")?.last_processed_ts).toBe("1700000005.000");
   });
@@ -286,6 +319,7 @@ describe("reply handler", () => {
       text: "[SILENT]",
       agent_id: "Claw'd",
       file_ids: ["Fabc"],
+      silent_reason: "no action",
     });
     const body = parseResult(result);
     expect(body.silent).toBe(true);
@@ -372,6 +406,7 @@ describe("reply handler", () => {
         text: "[SILENT]",
         agent_id: "x",
         timestamp: 1777951220.156497,
+        silent_reason: "no action",
       });
       const body = parseResult(result);
       expect(body.ok).toBe(true);

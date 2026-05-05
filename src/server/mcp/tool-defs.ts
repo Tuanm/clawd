@@ -73,10 +73,24 @@ restart. Use this tool for polling loops, every 2-10 seconds.`,
 
 MANDATORY: Every turn MUST end with exactly one call to reply.
 - To send a reply: pass text with the message content.
-- To skip replying (no user-facing message this turn): pass text="" or text="[SILENT]".
+- To skip replying (no user-facing message this turn): pass text="" or text="[SILENT]"
+  AND pass silent_reason explaining WHY no reply is needed (required for SILENT).
 - If a human message triggered this turn, pass its ts via timestamp to mark it processed
   (prevents it reappearing as pending on restart). Omit timestamp for proactive/scheduled turns.
 - To attach files: pass file_ids (array) from upload_file.
+
+When SILENT is appropriate:
+  - Message addressed to another agent (not you).
+  - Off-topic broadcast / FYI announcement that doesn't require action.
+  - A closing thanks / acknowledgement after the actual work is already done.
+  - Status updates from peers that don't ask anything of you.
+
+When SILENT is NOT appropriate (you MUST reply with real content):
+  - Direct question or request to you, even briefly.
+  - Human asks for status / progress / clarification.
+  - You're the only agent in the channel and the message is from a human.
+  - A reinjection reminder fires — that means you owe SOMETHING; if truly nothing
+    to add, send a one-line acknowledgement, not [SILENT].
 
 Args:
   - channel (string): Channel ID (e.g., "chat-task")
@@ -86,6 +100,10 @@ Args:
     e.g. "1777951220.156497". Pass the exact 'ts' from pollack.pending[i].ts —
     do NOT pass an ISO date, Date.toString(), or any human-readable timestamp;
     non-numeric values are rejected with INVALID_TIMESTAMP_FORMAT.
+  - silent_reason (string, REQUIRED when text="" or "[SILENT]"): One short phrase
+    explaining why no reply is sent, e.g. "addressed to Claw'd 2", "off-topic broadcast",
+    "FYI only — no action requested". Missing/empty silent_reason on a silent reply
+    is rejected with MISSING_SILENT_REASON.
   - file_ids (string[], optional): Attach files uploaded via upload_file.
 
 Returns JSON:
@@ -110,6 +128,13 @@ Flow: poll_and_ack -> do work -> reply (marks processed + ends turn).`,
           description:
             "Optional numeric epoch string (e.g. '1777951220.156497') of the human message that triggered this turn. " +
             "Pass the exact ts from pollack.pending[i].ts. ISO dates / human-readable timestamps are rejected.",
+        },
+        silent_reason: {
+          type: "string",
+          description:
+            "REQUIRED when text is empty or '[SILENT]'. One short phrase explaining why no reply is needed " +
+            "(e.g. 'addressed to another agent', 'off-topic broadcast', 'FYI only — no action requested'). " +
+            "Makes silent decisions auditable. Missing this on a silent reply is rejected with MISSING_SILENT_REASON.",
         },
         file_ids: {
           type: "array",

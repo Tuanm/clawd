@@ -98,6 +98,30 @@ describe("buildReinjectionPrompt", () => {
     const p = buildReinjectionPrompt(2, { ...opts, toolName: "mcp__clawd__reply" });
     expect(p).toContain("mcp__clawd__reply");
   });
+
+  test("triggeringIsHuman steers AWAY from [SILENT] template even when hadText=false", () => {
+    // The old template literally suggested text="[SILENT]" when hadText=false.
+    // For human-triggered turns we want the placeholder to nudge toward an
+    // acknowledgement instead — silence on a human turn looks like a malfunction.
+    const human = buildReinjectionPrompt(1, { ...opts, hadText: false, triggeringIsHuman: true });
+    const nonHuman = buildReinjectionPrompt(1, { ...opts, hadText: false, triggeringIsHuman: false });
+    expect(human).not.toContain('text="[SILENT]"');
+    expect(human).toContain("acknowledgement");
+    expect(nonHuman).toContain('"[SILENT]"');
+  });
+
+  test("triggeringIsHuman appends a human-warning notice", () => {
+    const p = buildReinjectionPrompt(2, { ...opts, hadText: true, triggeringIsHuman: true });
+    expect(p).toContain("HUMAN");
+    expect(p.toLowerCase()).toContain("malfunction");
+    expect(p).toContain("silent_reason");
+  });
+
+  test("triggeringIsHuman + hadText=true still suggests <your reply> (never [SILENT] inline)", () => {
+    const p = buildReinjectionPrompt(1, { ...opts, hadText: true, triggeringIsHuman: true });
+    expect(p).toContain("<your reply>");
+    expect(p).not.toContain("<your reply or [SILENT]>");
+  });
 });
 
 describe("MAX_REINJECT_ATTEMPTS", () => {

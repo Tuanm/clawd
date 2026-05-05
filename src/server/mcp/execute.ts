@@ -278,6 +278,29 @@ export async function executeToolCall(
 
         // SILENT / empty text → skip sending entirely. Still mark processed.
         const silent = text === "" || text.trim() === "[SILENT]";
+        const silentReason = (args.silent_reason as string | undefined)?.trim();
+
+        // Silent decisions must be auditable. Without a reason, agents drift into
+        // [SILENT] as a reflex dodge — especially after reinjection. Forcing the
+        // agent to articulate WHY surfaces broken decisions to the operator.
+        if (silent && (!silentReason || silentReason.length === 0)) {
+          resultText = JSON.stringify(
+            {
+              ok: false,
+              error: "MISSING_SILENT_REASON",
+              message:
+                "When sending an empty/[SILENT] reply, you must also pass `silent_reason` " +
+                "explaining why no reply is needed. Examples: " +
+                "'addressed to another agent', 'off-topic broadcast', " +
+                "'closing thanks — no action required', 'message is FYI only'. " +
+                "If the message is a direct question or request to you, you should NOT " +
+                "be silent — call reply with an actual response instead.",
+            },
+            null,
+            2,
+          );
+          break;
+        }
 
         // Validate parameter order BEFORE any DB write — detect if agent swapped text and agent_id.
         // Running this before markProcessed prevents a swapped-param call from marking the message
@@ -333,10 +356,12 @@ export async function executeToolCall(
         }
 
         if (silent) {
+          console.log(`[mcp.reply] silent decision in ${channel} by ${agentId || "default"}: ${silentReason}`);
           resultText = JSON.stringify({
             ok: true,
             silent: true,
             channel,
+            silent_reason: silentReason,
             ...(lastProcessedTs && { last_processed_ts: lastProcessedTs }),
           });
           break;
