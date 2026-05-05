@@ -478,7 +478,7 @@ export async function executeToolCall(
           for (const role of roles) {
             if (role === "bot") roleConditions.push("f.uploaded_by = 'UBOT'");
             if (role === "worker") roleConditions.push("f.uploaded_by LIKE 'UWORKER-%'");
-            if (role === "human") roleConditions.push("f.uploaded_by = 'UHUMAN'");
+            if (role === "human" || role === "pilot") roleConditions.push("f.uploaded_by = 'UHUMAN'");
           }
           if (roleConditions.length > 0) {
             conditions.push(`(${roleConditions.join(" OR ")})`);
@@ -860,7 +860,7 @@ export async function executeToolCall(
           for (const role of roles) {
             if (role === "bot") roleConditions.push("user = 'UBOT'");
             if (role === "worker") roleConditions.push("user LIKE 'UWORKER-%'");
-            if (role === "human") roleConditions.push("user = 'UHUMAN'");
+            if (role === "human" || role === "pilot") roleConditions.push("user = 'UHUMAN'");
           }
           if (roleConditions.length > 0) {
             conditions.push(`(${roleConditions.join(" OR ")})`);

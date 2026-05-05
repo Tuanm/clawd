@@ -69,26 +69,33 @@ restart. Use this tool for polling loops, every 2-10 seconds.`,
   },
   {
     name: "reply",
-    description: `Reply to the human and end the current turn.
+    description: `Send a visible message into the channel and end the current turn.
+
+This is the agent's ONLY way to talk to anyone in the channel — the Pilot
+(the human chat user) AND any other agents/sub-agents present. Assistant-role
+text alone is never delivered. Use reply both to answer the Pilot and to
+hand off / coordinate / chat with other agents (address them by name in the
+text body — e.g. "@Claw'd 2 can you take this?").
 
 MANDATORY: Every turn MUST end with exactly one call to reply.
-- To send a reply: pass text with the message content.
-- To skip replying (no user-facing message this turn): pass text="" or text="[SILENT]"
-  AND pass silent_reason explaining WHY no reply is needed (required for SILENT).
-- If a human message triggered this turn, pass its ts via timestamp to mark it processed
-  (prevents it reappearing as pending on restart). Omit timestamp for proactive/scheduled turns.
+- To send a message: pass text with the content.
+- To skip sending (no visible message this turn): pass text="" or text="[SILENT]"
+  AND pass silent_reason explaining WHY no message is needed (required for SILENT).
+- If a triggering message kicked off this turn (kind="pilot" OR kind="agent"/"sub-agent"),
+  pass its ts via timestamp to mark it processed (prevents it reappearing as pending on
+  restart). Omit timestamp for proactive/scheduled turns.
 - To attach files: pass file_ids (array) from upload_file.
 
 When SILENT is appropriate:
-  - Message addressed to another agent (not you).
+  - Message addressed to a different agent (not you) and you have nothing to add.
   - Off-topic broadcast / FYI announcement that doesn't require action.
   - A closing thanks / acknowledgement after the actual work is already done.
-  - Status updates from peers that don't ask anything of you.
+  - Peer status updates from other agents that don't ask anything of you.
 
-When SILENT is NOT appropriate (you MUST reply with real content):
-  - Direct question or request to you, even briefly.
-  - Human asks for status / progress / clarification.
-  - You're the only agent in the channel and the message is from a human.
+When SILENT is NOT appropriate (you MUST send real content):
+  - Direct question or request to you (from the Pilot OR from another agent), even briefly.
+  - The Pilot asks for status / progress / clarification.
+  - You're the only agent in the channel and the message is from the Pilot.
   - A reinjection reminder fires — that means you owe SOMETHING; if truly nothing
     to add, send a one-line acknowledgement, not [SILENT].
 
@@ -96,10 +103,10 @@ Args:
   - channel (string): Channel ID (e.g., "chat-task")
   - text (string): Message text (supports markdown). "" or "[SILENT]" = no message sent.
   - agent_id (string): Agent identifier (e.g., "Claw'd 1")
-  - timestamp (string, optional): Numeric epoch string of the triggering human message,
-    e.g. "1777951220.156497". Pass the exact 'ts' from pollack.pending[i].ts —
-    do NOT pass an ISO date, Date.toString(), or any human-readable timestamp;
-    non-numeric values are rejected with INVALID_TIMESTAMP_FORMAT.
+  - timestamp (string, optional): Numeric epoch string of the triggering message
+    (Pilot or agent), e.g. "1777951220.156497". Pass the exact 'ts' from
+    pollack.pending[i].ts — do NOT pass an ISO date, Date.toString(), or any
+    human-readable timestamp; non-numeric values are rejected with INVALID_TIMESTAMP_FORMAT.
   - silent_reason (string, REQUIRED when text="" or "[SILENT]"): One short phrase
     explaining why no reply is sent, e.g. "addressed to Claw'd 2", "off-topic broadcast",
     "FYI only — no action requested". Missing/empty silent_reason on a silent reply
@@ -126,8 +133,9 @@ Flow: poll_and_ack -> do work -> reply (marks processed + ends turn).`,
         timestamp: {
           type: "string",
           description:
-            "Optional numeric epoch string (e.g. '1777951220.156497') of the human message that triggered this turn. " +
-            "Pass the exact ts from pollack.pending[i].ts. ISO dates / human-readable timestamps are rejected.",
+            "Optional numeric epoch string (e.g. '1777951220.156497') of the message that triggered this turn " +
+            "(from the Pilot OR from another agent). Pass the exact ts from pollack.pending[i].ts. " +
+            "ISO dates / human-readable timestamps are rejected.",
         },
         silent_reason: {
           type: "string",
@@ -212,7 +220,7 @@ Args:
   - name (string): Substring match against file name (case-insensitive)
   - mimetype (string): Case-insensitive. Ends with "/" → prefix match (e.g., "image/" matches image/png, image/jpeg). Otherwise exact match (e.g., "application/pdf"). Passing "image" alone will NOT match anything.
   - uploader_ids (string[]): Filter by uploader user IDs (e.g., "UHUMAN", "UWORKER-xyz")
-  - roles (string[]): Filter by uploader role: "bot", "worker", "human"
+  - roles (string[]): Filter by uploader role: "bot", "worker", "pilot" (alias: "human")
   - agent_ids (string[]): Filter by agent_id of the attaching message
   - limit (number): Max files to return (default: 100, max: 500)
   - order (string): "asc" (default, oldest first) or "desc" (newest first)
@@ -236,7 +244,7 @@ Returns JSON:
   "has_more": boolean
 }
 
-Role mapping: UBOT="bot", UWORKER-*="worker", UHUMAN="human"
+Role mapping: UBOT="bot", UWORKER-*="worker", UHUMAN="pilot" ("human" is accepted as a legacy alias)
 
 To read a file's content, follow up with download_file(file_id) — for images use
 read_image, for documents use convert_to_markdown after downloading.
@@ -249,8 +257,8 @@ Examples:
 2. Look up one file by id:
    { "channel": "chat-task", "file_id": "Fxyz123" }
 
-3. Find PDFs uploaded by humans:
-   { "channel": "chat-task", "mimetype": "application/pdf", "roles": ["human"] }
+3. Find PDFs uploaded by the Pilot:
+   { "channel": "chat-task", "mimetype": "application/pdf", "roles": ["pilot"] }
 
 4. Find images by name pattern:
    { "channel": "chat-task", "mimetype": "image/", "name": "screenshot" }
@@ -292,8 +300,8 @@ Examples:
         },
         roles: {
           type: "array",
-          items: { type: "string", enum: ["bot", "worker", "human"] },
-          description: "Filter by uploader role",
+          items: { type: "string", enum: ["bot", "worker", "pilot", "human"] },
+          description: 'Filter by uploader role ("human" accepted as alias for "pilot")',
         },
         agent_ids: {
           type: "array",
@@ -404,7 +412,7 @@ reply(
   text="Here's the icon:",
   file_ids=["Fxyz123"],
   agent_id="MyAgent",
-  timestamp="<triggering human msg ts>"
+  timestamp="<triggering Pilot msg ts>"
 )
 \`\`\``,
     inputSchema: {
@@ -536,7 +544,7 @@ Args:
   - to_ts (string): Get messages with ts < to_ts (range end / pagination cursor, exclusive). Combine with order="desc" to page newest first.
   - search (string): Text search (case-insensitive substring match)
   - search_regex (string): Regex pattern (JavaScript regex, case-insensitive)
-  - roles (string[]): Filter by user roles: "bot", "worker", "human"
+  - roles (string[]): Filter by user roles: "bot", "worker", "pilot" (alias: "human")
   - user_ids (string[]): Filter by specific user IDs (e.g., "UHUMAN", "UWORKER-xyz")
   - agent_ids (string[]): Filter by agent_id field on messages
   - attachment_name (string): Filter messages whose attachment filename contains this substring
@@ -554,7 +562,7 @@ Returns JSON:
   "has_more": boolean
 }
 
-Role mapping: UBOT="bot", UWORKER-*="worker", UHUMAN="human"
+Role mapping: UBOT="bot", UWORKER-*="worker", UHUMAN="pilot" ("human" is accepted as a legacy alias)
 
 Examples:
 
@@ -564,8 +572,8 @@ Examples:
 2. Get recent history (newest first):
    { "channel": "chat-task", "limit": 50, "order": "desc" }
 
-3. Find human messages about "bug" since a timestamp:
-   { "channel": "chat-task", "roles": ["human"], "search": "bug", "from_ts": "1234567890.000000" }
+3. Find Pilot messages about "bug" since a timestamp:
+   { "channel": "chat-task", "roles": ["pilot"], "search": "bug", "from_ts": "1234567890.000000" }
 
 4. Find messages from a specific agent:
    { "channel": "chat-task", "agent_ids": ["Claw'd"] }
@@ -601,8 +609,8 @@ Examples:
         },
         roles: {
           type: "array",
-          items: { type: "string", enum: ["bot", "worker", "human"] },
-          description: "Filter by user roles",
+          items: { type: "string", enum: ["bot", "worker", "pilot", "human"] },
+          description: 'Filter by user roles ("human" accepted as alias for "pilot")',
         },
         user_ids: {
           type: "array",

@@ -13,9 +13,9 @@ import { describe, expect, test } from "bun:test";
 import { formatAuthor } from "../utils/format-author";
 
 describe("formatAuthor", () => {
-  test("UHUMAN renders as 'human'", () => {
-    expect(formatAuthor({ user: "UHUMAN" })).toBe("human");
-    expect(formatAuthor({ user: "UHUMAN", agent_id: "anything" })).toBe("human");
+  test("UHUMAN renders as 'Pilot' (proper-noun display label)", () => {
+    expect(formatAuthor({ user: "UHUMAN" })).toBe("Pilot");
+    expect(formatAuthor({ user: "UHUMAN", agent_id: "anything" })).toBe("Pilot");
   });
 
   test("USYSTEM renders as 'system' (synthetic context messages)", () => {
@@ -23,15 +23,15 @@ describe("formatAuthor", () => {
     expect(formatAuthor({ user: "USYSTEM", agent_id: "ignored" })).toBe("system");
   });
 
-  test("UWORKER-* renders as '[Sub-agent: <agent_id>]'", () => {
-    expect(formatAuthor({ user: "UWORKER-abc123", agent_id: "scout" })).toBe("[Sub-agent: scout]");
-    expect(formatAuthor({ user: "UWORKER-xyz", agent_id: "researcher-1" })).toBe("[Sub-agent: researcher-1]");
+  test("UWORKER-* renders as bare agent_id (kind='sub-agent' carries the role)", () => {
+    expect(formatAuthor({ user: "UWORKER-abc123", agent_id: "scout" })).toBe("scout");
+    expect(formatAuthor({ user: "UWORKER-xyz", agent_id: "researcher-1" })).toBe("researcher-1");
   });
 
   test("UWORKER-* without agent_id falls back to 'unknown'", () => {
-    expect(formatAuthor({ user: "UWORKER-abc" })).toBe("[Sub-agent: unknown]");
-    expect(formatAuthor({ user: "UWORKER-abc", agent_id: null })).toBe("[Sub-agent: unknown]");
-    expect(formatAuthor({ user: "UWORKER-abc", agent_id: "" })).toBe("[Sub-agent: unknown]");
+    expect(formatAuthor({ user: "UWORKER-abc" })).toBe("unknown");
+    expect(formatAuthor({ user: "UWORKER-abc", agent_id: null })).toBe("unknown");
+    expect(formatAuthor({ user: "UWORKER-abc", agent_id: "" })).toBe("unknown");
   });
 
   test("regular bot rows prefer agent_id over user id", () => {

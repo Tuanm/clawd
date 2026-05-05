@@ -2374,7 +2374,7 @@ export default function MessageList({
     if (agentId) return "Agent"; // New style agent
     if (user === "UBOT") return "Agent";
     if (user.startsWith("UWORKER-")) return "Worker";
-    return "Human";
+    return "Pilot";
   };
 
   const isImageFile = (file: { mimetype?: string; name: string }) => {

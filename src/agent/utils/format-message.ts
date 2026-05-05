@@ -1,6 +1,6 @@
 import { formatAuthor } from "./format-author";
 
-export type MessageKind = "human" | "system" | "sub-agent" | "agent";
+export type MessageKind = "pilot" | "system" | "sub-agent" | "agent";
 
 interface MessageLike {
   ts?: string | number | null;
@@ -12,7 +12,7 @@ interface MessageLike {
 }
 
 function inferKind(msg: MessageLike): MessageKind {
-  if (msg.user === "UHUMAN") return "human";
+  if (msg.user === "UHUMAN") return "pilot";
   if (msg.user === "USYSTEM") return "system";
   if (typeof msg.user === "string" && msg.user.startsWith("UWORKER-")) return "sub-agent";
   return "agent";

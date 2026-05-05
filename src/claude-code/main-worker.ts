@@ -1613,10 +1613,10 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       ) {
         const lastTs =
           this.pendingTimestamps[this.pendingTimestamps.length - 1] || messages[messages.length - 1]?.ts || "latest";
-        // Detect human-triggered turn so reinjection prompt steers AWAY from
+        // Detect Pilot-triggered turn so reinjection prompt steers AWAY from
         // [SILENT] — the old template literally suggested text="[SILENT]" and
-        // trained agents to dodge human messages on reinjection.
-        const triggeringIsHuman = messages.some((m: any) => m.user === "UHUMAN");
+        // trained agents to dodge Pilot messages on reinjection.
+        const triggeringIsPilot = messages.some((m: any) => m.user === "UHUMAN");
         const hadText = this.turnStreamText.trim().length > 0;
         let lastReinjectionText = "";
 
@@ -1628,7 +1628,7 @@ export class ClaudeCodeMainWorker implements AgentWorker {
             toolName: "mcp__clawd__reply",
             lastTs,
             hadText: hadText || lastReinjectionText.trim().length > 0,
-            triggeringIsHuman,
+            triggeringIsPilot,
           });
 
           // Fresh AbortController per attempt so cancelProcessing()/setSleeping()

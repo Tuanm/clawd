@@ -147,9 +147,12 @@ function expandMessage(
       const senderMatch = /^([a-zA-Z0-9_-]+):\s+(.+)$/.exec(line);
       if (senderMatch) {
         const [, sender, text] = senderMatch;
-        // Normalize to lowercase so wakeup labels match regular channel labels
-        // (wakeup summary uses "Human" capital, channel uses "human" lowercase)
-        wakeupLines.push(`[${sender.toLowerCase()}]: ${text.trim()}`);
+        // Wakeup summary may use legacy "Human" / "human" labels — normalize
+        // them all to "Pilot" so wakeup context matches the live channel
+        // labels that the agent now sees on `from="Pilot"` wrappers.
+        const lower = sender.toLowerCase();
+        const normalized = lower === "human" || lower === "pilot" ? "Pilot" : sender;
+        wakeupLines.push(`[${normalized}]: ${text.trim()}`);
       }
     }
   }
@@ -199,7 +202,10 @@ function expandMessage(
 
       const snippet = text.replace(/\[truncated\]$/, "").trim();
       if (!snippet) continue;
-      const label = sender === "human" ? "human" : sender;
+      // Legacy lines may carry the old lowercase "human:" label; normalize to
+      // "Pilot" so the agent sees the same identity across wakeup, legacy,
+      // and live wrapper formats.
+      const label = sender === "human" || sender === "pilot" ? "Pilot" : sender;
       extracted.push(`[${ts}] ${label}: ${snippet}`);
     }
   }
@@ -207,10 +213,10 @@ function expandMessage(
   // Fallback for plain-text content (no formatted lines found) — used by
   // non-CC callers and tests that store raw text rather than formatted prompts.
   // Gated on !formatRecognized so a row containing recognised wrappers/lines
-  // that all got dedup'd does NOT dump its raw XML as a "[Human]:" line —
-  // that would re-promote the wrapper text as a synthetic human turn.
+  // that all got dedup'd does NOT dump its raw XML as a "[Pilot]:" line —
+  // that would re-promote the wrapper text as a synthetic Pilot turn.
   if (extracted.length === 0 && !formatRecognized) {
-    return [`[Human]: ${trimmed}`];
+    return [`[Pilot]: ${trimmed}`];
   }
 
   return extracted;

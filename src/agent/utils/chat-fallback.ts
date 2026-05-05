@@ -29,55 +29,55 @@ export const MAX_REINJECT_ATTEMPTS = 10;
  * as the attempt count grows, so compliant agents notice on attempt 1 while
  * stubborn ones eventually get an unambiguous directive.
  *
- * When the triggering message is from a human (triggeringIsHuman=true), the
+ * When the triggering message is from the Pilot (triggeringIsPilot=true), the
  * suggested call shape steers the agent AWAY from `[SILENT]` and toward a
- * brief acknowledgement — silence on a human's direct turn looks like a
- * malfunction, and the old template literally trained the dodge by suggesting
+ * brief acknowledgement — silence on a Pilot turn looks like a malfunction,
+ * and the old template literally trained the dodge by suggesting
  * `text="[SILENT]"` whenever the agent had emitted no streaming text.
  *
  * @param attempt 1-indexed attempt number
  * @param opts.toolName Fully-qualified tool name (e.g. "reply" or "mcp__clawd__reply")
  * @param opts.lastTs Timestamp of the triggering message (or "latest")
  * @param opts.hadText True if the agent emitted visible streaming text this turn
- * @param opts.triggeringIsHuman True if the message that owes a reply came from UHUMAN
+ * @param opts.triggeringIsPilot True if the message that owes a reply came from UHUMAN (the Pilot)
  */
 export function buildReinjectionPrompt(
   attempt: number,
-  opts: { toolName: string; lastTs: string; hadText: boolean; triggeringIsHuman?: boolean },
+  opts: { toolName: string; lastTs: string; hadText: boolean; triggeringIsPilot?: boolean },
 ): string {
-  const { toolName, lastTs, hadText, triggeringIsHuman } = opts;
+  const { toolName, lastTs, hadText, triggeringIsPilot } = opts;
 
-  // Pick the suggested `text=...` placeholder. For human-triggered turns we
+  // Pick the suggested `text=...` placeholder. For Pilot-triggered turns we
   // never literally suggest `"[SILENT]"` — that template was the loophole
   // agents kept exploiting to dodge replies.
   const textPlaceholder = hadText
-    ? triggeringIsHuman
+    ? triggeringIsPilot
       ? '"<your reply>"'
       : '"<your reply or [SILENT]>"'
-    : triggeringIsHuman
+    : triggeringIsPilot
       ? '"<one-line acknowledgement>"'
       : '"[SILENT]"';
   const call = `${toolName}(text=${textPlaceholder}, timestamp="${lastTs}")`;
 
-  // Extra warning for human-triggered turns: appended at attempt >= 2 to make
+  // Extra warning for Pilot-triggered turns: appended at attempt >= 2 to make
   // the escalation visible without spamming compliant agents on attempt 1.
-  const humanWarn = triggeringIsHuman
-    ? ` The triggering message is from a HUMAN — silence here looks like a malfunction. Send a brief honest reply ("On it.", "Got it, no action needed."). Use [SILENT] ONLY if the message genuinely wasn't directed at you, and pass silent_reason explaining why.`
+  const pilotWarn = triggeringIsPilot
+    ? ` The triggering message is from the PILOT (the human chat user) — silence here looks like a malfunction. Send a brief honest reply ("On it.", "Got it, no action needed."). Use [SILENT] ONLY if the message genuinely wasn't directed at you, and pass silent_reason explaining why.`
     : "";
 
   if (attempt <= 1) {
     const base = hadText
       ? `[Your turn did not end properly — call \`${call}\` now to deliver your reply AND mark the message processed. Without this, the message will re-poll.]`
       : `[Your turn did not end properly — call \`${call}\` now. Without this, the message will re-poll.]`;
-    return triggeringIsHuman ? base.replace(/]$/, `${humanWarn}]`) : base;
+    return triggeringIsPilot ? base.replace(/]$/, `${pilotWarn}]`) : base;
   }
   if (attempt === 2) {
-    return `[Reminder #${attempt}: ${toolName} has NOT been called yet. Stop whatever you're doing and call \`${call}\` NOW. Do not emit any other tool calls or text before this.${humanWarn}]`;
+    return `[Reminder #${attempt}: ${toolName} has NOT been called yet. Stop whatever you're doing and call \`${call}\` NOW. Do not emit any other tool calls or text before this.${pilotWarn}]`;
   }
   if (attempt <= 4) {
-    return `[Reminder #${attempt}: your ONLY permitted next action is \`${call}\`. No further analysis, tool calls, or commentary — just call ${toolName} immediately.${humanWarn}]`;
+    return `[Reminder #${attempt}: your ONLY permitted next action is \`${call}\`. No further analysis, tool calls, or commentary — just call ${toolName} immediately.${pilotWarn}]`;
   }
-  return `[FINAL NOTICE #${attempt}/${MAX_REINJECT_ATTEMPTS}: call \`${call}\` NOW. This is non-negotiable — any other output is ignored. Call ${toolName} or the turn continues re-polling.${humanWarn}]`;
+  return `[FINAL NOTICE #${attempt}/${MAX_REINJECT_ATTEMPTS}: call \`${call}\` NOW. This is non-negotiable — any other output is ignored. Call ${toolName} or the turn continues re-polling.${pilotWarn}]`;
 }
 
 export type FallbackOutcome =
@@ -112,7 +112,7 @@ export async function sendChatFallback(params: {
   userId: string;
   reinjectionText: string;
   authHeaders?: Record<string, string>;
-  /** Optional ts of the triggering human message; marks it processed alongside the send. */
+  /** Optional ts of the triggering Pilot message; marks it processed alongside the send. */
   processedTs?: string;
 }): Promise<FallbackOutcome> {
   const { apiUrl, channel, agentId, userId, reinjectionText, authHeaders, processedTs } = params;

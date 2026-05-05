@@ -264,7 +264,7 @@ export class SessionSummarizer {
   private async createSummary(messages: any[]): Promise<void> {
     const conversationText = messages
       .map((m) => {
-        const role = m.user === "UHUMAN" ? "Human" : m.agent_id || "Bot";
+        const role = m.user === "UHUMAN" ? "Pilot" : m.agent_id || "Bot";
         return `[${role}]: ${m.text}`;
       })
       .join("\n\n");

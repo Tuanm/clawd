@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { formatMessageBlock, parseMessageBlocks } from "./format-message";
 
 describe("formatMessageBlock — kind inference", () => {
-  test("UHUMAN → human", () => {
+  test("UHUMAN → pilot/Pilot (kind lowercase, from proper-noun)", () => {
     const out = formatMessageBlock({ ts: "1", user: "UHUMAN", text: "hi" });
-    expect(out).toContain('kind="human"');
-    expect(out).toContain('from="human"');
+    expect(out).toContain('kind="pilot"');
+    expect(out).toContain('from="Pilot"');
   });
 
   test("USYSTEM → system", () => {
@@ -14,10 +14,10 @@ describe("formatMessageBlock — kind inference", () => {
     expect(out).toContain('from="system"');
   });
 
-  test("UWORKER-* → sub-agent", () => {
+  test("UWORKER-* → sub-agent (from is bare agent_id; kind carries the role)", () => {
     const out = formatMessageBlock({ ts: "1", user: "UWORKER-abc", agent_id: "scout", text: "hi" });
     expect(out).toContain('kind="sub-agent"');
-    expect(out).toContain('from="[Sub-agent: scout]"');
+    expect(out).toContain('from="scout"');
   });
 
   test("default agent → agent", () => {
@@ -111,7 +111,7 @@ describe("parseMessageBlocks — round-trip", () => {
     const block = formatMessageBlock({ ts: "42", user: "UHUMAN", text: "hello world" });
     const parsed = [...parseMessageBlocks(block)];
     expect(parsed).toHaveLength(1);
-    expect(parsed[0]).toEqual({ ts: "42", from: "human", kind: "human", body: "hello world" });
+    expect(parsed[0]).toEqual({ ts: "42", from: "Pilot", kind: "pilot", body: "hello world" });
   });
 
   test("decodes CDATA escape split back to ]]>", () => {

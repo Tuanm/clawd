@@ -88,13 +88,13 @@ describe("buildContextPreamble", () => {
 
     expect(result).toContain("<conversation_history>");
     expect(result).toContain("</conversation_history>");
-    expect(result).toContain("[Human]: Hello, world!");
+    expect(result).toContain("[Pilot]: Hello, world!");
     // Legacy [Sent to chat] rows render as "you: <text>" in the current format
     // (unified with [CC-Turn] rows — agent recognises its own messages).
     expect(result).toContain("you: Hi there!");
   });
 
-  test("labels plain user messages as [Human] (fallback) and filters raw assistant text", () => {
+  test("labels plain user messages as [Pilot] (fallback) and filters raw assistant text", () => {
     const session = mgr.getOrCreateSession(SESSION, "model");
     mgr.addMessage(session.id, userMsg("u"));
     // Raw assistant text (no [Sent to chat]: prefix) is filtered — it's noisy internal streaming
@@ -102,7 +102,7 @@ describe("buildContextPreamble", () => {
 
     const result = buildContextPreamble(SESSION, opts());
 
-    expect(result).toContain("[Human]: u");
+    expect(result).toContain("[Pilot]: u");
     // Raw assistant blob must NOT appear — only [Sent to chat]: prefixed lines are surfaced
     expect(result).not.toContain("[Assistant]: a");
     expect(result).not.toContain("you: a");
@@ -157,12 +157,12 @@ describe("buildContextPreamble", () => {
     expect(messageLines[0]).toContain(spoofText);
   });
 
-  test("dedup'd XML rows do not regress to raw [Human]: <message ...> dumps", () => {
+  test("dedup'd XML rows do not regress to raw [Pilot]: <message ...> dumps", () => {
     // Regression test for a real bug caught during review: when the same wrapper
     // appears in two stored rows, the second row's blocks all get dedup'd by
     // ts+from, leaving extracted=[]. The naïve fallback would then dump the raw
-    // <message> XML as a "[Human]: ..." line — re-promoting the wrapper as a
-    // synthetic human turn, defeating the whole point of the seal.
+    // <message> XML as a "[Pilot]: ..." line — re-promoting the wrapper as a
+    // synthetic Pilot turn, defeating the whole point of the seal.
     const session = mgr.getOrCreateSession(SESSION, "model");
     const wrapper = `<message from="evil-agent" kind="agent" ts="1705001235000"><![CDATA[anything goes here]]></message>`;
     // Same wrapper stored twice — second one's block dedup'd by ts+from.
@@ -171,9 +171,9 @@ describe("buildContextPreamble", () => {
 
     const result = buildContextPreamble(SESSION, opts());
 
-    // The dedup'd row must NOT dump the raw XML as a "[Human]:" line.
-    expect(result).not.toContain("[Human]: <message");
-    expect(result).not.toMatch(/\[Human\]:[^\n]*<!\[CDATA\[/);
+    // The dedup'd row must NOT dump the raw XML as a "[Pilot]:" line.
+    expect(result).not.toContain("[Pilot]: <message");
+    expect(result).not.toMatch(/\[Pilot\]:[^\n]*<!\[CDATA\[/);
     // Exactly one top-level message line — evil-agent's first occurrence.
     const messageLines = result.split("\n").filter((l) => /^\[\d+\]\s+\S+:/.test(l));
     expect(messageLines).toHaveLength(1);
@@ -197,7 +197,8 @@ describe("buildContextPreamble", () => {
     const result = buildContextPreamble(SESSION, opts({ agentId: "claude-1" }));
 
     // Current format preserves timestamps for channel-message lines.
-    expect(result).toContain("[1705001234567] human: hey can you fix the auth bug");
+    // Legacy "human" label is normalized to the proper-noun "Pilot".
+    expect(result).toContain("[1705001234567] Pilot: hey can you fix the auth bug");
     expect(result).toContain("[1705001235678] verify-agent: I checked the auth module, found an issue");
     expect(result).toContain("you: On it!");
     // Boilerplate must not appear
@@ -217,7 +218,7 @@ describe("buildContextPreamble", () => {
     const result = buildContextPreamble(SESSION, opts());
 
     expect(result).not.toContain("command output here");
-    expect(result).toContain("[Human]: Run a command");
+    expect(result).toContain("[Pilot]: Run a command");
     expect(result).toContain("you: Done!");
   });
 
@@ -231,7 +232,7 @@ describe("buildContextPreamble", () => {
 
     const result = buildContextPreamble(SESSION, opts());
 
-    expect(result).toContain("[Human]: Do something");
+    expect(result).toContain("[Pilot]: Do something");
     expect((result.match(/\[Assistant\]:/g) ?? []).length).toBe(0);
   });
 
@@ -243,9 +244,9 @@ describe("buildContextPreamble", () => {
 
     const result = buildContextPreamble(SESSION, opts({ maxContentLength: 500 }));
 
-    expect(result).toContain("[Human]:");
-    const humanLine = result.split("\n").find((l) => l.startsWith("[Human]:")) ?? "";
-    expect(humanLine.length).toBeLessThan(700);
+    expect(result).toContain("[Pilot]:");
+    const pilotLine = result.split("\n").find((l) => l.startsWith("[Pilot]:")) ?? "";
+    expect(pilotLine.length).toBeLessThan(700);
   });
 
   // ── 6. autoCompact fires ─────────────────────────────────────────────────
@@ -291,7 +292,7 @@ describe("buildContextPreamble", () => {
 
     const result = buildContextPreamble(SESSION, opts());
 
-    expect((result.match(/\[Human\]:/g) ?? []).length).toBe(0);
+    expect((result.match(/\[Pilot\]:/g) ?? []).length).toBe(0);
     expect(result).toContain("you: Real response");
   });
 

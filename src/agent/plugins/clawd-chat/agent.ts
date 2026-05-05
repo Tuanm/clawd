@@ -256,7 +256,7 @@ export function createClawdChatPlugin(config: ClawdChatConfig): Plugin {
       const formattedHistory = messages
         .reverse()
         .map((msg) => {
-          const sender = msg.agent_id || (msg.user === "UHUMAN" ? "Human" : msg.user);
+          const sender = msg.agent_id || (msg.user === "UHUMAN" ? "Pilot" : msg.user);
           const text = msg.text.slice(0, 500) + (msg.text.length > 500 ? "..." : "");
           return `[${sender}]: ${text}`;
         })
@@ -301,17 +301,17 @@ Output in plain text, no markdown headers.`,
 
   // Fallback summary when LLM not available
   function generateFallbackSummary(messages: ChatMessage[]): string {
-    const humanMessages = messages.filter((m) => m.user === "UHUMAN");
+    const pilotMessages = messages.filter((m) => m.user === "UHUMAN");
     const agentMessages = messages.filter((m) => m.agent_id);
 
-    const recentTopics = humanMessages.slice(-5).map((m) => {
+    const recentTopics = pilotMessages.slice(-5).map((m) => {
       const text = m.text.slice(0, 100);
       return `- ${text}${m.text.length > 100 ? "..." : ""}`;
     });
 
-    return `Channel has ${messages.length} recent messages (${humanMessages.length} from humans, ${agentMessages.length} from agents).
+    return `Channel has ${messages.length} recent messages (${pilotMessages.length} from the Pilot, ${agentMessages.length} from agents).
 
-Recent human requests:
+Recent Pilot requests:
 ${recentTopics.join("\n")}`;
   }
 
@@ -320,7 +320,7 @@ ${recentTopics.join("\n")}`;
 
     // Format recent messages as context (reverse to get chronological order)
     const contextLines = messages.reverse().map((msg) => {
-      const sender = msg.agent_id || (msg.user === "UHUMAN" ? "Human" : msg.user);
+      const sender = msg.agent_id || (msg.user === "UHUMAN" ? "Pilot" : msg.user);
       return `[${sender}]: ${msg.text}`;
     });
 
@@ -529,7 +529,7 @@ Your agent name is: ${config.agentId}
 Channel: ${config.channel}
 
 Every turn MUST end with exactly one call to reply(text, timestamp). Only "text" is required — channel, agent_id, and user are auto-injected. Pass timestamp=<triggering message ts> to mark the message processed in the same call.
-Humans CANNOT see your text output — ALWAYS use reply for ALL responses.
+No one in the channel — Pilot OR other agents — sees your assistant-role text output; use reply for ALL channel-visible communication.
 Do NOT output text intended for users — it will never reach them.
 To skip replying while still ending the turn, call reply(text="[SILENT]", timestamp=<ts>).
 When providing copiable content (commands, code, URLs, paths, config values), ALWAYS wrap it in a markdown code block — users can only copy via the Copy button on code blocks.
@@ -545,7 +545,7 @@ The chat UI renders <artifact> tags as visual cards. Use them for rich content (
 You are connected to chat channel "${config.channel}" as "${config.agentId}".
 
 IMPORTANT OUTPUT RULES:
-- Humans CANNOT see your text output — they can ONLY see messages sent via reply
+- Nobody in the channel — Pilot OR other agents — can see your assistant-role text output; they ONLY see messages sent via reply
 - Every turn MUST end with exactly one call to reply(text, timestamp) — this delivers your visible text AND marks the triggering message processed in a single call
 - ALWAYS use reply for ALL replies to users
 - Do NOT output text intended for users — it will never reach them
@@ -968,7 +968,7 @@ reply(
   text="Here's the screenshot",
   file_ids=["Fxyz123"],
   agent_id="Claw'd",
-  timestamp="<triggering human msg ts>"
+  timestamp="<triggering Pilot msg ts>"
 )
 \`\`\``,
           parameters: {
