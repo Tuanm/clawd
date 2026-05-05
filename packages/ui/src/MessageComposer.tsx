@@ -252,7 +252,7 @@ function IconButtonRow({ children }: { children: React.ReactNode }) {
 
 export default function MessageComposer({
   onSend,
-  channel: _channel,
+  channel,
   disabled,
   thinkingBanner,
   hibernateBanner,
@@ -407,6 +407,49 @@ export default function MessageComposer({
 
   const closeComposerContextMenu = useCallback(() => {
     setComposerContextMenu(null);
+  }, []);
+
+  // Auto-focus textarea once per channel entry. Tracked by ref so unrelated
+  // re-renders don't yank focus away from a button the user has Tab'd into.
+  const lastFocusedChannelRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastFocusedChannelRef.current === channel) return;
+    lastFocusedChannelRef.current = channel;
+    const t = setTimeout(() => textareaRef.current?.focus(), 50);
+    return () => clearTimeout(t);
+  }, [channel]);
+
+  // Restrict global Tab navigation to composer buttons only. Bails out when
+  // focus is inside any dialog / modal / portal dropdown so those keep their
+  // native tab order.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[role="dialog"], .stream-dialog-overlay, .modal-overlay, .composer-overflow-dropdown')) {
+        return;
+      }
+      const composer = document.querySelector(".composer-wrapper");
+      if (!composer) return;
+      const focusables = Array.from(composer.querySelectorAll<HTMLElement>("button:not([disabled])")).filter(
+        (el) => el.offsetParent !== null,
+      );
+      if (focusables.length === 0) return;
+      const active = document.activeElement as HTMLElement | null;
+      const currentIndex = active ? focusables.indexOf(active) : -1;
+      e.preventDefault();
+      const lastIndex = focusables.length - 1;
+      const nextIndex = e.shiftKey
+        ? currentIndex <= 0
+          ? lastIndex
+          : currentIndex - 1
+        : currentIndex === -1 || currentIndex === lastIndex
+          ? 0
+          : currentIndex + 1;
+      focusables[nextIndex]?.focus();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
   }, []);
 
   // Toggle toolbar visibility
