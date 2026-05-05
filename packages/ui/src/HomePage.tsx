@@ -114,14 +114,14 @@ export default function HomePage() {
 
   const trimmedId = spaceId.trim();
   const validationError =
-    trimmedId.length > 0 && !/^[\w.-]+$/.test(trimmedId)
-      ? "Use only letters, numbers, dot, dash, or underscore."
+    trimmedId.length > 0 && !/^[a-z0-9-]+$/.test(trimmedId)
+      ? "Use only lowercase letters, numbers, and hyphens."
       : null;
 
   const navigateToSpace = useCallback(() => {
     const id = spaceId.trim();
     if (!id) return;
-    if (!/^[\w.-]+$/.test(id)) return;
+    if (!/^[a-z0-9-]+$/.test(id)) return;
     window.location.pathname = `/${id}`;
   }, [spaceId]);
 

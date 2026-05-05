@@ -10564,28 +10564,6 @@ body,
   color: hsl(var(--text) / 75%);
 }
 
-.empty-channel-state-title {
-  margin: 16px 0 6px;
-  font-size: 18px;
-  font-weight: 700;
-  color: hsl(var(--text));
-}
-
-.empty-channel-state-message {
-  margin: 0 0 18px;
-  font-size: 14px;
-  line-height: 1.5;
-  max-width: 420px;
-  color: hsl(var(--text) / 70%);
-}
-
-.empty-channel-state-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
 .empty-channel-state-btn {
   padding: 8px 14px;
   border-radius: 6px;

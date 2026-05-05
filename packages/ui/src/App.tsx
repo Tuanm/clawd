@@ -2617,15 +2617,7 @@ export default function App({ channel: initialChannel, articleId }: Props) {
           <div className="messages-wrapper">
             {messages.length === 0 && pendingMessages.length === 0 && channelStates.get(activeChannel)?.loaded ? (
               <div className="messages">
-                <EmptyChannelState
-                  channel={activeChannel}
-                  hasAgents={(channelAgents[activeChannel] ?? []).length > 0}
-                  onAddAgent={() => setShowAgentDialog(true)}
-                  onFocusComposer={() => {
-                    const el = document.querySelector<HTMLElement>(".composer-textarea, textarea.composer-input");
-                    el?.focus();
-                  }}
-                />
+                <EmptyChannelState onGetStarted={() => setShowAgentDialog(true)} />
               </div>
             ) : (
               <MessageList
