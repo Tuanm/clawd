@@ -307,6 +307,88 @@ describe("reply handler", () => {
     expect(attachFilesToMessageMock.mock.calls[0][1]).toEqual(["Fgood", "Falso-good"]);
   });
 
+  describe("timestamp format validation", () => {
+    test("ISO date string returns INVALID_TIMESTAMP_FORMAT and does NOT post message", async () => {
+      const result = await executeToolCall("reply", {
+        channel: "octopos",
+        text: "Hi",
+        agent_id: "Tuan",
+        timestamp: "2026-05-05T12:00:00.000Z",
+      });
+      const body = parseResult(result);
+      expect(body.ok).toBe(false);
+      expect(body.error).toBe("INVALID_TIMESTAMP_FORMAT");
+      expect(body.message).toMatch(/numeric epoch/i);
+      expect(postMessageMock.mock.calls.length).toBe(0);
+      expect(readSeen("Tuan", "octopos")).toBeNull();
+    });
+
+    test("letters / mixed alphanumeric returns error", async () => {
+      const result = await executeToolCall("reply", {
+        channel: "test",
+        text: "Hi",
+        agent_id: "x",
+        timestamp: "abc123",
+      });
+      expect(parseResult(result).error).toBe("INVALID_TIMESTAMP_FORMAT");
+      expect(postMessageMock.mock.calls.length).toBe(0);
+    });
+
+    test("scientific notation returns error", async () => {
+      const result = await executeToolCall("reply", {
+        channel: "test",
+        text: "Hi",
+        agent_id: "x",
+        timestamp: "1.7e9",
+      });
+      expect(parseResult(result).error).toBe("INVALID_TIMESTAMP_FORMAT");
+    });
+
+    test("negative number returns error", async () => {
+      const result = await executeToolCall("reply", {
+        channel: "test",
+        text: "Hi",
+        agent_id: "x",
+        timestamp: "-100",
+      });
+      expect(parseResult(result).error).toBe("INVALID_TIMESTAMP_FORMAT");
+    });
+
+    test("empty-string timestamp is treated as missing (no error, no row)", async () => {
+      const result = await executeToolCall("reply", {
+        channel: "test",
+        text: "Hi",
+        agent_id: "x",
+        timestamp: "",
+      });
+      const body = parseResult(result);
+      expect(body.ok).toBe(true);
+      expect(body.last_processed_ts).toBeUndefined();
+    });
+
+    test("numeric (non-string) timestamp is accepted and stringified", async () => {
+      const result = await executeToolCall("reply", {
+        channel: "test",
+        text: "[SILENT]",
+        agent_id: "x",
+        timestamp: 1777951220.156497,
+      });
+      const body = parseResult(result);
+      expect(body.ok).toBe(true);
+      expect(body.last_processed_ts).toBe("1777951220.156497");
+    });
+
+    test("error fires BEFORE postMessage — bad ts cannot ship the message", async () => {
+      await executeToolCall("reply", {
+        channel: "test",
+        text: "should not be sent",
+        agent_id: "Tuan",
+        timestamp: "Date.now()",
+      });
+      expect(postMessageMock.mock.calls.length).toBe(0);
+    });
+  });
+
   test("parameter-swap guard fires BEFORE markProcessed — swapped call does NOT regress last_processed_ts", async () => {
     const longMessage =
       "Hello! This is a long message that was accidentally placed into the agent_id field instead of the text field.";

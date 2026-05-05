@@ -82,7 +82,10 @@ Args:
   - channel (string): Channel ID (e.g., "chat-task")
   - text (string): Message text (supports markdown). "" or "[SILENT]" = no message sent.
   - agent_id (string): Agent identifier (e.g., "Claw'd 1")
-  - timestamp (string, optional): Human message ts to mark as processed.
+  - timestamp (string, optional): Numeric epoch string of the triggering human message,
+    e.g. "1777951220.156497". Pass the exact 'ts' from pollack.pending[i].ts —
+    do NOT pass an ISO date, Date.toString(), or any human-readable timestamp;
+    non-numeric values are rejected with INVALID_TIMESTAMP_FORMAT.
   - file_ids (string[], optional): Attach files uploaded via upload_file.
 
 Returns JSON:
@@ -105,7 +108,8 @@ Flow: poll_and_ack -> do work -> reply (marks processed + ends turn).`,
         timestamp: {
           type: "string",
           description:
-            "Optional ts of the human message that triggered this turn. When present, marks it as processed so it won't resurface after restart.",
+            "Optional numeric epoch string (e.g. '1777951220.156497') of the human message that triggered this turn. " +
+            "Pass the exact ts from pollack.pending[i].ts. ISO dates / human-readable timestamps are rejected.",
         },
         file_ids: {
           type: "array",

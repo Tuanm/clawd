@@ -249,7 +249,32 @@ export async function executeToolCall(
         const text = (args.text as string | undefined) ?? "";
         const agentId = args.agent_id as string;
         const userOverride = args.user as string | undefined;
-        const processedTs = args.timestamp as string | undefined;
+        const rawTimestamp = args.timestamp;
+        const processedTs = rawTimestamp === undefined || rawTimestamp === null ? undefined : String(rawTimestamp);
+
+        // Format-check `timestamp` BEFORE the message is sent. The arg must be a
+        // numeric epoch string ("1777951220.156497"); ISO dates / letters silently
+        // poison agent_seen.last_processed_ts because pollack lex-compares against
+        // it (see writeLastProcessed in server/database.ts). Failing fast here
+        // forces the agent to retry with the correct ts from pollack.pending[i].ts.
+        if (processedTs !== undefined && processedTs !== "" && !/^\d+(\.\d+)?$/.test(processedTs)) {
+          resultText = JSON.stringify(
+            {
+              ok: false,
+              error: "INVALID_TIMESTAMP_FORMAT",
+              message:
+                "The 'timestamp' parameter must be a numeric epoch string like '1777951220.156497' " +
+                "(seconds since 1970, optionally with a decimal fraction). " +
+                `You passed: ${JSON.stringify(rawTimestamp)}. ` +
+                "Use the exact 'ts' field from the message you are replying to (pollack.pending[i].ts). " +
+                "Do NOT pass an ISO date, a Date.toString(), or any human-readable timestamp — " +
+                "doing so corrupts processed-message tracking and stalls the agent.",
+            },
+            null,
+            2,
+          );
+          break;
+        }
 
         // SILENT / empty text → skip sending entirely. Still mark processed.
         const silent = text === "" || text.trim() === "[SILENT]";
