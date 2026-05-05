@@ -1878,6 +1878,10 @@ export default function MessageList({
   const [isDragging, setIsDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
 
+  // Like/Dislike popup temporarily hidden — flip to true to re-enable.
+  // Typed as `boolean` (not `false`) so TS still narrows the `&& createPortal(...)` chain.
+  const LIKE_DISLIKE_POPUP_ENABLED: boolean = false;
+
   // Hover state for reaction pane + tracked position for portal rendering
   const [hoveredMsgTs, setHoveredMsgTs] = useState<string | null>(null);
   const [reactionPanePos, setReactionPanePos] = useState<{ top: number; right: number } | null>(null);
@@ -3603,7 +3607,8 @@ export default function MessageList({
           document.body,
         )}
       {/* Reaction hover pane — portal to escape .message { overflow: hidden } clipping */}
-      {hoveredMsgTs &&
+      {LIKE_DISLIKE_POPUP_ENABLED &&
+        hoveredMsgTs &&
         reactionPanePos &&
         createPortal(
           <div

@@ -917,7 +917,7 @@ export default function MessageComposer({
           {isListening ? "Voice input active. Speak now." : "Voice input stopped."}
         </div>
       )}
-      <div className="composer-disclaimer">Claw'd can make mistakes. You too.</div>
+      <div className="composer-disclaimer">Claw'd can make mistakes.</div>
 
       {/* Composer context menu */}
       {composerContextMenu && (
