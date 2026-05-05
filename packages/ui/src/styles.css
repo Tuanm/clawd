@@ -6206,6 +6206,29 @@ textarea {
   height: 16px;
 }
 
+.memos-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 4px;
+}
+.memos-btn:hover {
+  background: transparent;
+  color: hsl(var(--accent));
+}
+.memos-btn:focus:not(:focus-visible) {
+  outline: none;
+}
+.memos-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* ── Scheduler dialog ─────────────────────────────────────────── */
 .scheduler-dialog {
   width: min(92vw, 720px);
