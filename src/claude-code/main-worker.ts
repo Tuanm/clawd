@@ -40,6 +40,8 @@ import { createLogger } from "../utils/logger";
 import { timedFetch } from "../utils/timed-fetch";
 import type { AgentHealthSnapshot, AgentWorker } from "../worker-loop";
 import { buildSdkPromptWithHeartbeat } from "./build-sdk-messages";
+import { CCMemoryExtractor } from "./cc-memory-extractor";
+import { CCStatePersistence, formatForContext } from "./cc-state-persistence";
 import { initMemorySession, saveToMemory } from "./memory";
 import { runSDKQuery } from "./sdk";
 import { extractSubject } from "./tool-subject";
@@ -158,6 +160,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       }
     | null
     | "disabled" = null;
+
+  // CC State Persistence — structured working state (files, decisions, errors, plan)
+  private ccStatePersistence: CCStatePersistence | null = null;
+  // CC Memory Extractor — auto-extract memories from tool outputs
+  private ccMemoryExtractor: CCMemoryExtractor | null = null;
 
   private addToSkillReviewBuffer(entry: { role: string; content: string; toolName?: string }): void {
     this.skillReviewBuffer.push({ ...entry, ts: Date.now() });
@@ -282,6 +289,30 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       this.restoreSessionId();
       this.restorePendingSeenTimestamps();
       this.memorySessionId = initMemorySession(this.memorySessionName, this.config.model);
+
+      // Initialize CC State Persistence
+      const sessionDir = `${homedir()}/.clawd/sessions/${this.memorySessionId || this.memorySessionName}`;
+      this.ccStatePersistence = new CCStatePersistence(sessionDir);
+      this.ccMemoryExtractor = new CCMemoryExtractor(
+        getAgentMemoryStore(),
+        this.config.agentId,
+        this.config.channel,
+        this.config.projectRoot,
+      );
+
+      // Capture environment (git branch, working dir) for working state
+      if (this.ccStatePersistence) {
+        try {
+          const { execSync } = require("child_process");
+          const branch = execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", {
+            encoding: "utf-8",
+            cwd: this.config.projectRoot,
+          }).trim();
+          this.ccStatePersistence.updateEnvironment(branch, this.config.projectRoot);
+        } catch {
+          this.ccStatePersistence.updateEnvironment("", this.config.projectRoot);
+        }
+      }
       // Clear any orphan is_streaming=true flag from a prior process crash.
       // Without this, the UI would show this agent as streaming indefinitely.
       try {
@@ -721,6 +752,11 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const { channel, agentId } = this.config;
     const input = (toolInput || {}) as Record<string, any>;
     broadcastAgentToolCall(channel, agentId, toolName, input, "started", undefined, toolUseId, this.getAvatarColor());
+    // Cache tool args for state persistence (onToolCall with args)
+    const shortName = toolName.replace(/^mcp__clawd__/, "");
+    if (this.ccStatePersistence) {
+      this.ccStatePersistence.onToolCall(shortName, input);
+    }
   }
 
   handleToolResult(toolName: string, toolInput: unknown, toolResponse: unknown, toolUseId?: string): void {
@@ -752,6 +788,21 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       undefined,
       toolUseId || `tool_${toolName}_${Date.now()}`,
     );
+
+    // CC State Persistence: track file operations, errors, and extract memories
+    // All tracking is best-effort — wrapped in try-catch independently
+    try {
+      // Track file ops and errors via state persistence
+      if (this.ccStatePersistence) {
+        this.ccStatePersistence.onToolResult(shortName, input, response);
+      }
+      // Auto-extract memories from tool outputs
+      if (this.ccMemoryExtractor) {
+        this.ccMemoryExtractor.extractFromToolResult(shortName, input, response);
+      }
+    } catch (err) {
+      logger.error(`[handleToolResult] state/memory tracking failed:`, err);
+    }
 
     // All tracking below is best-effort. Each block is independently try-catched
     // so one failure cannot cascade and drop later tracking work.
@@ -879,6 +930,12 @@ export class ClaudeCodeMainWorker implements AgentWorker {
    * them far better source material for a summary than parsed prompt text.
    */
   private async maybeCompactSession(): Promise<void> {
+    // CC State Persistence: save working state BEFORE compaction clears messages
+    // This ensures files/decisions/errors survive the compaction
+    if (this.ccStatePersistence) {
+      this.ccStatePersistence.saveImmediately();
+    }
+
     const manager = getSessionManager();
     if (!manager.needsCompaction(this.memorySessionName, 100_000)) return;
 
@@ -891,6 +948,38 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // channel DB and injected into the preamble separately.
     const rowsToDelete = manager.getMessagesToCompactByName(this.memorySessionName, KEEP_COUNT);
     if (rowsToDelete.length === 0) return;
+
+    // CC State Persistence: harvest tool calls from rows being deleted
+    // This preserves the tool call sequence even after rows are summarized/deleted
+    if (this.ccStatePersistence) {
+      for (const row of rowsToDelete) {
+        if (row.tool_calls) {
+          try {
+            const toolCalls = JSON.parse(row.tool_calls);
+            for (const tc of toolCalls) {
+              const toolName = tc?.function?.name || tc?.name || "unknown";
+              const args = tc?.function?.arguments || tc?.arguments || "";
+              const argsStr = typeof args === "string" ? args : JSON.stringify(args);
+              // Extract key args (path, file, url) for readability
+              let shortArgs = argsStr;
+              try {
+                const parsed = typeof argsStr === "string" ? JSON.parse(argsStr) : args;
+                shortArgs = parsed?.path || parsed?.file || parsed?.url || parsed?.command || argsStr.slice(0, 100);
+              } catch {
+                shortArgs = argsStr.slice(0, 100);
+              }
+              this.ccStatePersistence.addToolCallToLog(
+                toolName,
+                shortArgs,
+                row.created_at ? String(row.created_at) : "",
+              );
+            }
+          } catch {
+            // Skip malformed tool_calls
+          }
+        }
+      }
+    }
 
     const lines: string[] = [];
     for (const row of rowsToDelete) {
@@ -1224,6 +1313,24 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       // prefixes in their reply text — the wrapper attributes are the source
       // of truth. See src/agent/utils/format-message.ts.
       const line = formatMessageBlock(msg);
+
+      // CC State Persistence: capture inception from first user message
+      // Handle file-only messages (drag-drop without caption) — use file names as context
+      if (msg.user === "UHUMAN" && this.ccStatePersistence) {
+        try {
+          let inceptionText = text || msg.text || "";
+          if (!inceptionText && hasFiles && Array.isArray(msg.files)) {
+            const fileNames = msg.files.map((f: any) => f?.name || "unnamed").join(", ");
+            inceptionText = `[Uploaded files: ${fileNames}]`;
+          }
+          if (inceptionText) {
+            this.ccStatePersistence.captureInception(inceptionText);
+          }
+        } catch (err) {
+          logger.error(`[handleAssistantMessage] inception capture failed:`, err);
+        }
+      }
+
       const rowId = saveToMemory(this.memorySessionId, "user", line);
       if (rowId !== null) currentTurnRowIds.add(rowId);
     }
@@ -1426,6 +1533,14 @@ export class ClaudeCodeMainWorker implements AgentWorker {
       systemPrompt += "\n\n" + memoryContext;
     }
 
+    // Inject CC State Persistence working-state context (files, decisions, errors, plan)
+    if (this.ccStatePersistence) {
+      const workingStateContext = this.ccStatePersistence.getContext();
+      if (workingStateContext) {
+        systemPrompt += "\n\n" + workingStateContext;
+      }
+    }
+
     // Inject compaction summary (if prior turns were summarised). Summary rows
     // live in the session DB with created_at=0; we lift them into the system
     // prompt instead of emitting as user messages so the agent sees them as
@@ -1433,6 +1548,13 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     const summaries = getSessionManager().getCompactionSummariesByName(this.memorySessionName);
     if (summaries.length > 0) {
       systemPrompt += `\n\n<prior_conversation_summary>\n${summaries.join("\n\n")}\n</prior_conversation_summary>`;
+      // Hint: if the agent needs more context, tell them how to query history
+      // Note: channel is auto-injected from agent context, no need to pass it
+      systemPrompt += `\n\n<context_recovery_hint>
+If you need more details about what happened in the conversation, use:
+  mcp__clawd__query_messages(limit=10, order="desc")
+This returns the most recent messages. Use search or ts filters to narrow down specific topics.
+</context_recovery_hint>`;
     }
 
     // Dynamic: inject active sub-agent count as a system reminder (best-effort).
@@ -1785,6 +1907,15 @@ export class ClaudeCodeMainWorker implements AgentWorker {
     // Feed assistant text into skill review buffer
     const trimmedText = text.trim();
     if (trimmedText) this.addToSkillReviewBuffer({ role: "assistant", content: sanitize(trimmedText.slice(0, 500)) });
+
+    // CC State Persistence: extract decisions from assistant text
+    if (trimmedText && this.ccMemoryExtractor) {
+      try {
+        this.ccMemoryExtractor.extractDecision(trimmedText);
+      } catch (err) {
+        logger.error(`[handleAssistantMessage] decision extraction failed:`, err);
+      }
+    }
   }
 
   /** Format a single message line for prompt building */
